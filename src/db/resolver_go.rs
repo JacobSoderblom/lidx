@@ -14,6 +14,7 @@
 
 use super::*;
 use crate::indexer::extract::{GoDeferred, GoValue};
+use crate::indexer::go_build::{BUILD_HOST_MODIFIER, BUILD_TAG_MODIFIER};
 use crate::model::go_type_data;
 
 /// How deep embedded types are searched for a promoted member.
@@ -37,9 +38,130 @@ struct GoSymbol {
     kind: String,
     signature: Option<String>,
     file_id: i64,
+    /// `symbols.visibility`: carries the file's build constraint, if any.
+    visibility: Option<String>,
+}
+
+/// A file's build constraint as its symbols record it (`go_build`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BuildTag {
+    key: String,
+    host: bool,
+}
+
+impl BuildTag {
+    /// The constraint a `symbols.visibility` value records, if any.
+    pub(super) fn parse(visibility: Option<&str>) -> Option<BuildTag> {
+        let visibility = visibility?;
+        let key = visibility
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix(BUILD_TAG_MODIFIER))?;
+        Some(BuildTag {
+            key: key.to_string(),
+            host: visibility
+                .split_whitespace()
+                .any(|w| w == BUILD_HOST_MODIFIER),
+        })
+    }
+}
+
+/// Which of same-package twins -- one declaration written in several files
+/// whose build constraints exclude each other (`stdlib_regex.go` is
+/// `!gore2regex`, `wasilibs_regex.go` is `gore2regex`) -- a call means.
+/// `tags` is each twin's file constraint (`None`: unconstrained), `caller`
+/// the calling file's. In order:
+/// 1. a caller in a constrained file takes the twin with its own constraint
+///    (a call inside `x_windows.go` means the windows variant);
+/// 2. else the twin that holds on the default host (linux/amd64, cgo off, no
+///    extra tags -- see `indexer::go_build`) or has no constraint;
+/// 3. if that is still several, the unconstrained one.
+///
+/// `None` when no twin is told apart: the name stays ambiguous.
+pub(super) fn pick_build_twin(
+    tags: &[Option<BuildTag>],
+    caller: Option<&BuildTag>,
+) -> Option<usize> {
+    if let Some(caller) = caller {
+        let mut own =
+            (0..tags.len()).filter(|&i| tags[i].as_ref().is_some_and(|t| t.key == caller.key));
+        if let (Some(only), None) = (own.next(), own.next()) {
+            return Some(only);
+        }
+    }
+    let on_host: Vec<usize> = (0..tags.len())
+        .filter(|&i| tags[i].as_ref().is_none_or(|t| t.host))
+        .collect();
+    if let [only] = on_host[..] {
+        return Some(only);
+    }
+    let mut plain = on_host.iter().copied().filter(|&i| tags[i].is_none());
+    match (plain.next(), plain.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    }
+}
+
+/// `items` with every set of build-constraint twins -- same `kind` and
+/// member key, different file, at least one file constrained -- reduced to
+/// the twin `pick_build_twin` chooses. A set no twin is picked from stays as
+/// it is (ambiguous when named). `view` gives `(kind, member key,
+/// visibility)`.
+pub(super) fn collapse_build_twins<T>(
+    items: Vec<T>,
+    view: impl Fn(&T) -> (String, String, Option<String>),
+    caller: Option<&BuildTag>,
+) -> Vec<T> {
+    if items.len() < 2 {
+        return items;
+    }
+    let mut dropped = HashSet::new();
+    {
+        let mut groups: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+        let views: Vec<_> = items.iter().map(&view).collect();
+        for (i, (kind, member, _)) in views.iter().enumerate() {
+            groups.entry((kind, member)).or_default().push(i);
+        }
+        for group in groups.values().filter(|g| g.len() > 1) {
+            let tags: Vec<Option<BuildTag>> = group
+                .iter()
+                .map(|&i| BuildTag::parse(views[i].2.as_deref()))
+                .collect();
+            if tags.iter().all(Option::is_none) {
+                continue;
+            }
+            if let Some(kept) = pick_build_twin(&tags, caller) {
+                dropped.extend(
+                    group
+                        .iter()
+                        .enumerate()
+                        .filter(|&(n, _)| n != kept)
+                        .map(|(_, &i)| i),
+                );
+            }
+        }
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, item)| (!dropped.contains(&i)).then_some(item))
+        .collect()
 }
 
 impl GoSymbol {
+    /// The member the symbol declares in its package: `Name`, or
+    /// `Type.Method` for a method (the qualname minus its module, whose file
+    /// stem may itself hold dots).
+    fn name_in_package(&self) -> &str {
+        let mut dots = self.qualname.rmatch_indices('.').map(|(i, _)| i);
+        let last = dots.next();
+        let cut = if self.kind == "method" {
+            dots.next()
+        } else {
+            last
+        };
+        cut.map_or(self.qualname.as_str(), |i| &self.qualname[i + 1..])
+    }
+
     /// The package directory the symbol is declared in.
     fn dir(&self) -> &str {
         self.qualname.rsplit_once('/').map_or("", |(dir, _)| dir)
@@ -161,7 +283,7 @@ impl Resolver<'_> {
     /// types and variables (never methods).
     fn go_package_symbols(&mut self, dir: &str, name: &str) -> Result<Vec<GoSymbol>> {
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT s.id, s.qualname, s.kind, s.signature, s.file_id
+            "SELECT s.id, s.qualname, s.kind, s.signature, s.file_id, s.visibility
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name = ?1 AND f.language = 'go' AND s.kind != 'method' AND {}",
             live_symbols(2)
@@ -169,7 +291,41 @@ impl Resolver<'_> {
         let rows = stmt
             .query_map(params![name, self.graph_version], go_symbol_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows.into_iter().filter(|s| s.dir() == dir).collect())
+        let caller = self.go_caller_tag()?;
+        Ok(collapse_build_twins(
+            rows.into_iter().filter(|s| s.dir() == dir).collect(),
+            |s: &GoSymbol| {
+                (
+                    s.kind.clone(),
+                    s.name_in_package().to_string(),
+                    s.visibility.clone(),
+                )
+            },
+            caller.as_ref(),
+        ))
+    }
+
+    /// The build constraint of the file making the reference being
+    /// resolved.
+    pub(super) fn go_caller_tag(&mut self) -> Result<Option<BuildTag>> {
+        if let Some(known) = self.caller_build_tags.get(&self.caller_file) {
+            return Ok(known.clone());
+        }
+        let visibility: Option<String> = self
+            .conn
+            .prepare_cached(
+                "SELECT s.visibility FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE f.path = ?1 AND s.graph_version = ?2 AND s.visibility LIKE '%buildtag:%'
+                 LIMIT 1",
+            )?
+            .query_row(params![self.caller_file, self.graph_version], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let tag = BuildTag::parse(visibility.as_deref());
+        self.caller_build_tags
+            .insert(self.caller_file.clone(), tag.clone());
+        Ok(tag)
     }
 
     /// The method `name` of type `ty` of package `dir`, declared on it or
@@ -185,7 +341,7 @@ impl Resolver<'_> {
         let own = {
             let suffix = format!(".{ty}.{name}");
             let mut stmt = self.conn.prepare_cached(&format!(
-                "SELECT s.id, s.qualname, s.kind, s.signature, s.file_id
+                "SELECT s.id, s.qualname, s.kind, s.signature, s.file_id, s.visibility
                  FROM symbols s JOIN files f ON s.file_id = f.id
                  WHERE s.name = ?1 AND f.language = 'go' AND s.kind = 'method' AND {}",
                 live_symbols(2)
@@ -193,9 +349,20 @@ impl Resolver<'_> {
             let rows = stmt
                 .query_map(params![name, self.graph_version], go_symbol_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows.into_iter()
-                .filter(|s| s.qualname.ends_with(&suffix) && s.dir() == dir)
-                .collect::<Vec<_>>()
+            let caller = self.go_caller_tag()?;
+            collapse_build_twins(
+                rows.into_iter()
+                    .filter(|s| s.qualname.ends_with(&suffix) && s.dir() == dir)
+                    .collect::<Vec<_>>(),
+                |s: &GoSymbol| {
+                    (
+                        s.kind.clone(),
+                        s.name_in_package().to_string(),
+                        s.visibility.clone(),
+                    )
+                },
+                caller.as_ref(),
+            )
         };
         if own.len() > 1 {
             self.saw_ambiguous = true;
@@ -398,6 +565,7 @@ fn go_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GoSymbol> {
         kind: row.get(2)?,
         signature: row.get(3)?,
         file_id: row.get(4)?,
+        visibility: row.get(5)?,
     })
 }
 

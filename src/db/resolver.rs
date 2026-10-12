@@ -1279,6 +1279,11 @@ pub(crate) struct Resolver<'c> {
     /// Qualname of the symbol making the reference being resolved: which
     /// fn-local twins it can see.
     caller_scope: Option<String>,
+    /// Path of the file making the reference being resolved.
+    caller_file: String,
+    /// Go build constraint of a file (by path), memoized: `None` for an
+    /// unconstrained one.
+    caller_build_tags: HashMap<String, Option<resolver_go::BuildTag>>,
     /// Simple name of the current call's known receiver type, if any --
     /// narrows same-arity extension-method overloads.
     call_receiver: Option<String>,
@@ -1318,6 +1323,8 @@ impl<'c> Resolver<'c> {
             binds_local_functions: false,
             deferred_cache: HashMap::new(),
             caller_scope: None,
+            caller_file: String::new(),
+            caller_build_tags: HashMap::new(),
             call_receiver: None,
             merged_half: MergedHalf::Value,
             call_scope: TypeScope::default(),
@@ -1335,6 +1342,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.caller_scope = r.source_qualname.map(str::to_string);
+        self.caller_file = r.source_file_path.to_string();
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             return self.refuse_uncallable_kind(r, resolution);
@@ -2840,28 +2848,42 @@ impl<'c> Resolver<'c> {
                 continue;
             };
             let name = member.rsplit('.').next().unwrap_or(member);
-            let rows: Vec<(i64, String)> = self
+            let rows: Vec<(i64, String, String, Option<String>)> = self
                 .conn
                 .prepare_cached(
-                    "SELECT s.id, s.qualname, s.kind FROM symbols s JOIN files f ON f.id = s.file_id
+                    "SELECT s.id, s.qualname, s.kind, s.visibility FROM symbols s JOIN files f ON f.id = s.file_id
                      WHERE s.name = ?1 AND s.graph_version = ?2 AND f.language = 'go'
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
                 )?
                 .query_map(params![name, gv], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
                 // A bare `Name()` never dispatches to a method.
-                .filter(|(_, _, kind)| !(bare && kind == "method"))
-                .map(|(id, qualname, _)| (id, qualname))
+                .filter(|(_, _, kind, _)| !(bare && kind == "method"))
                 .collect();
             let dot_member = format!(".{member}");
-            let mut hits = rows.iter().filter_map(|(id, qualname)| {
-                let module = qualname.strip_suffix(&dot_member)?;
-                let dir = module.rsplit_once('/').map_or("", |(dir, _)| dir);
-                (dir == want_dir).then_some(*id)
-            });
+            let hits: Vec<(i64, String, String, Option<String>)> = rows
+                .into_iter()
+                .filter(|(_, qualname, _, _)| {
+                    qualname.strip_suffix(&dot_member).is_some_and(|module| {
+                        module.rsplit_once('/').map_or("", |(dir, _)| dir) == want_dir
+                    })
+                })
+                .collect();
+            // One declaration written in several files under mutually
+            // exclusive build constraints is one hit, not an ambiguity.
+            let caller_tag = self.go_caller_tag()?;
+            let mut hits = resolver_go::collapse_build_twins(
+                hits,
+                |(_, _, kind, visibility): &(i64, String, String, Option<String>)| {
+                    (kind.clone(), member.to_string(), visibility.clone())
+                },
+                caller_tag.as_ref(),
+            )
+            .into_iter()
+            .map(|(id, ..)| id);
             let first = hits.next();
             let second = first.and_then(|_| hits.next());
             // `Type.Method`: a method promoted from an embedded type when
@@ -4831,6 +4853,27 @@ impl Db {
         )
     }
 
+    /// Re-judge the Go edges bound to one of several same-package twins of a
+    /// declaration (one name and kind in different files, at least one under
+    /// a build constraint): editing a constraint, or adding or removing a
+    /// twin, changes which twin a call means without touching the call.
+    pub fn retry_go_twin_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "JOIN symbols twin ON twin.id = e.target_symbol_id",
+            &format!(
+                "AND e.kind IN ('CALLS', 'REFERENCES')
+                 AND e.file_id IN (SELECT id FROM files WHERE language = 'go')
+                 AND EXISTS (
+                    SELECT 1 FROM symbols other
+                    WHERE other.graph_version = e.graph_version AND other.name = twin.name
+                      AND other.kind = twin.kind AND other.file_id != twin.file_id
+                      AND (other.visibility LIKE '%{tag}%' OR twin.visibility LIKE '%{tag}%'))",
+                tag = crate::indexer::go_build::BUILD_TAG_MODIFIER
+            ),
+        )
+    }
+
     /// Re-judge the edges a name tier bound (`bare_name`, `two_segment`)
     /// whose name a symbol added since the watermark now shares with another
     /// one: a fresh reindex sees both candidates and refuses (or binds the
@@ -5027,6 +5070,13 @@ impl Db {
         if promoted_rejudged > 0 {
             eprintln!(
                 "lidx: re-judged {promoted_rejudged} promoted-method edge(s) after {context}"
+            );
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let twins_rejudged = self.retry_go_twin_edges(graph_version)?;
+        if twins_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {twins_rejudged} build-constraint twin edge(s) after {context}"
             );
             self.reconcile_unresolved_reference_store(graph_version)?;
         }

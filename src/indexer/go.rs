@@ -158,6 +158,9 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             types: Rc::new(LocalTypes::default()),
         };
         walk_node(root, &ctx, source, &mut output);
+        if let Some(constraint) = crate::indexer::go_build::file_constraint(module_name, source) {
+            output.file_modifiers = constraint.modifiers();
+        }
         Ok(output)
     }
 
@@ -479,9 +482,11 @@ fn handle_type_spec(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         return;
     };
 
-    let signature = (type_node.kind() == "struct_type")
-        .then(|| struct_signature(type_node, source))
-        .flatten();
+    let signature = match type_node.kind() {
+        "struct_type" => struct_signature(type_node, source),
+        "interface_type" => interface_signature(type_node, source),
+        _ => None,
+    };
     let kind = match type_node.kind() {
         "struct_type" => "class",
         "interface_type" => {
@@ -516,6 +521,105 @@ fn handle_type_spec(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         evidence_snippet: None,
         ..Default::default()
     });
+    if type_node.kind() == "interface_type" {
+        handle_interface_methods(type_node, ctx, source, output, &name);
+    }
+}
+
+/// The method specs of interface `interface_name` as `method` symbols
+/// (`<module>.<Interface>.<Method>`, the shape of a concrete type's methods),
+/// so a call through an interface-typed receiver binds to the spec and the
+/// dispatch machinery (`Db::edges_for_symbols_with_dispatch`) can fan it out
+/// to the types implementing it. Embedded interfaces declare no spec of
+/// their own: their methods are the embedded interface's.
+fn handle_interface_methods(
+    type_node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+    interface_name: &str,
+) {
+    let parent_qualname = format!("{}.{}", ctx.module, interface_name);
+    let mut cursor = type_node.walk();
+    for spec in type_node.named_children(&mut cursor) {
+        if spec.kind() != "method_elem" {
+            continue;
+        }
+        let Some(name_node) = spec.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        let qualname = format!("{parent_qualname}.{name}");
+        let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(spec);
+        output.symbols.push(SymbolInput {
+            kind: "method".to_string(),
+            name,
+            qualname: qualname.clone(),
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            start_byte,
+            end_byte,
+            signature: extract_function_signature(spec, source),
+            docstring: None,
+            identity: None,
+        });
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(parent_qualname.clone()),
+            target_qualname: Some(qualname),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
+}
+
+/// The interfaces `type_node` embeds, as the type text each is named by
+/// (`Reader`, `io.Writer`, `Set[T]` without its arguments). A union or a
+/// `~T` approximation element is a type-set constraint, not an embedding.
+fn embedded_interfaces(type_node: Node<'_>, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = type_node.walk();
+    for elem in type_node.named_children(&mut cursor) {
+        if elem.kind() != "type_elem" || elem.named_child_count() != 1 {
+            continue;
+        }
+        let Some(inner) = elem.named_child(0) else {
+            continue;
+        };
+        let inner = if inner.kind() == "generic_type" {
+            inner.child_by_field_name("type").unwrap_or(inner)
+        } else {
+            inner
+        };
+        if matches!(inner.kind(), "type_identifier" | "qualified_type") {
+            let text = node_text(inner, source);
+            if !text.is_empty() {
+                out.push(text);
+            }
+        }
+    }
+    out
+}
+
+/// An interface's resolver marker: its embedded interfaces in the shape of a
+/// struct's embedded fields (`{~Reader; ~io.Writer}`), so the resolver finds
+/// a method through them like one promoted through an embedded struct.
+fn interface_signature(type_node: Node<'_>, source: &str) -> Option<String> {
+    let embedded = embedded_interfaces(type_node, source);
+    if embedded.is_empty() {
+        return None;
+    }
+    let fields: Vec<String> = embedded.iter().map(|ty| format!("~{ty}")).collect();
+    Some(crate::model::go_type_marker(&format!(
+        "{{{}}}",
+        fields.join("; ")
+    )))
 }
 
 fn handle_const_declaration(
@@ -713,22 +817,16 @@ fn handle_interface_embedding(
         return;
     }
 
-    let mut cursor = type_node.walk();
-    for child in type_node.named_children(&mut cursor) {
-        if child.kind() == "qualified_type" || child.kind() == "type_identifier" {
-            let base_type = node_text(child, source);
-            if !base_type.is_empty() {
-                let source_qualname = format!("{}.{}", ctx.module, interface_name);
-                output.edges.push(EdgeInput {
-                    kind: "EXTENDS".to_string(),
-                    source_qualname: Some(source_qualname),
-                    target_qualname: Some(base_type),
-                    detail: None,
-                    evidence_snippet: None,
-                    ..Default::default()
-                });
-            }
-        }
+    for base_type in embedded_interfaces(type_node, source) {
+        let source_qualname = format!("{}.{}", ctx.module, interface_name);
+        output.edges.push(EdgeInput {
+            kind: "EXTENDS".to_string(),
+            source_qualname: Some(source_qualname),
+            target_qualname: Some(base_type),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
     }
 }
 

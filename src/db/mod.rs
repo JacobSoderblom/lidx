@@ -1784,8 +1784,14 @@ impl Db {
             statics,
             local,
             overrides,
+            file_wide,
         } = modifiers;
-        if private.is_empty() && statics.is_empty() && local.is_empty() && overrides.is_empty() {
+        if private.is_empty()
+            && statics.is_empty()
+            && local.is_empty()
+            && overrides.is_empty()
+            && file_wide.is_empty()
+        {
             self.conn().execute(
                 "UPDATE symbols SET visibility = NULL
                  WHERE file_id = ? AND graph_version = ? AND visibility IS NOT NULL",
@@ -1814,7 +1820,8 @@ impl Db {
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
                     || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
                     || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
-                    || CASE WHEN {override_test} THEN ' override' ELSE '' END), '')
+                    || CASE WHEN {override_test} THEN ' override' ELSE '' END
+                    || ?), '')
              WHERE file_id = ? AND graph_version = ?",
             local_modifier = graph_query::LOCAL_MODIFIER
         );
@@ -1828,6 +1835,13 @@ impl Db {
             params.push(Box::new(qualname.clone()));
             params.push(Box::new(*line));
         }
+        // Words every symbol of the file carries, after the per-symbol ones.
+        params.push(Box::new(
+            file_wide
+                .iter()
+                .map(|w| format!(" {w}"))
+                .collect::<String>(),
+        ));
         params.push(Box::new(file_id));
         params.push(Box::new(graph_version));
         self.conn().execute(

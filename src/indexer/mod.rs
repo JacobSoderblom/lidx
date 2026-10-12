@@ -55,6 +55,7 @@ pub mod csharp;
 pub mod differ;
 pub mod extract;
 pub mod go;
+pub mod go_build;
 mod go_repo;
 mod go_types;
 pub mod http;
