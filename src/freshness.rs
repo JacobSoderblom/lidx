@@ -1,14 +1,13 @@
 //! Index freshness: how far the checkout has moved since the last completed
 //! index/sync, cheap enough to attach to every response.
 //!
-//! The check is one `git status` spawn (current HEAD plus untracked files)
-//! and one `stat` per indexed file; only files whose mtime or size differ are
-//! re-hashed, so a `touch` or a checkout that restores identical content does
+//! The check reads HEAD from the `.git` files and walks the tree once
+//! (stat only, same ignore rules as indexing); only files whose mtime differs
+//! at equal size are re-hashed, so a `touch` or a checkout that restores identical content does
 //! not count as a change. Callers cache the result for [`CACHE_TTL`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -86,6 +85,13 @@ fn short(sha: Option<&str>) -> &str {
     sha.map_or("none", |s| &s[..s.len().min(7)])
 }
 
+fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -93,57 +99,49 @@ pub fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-/// Current git HEAD and the paths `git status` lists, or `(None, [])`
-/// outside a git work tree.
-fn git_state(repo_root: &Path) -> (Option<String>, Vec<String>) {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args([
-            "status",
-            "--porcelain=v2",
-            "--branch",
-            "--untracked-files=all",
-            "-z",
-        ])
-        .output();
-    let Ok(output) = output else {
-        return (None, Vec::new());
+/// Current git HEAD read straight from the `.git` files (no process spawn,
+/// which alone costs more than the whole freshness budget). Handles
+/// worktrees, detached HEADs and packed refs; `None` outside a git work tree.
+fn read_head(repo_root: &Path) -> Option<String> {
+    let dot_git = repo_root
+        .ancestors()
+        .map(|d| d.join(".git"))
+        .find(|p| p.exists())?;
+    let git_dir = if dot_git.is_file() {
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let target = text.trim().strip_prefix("gitdir:")?.trim();
+        dot_git.parent()?.join(target)
+    } else {
+        dot_git
     };
-    if !output.status.success() {
-        return (None, Vec::new());
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut head = None;
-    let mut paths = Vec::new();
-    let mut tokens = text.split('\0');
-    while let Some(token) = tokens.next() {
-        if let Some(oid) = token.strip_prefix("# branch.oid ") {
-            // "(initial)" on a repo with no commits yet.
-            if oid != "(initial)" {
-                head = Some(oid.to_string());
-            }
-        } else if token.starts_with('#') {
-        } else if let Some(path) = token.strip_prefix("? ") {
-            paths.push(path.to_string());
-        } else if token.starts_with("1 ") || token.starts_with("u ") {
-            // 1: 8 fields then path; u: 10 fields then path.
-            let skip = if token.starts_with("1 ") { 8 } else { 10 };
-            if let Some(path) = token.splitn(skip + 1, ' ').nth(skip) {
-                paths.push(path.to_string());
-            }
-        } else if token.starts_with("2 ") {
-            // Rename/copy: 9 fields then path, original path in the next token.
-            if let Some(path) = token.splitn(10, ' ').nth(9) {
-                paths.push(path.to_string());
-            }
-            tokens.next();
+    // A linked worktree keeps shared refs in the common dir.
+    let common_dir = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(rel) => git_dir.join(rel.trim()),
+        Err(_) => git_dir.clone(),
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    let Some(reference) = head.strip_prefix("ref:").map(str::trim) else {
+        return (head.len() >= 40).then(|| head.to_string());
+    };
+    for dir in [&git_dir, &common_dir] {
+        if let Ok(sha) = std::fs::read_to_string(dir.join(reference)) {
+            return Some(sha.trim().to_string());
         }
     }
-    (head, paths)
+    let packed = std::fs::read_to_string(common_dir.join("packed-refs")).ok()?;
+    packed.lines().find_map(|line| {
+        let (sha, name) = line.split_once(' ')?;
+        (name == reference).then(|| sha.to_string())
+    })
 }
 
-pub fn compute(db: &Db, repo_root: &Path, graph_version: i64) -> Result<Freshness> {
+pub fn compute(
+    db: &Db,
+    repo_root: &Path,
+    graph_version: i64,
+    options: scan::ScanOptions,
+) -> Result<Freshness> {
     let indexed_commit = match db.get_meta_str(INDEXED_HEAD_KEY)? {
         Some(sha) if !sha.is_empty() => Some(sha),
         _ => db.graph_version_commit(graph_version)?,
@@ -151,7 +149,7 @@ pub fn compute(db: &Db, repo_root: &Path, graph_version: i64) -> Result<Freshnes
     let indexed_at = db.get_meta_i64("last_indexed")?;
     let index_age_s = indexed_at.map(|at| (now_secs() - at).max(0));
 
-    let (current_head, git_paths) = git_state(repo_root);
+    let current_head = read_head(repo_root);
     let head_moved = matches!(
         (&indexed_commit, &current_head),
         (Some(a), Some(b)) if a != b
@@ -165,18 +163,15 @@ pub fn compute(db: &Db, repo_root: &Path, graph_version: i64) -> Result<Freshnes
 
     let mut changed = 0usize;
     let mut rehashed = 0usize;
-    for (path, (hash, size, modified)) in &indexed {
+    // Indexed files: one stat each. A differing mtime at equal size may be a
+    // touch or a checkout that restored identical content: the hash decides.
+    for (path, (hash, size, mtime)) in &indexed {
         let abs = repo_root.join(path);
         let Ok(meta) = std::fs::metadata(&abs) else {
             changed += 1;
             continue;
         };
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_secs() as i64);
-        if meta.len() as i64 == *size && mtime == *modified {
+        if meta.len() as i64 == *size && mtime_secs(&meta) == *mtime {
             continue;
         }
         if meta.len() as i64 != *size || rehashed >= MAX_REHASH {
@@ -189,15 +184,38 @@ pub fn compute(db: &Db, repo_root: &Path, graph_version: i64) -> Result<Freshnes
             _ => changed += 1,
         }
     }
-    // Files git sees that the index has never held (new, untracked, renamed
-    // targets); indexed paths were already covered by the stat pass.
-    for path in git_paths {
-        if !indexed.contains_key(&path)
-            && scan::language_for_path(Path::new(&path)).is_some()
-            && repo_root.join(&path).is_file()
-        {
-            changed += 1;
+
+    // New files: creating one bumps its directory's mtime, so only
+    // directories touched since the index finished are listed (with the
+    // indexer's ignore rules); a never-seen subdirectory is walked whole.
+    if let Some(indexed_at) = indexed_at {
+        let mut known_dirs: HashSet<String> = HashSet::from([String::new()]);
+        for path in indexed.keys() {
+            let mut dir = path.as_str();
+            while let Some((parent, _)) = dir.rsplit_once('/') {
+                if !known_dirs.insert(parent.to_string()) {
+                    break;
+                }
+                dir = parent;
+            }
         }
+        let mut added: HashSet<String> = HashSet::new();
+        for dir in &known_dirs {
+            let abs = repo_root.join(dir);
+            let touched = std::fs::metadata(&abs)
+                .map(|m| mtime_secs(&m) >= indexed_at)
+                .unwrap_or(false);
+            if !touched {
+                continue;
+            }
+            let (files, subdirs) = scan::list_dir(repo_root, &abs, options, true);
+            added.extend(files.into_iter().filter(|f| !indexed.contains_key(f)));
+            for sub in subdirs.into_iter().filter(|d| !known_dirs.contains(d)) {
+                let (files, _) = scan::list_dir(repo_root, &repo_root.join(sub), options, false);
+                added.extend(files.into_iter().filter(|f| !indexed.contains_key(f)));
+            }
+        }
+        changed += added.len();
     }
 
     let stale = (head_moved || changed > 0).then(|| Stale {

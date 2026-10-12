@@ -37,6 +37,7 @@ fn check(indexer: &Indexer) -> freshness::Freshness {
         indexer.db(),
         indexer.repo_root(),
         indexer.db().current_graph_version().unwrap(),
+        lidx::indexer::scan::ScanOptions::default(),
     )
     .unwrap()
 }
@@ -65,7 +66,10 @@ fn commit_after_index_reports_head_moved() {
     assert_ne!(stale.current_head.as_deref(), Some(before.as_str()));
     assert_eq!(stale.changed_files, 0);
     let line = fresh.warning_line().unwrap();
-    assert!(line.starts_with("\u{26a0} index stale: HEAD moved "), "{line}");
+    assert!(
+        line.starts_with("\u{26a0} index stale: HEAD moved "),
+        "{line}"
+    );
     assert!(line.ends_with("run reindex"), "{line}");
 }
 
@@ -142,4 +146,25 @@ fn rpc_request_meta_only_appears_when_stale() {
     assert_eq!(meta["indexed_commit"].as_str().unwrap().len(), 40);
     assert!(meta["indexed_at"].is_i64() && meta["index_age_s"].is_i64());
     drop(indexer);
+}
+
+#[test]
+fn new_files_in_new_directories_count_but_ignored_ones_do_not() {
+    let (tmp, indexer) = indexed(true);
+    let root = tmp.path();
+    std::fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+    std::fs::create_dir_all(root.join("ignored")).unwrap();
+    std::fs::write(root.join("ignored/skip.py"), "x = 1\n").unwrap();
+    std::fs::write(root.join("notes.txt"), "not indexable\n").unwrap();
+    assert!(check(&indexer).stale.is_none());
+    std::fs::create_dir_all(root.join("pkg/inner")).unwrap();
+    std::fs::write(root.join("pkg/inner/deep.py"), "x = 1\n").unwrap();
+    assert_eq!(check(&indexer).stale.unwrap().changed_files, 1);
+}
+
+#[test]
+fn deleted_file_counts_as_changed() {
+    let (tmp, indexer) = indexed(true);
+    std::fs::remove_file(tmp.path().join("app.py")).unwrap();
+    assert_eq!(check(&indexer).stale.unwrap().changed_files, 1);
 }

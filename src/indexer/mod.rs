@@ -199,8 +199,13 @@ impl Indexer {
         {
             return Some(cached.clone());
         }
-        let fresh =
-            crate::freshness::compute(&self.db, &self.repo_root, self.graph_version).ok()?;
+        let fresh = crate::freshness::compute(
+            &self.db,
+            &self.repo_root,
+            self.graph_version,
+            self.scan_options,
+        )
+        .ok()?;
         self.freshness_cache = Some((Instant::now(), fresh.clone()));
         Some(fresh)
     }
@@ -208,8 +213,10 @@ impl Indexer {
     /// Record the checkout state a completed reindex/sync indexed.
     fn record_indexed_head(&mut self, head: Option<String>) -> Result<()> {
         self.freshness_cache = None;
-        self.db
-            .set_meta_str(crate::freshness::INDEXED_HEAD_KEY, &head.unwrap_or_default())
+        self.db.set_meta_str(
+            crate::freshness::INDEXED_HEAD_KEY,
+            &head.unwrap_or_default(),
+        )
     }
 
     pub fn graph_version(&self) -> i64 {

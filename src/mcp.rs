@@ -860,7 +860,10 @@ mod tests {
         );
         // The result itself is unchanged.
         assert_eq!(blocks[0], fresh["result"]["content"][0]);
-        assert_eq!(result["structuredContent"], fresh["result"]["structuredContent"]);
+        assert_eq!(
+            result["structuredContent"],
+            fresh["result"]["structuredContent"]
+        );
     }
 
     #[test]
