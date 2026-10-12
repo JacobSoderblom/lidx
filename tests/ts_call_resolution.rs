@@ -150,7 +150,12 @@ export function nestedShadow(items: string[]) {
 #[test]
 fn locally_bound_callees_are_not_class_members_or_imports() {
     let f = [("src/lib.ts", SHADOW_LIB), ("src/shadow.ts", SHADOW)];
-    assert!(call_targets(&f, "src/shadow.Context.html").is_empty());
+    // The local arrow is a symbol of its own: the call binds to it, never to
+    // the import or the `res` getter.
+    assert_eq!(
+        call_targets(&f, "src/shadow.Context.html"),
+        ["src/shadow.Context.html.res"]
+    );
     assert!(call_targets(&f, "src/shadow.param").is_empty());
     assert_eq!(call_targets(&f, "src/shadow.imported"), ["src/lib.res"]);
     // A callback parameter named like the import does not hide the import.
@@ -422,7 +427,10 @@ export function viaModule() {
 #[test]
 fn a_local_binding_shadows_a_module_declaration() {
     let f = [("src/shadow2.ts", LOCAL_SHADOW)];
-    assert!(call_targets(&f, "src/shadow2.localConst").is_empty());
+    assert_eq!(
+        call_targets(&f, "src/shadow2.localConst"),
+        ["src/shadow2.localConst.helper"]
+    );
     assert!(call_targets(&f, "src/shadow2.param").is_empty());
     assert_eq!(
         call_targets(&f, "src/shadow2.viaModule"),

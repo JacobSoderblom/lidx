@@ -119,7 +119,7 @@ pub fn build_subgraph_filtered(
             if !source_ok || !target_ok {
                 continue;
             }
-            let new_edge = if edge.is_synthetic() {
+            let new_edge = if edge.is_synthetic() || edge.is_containment() {
                 synthetic.insert((edge.source_symbol_id, edge.target_symbol_id))
             } else {
                 edge_ids.insert(edge.id)

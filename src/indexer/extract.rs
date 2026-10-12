@@ -165,6 +165,29 @@ pub enum DeferredBase {
     /// these absolute qualname candidates. `DeferredReturn::method` holds
     /// the callee's bare name and is not consulted.
     Function(Vec<String>),
+    /// TypeScript: the type of a callback parameter that gets its type from
+    /// context (`createMiddleware(async (c, next) => ..)`). `method` names
+    /// a property of that type; empty means the parameter itself.
+    Param(ParamType),
+}
+
+/// "Parameter `index` of the callable type `origin` names": the contextual
+/// type of an untyped callback parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParamType {
+    pub origin: ParamOrigin,
+    pub index: usize,
+}
+
+/// Where a callback's contextual callable type comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParamOrigin {
+    /// A function type or alias by name (`MiddlewareHandler`), written as
+    /// the annotation of the variable or return type the callback fills.
+    Callable(String),
+    /// The type of parameter `arg_index` of `callee` (`createMiddleware`, or
+    /// `Type.method`), as declared.
+    Argument { callee: String, arg_index: usize },
 }
 
 /// "The parameter at `index` (or named `name`) of the `arg_count`-argument
@@ -208,6 +231,18 @@ impl DeferredReturn {
         }
     }
 
+    /// A property (`method`; empty for none) of a contextually typed callback
+    /// parameter.
+    pub fn on_param(param: ParamType, method: &str) -> Self {
+        Self {
+            base: DeferredBase::Param(param),
+            method: method.to_string(),
+            awaited: false,
+            static_only: false,
+            name_only: false,
+        }
+    }
+
     pub fn on_call(inner: DeferredReturn, method: &str, awaited: bool) -> Self {
         Self {
             base: DeferredBase::Call(Box::new(inner)),
@@ -221,7 +256,7 @@ impl DeferredReturn {
     /// How many calls this nests (1 for a call on a type).
     pub fn depth(&self) -> usize {
         match &self.base {
-            DeferredBase::Type(_) | DeferredBase::Function(_) => 1,
+            DeferredBase::Type(_) | DeferredBase::Function(_) | DeferredBase::Param(_) => 1,
             DeferredBase::Call(inner) => 1 + inner.depth(),
         }
     }
@@ -679,6 +714,11 @@ pub struct ExtractedFile {
     /// to `private` by `Db::set_private_symbols`; only the C# deferred
     /// `Type.Method()` receiver reads it.
     pub static_member_qualnames: Vec<String>,
+    /// Qualnames of functions declared inside another function (TypeScript/
+    /// JavaScript, `mod.outer.f`): recorded as the `local` modifier. They are
+    /// bound only by their exact qualname, never by a name-fallback tier --
+    /// their `outer.f` shape is also how a member `f` of a type `outer` reads.
+    pub local_qualnames: Vec<String>,
     /// JS/TS only: hash of the file's export surface (see
     /// `javascript::export_surface_hash`), stored so a later sync can tell a
     /// body-only edit from one that changes what importers resolve.
@@ -687,6 +727,29 @@ pub struct ExtractedFile {
     /// per overload. Recorded into `symbols.visibility` as `override`;
     /// dispatch only pairs a base-class member with an override.
     pub override_symbols: Vec<(String, i64)>,
+}
+
+/// The declaration modifiers one file's extraction recorded, written to
+/// `symbols.visibility` (a space-separated list) by `Db::set_symbol_modifiers`.
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolModifiers<'a> {
+    pub private: &'a [String],
+    pub statics: &'a [String],
+    pub local: &'a [String],
+    /// `(qualname, start_line)`: overloads share a qualname.
+    pub overrides: &'a [(String, i64)],
+}
+
+impl ExtractedFile {
+    /// This file's recorded modifiers.
+    pub fn modifiers(&self) -> SymbolModifiers<'_> {
+        SymbolModifiers {
+            private: &self.private_qualnames,
+            statics: &self.static_member_qualnames,
+            local: &self.local_qualnames,
+            overrides: &self.override_symbols,
+        }
+    }
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;

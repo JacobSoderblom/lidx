@@ -92,8 +92,9 @@ fn parameter_shadows_export() {
 }
 
 #[test]
-fn local_arrow_call_is_unresolved() {
-    // The arrow is not a symbol, so there is nothing to resolve to.
+fn local_arrow_call_binds_the_local_symbol_not_the_export() {
+    // The arrow is a symbol qualified under its function; the exported
+    // `login` of another file is not a candidate.
     let t = call_targets(
         &[
             TAURI,
@@ -104,7 +105,7 @@ fn local_arrow_call_is_unresolved() {
         ],
         "a.run",
     );
-    assert!(t.is_empty(), "{t:?}");
+    assert_eq!(t, ["a.run.login"]);
 }
 
 #[test]

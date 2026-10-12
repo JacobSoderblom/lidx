@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 23;
+pub const EXTRACTOR_VERSION: i64 = 24;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -765,13 +765,8 @@ impl Indexer {
         // processed early would see a later file's private symbols as
         // still-NULL (unrestricted) and bind to them (issue #75 follow-up).
         for (_file, extracted, _diff, file_id) in &file_data {
-            self.db.set_private_symbols(
-                *file_id,
-                self.graph_version,
-                &extracted.private_qualnames,
-                &extracted.static_member_qualnames,
-                &extracted.override_symbols,
-            )?;
+            self.db
+                .set_symbol_modifiers(*file_id, self.graph_version, extracted.modifiers())?;
         }
 
         // Issue #79: whether this reindex removed any symbol -- a whole
@@ -1053,13 +1048,8 @@ impl Indexer {
         // Mark this file's private/unexported symbols. Must happen for
         // every file in the batch before any file's edges are resolved —
         // see `sync_abs_paths`.
-        self.db.set_private_symbols(
-            file_id,
-            self.graph_version,
-            &extracted.private_qualnames,
-            &extracted.static_member_qualnames,
-            &extracted.override_symbols,
-        )?;
+        self.db
+            .set_symbol_modifiers(file_id, self.graph_version, extracted.modifiers())?;
 
         Ok(Some(ScannedFileSymbols {
             extracted,

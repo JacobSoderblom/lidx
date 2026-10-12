@@ -1,10 +1,12 @@
-use crate::db::resolver::{DeclarationIndex, LanguageProfile, VisibilityRule};
+use crate::db::resolver::{
+    Declaration, DeclarationIndex, DeclarationQuery, LanguageProfile, VisibilityRule,
+};
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
     CallShape, DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile,
-    MAX_DEFERRED_DEPTH, PinnedType, ReceiverType, SymbolInput,
+    MAX_DEFERRED_DEPTH, ParamOrigin, ParamType, PinnedType, ReceiverType, SymbolInput,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -60,6 +62,13 @@ fn deferred_property_type(
 ) -> Result<Option<String>> {
     let owner = match &call.base {
         DeferredBase::Type(ty) => ty.clone(),
+        DeferredBase::Param(param) => match contextual_param_type(param, index)? {
+            // `c.header()` with `c` a contextually typed parameter: the
+            // receiver is the parameter's own type.
+            Some(ty) if call.method.is_empty() => return Ok(Some(ty)),
+            Some(ty) => ty,
+            None => return Ok(None),
+        },
         DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
         DeferredBase::Call(inner) => match deferred_property_type(inner, index, depth + 1)? {
             Some(ty) => ty,
@@ -81,6 +90,311 @@ fn deferred_property_type(
         Some(ty) if index.is_repo_type(&ty)? => Ok(Some(ty)),
         _ => Ok(None),
     }
+}
+
+/// How deep a type alias may refer to another (`H` = `Handler | ...`)
+/// before the contextual parameter type is given up on.
+const MAX_ALIAS_DEPTH: usize = 4;
+
+/// The repo type of the contextually typed callback parameter `param`: the
+/// parameter type every declaration of the callable type agrees on (a
+/// callable alias such as `MiddlewareHandler`, an inline function type, or
+/// the declared type of the callee's parameter the callback is passed
+/// for). The alias and the callee are named by qualname -- the extractor
+/// resolved them through the file's imports, and one that is not a repo
+/// declaration (a package's `use`, an `express` `Handler`) arrives empty --
+/// so a same-named declaration elsewhere is never a candidate. Differing or
+/// unreadable declarations give `None`, never a guess; so does a type
+/// parameter (`E`), which names no repo type.
+fn contextual_param_type(
+    param: &ParamType,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<String>> {
+    // (callable type text, declaration its bare names are written in; `None`
+    // when the names in it are qualnames already)
+    let callee_decls: Vec<Declaration>;
+    let callables: Vec<(String, Option<&Declaration>)> = match &param.origin {
+        ParamOrigin::Callable(text) => vec![(text.clone(), None)],
+        ParamOrigin::Argument { callee, arg_index } => {
+            if callee.is_empty() {
+                return Ok(None);
+            }
+            callee_decls = index.declarations(DeclarationQuery::Callable(callee))?;
+            if callee_decls.is_empty() {
+                return Ok(None);
+            }
+            let mut texts = Vec::new();
+            for decl in &callee_decls {
+                let Some(text) = decl
+                    .signature
+                    .as_deref()
+                    .and_then(|sig| declared_param_type_text(sig, *arg_index))
+                else {
+                    return Ok(None);
+                };
+                texts.push((text, Some(decl)));
+            }
+            texts
+        }
+    };
+    let mut agreed: Option<String> = None;
+    for (text, scope) in &callables {
+        let Some(ty) = callable_param_type(text, param.index, index, 0, *scope)? else {
+            return Ok(None);
+        };
+        match &agreed {
+            Some(prev) if *prev != ty => return Ok(None),
+            _ => agreed = Some(ty),
+        }
+    }
+    match agreed {
+        Some(ty) if index.is_repo_type(&ty)? => Ok(Some(ty)),
+        _ => Ok(None),
+    }
+}
+
+/// The alias or interface a bare `name` written in the file of `home`
+/// means: the one that file declares, else the one the name is imported as
+/// (the `IMPORTS_FILE` edge that binds that very name). A name imported from
+/// a package is none.
+fn alias_declared_for(
+    name: &str,
+    home: &Declaration,
+    index: &dyn DeclarationIndex,
+) -> Result<Vec<Declaration>> {
+    let own = index.declarations(DeclarationQuery::Alias(&format!(
+        "{}.{name}",
+        module_of(&home.qualname)
+    )))?;
+    if !own.is_empty() {
+        return Ok(own);
+    }
+    match index.imported_binding(home.file_id, name)? {
+        Some(qualname) => index.declarations(DeclarationQuery::Alias(&qualname)),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The module part of a declaration's qualname (`src/types.Handler` ->
+/// `src/types`).
+fn module_of(qualname: &str) -> &str {
+    qualname
+        .rsplit_once('.')
+        .map_or(qualname, |(module, _)| module)
+}
+
+/// The type name of parameter `param_index` of the callable type `text`: a
+/// function type (`(c: Context<E>, next: Next) => R`), the name of an alias
+/// or interface with a call signature, or a union of those (an
+/// `undefined`/`null` member is ignored). Every member must agree. A name
+/// is a qualname when `scope` is `None`; otherwise it is bare and declared
+/// in the module `scope` (an alias body's own file): a name that module
+/// imports is not followed.
+fn callable_param_type(
+    text: &str,
+    param_index: usize,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+    scope: Option<&Declaration>,
+) -> Result<Option<String>> {
+    if depth > MAX_ALIAS_DEPTH {
+        return Ok(None);
+    }
+    let mut agreed: Option<String> = None;
+    let mut seen_member = false;
+    let text = text.trim();
+    // A bare function type owns any `|` after its `=>` (`(c) => A | B`).
+    let is_function_type = text.starts_with(['(', '<'])
+        && paren_group(strip_leading_type_params(text))
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with("=>"));
+    let members = if is_function_type {
+        vec![text]
+    } else {
+        split_top_level(text, '|')
+    };
+    for member in members {
+        let member = member.trim();
+        if member.is_empty() || member == "undefined" || member == "null" {
+            continue;
+        }
+        seen_member = true;
+        let found = if member.starts_with(['(', '<']) {
+            match paren_group(strip_leading_type_params(member)) {
+                Some((_, rest)) if rest.trim_start().starts_with("=>") => {
+                    match declared_param_type_text(member, param_index)
+                        .map(|ty| classify_annotation(&ty))
+                    {
+                        Some(LocalType::Known(ty)) => Some(ty),
+                        _ => None,
+                    }
+                }
+                // `(A | B)`: a parenthesised union.
+                Some((inner, rest)) if rest.trim().is_empty() => {
+                    callable_param_type(inner, param_index, index, depth + 1, scope)?
+                }
+                _ => None,
+            }
+        } else {
+            let decls = match scope {
+                None if member.contains(IMPORT_PLACEHOLDER_SEP) => Vec::new(),
+                None => index.declarations(DeclarationQuery::Alias(member))?,
+                Some(home) => {
+                    let name = strip_type_arguments(member).unwrap_or(member);
+                    if !is_type_name_text(name, false) || name.is_empty() {
+                        return Ok(None);
+                    }
+                    alias_declared_for(name, home, index)?
+                }
+            };
+            let mut found: Option<String> = None;
+            let mut ok = !decls.is_empty();
+            for decl in &decls {
+                let ty = match decl.signature.as_deref() {
+                    Some(sig) => {
+                        callable_param_type(sig, param_index, index, depth + 1, Some(decl))?
+                    }
+                    None => None,
+                };
+                match (&found, ty) {
+                    (_, None) => ok = false,
+                    (Some(prev), Some(ty)) if *prev != ty => ok = false,
+                    (_, Some(ty)) => found = Some(ty),
+                }
+            }
+            if ok { found } else { None }
+        };
+        let Some(ty) = found else {
+            return Ok(None);
+        };
+        match &agreed {
+            Some(prev) if *prev != ty => return Ok(None),
+            _ => agreed = Some(ty),
+        }
+    }
+    Ok(if seen_member { agreed } else { None })
+}
+
+/// `text` split at the top-level occurrences of `sep`: outside brackets,
+/// quotes and the `>` of `=>`.
+fn split_top_level(text: &str, sep: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut start = 0;
+    let mut prev = ' ';
+    for (i, ch) in text.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+        } else {
+            match ch {
+                '\'' | '"' | '`' => quote = Some(ch),
+                '(' | '[' | '{' | '<' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                '>' if prev != '=' => depth -= 1,
+                // The `=` of `=>` is no separator (`cb: (c: X) => void = f`).
+                '=' if sep == '=' && text[i + 1..].starts_with('>') => {}
+                c if c == sep && depth == 0 => {
+                    parts.push(&text[start..i]);
+                    start = i + ch.len_utf8();
+                }
+                _ => {}
+            }
+        }
+        prev = ch;
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// `sig` without its leading `<T extends ..>` type parameter list.
+fn strip_leading_type_params(sig: &str) -> &str {
+    let sig = sig.trim_start();
+    if !sig.starts_with('<') {
+        return sig;
+    }
+    let mut depth = 0i32;
+    let mut prev = ' ';
+    for (i, ch) in sig.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' if prev != '=' => {
+                depth -= 1;
+                if depth == 0 {
+                    return sig[i + 1..].trim_start();
+                }
+            }
+            _ => {}
+        }
+        prev = ch;
+    }
+    sig
+}
+
+/// The text inside the parenthesis group `text` starts with, and what
+/// follows its closing parenthesis.
+fn paren_group(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start();
+    if !text.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for (i, ch) in text.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' | '`' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&text[1..i], &text[i + 1..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The declared type text of parameter `index` of a signature
+/// `<T>(a: A, ...rest: R[]): Ret` or a function type `(a: A) => Ret`. A
+/// rest parameter answers for every position from its own, as its element
+/// type; a leading `this` parameter is not counted.
+fn declared_param_type_text(sig: &str, index: usize) -> Option<String> {
+    let (inner, _) = paren_group(strip_leading_type_params(sig))?;
+    let mut params: Vec<&str> = split_top_level(inner, ',')
+        .into_iter()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if params.first().is_some_and(|p| p.starts_with("this:")) {
+        params.remove(0);
+    }
+    let last_is_rest = params.last().is_some_and(|p| p.starts_with("..."));
+    let param = match params.get(index) {
+        Some(param) => *param,
+        None if last_is_rest => params.last().copied()?,
+        None => return None,
+    };
+    let colon = split_top_level(param, ':');
+    if colon.len() < 2 {
+        return None;
+    }
+    let mut ty = param[colon.first()?.len() + 1..].trim();
+    if let Some(eq) = split_top_level(ty, '=').first() {
+        ty = eq.trim();
+    }
+    if param.starts_with("...") {
+        ty = ty.strip_suffix("[]")?.trim();
+    }
+    (!ty.is_empty()).then(|| ty.to_string())
 }
 
 /// The type name a zero-parameter `(): Type<Args>` signature (a getter, as
@@ -129,6 +443,16 @@ struct GrpcService {
     /// import evidence); the edge carries `"evidence":"name"` so queries
     /// surface it only when a proto service of that name is indexed (#204).
     name_only: bool,
+}
+
+/// A function declared inside another function, indexed as a symbol
+/// qualified under it (`mod.outer.f`).
+#[derive(Clone, Debug)]
+struct LocalFn {
+    qualname: String,
+    /// Where the declaration starts (the declarator for `const f = ..`), to
+    /// tell it from a same-named declaration elsewhere.
+    start_byte: usize,
 }
 
 #[derive(Clone)]
@@ -180,6 +504,10 @@ struct Context {
     /// function (`const x = f()`, the `dynamic(...)` in `const X =
     /// dynamic(() => ...)`) still attribute to the module.
     fn_owner: Option<String>,
+    /// Functions declared inside the enclosing function symbols
+    /// (`function g(){}`, `const f = () => ..`) by name -- see
+    /// `collect_local_functions`. A bare call of one targets its symbol.
+    local_fns: Rc<HashMap<String, LocalFn>>,
     /// This file's top-level `import` bindings — see `collect_import_bindings`.
     import_bindings: Rc<ImportBindings>,
     /// Module-level names bound from `require(..)` / `import(..)`
@@ -243,6 +571,11 @@ enum LocalType {
     /// (`const p = getProcessor(event)`): typed by that function's declared
     /// return type, looked up in `Context::return_types` where it is used.
     ReturnOf(String),
+    /// An untyped callback parameter typed by context: parameter `index` of
+    /// the callable type the callback is declared against (see
+    /// `contextual_origin`). The resolver reads the type off the callable's
+    /// declaration, which may live in another file.
+    Contextual(ParamType),
     /// Builtin type, untyped parameter, destructured binding, loop/catch
     /// target, or anything else not explicitly recognized. A name landing
     /// here (rather than simply absent from the map) still gates
@@ -502,6 +835,9 @@ pub fn resolve_import_file_edges(
                 None => ReceiverType::Known(local.clone()),
             };
         }
+        if let ReceiverType::Deferred(call) = &mut edge.receiver_type {
+            rewrite_deferred_origins(call, &mut rewrite);
+        }
     }
     let mut resolved = Vec::new();
     for edge in edges.iter() {
@@ -535,6 +871,12 @@ pub fn resolve_import_file_edges(
                     "src_path": file_rel_path,
                     "dst_path": dst_rel,
                     "confidence": if resolved_on_disk { 1.0 } else { 0.0 },
+                    "names": edge
+                        .detail
+                        .as_deref()
+                        .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                        .and_then(|d| d.get("names").cloned())
+                        .unwrap_or(serde_json::Value::Null),
                 })
                 .to_string(),
             ),
@@ -545,6 +887,41 @@ pub fn resolve_import_file_edges(
         });
     }
     edges.extend(resolved);
+}
+
+/// Rewrites the import placeholders in the callable origin of a contextual
+/// callback parameter (`DeferredBase::Param`) into qualnames in the imported
+/// file. A name whose specifier is no repo file (a package) is emptied: the
+/// parameter then stays untyped instead of taking the type of a same-named
+/// repo declaration.
+fn rewrite_deferred_origins(
+    call: &mut DeferredReturn,
+    rewrite: &mut impl FnMut(&str) -> Option<String>,
+) {
+    match &mut call.base {
+        DeferredBase::Param(param) => match &mut param.origin {
+            ParamOrigin::Callable(text) => {
+                if text.contains(IMPORT_PLACEHOLDER_SEP) {
+                    *text = split_top_level(text, '|')
+                        .into_iter()
+                        .map(|member| match member.trim() {
+                            m if m.contains(IMPORT_PLACEHOLDER_SEP) => rewrite(m),
+                            m => Some(m.to_string()),
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        .map(|members| members.join(" | "))
+                        .unwrap_or_default();
+                }
+            }
+            ParamOrigin::Argument { callee, .. } => {
+                if callee.contains(IMPORT_PLACEHOLDER_SEP) {
+                    *callee = rewrite(callee).unwrap_or_default();
+                }
+            }
+        },
+        DeferredBase::Call(inner) => rewrite_deferred_origins(inner, rewrite),
+        _ => {}
+    }
 }
 
 /// Name of the default export in `chase_export` lookups, and of the symbol an
@@ -1676,6 +2053,7 @@ fn extract_with_parser(
         scope_bindings: Rc::new(HashSet::new()),
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
+        local_fns: Rc::new(HashMap::new()),
         import_bindings: Rc::new(collect_import_bindings(root, source)),
         required_names: Rc::new(collect_required_names(root, source)),
         outer_locals: Rc::new(HashSet::new()),
@@ -1688,11 +2066,81 @@ fn extract_with_parser(
     walk_node(root, &ctx, source, &mut output);
     bind_next_routes_to_handlers(&mut output, module_name);
     dedup_namespace_symbols(&mut output);
+    drop_ambiguous_locals(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
     finish_value_references(&mut output);
     collect_type_references(root, &ctx, source, &mut output);
     output.export_surface = Some(surface_hash(root, source, &http_wrappers));
     Ok(output)
+}
+
+/// Takes back the local function symbols a qualname cannot tell apart: one
+/// whose own qualname is declared twice, or one inside a parent that is
+/// (`describe` blocks declaring the same `function Comp` each hold a
+/// `prefetch`). The qualname would bind every call to one of the copies, so
+/// these are no symbols, exactly like a name declared twice in one function:
+/// calls inside them stay with the nearest surviving enclosing symbol and
+/// calls to them are left unresolved.
+fn drop_ambiguous_locals(output: &mut ExtractedFile) {
+    if output.local_qualnames.is_empty() {
+        return;
+    }
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for symbol in &output.symbols {
+        *counts.entry(symbol.qualname.as_str()).or_default() += 1;
+    }
+    let mut locals: Vec<&String> = output.local_qualnames.iter().collect();
+    locals.sort_by_key(|q| q.len());
+    let mut removed: HashSet<String> = HashSet::new();
+    for qualname in locals {
+        let Some((parent, _)) = qualname.rsplit_once('.') else {
+            continue;
+        };
+        let count = |q: &str| counts.get(q).copied().unwrap_or(0);
+        if count(qualname) > 1 || count(parent) > 1 || removed.contains(parent) {
+            removed.insert(qualname.clone());
+        }
+    }
+    if removed.is_empty() {
+        return;
+    }
+    let survivor = |qualname: &str| -> String {
+        let mut current = qualname;
+        while removed.contains(current) {
+            match current.rsplit_once('.') {
+                Some((parent, _)) => current = parent,
+                None => break,
+            }
+        }
+        current.to_string()
+    };
+    output.symbols.retain(|s| !removed.contains(&s.qualname));
+    output.local_qualnames.retain(|q| !removed.contains(q));
+    output.private_qualnames.retain(|q| !removed.contains(q));
+    let mut kept = Vec::with_capacity(output.edges.len());
+    for mut edge in std::mem::take(&mut output.edges) {
+        if let Some(source) = edge
+            .source_qualname
+            .as_deref()
+            .filter(|q| removed.contains(*q))
+        {
+            edge.source_qualname = Some(survivor(source));
+        }
+        if let Some(target) = edge
+            .target_qualname
+            .as_deref()
+            .filter(|q| removed.contains(*q))
+        {
+            if edge.kind != "CALLS" {
+                continue;
+            }
+            edge.detail = Some(target.rsplit('.').next().unwrap_or(target).to_string());
+            edge.target_qualname = None;
+            edge.receiver_type = ReceiverType::Unresolved;
+        }
+        kept.push(edge);
+    }
+    output.edges = kept;
 }
 
 /// An App Router `HTTP_ROUTE` edge belongs to its method's handler symbol
@@ -2338,6 +2786,12 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             return;
         }
     }
+    if node.kind() == "variable_declarator"
+        && let Some(local) = local_function_of(node, ctx, source)
+    {
+        handle_local_function(node, local, ctx, source, output);
+        return;
+    }
     // const { DB_URL } = process.env (destructuring)
     if node.kind() == "variable_declarator" {
         for edge in process_env_destructuring_edges(node, ctx, source) {
@@ -2430,6 +2884,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         // `method_signature`) are deliberately not symbols: calls must
         // resolve to the implementation, the only declaration with a body.
         "function_declaration" | "generator_function_declaration" => {
+            if let Some(local) = local_function_of(node, ctx, source) {
+                handle_local_function(node, local, ctx, source, output);
+                return;
+            }
             if ctx.fn_depth > 0 {
                 // Not a symbol, but its calls belong to the enclosing one,
                 // resolved against its own locals plus the enclosing ones.
@@ -3449,13 +3907,21 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             None => {
                 // A bare callee bound by a parameter or local declaration is
                 // that local, never a module-level or imported symbol.
-                let target = if target_node.kind() == "identifier" && is_shadowing_local(ctx, &raw)
-                {
+                let local_fn = (target_node.kind() == "identifier")
+                    .then(|| ctx.local_fns.get(&raw))
+                    .flatten();
+                let target = if let Some(local) = local_fn {
+                    Some(local.qualname.clone())
+                } else if target_node.kind() == "identifier" && is_shadowing_local(ctx, &raw) {
                     None
                 } else {
                     resolve_call_target(&raw, ctx)
                 };
-                let receiver_type = infer_receiver_type(target_node, source, ctx);
+                let receiver_type = if local_fn.is_some() {
+                    ReceiverType::NotTracked
+                } else {
+                    infer_receiver_type(target_node, source, ctx)
+                };
                 let import_candidates: Vec<String> =
                     import_placeholder(&raw, ctx).into_iter().collect();
                 match target {
@@ -3821,57 +4287,62 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
     let mut bindings = ImportBindings::new();
     let mut cursor = root.walk();
     for stmt in root.named_children(&mut cursor) {
-        if stmt.kind() != "import_statement" {
+        statement_import_bindings(stmt, source, &mut bindings);
+    }
+    bindings
+}
+
+/// The names one `import` statement binds (nothing for any other node).
+fn statement_import_bindings(stmt: Node<'_>, source: &str, bindings: &mut ImportBindings) {
+    if stmt.kind() != "import_statement" {
+        return;
+    }
+    let Some(spec) = stmt
+        .child_by_field_name("source")
+        .and_then(|n| unquote_string_literal(&node_text(n, source)))
+    else {
+        return;
+    };
+    let mut stmt_cursor = stmt.walk();
+    for clause in stmt.named_children(&mut stmt_cursor) {
+        if clause.kind() != "import_clause" {
             continue;
         }
-        let Some(spec) = stmt
-            .child_by_field_name("source")
-            .and_then(|n| unquote_string_literal(&node_text(n, source)))
-        else {
-            continue;
-        };
-        let mut stmt_cursor = stmt.walk();
-        for clause in stmt.named_children(&mut stmt_cursor) {
-            if clause.kind() != "import_clause" {
-                continue;
-            }
-            let mut clause_cursor = clause.walk();
-            for part in clause.named_children(&mut clause_cursor) {
-                match part.kind() {
-                    "identifier" => {
-                        let local = node_text(part, source);
-                        bindings.insert(local, (spec.clone(), Some(DEFAULT_EXPORT.to_string())));
-                    }
-                    "namespace_import" => {
-                        let mut ns_cursor = part.walk();
-                        let local = part
-                            .named_children(&mut ns_cursor)
-                            .find(|n| n.kind() == "identifier");
-                        if let Some(local) = local {
-                            bindings.insert(node_text(local, source), (spec.clone(), None));
-                        }
-                    }
-                    "named_imports" => {
-                        let mut named_cursor = part.walk();
-                        for item in part.named_children(&mut named_cursor) {
-                            let Some(name) = item.child_by_field_name("name") else {
-                                continue;
-                            };
-                            let name = node_text(name, source);
-                            let name = unquote_string_literal(&name).unwrap_or(name);
-                            let local = item
-                                .child_by_field_name("alias")
-                                .map(|n| node_text(n, source))
-                                .unwrap_or_else(|| name.clone());
-                            bindings.insert(local, (spec.clone(), Some(name)));
-                        }
-                    }
-                    _ => {}
+        let mut clause_cursor = clause.walk();
+        for part in clause.named_children(&mut clause_cursor) {
+            match part.kind() {
+                "identifier" => {
+                    let local = node_text(part, source);
+                    bindings.insert(local, (spec.clone(), Some(DEFAULT_EXPORT.to_string())));
                 }
+                "namespace_import" => {
+                    let mut ns_cursor = part.walk();
+                    let local = part
+                        .named_children(&mut ns_cursor)
+                        .find(|n| n.kind() == "identifier");
+                    if let Some(local) = local {
+                        bindings.insert(node_text(local, source), (spec.clone(), None));
+                    }
+                }
+                "named_imports" => {
+                    let mut named_cursor = part.walk();
+                    for item in part.named_children(&mut named_cursor) {
+                        let Some(name) = item.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let name = node_text(name, source);
+                        let name = unquote_string_literal(&name).unwrap_or(name);
+                        let local = item
+                            .child_by_field_name("alias")
+                            .map(|n| node_text(n, source))
+                            .unwrap_or_else(|| name.clone());
+                        bindings.insert(local, (spec.clone(), Some(name)));
+                    }
+                }
+                _ => {}
             }
         }
     }
-    bindings
 }
 
 /// Names bound from `require(..)` / `import(..)` at any scope.
@@ -6264,7 +6735,7 @@ fn rebind_this_scope(node: Node<'_>, ctx: &Context, source: &str) -> Context {
     next_ctx.fn_depth += 1;
     next_ctx.this_rebound = true;
     enter_scope(&mut next_ctx);
-    set_function_scope(&mut next_ctx, infer_local_types(node, source));
+    set_function_scope(&mut next_ctx, infer_scope_types(node, ctx, source));
     next_ctx
 }
 
@@ -6309,9 +6780,10 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
     next_ctx.current_scope =
         object_literal_member_qualname(node, owner, source).unwrap_or_else(|| owner.clone());
     next_ctx.fn_owner = None;
+    enter_local_functions(&mut next_ctx, node, source);
     if !is_lambda_node(kind) {
         enter_scope(&mut next_ctx);
-        set_function_scope(&mut next_ctx, infer_local_types(node, source));
+        set_function_scope(&mut next_ctx, infer_scope_types(node, ctx, source));
         next_ctx.this_rebound = true;
     } else {
         // The module-wide map folds every module-level arrow's parameters
@@ -6320,6 +6792,262 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
         set_lambda_scope(&mut next_ctx, node, ctx, source);
     }
     Some(next_ctx)
+}
+
+/// Node kinds with a `return_type` a returned callback is typed by.
+const RETURN_TYPED_KINDS: &[&str] = &[
+    "arrow_function",
+    "function_declaration",
+    "function_expression",
+    "generator_function",
+    "generator_function_declaration",
+    "method_definition",
+];
+
+/// The longest callable type text kept in a deferred marker.
+const MAX_CALLABLE_TEXT: usize = 300;
+
+/// The declaration `name` (a bare or dotted type or function name as
+/// written) refers to, found through this file's imports or its own
+/// declarations: the qualname when it is declared here, an import
+/// placeholder (`resolve_import_file_edges` rewrites it to the qualname in
+/// the imported file, or drops it when the specifier is no repo file) when
+/// it is imported. `None` for a global, a shadowed name or an undeclared
+/// one: it is never looked up by its bare name.
+fn qualify_declared_name(name: &str, ctx: &Context) -> Option<String> {
+    let root = name.split('.').next()?;
+    if ctx.scope_bindings.contains(root) || ctx.local_fns.contains_key(root) {
+        return None;
+    }
+    if ctx.import_bindings.contains_key(root) {
+        return import_placeholder_unshadowed(name, ctx);
+    }
+    if ctx.required_names.contains(root) {
+        return None;
+    }
+    if ctx.declared_types.contains(root) || ctx.declared_names.contains(root) {
+        let container = container_qualname(&ctx.module, namespace_stack(ctx));
+        return Some(format!("{container}.{name}"));
+    }
+    None
+}
+
+/// Type text with its whitespace runs collapsed to one space and no leading
+/// `|` (a multi-line union), for a stored signature or an origin.
+fn collapse_type_text(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined.trim_start_matches('|').trim_start().to_string()
+}
+
+/// A declared callable type (an annotation node, or the type node of `as
+/// T`) as the origin of a callback's parameter types: a function type kept
+/// as written, a type name (or a union of them) qualified through
+/// `qualify_declared_name`. `None` when any name cannot be qualified.
+fn callable_origin_text(node: Node<'_>, ctx: &Context, source: &str) -> Option<ParamOrigin> {
+    let ty = if node.kind() == "type_annotation" {
+        node.named_child(0)?
+    } else {
+        node
+    };
+    let text = collapse_type_text(&node_text(ty, source));
+    if text.is_empty() || text.len() > MAX_CALLABLE_TEXT {
+        return None;
+    }
+    let is_function_type = text.starts_with(['(', '<'])
+        && paren_group(strip_leading_type_params(&text))
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with("=>"));
+    if is_function_type {
+        return Some(ParamOrigin::Callable(text));
+    }
+    let mut members = Vec::new();
+    for member in split_top_level(&text, '|') {
+        let member = member.trim();
+        if member.is_empty() || member == "undefined" || member == "null" {
+            continue;
+        }
+        let name = strip_type_arguments(member).unwrap_or(member);
+        if !is_type_name_text(name, true) {
+            return None;
+        }
+        members.push(qualify_declared_name(name, ctx)?);
+    }
+    (!members.is_empty()).then(|| ParamOrigin::Callable(members.join(" | ")))
+}
+
+/// Where the function expression `node` gets its parameter types from, when
+/// it is written where TypeScript types it by context: the initializer of a
+/// variable or field annotated with a callable type, an `as`/`satisfies`
+/// operand, a value returned from a function declared to return a callable
+/// type (`(): MiddlewareHandler => async (c, next) => ..`), or an argument
+/// of a call whose callee declares the parameter.
+fn contextual_origin(node: Node<'_>, ctx: &Context, source: &str) -> Option<ParamOrigin> {
+    if !matches!(
+        node.kind(),
+        "arrow_function" | "function_expression" | "function" | "generator_function"
+    ) {
+        return None;
+    }
+    let mut child = node;
+    loop {
+        let parent = child.parent()?;
+        match parent.kind() {
+            "parenthesized_expression" | "non_null_expression" => {}
+            "as_expression" | "satisfies_expression" => {
+                if parent.named_child(0)?.id() != child.id() {
+                    return None;
+                }
+                return callable_origin_text(parent.named_child(1)?, ctx, source);
+            }
+            "variable_declarator" | "public_field_definition" | "field_definition" => {
+                if parent.child_by_field_name("value")?.id() != child.id() {
+                    return None;
+                }
+                return callable_origin_text(parent.child_by_field_name("type")?, ctx, source);
+            }
+            "return_statement" => {
+                let mut up = parent.parent();
+                while let Some(n) = up {
+                    if RETURN_TYPED_KINDS.contains(&n.kind()) {
+                        return callable_origin_text(
+                            n.child_by_field_name("return_type")?,
+                            ctx,
+                            source,
+                        );
+                    }
+                    up = n.parent();
+                }
+                return None;
+            }
+            "arrow_function" => {
+                if parent.child_by_field_name("body")?.id() != child.id() {
+                    return None;
+                }
+                return callable_origin_text(
+                    parent.child_by_field_name("return_type")?,
+                    ctx,
+                    source,
+                );
+            }
+            "arguments" => return argument_origin(parent, child, ctx, source),
+            _ => return None,
+        }
+        child = parent;
+    }
+}
+
+/// `ParamOrigin::Argument` for `arg` passed in `arguments` of a call whose
+/// callee is a bare function or a method of a typed receiver.
+fn argument_origin(
+    arguments: Node<'_>,
+    arg: Node<'_>,
+    ctx: &Context,
+    source: &str,
+) -> Option<ParamOrigin> {
+    let call = arguments.parent()?;
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let mut arg_index = 0;
+    let mut cursor = arguments.walk();
+    for a in arguments.named_children(&mut cursor) {
+        if a.kind() == "comment" {
+            continue;
+        }
+        if a.id() == arg.id() {
+            break;
+        }
+        arg_index += 1;
+    }
+    let callee = peel_expression(call.child_by_field_name("function")?);
+    let callee_text = match callee.kind() {
+        "identifier" => qualify_declared_name(&node_text(callee, source), ctx)?,
+        "member_expression" => {
+            let object = peel_expression(callee.child_by_field_name("object")?);
+            if object.kind() != "identifier" {
+                return None;
+            }
+            let method = node_text(callee.child_by_field_name("property")?, source);
+            let root = node_text(object, source);
+            if !is_type_name_text(&method, false) {
+                return None;
+            }
+            match ctx.local_types.get(&root) {
+                // A method of a typed receiver: the method of that type.
+                Some(LocalType::Known(ty)) if is_type_name_text(ty, true) => {
+                    qualify_declared_name(&format!("{ty}.{method}"), ctx)?
+                }
+                // `ns.fn(..)` on a namespace import is the module's `fn`.
+                None if matches!(ctx.import_bindings.get(&root), Some((_, None))) => {
+                    qualify_declared_name(&format!("{root}.{method}"), ctx)?
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    if callee_text.is_empty() {
+        return None;
+    }
+    Some(ParamOrigin::Argument {
+        callee: callee_text,
+        arg_index,
+    })
+}
+
+/// Types the untyped parameters of the function expression `node` by
+/// context (`contextual_origin`), over the `types` its own scope inferred.
+fn apply_contextual_params(
+    types: &mut HashMap<String, LocalType>,
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+) {
+    let Some(origin) = contextual_origin(node, ctx, source) else {
+        return;
+    };
+    let params: Vec<Node<'_>> = if let Some(list) = node.child_by_field_name("parameters") {
+        let mut cursor = list.walk();
+        list.named_children(&mut cursor)
+            .filter(|p| p.kind() != "comment")
+            .collect()
+    } else if let Some(single) = node.child_by_field_name("parameter") {
+        vec![single]
+    } else {
+        return;
+    };
+    for (index, param) in params.into_iter().enumerate() {
+        let name_node = match param.kind() {
+            "identifier" => param,
+            "required_parameter" | "optional_parameter" => {
+                if param.child_by_field_name("type").is_some() {
+                    continue;
+                }
+                match param.child_by_field_name("pattern") {
+                    Some(p) if p.kind() == "identifier" => p,
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        let name = node_text(name_node, source);
+        if matches!(types.get(&name), Some(LocalType::Other)) {
+            types.insert(
+                name,
+                LocalType::Contextual(ParamType {
+                    origin: origin.clone(),
+                    index,
+                }),
+            );
+        }
+    }
+}
+
+/// `infer_local_types` for a function expression's own scope, with its
+/// contextually typed parameters.
+fn infer_scope_types(node: Node<'_>, ctx: &Context, source: &str) -> HashMap<String, LocalType> {
+    let mut types = infer_local_types(node, source);
+    apply_contextual_params(&mut types, node, ctx, source);
+    types
 }
 
 /// Enters a function scope of its own: `types` replace the enclosing
@@ -6335,7 +7063,7 @@ fn set_function_scope(ctx: &mut Context, types: HashMap<String, LocalType>) {
 /// types and scope bindings plus the arrow's own parameters and locals,
 /// which shadow them.
 fn set_lambda_scope(next_ctx: &mut Context, node: Node<'_>, ctx: &Context, source: &str) {
-    let own = infer_local_types(node, source);
+    let own = infer_scope_types(node, ctx, source);
     if own.is_empty() {
         return;
     }
@@ -6400,6 +7128,160 @@ fn collect_lambda_parameter_bindings(
     }
 }
 
+/// The functions declared inside `owner` (a function-like node whose symbol
+/// is `owner_qualname`) that become symbols of their own: `function g(){}`
+/// and `const f = () => ..` at any block depth, through callbacks that are
+/// not symbols, but not inside another such function (its own scan finds
+/// those) nor a class. A name declared twice maps to `None`: no symbol, so
+/// no call is bound to the wrong one.
+fn collect_local_functions(
+    owner: Node<'_>,
+    owner_qualname: &str,
+    source: &str,
+) -> HashMap<String, Option<LocalFn>> {
+    let mut found: HashMap<String, Option<LocalFn>> = HashMap::new();
+    let Some(body) = owner.child_by_field_name("body") else {
+        return found;
+    };
+    let mut record = |name: String, start_byte: usize| {
+        let local = LocalFn {
+            qualname: format!("{owner_qualname}.{name}"),
+            start_byte,
+        };
+        match found.get_mut(&name) {
+            Some(slot) => *slot = None,
+            None => {
+                found.insert(name, Some(local));
+            }
+        }
+    };
+    let mut stack = vec![body];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "class_declaration" | "abstract_class_declaration" | "class" | "method_definition" => {
+                continue;
+            }
+            "function_declaration" | "generator_function_declaration" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    record(node_text(name, source), node.start_byte());
+                }
+                continue;
+            }
+            "variable_declarator" => {
+                // `const f = function g() {}` is declared by the expression's
+                // own name, not `f`: tsc keys its calls to `g`, so it is no
+                // symbol here (its calls stay with the enclosing function).
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .filter(|n| n.kind() == "identifier")
+                    && function_initializer(node)
+                        .is_some_and(|f| f.child_by_field_name("name").is_none())
+                {
+                    record(node_text(name, source), node.start_byte());
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    found
+}
+
+/// Makes the functions declared inside `owner` visible to the calls walked
+/// with `ctx` (see `collect_local_functions`; `ctx.current_scope` is the
+/// owner's symbol), over the enclosing ones.
+fn enter_local_functions(ctx: &mut Context, owner: Node<'_>, source: &str) {
+    let scanned = collect_local_functions(owner, &ctx.current_scope, source);
+    if scanned.is_empty() {
+        return;
+    }
+    let mut visible = (*ctx.local_fns).clone();
+    for (name, local) in scanned {
+        match local {
+            Some(local) => visible.insert(name, local),
+            None => visible.remove(&name),
+        };
+    }
+    ctx.local_fns = Rc::new(visible);
+}
+
+/// The `LocalFn` the declaration `node` (a function declaration, or the
+/// declarator of `const f = ..`) was scanned as, when it is one.
+fn local_function_of<'c>(node: Node<'_>, ctx: &'c Context, source: &str) -> Option<&'c LocalFn> {
+    let name = node.child_by_field_name("name")?;
+    if name.kind() != "identifier" {
+        return None;
+    }
+    ctx.local_fns
+        .get(&node_text(name, source))
+        .filter(|local| local.start_byte == node.start_byte())
+}
+
+/// A function declared inside a function: a symbol qualified under it, its
+/// body walked with calls attributed to it.
+fn handle_local_function(
+    node: Node<'_>,
+    local: &LocalFn,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let is_declarator = node.kind() == "variable_declarator";
+    let func = if is_declarator {
+        function_initializer(node)
+    } else {
+        Some(node)
+    };
+    let Some(func) = func else {
+        return;
+    };
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source))
+        .unwrap_or_default();
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    output.symbols.push(SymbolInput {
+        kind: "function".to_string(),
+        name,
+        qualname: local.qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature: extract_signature(func, source),
+        docstring: None,
+        identity: None,
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(local.qualname.clone()),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
+    // Unreachable from other files: the name-fallback tiers skip it there.
+    output.private_qualnames.push(local.qualname.clone());
+    output.local_qualnames.push(local.qualname.clone());
+    let mut next_ctx = if is_declarator {
+        ctx.clone()
+    } else {
+        rebind_this_scope(node, ctx, source)
+    };
+    next_ctx.current_scope = local.qualname.clone();
+    next_ctx.fn_depth += 1;
+    enter_local_functions(&mut next_ctx, func, source);
+    if is_declarator {
+        walk_node(func, &next_ctx, source, output);
+    } else if let Some(body) = node.child_by_field_name("body") {
+        walk_node(body, &next_ctx, source, output);
+    }
+}
+
 fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
@@ -6449,6 +7331,7 @@ fn handle_function_named(
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
         set_function_scope(&mut next_ctx, infer_local_types(node, source));
+        enter_local_functions(&mut next_ctx, node, source);
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -6517,6 +7400,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
         set_function_scope(&mut next_ctx, infer_local_types(node, source));
+        enter_local_functions(&mut next_ctx, node, source);
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -6652,6 +7536,11 @@ fn handle_named_item(
     }
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    let signature = match kind {
+        "type" => alias_signature(node, source),
+        "interface" => interface_call_signature(node, source),
+        _ => None,
+    };
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
         name: name.clone(),
@@ -6662,7 +7551,7 @@ fn handle_named_item(
         end_col,
         start_byte,
         end_byte,
-        signature: None,
+        signature,
         docstring: None,
         identity: None,
     });
@@ -6675,6 +7564,66 @@ fn handle_named_item(
         ..Default::default()
     });
     Some(qualname)
+}
+
+/// Whether `ty` can be a callable type's source text: a function type, a
+/// type reference (an alias of an alias), or a union of those (with
+/// `undefined`/`null`). Returns whether it holds at least one such leaf.
+fn callable_type_shape(ty: Node<'_>) -> Option<bool> {
+    match ty.kind() {
+        "function_type" | "type_identifier" | "generic_type" | "nested_type_identifier" => {
+            Some(true)
+        }
+        "predefined_type" | "literal_type" => Some(false),
+        "parenthesized_type" => callable_type_shape(ty.named_child(0)?),
+        "union_type" => {
+            let mut leaf = false;
+            let mut cursor = ty.walk();
+            for member in ty.named_children(&mut cursor) {
+                leaf |= callable_type_shape(member)?;
+            }
+            Some(leaf)
+        }
+        _ => None,
+    }
+}
+
+/// The right-hand side of a `type X = ..` alias that names a callable type
+/// (see `callable_type_shape`), kept as the alias symbol's signature so a
+/// callback typed `X` can take its parameter types from it.
+fn alias_signature(node: Node<'_>, source: &str) -> Option<String> {
+    let value = node.child_by_field_name("value")?;
+    if callable_type_shape(value) != Some(true) {
+        return None;
+    }
+    let text = collapse_type_text(&node_text(value, source));
+    (text.len() <= MAX_CALLABLE_TEXT).then_some(text)
+}
+
+/// `(params) => ret` for an interface whose only member is one call
+/// signature (`interface NotFoundHandler { (c: Context): Response }`).
+fn interface_call_signature(node: Node<'_>, source: &str) -> Option<String> {
+    let body = node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let mut calls = body
+        .named_children(&mut cursor)
+        .filter(|m| m.kind() == "call_signature");
+    let call = calls.next()?;
+    if calls.next().is_some() {
+        return None;
+    }
+    let params = node_text(call.child_by_field_name("parameters")?, source);
+    let ret = call
+        .child_by_field_name("return_type")
+        .map(|r| annotation_text(r, source))
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| "void".to_string());
+    let generics = call
+        .child_by_field_name("type_parameters")
+        .map(|t| node_text(t, source))
+        .unwrap_or_default();
+    let text = collapse_type_text(&format!("{generics}{params} => {ret}"));
+    (text.len() <= MAX_CALLABLE_TEXT).then_some(text)
 }
 
 fn handle_variable_declaration(
@@ -6870,11 +7819,19 @@ fn push_imports_edge(
 ) {
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    // The names the statement binds (`local` -> exported name), so the
+    // `IMPORTS_FILE` edge can say which name came from which module.
+    let mut bindings = ImportBindings::new();
+    statement_import_bindings(node, source, &mut bindings);
+    let names: serde_json::Map<String, serde_json::Value> = bindings
+        .into_iter()
+        .filter_map(|(local, (_, imported))| Some((local, json!(imported?))))
+        .collect();
     output.edges.push(EdgeInput {
         kind: "IMPORTS".to_string(),
         source_qualname: Some(ctx.module.clone()),
         target_qualname: Some(target),
-        detail: None,
+        detail: (!names.is_empty()).then(|| json!({ "names": names }).to_string()),
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
@@ -7366,6 +8323,9 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
                 Some(ty) => ReceiverType::Known(ty.clone()),
                 None => ReceiverType::Unresolved,
             },
+            Some(LocalType::Contextual(param)) => {
+                ReceiverType::Deferred(DeferredReturn::on_param(param.clone(), ""))
+            }
             Some(_) => ReceiverType::Unresolved,
             None => ReceiverType::NotTracked,
         };
@@ -7391,8 +8351,9 @@ fn property_chain_receiver(
     ctx: &Context,
 ) -> Option<ReceiverType> {
     let root_type = match ctx.local_types.get(root_name)? {
-        LocalType::Known(ty) => ty.clone(),
-        LocalType::ReturnOf(f) => ctx.return_types.get(f)?.clone(),
+        LocalType::Known(ty) => Some(ty.clone()),
+        LocalType::ReturnOf(f) => Some(ctx.return_types.get(f)?.clone()),
+        LocalType::Contextual(_) => None,
         _ => return None,
     };
     let mut names = Vec::new();
@@ -7410,7 +8371,13 @@ fn property_chain_receiver(
     if names.len() > MAX_DEFERRED_DEPTH {
         return None;
     }
-    let mut call = DeferredReturn::on_type(&root_type, first, false, false);
+    let mut call = match (&root_type, ctx.local_types.get(root_name)) {
+        (Some(ty), _) => DeferredReturn::on_type(ty, first, false, false),
+        (None, Some(LocalType::Contextual(param))) => {
+            DeferredReturn::on_param(param.clone(), first)
+        }
+        _ => return None,
+    };
     for name in rest {
         call = DeferredReturn::on_call(call, name, false);
     }
@@ -8712,10 +9679,17 @@ setup();
             call_source(&file, "renderRows"),
             "components.tabs.ProductTabs"
         );
-        // A handler const nested inside the component stays the component's.
-        assert_eq!(call_source(&file, "track"), "components.tabs.ProductTabs");
+        // A handler const nested inside the component is a local function
+        // symbol qualified under it, and owns its calls.
+        assert_eq!(
+            call_source(&file, "track"),
+            "components.tabs.ProductTabs.onClick"
+        );
         // Nested named function: innermost wins.
-        assert_eq!(call_source(&file, "deep"), "components.tabs.inner");
+        assert_eq!(
+            call_source(&file, "deep"),
+            "components.tabs.ProductTabs.inner"
+        );
         // The HOC-style wrapper call itself is a module-level call ...
         assert_eq!(call_source(&file, "dynamic"), "components.tabs");
         // ... but the callback passed to it belongs to the const.

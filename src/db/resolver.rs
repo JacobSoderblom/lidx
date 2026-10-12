@@ -62,6 +62,7 @@ mod resolver_go;
 pub(crate) use resolver_go::go_deferred_candidate;
 
 use super::Db;
+use super::graph_query::{LOCAL_MODIFIER, has_modifier, has_modifier_sql};
 use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
@@ -555,6 +556,9 @@ pub enum DeclarationQuery<'a> {
     /// Methods named `method` on a type named `ty` (`ty.method`, or
     /// `<namespace>.ty.method`; dot-separated qualnames).
     Member { ty: &'a str, method: &'a str },
+    /// A type alias or interface with exactly this qualname (TypeScript
+    /// callable types).
+    Alias(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -576,6 +580,13 @@ pub trait DeclarationIndex {
     fn inherited_members(&self, ty: &str, method: &str) -> Result<Vec<Declaration>>;
     /// The imports and enclosing namespaces of where `decl` is declared.
     fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports>;
+    /// The qualname of the declaration the file `file_id` imports under the
+    /// local `name` from a repo module (`<module>.<exported name>`), read
+    /// off the `IMPORTS_FILE` edge that binds that very name; `None` for a
+    /// name imported from a package or not imported at all.
+    fn imported_binding(&self, _file_id: i64, _name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// See `LanguageProfile::deferred_receiver`. `Ok(None)`: not this
@@ -695,7 +706,7 @@ impl VisibilityRule {
 /// `symbols.visibility` is a space-separated modifier list (`private`,
 /// `static`); whether it contains `private`.
 pub(crate) fn is_private(visibility: Option<&str>) -> bool {
-    visibility.is_some_and(|v| v.split_whitespace().any(|m| m == "private"))
+    has_modifier(visibility, "private")
 }
 
 /// The qualname minus its own trailing name segment — the module, type,
@@ -832,13 +843,19 @@ fn profile_for(lang: &str) -> LanguageProfile {
 /// The prefilter clause, removed to derive the unfiltered fallback statements.
 const NAME_PREFILTER: &str = "s.name IN (:tail, '.' || :tail)\n       AND ";
 
-const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.kind, s.signature
+static SAME_LANG_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT s.id, s.visibility, s.qualname, f.path, s.kind, s.signature
      FROM symbols s
      JOIN files f ON s.file_id = f.id
      WHERE s.name IN (:tail, '.' || :tail)
        AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
        AND (:exclude_method = 0 OR s.kind != 'method')
+       -- A function declared inside another (`mod.outer.f`) is bound by its
+       -- exact qualname only: the name tiers would read it as member `f` of
+       -- a type `outer`.
+       AND NOT {local}
        AND s.graph_version = :gv
        AND (f.deleted_version IS NULL OR f.deleted_version > :gv)
        AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = :lang
@@ -849,7 +866,10 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
        AND (f.language != 'csharp' OR s.kind != 'method' OR EXISTS (
             SELECT 1 FROM symbols p
              WHERE p.graph_version = s.graph_version
-               AND p.qualname = substr(s.qualname, 1, length(s.qualname) - length(s.name) - 1)))";
+               AND p.qualname = substr(s.qualname, 1, length(s.qualname) - length(s.name) - 1)))",
+        local = has_modifier_sql("s", LOCAL_MODIFIER)
+    )
+});
 
 /// Cross-language fuzzy candidates, for Bridge Edge kinds only. Same
 /// case-insensitive-`LIKE` caveat as `SAME_LANG_SQL` (issue #110): selects
@@ -858,14 +878,20 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
 /// `SAME_LANG_SQL`'s doc — a case-sensitive re-check after the fetch means
 /// a `LIMIT` could truncate the set before a real match past the cutoff is
 /// ever seen.
-const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname, s.kind, s.signature, f.language
+static ANY_LANG_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT s.id, s.qualname, s.kind, s.signature, f.language
      FROM symbols s
      JOIN files f ON s.file_id = f.id
      WHERE s.name IN (:tail, '.' || :tail)
        AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+       AND NOT {local}
        AND s.graph_version = :gv
-       AND (f.deleted_version IS NULL OR f.deleted_version > :gv)";
+       AND (f.deleted_version IS NULL OR f.deleted_version > :gv)",
+        local = has_modifier_sql("s", LOCAL_MODIFIER)
+    )
+});
 
 /// A type's recorded EXTENDS/IMPLEMENTS/INHERITS edges, for
 /// `resolve_via_inheritance` -- unioned across both shapes issue #79 leaves
@@ -910,7 +936,7 @@ static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
 /// that judgment needs to see every candidate, not just the first two.
-const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature, f.language FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
+const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature, f.language, s.visibility FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
 /// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
@@ -1026,6 +1052,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 method.to_string(),
                 format!(".{ty}.{method}"),
             ),
+            DeclarationQuery::Alias(qualname) => (
+                "s.kind IN ('type', 'interface') AND s.qualname = ?1",
+                qualname.to_string(),
+                String::new(),
+                String::new(),
+            ),
         };
         let mut stmt = self.resolver.conn.prepare_cached(&format!(
             "SELECT s.qualname, s.signature, s.visibility, s.file_id
@@ -1128,6 +1160,28 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
         Ok(Vec::new())
     }
 
+    fn imported_binding(&self, file_id: i64, name: &str) -> Result<Option<String>> {
+        let mut stmt = self.resolver.conn.prepare_cached(
+            "SELECT target_qualname, detail FROM edges
+             WHERE kind = 'IMPORTS_FILE' AND file_id = ?1 AND graph_version = ?2
+               AND target_qualname IS NOT NULL
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![file_id, self.resolver.graph_version], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        for row in rows {
+            let (module, detail) = row?;
+            let imported = detail
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+                .and_then(|d| d.get("names")?.get(name)?.as_str().map(str::to_string));
+            if let Some(imported) = imported.filter(|i| i != "default") {
+                return Ok(Some(format!("{module}.{imported}")));
+            }
+        }
+        Ok(None)
+    }
+
     fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports> {
         let gv = self.resolver.graph_version;
         let mut stmt = self.resolver.conn.prepare_cached(
@@ -1210,6 +1264,18 @@ pub(crate) struct Resolver<'c> {
     /// several same-qualname candidates would otherwise collapse or
     /// refuse: see `arity_admits`.
     arity: Option<Arity>,
+    /// The reference being resolved is a bare call (`f()`) or the CONTAINS
+    /// edge of its parent, the only shapes that can name a function declared
+    /// inside another (`mod.outer.f`, visibility `local`): every other lookup
+    /// skips those, since the qualname also reads as member `f` of a type
+    /// `outer`.
+    binds_local_functions: bool,
+    /// What a `LanguageProfile::deferred_receiver` hook answered for a
+    /// marker (keyed by its encoded form) in this resolver's lifetime: the
+    /// symbols it reads do not change while one transaction resolves, and
+    /// the same marker (a contextual `c` typed by `MiddlewareHandler`)
+    /// recurs on every call made through it.
+    deferred_cache: HashMap<(&'static str, String), Option<Option<String>>>,
     /// Qualname of the symbol making the reference being resolved: which
     /// fn-local twins it can see.
     caller_scope: Option<String>,
@@ -1237,8 +1303,8 @@ impl<'c> Resolver<'c> {
             conn,
             graph_version,
             exact: conn.prepare(EXACT_SQL)?,
-            same_lang: conn.prepare(SAME_LANG_SQL)?,
-            any_lang: conn.prepare(ANY_LANG_SQL)?,
+            same_lang: conn.prepare(&SAME_LANG_SQL)?,
+            any_lang: conn.prepare(&ANY_LANG_SQL)?,
             same_lang_scan: conn.prepare(&SAME_LANG_SQL.replace(NAME_PREFILTER, ""))?,
             any_lang_scan: conn.prepare(&ANY_LANG_SQL.replace(NAME_PREFILTER, ""))?,
             hierarchy: conn.prepare(&HIERARCHY_SQL)?,
@@ -1249,6 +1315,8 @@ impl<'c> Resolver<'c> {
             saw_repo_ambiguous: false,
             saw_private: false,
             arity: None,
+            binds_local_functions: false,
+            deferred_cache: HashMap::new(),
             caller_scope: None,
             call_receiver: None,
             merged_half: MergedHalf::Value,
@@ -1398,19 +1466,35 @@ impl<'c> Resolver<'c> {
         // receiver untracked rather than `""`, so no name-tier edge is lost.
         let hooked: Option<String>;
         let name_only = matches!(r.deferred, Some(DeferredMarker::Return(call)) if call.name_only);
-        let r = match r
+        let hook_result = match r
             .deferred
             .filter(|marker| !matches!(marker, DeferredMarker::Argument(_)))
-            .and_then(|marker| {
-                let hook = profile_for(r.source_lang).deferred_receiver?;
-                Some(hook(
-                    marker,
-                    &LanguageIndex {
-                        resolver: self,
-                        lang: r.source_lang,
-                    },
-                ))
-            }) {
+        {
+            Some(marker) => match profile_for(r.source_lang).deferred_receiver {
+                Some(hook) => {
+                    let key = marker.encode();
+                    match self.deferred_cache.get(&key) {
+                        Some(cached) => Some(Ok(cached.clone())),
+                        None => {
+                            let answer = hook(
+                                marker,
+                                &LanguageIndex {
+                                    resolver: self,
+                                    lang: r.source_lang,
+                                },
+                            );
+                            if let Ok(answer) = &answer {
+                                self.deferred_cache.insert(key, answer.clone());
+                            }
+                            Some(answer)
+                        }
+                    }
+                }
+                None => None,
+            },
+            None => None,
+        };
+        let r = match hook_result {
             Some(resolved) => match resolved? {
                 Some(ty) => {
                     hooked = ty.or_else(|| {
@@ -1435,6 +1519,8 @@ impl<'c> Resolver<'c> {
             },
             None => r,
         };
+        self.binds_local_functions = (r.bare_call && r.edge_kind == edge_views::CALLS)
+            || r.edge_kind == edge_views::CONTAINS;
         self.arity = match r.call_shape {
             Some(shape) if !shape.is_new && !shape.is_ref => Some(Arity {
                 args: shape.arg_count as usize,
@@ -1879,12 +1965,13 @@ impl<'c> Resolver<'c> {
             return Ok(Some(id));
         }
         let gv = self.graph_version;
-        let mut candidates = query_exact_candidates(
+        let mut candidates = query_exact_candidates_with(
             &mut self.exact,
             qualname,
             gv,
             caller_file,
             self.caller_scope.as_deref(),
+            self.binds_local_functions,
         )?;
         if types_only {
             candidates.retain(|c| !matches!(c.kind.as_str(), "module" | "namespace"));
@@ -3492,7 +3579,23 @@ static UPDATE_EDGE_TARGET_SQL: LazyLock<String> = LazyLock::new(|| {
 /// map entirely, so the SQL fallback re-judges it the same way.
 pub(crate) fn build_exact_symbol_map(symbols: &[crate::model::Symbol]) -> HashMap<String, i64> {
     let mut by_qualname: HashMap<&str, Vec<(i64, &str)>> = HashMap::new();
+    let callables: std::collections::HashSet<&str> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind.as_str(), "function" | "method"))
+        .map(|s| s.qualname.as_str())
+        .collect();
     for symbol in symbols {
+        // A function declared inside another is bound by a bare call only
+        // (`Resolver::binds_local_functions`): the SQL path knows which
+        // those are, this map does not.
+        if symbol.kind == "function"
+            && symbol
+                .qualname
+                .rsplit_once('.')
+                .is_some_and(|(parent, _)| callables.contains(parent))
+        {
+            continue;
+        }
         // Every symbol here already comes from the one file this batch just
         // wrote, so there's no file to compare (unlike
         // `collapse_exact_candidates`'s cross-file rows) — `same_kind_min`
@@ -3655,6 +3758,8 @@ struct ExactCandidate {
     kind: String,
     signature: Option<String>,
     language: String,
+    /// A function declared inside another (visibility `local`).
+    local: bool,
 }
 
 impl ExactCandidate {
@@ -3884,6 +3989,27 @@ fn query_exact_candidates(
     caller_file: &str,
     caller_scope: Option<&str>,
 ) -> Result<Vec<ExactCandidate>> {
+    query_exact_candidates_with(
+        stmt,
+        qualname,
+        graph_version,
+        caller_file,
+        caller_scope,
+        false,
+    )
+}
+
+/// `query_exact_candidates`, keeping the functions declared inside other
+/// functions (visibility `local`) when `with_local`: they are bound by a
+/// bare call only, never as a member of a same-named type.
+fn query_exact_candidates_with(
+    stmt: &mut Statement<'_>,
+    qualname: &str,
+    graph_version: i64,
+    caller_file: &str,
+    caller_scope: Option<&str>,
+    with_local: bool,
+) -> Result<Vec<ExactCandidate>> {
     let rows = stmt.query_map(params![qualname, graph_version], |row| {
         Ok((
             ExactCandidate {
@@ -3893,6 +4019,7 @@ fn query_exact_candidates(
                 kind: row.get(2)?,
                 signature: row.get(4)?,
                 language: row.get(5)?,
+                local: has_modifier(row.get::<_, Option<String>>(6)?.as_deref(), LOCAL_MODIFIER),
             },
             row.get::<_, String>(3)?,
         ))
@@ -3902,6 +4029,9 @@ fn query_exact_candidates(
         let (candidate, path) = row?;
         // Issue #102: fixture symbols are never targets from outside them.
         if is_fixture_path(&path) && !is_fixture_path(caller_file) {
+            continue;
+        }
+        if candidate.local && !with_local {
             continue;
         }
         candidates.push(candidate);
@@ -6238,7 +6368,7 @@ mod tests {
     #[test]
     fn name_fallback_queries_seek_the_name_index() {
         let conn = test_conn();
-        for sql in [super::SAME_LANG_SQL, super::ANY_LANG_SQL] {
+        for sql in [&*super::SAME_LANG_SQL, &*super::ANY_LANG_SQL] {
             let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
             let args =
                 (0..stmt.parameter_count()).map(|i| rusqlite::types::Value::Integer(i as i64));

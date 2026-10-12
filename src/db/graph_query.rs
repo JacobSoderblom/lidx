@@ -1,6 +1,6 @@
 use super::{Db, RPC_NAME_ONLY_FILTER, edge_from_row, symbol_from_row};
 use crate::edge_views;
-use crate::model::{Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
+use crate::model::{CONTAINMENT_KIND, Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
@@ -117,8 +117,20 @@ pub(super) fn call_reaches_impl_sql(ce: &str) -> String {
 /// SQL: symbol `alias` carries `modifier` in the space-separated
 /// `symbols.visibility` list (`private`, `static`, `override`), recorded by
 /// the extractors (issue #238).
-pub(super) fn has_modifier_sql(alias: &str, modifier: &str) -> String {
+pub(crate) fn has_modifier_sql(alias: &str, modifier: &str) -> String {
     format!("((' ' || COALESCE({alias}.visibility, '') || ' ') LIKE '% {modifier} %')")
+}
+
+/// The `symbols.visibility` modifier of a function declared inside another
+/// function (TypeScript/JavaScript `mod.outer.f`): bound only by a bare call
+/// or its parent's CONTAINS edge, never by a name tier or as a member of a
+/// same-named type; no top-level symbol (`dead_symbols`, `repo_map`).
+pub(crate) const LOCAL_MODIFIER: &str = "local";
+
+/// Rust form of [`has_modifier_sql`]: whether a `symbols.visibility` value
+/// carries `modifier`.
+pub(crate) fn has_modifier(visibility: Option<&str>, modifier: &str) -> bool {
+    visibility.is_some_and(|v| v.split_whitespace().any(|m| m == modifier))
 }
 
 /// SQL: the C# member `m`'s containing type has an EXTENDS/IMPLEMENTS
@@ -547,7 +559,67 @@ impl Db {
                 }
             }
         }
+        // A function declared inside another is reached through its parent
+        // (nothing calls a returned closure): list the parent as its caller.
+        for (local, parent, file_path) in self.local_function_parents(ids, graph_version)? {
+            let entry = map.entry(local).or_default();
+            let called = entry.iter().any(|e| {
+                e.kind == "CALLS"
+                    && e.source_symbol_id == Some(parent)
+                    && e.target_symbol_id == Some(local)
+            });
+            if called {
+                continue;
+            }
+            entry.push(Edge {
+                id: 0,
+                file_path,
+                kind: "CALLS".to_string(),
+                source_symbol_id: Some(parent),
+                target_symbol_id: Some(local),
+                target_qualname: None,
+                detail: Some("contained by".to_string()),
+                evidence_snippet: None,
+                evidence_start_line: None,
+                evidence_end_line: None,
+                confidence: None,
+                resolution_kind: Some(CONTAINMENT_KIND.to_string()),
+                graph_version,
+                commit_sha: None,
+                trace_id: None,
+                span_id: None,
+                event_ts: None,
+                dispatch_args: None,
+            });
+        }
         Ok(map)
+    }
+
+    /// `(local function id, CONTAINS parent id, file path)` for every `local`
+    /// function among `ids`.
+    fn local_function_parents(
+        &self,
+        ids: &[i64],
+        graph_version: i64,
+    ) -> Result<Vec<(i64, i64, String)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let is_local = has_modifier_sql("s", LOCAL_MODIFIER);
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT s.id, c.source_symbol_id, f.path
+             FROM symbols s
+             JOIN files f ON f.id = s.file_id
+             JOIN edges c ON c.target_symbol_id = s.id AND c.kind = 'CONTAINS'
+                         AND c.graph_version = ? AND c.source_symbol_id IS NOT NULL
+             WHERE s.id IN ({placeholders}) AND {is_local}"
+        ))?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
+        params.extend(ids.iter().map(|id| id as &dyn rusqlite::ToSql));
+        let rows = stmt.query_map(&*params, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Real edges into the interface-method peers of `id`: the callers that

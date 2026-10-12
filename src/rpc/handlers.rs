@@ -1811,13 +1811,16 @@ fn resolution_kind_rank(kind: &str) -> Option<usize> {
 /// `db::resolver::ALL_RESOLUTION_KINDS`, the resolver's own single source
 /// of truth for the column's possible values.
 fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
-    if let Some(bad) = kinds
-        .iter()
-        .find(|k| !crate::db::resolver::ALL_RESOLUTION_KINDS.contains(&k.as_str()))
-    {
+    // `containment` labels the synthetic parent-to-local-function hops
+    // (`model::CONTAINMENT_KIND`): not a resolver tier, but excludable.
+    if let Some(bad) = kinds.iter().find(|k| {
+        !crate::db::resolver::ALL_RESOLUTION_KINDS.contains(&k.as_str())
+            && k.as_str() != crate::model::CONTAINMENT_KIND
+    }) {
         anyhow::bail!(
-            "unknown resolution kind '{bad}' in exclude_resolution_kinds -- valid kinds: {}",
-            crate::db::resolver::ALL_RESOLUTION_KINDS.join(", ")
+            "unknown resolution kind '{bad}' in exclude_resolution_kinds -- valid kinds: {}, {}",
+            crate::db::resolver::ALL_RESOLUTION_KINDS.join(", "),
+            crate::model::CONTAINMENT_KIND
         );
     }
     Ok(())

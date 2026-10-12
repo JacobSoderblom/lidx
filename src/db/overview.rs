@@ -300,12 +300,16 @@ impl Db {
         // to (`f.language = 'external'`, see `Resolver::external_file_id`)
         // -- it would otherwise show up as its own noise "module" in the
         // repo map.
-        let mut sql = String::from(
+        let is_local =
+            super::graph_query::has_modifier_sql("s", super::graph_query::LOCAL_MODIFIER);
+        let mut sql = format!(
             "SELECT f.path, f.language, COUNT(s.id) as sym_count
              FROM files f
              LEFT JOIN symbols s ON s.file_id = f.id AND s.graph_version = ?
+               -- A function declared inside another is no module-level symbol.
+               AND NOT {is_local}
              WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
-               AND f.language != 'external'",
+               AND f.language != 'external'"
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 

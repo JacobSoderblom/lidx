@@ -1,4 +1,6 @@
-use lidx::indexer::extract::{LanguageExtractor, ReceiverType};
+use lidx::indexer::extract::{
+    DeferredBase, LanguageExtractor, ParamOrigin, ParamType, ReceiverType,
+};
 use lidx::indexer::javascript::{
     JavascriptExtractor, TsxExtractor, TypescriptExtractor, module_name_from_rel_path,
 };
@@ -834,6 +836,7 @@ class Foo {
 #[test]
 fn arrow_function_parameter_shadowing_local_does_not_bind_to_declared_type() {
     let source = r#"
+function withStore(cb: (store: EventStore) => void) {}
 class Foo {
     method(store: EventStore) {
         withStore((store) => {
@@ -849,12 +852,26 @@ class Foo {
         .iter()
         .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.append"))
         .expect("store.append(1) call edge inside the arrow body");
+    // The parameter is typed by the callee's declared parameter (a deferred
+    // marker the resolver finishes), never by the outer `store: EventStore`.
+    let ReceiverType::Deferred(marker) = &call.receiver_type else {
+        panic!(
+            "the arrow function's own (untyped) parameter shadows the outer \
+             `store: EventStore` and must not be resolved via the outer type: {:?}",
+            call.receiver_type
+        );
+    };
     assert_eq!(
-        call.receiver_type,
-        ReceiverType::Unresolved,
-        "the arrow function's own (untyped) parameter shadows the outer \
-         `store: EventStore` and must not be resolved via the outer type"
+        marker.base,
+        DeferredBase::Param(ParamType {
+            origin: ParamOrigin::Argument {
+                callee: "src/app.withStore".into(),
+                arg_index: 0
+            },
+            index: 0
+        })
     );
+    assert_eq!(marker.method, "");
 }
 
 // Issue #111: `<Foo />` usage emitted no edge at all — `walk_node` only fed
@@ -1288,10 +1305,25 @@ class Foo {
         .filter(|e| e.detail.as_deref().is_some_and(|d| d.starts_with("this.")))
         .collect();
     assert_eq!(inner.len(), 4, "{calls:#?}");
+    // The nested `function inner` and `const f` are local function symbols
+    // and own their calls; every other one stays the method's.
+    let mut sources: Vec<_> = inner
+        .iter()
+        .map(|e| e.source_qualname.clone().unwrap_or_default())
+        .collect();
+    sources.sort();
+    assert_eq!(
+        sources,
+        [
+            "src/app.Foo.run",
+            "src/app.Foo.run",
+            "src/app.Foo.run.f",
+            "src/app.Foo.run.inner"
+        ]
+    );
     for e in inner {
         assert!(e.target_qualname.is_none(), "{e:#?}");
         assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{e:#?}");
-        assert_eq!(e.source_qualname.as_deref(), Some("src/app.Foo.run"));
     }
 }
 
@@ -1424,6 +1456,7 @@ fn same_name_locals_in_sibling_callbacks_are_typed_per_callback() {
     // sibling's, so disagreeing, untyped and parameter bindings in one
     // callback leave the others' types intact.
     let src = r#"
+import { it } from './fw';
 it('a', () => { const x = new A(); x.go() })
 it('b', () => { const x = new B(); x.go() })
 it('c', (x) => { x.go() })
@@ -1437,6 +1470,24 @@ it('d', () => { const x = make(); x.go() })
         .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("x.go"))
         .map(|e| e.receiver_type.clone())
         .collect();
+    // `c`'s untyped parameter is typed by context: a deferred marker for the
+    // resolver (`it`'s declared parameter 1, `it` imported from `./fw`), not
+    // a sibling's type.
+    let ReceiverType::Deferred(marker) = &types[2] else {
+        panic!("{types:?}");
+    };
+    assert_eq!(
+        marker.base,
+        DeferredBase::Param(ParamType {
+            origin: ParamOrigin::Argument {
+                callee: "./fw\u{0}it".into(),
+                arg_index: 1
+            },
+            index: 0
+        })
+    );
+    let mut types = types;
+    types[2] = ReceiverType::Unresolved;
     assert_eq!(
         types,
         [

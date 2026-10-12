@@ -121,7 +121,9 @@ struct AnalyzeImpactParams {
     /// Edge kinds to follow, upper-case names such as CALLS, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
-    /// to exclude the guarded name-fallback tier's heuristic edges. Default: none excluded.
+    /// to exclude the guarded name-fallback tier's heuristic edges. "containment" is also
+    /// accepted: it drops the hops from a function to the functions declared inside it
+    /// (a returned closure has no caller of its own). Default: none excluded.
     exclude_resolution_kinds: Option<Vec<String>>,
     include_tests: Option<bool>,
     include_paths: Option<bool>,
@@ -280,7 +282,9 @@ struct ExplainSymbolParams {
     /// above this tier (exact, import, receiver_type, inherited,
     /// two_segment, bare_name, external -- strongest to weakest; see
     /// `Edge::resolution_kind`). A ref whose edge never resolved (no
-    /// `resolution_kind` at all) is always excluded once this is set.
+    /// `resolution_kind` at all) is always excluded once this is set; so is a
+    /// caller listed only through "containment" (the function that declares
+    /// a local function), which is no resolver tier.
     /// Distinct from `analyze_impact`'s `min_confidence`, which filters an
     /// unrelated query-time heuristic. Omit to return every ref regardless
     /// of tier. An unknown tier name is ignored with a warning rather than
@@ -341,7 +345,9 @@ struct TraceFlowParams {
     /// Edge kinds to follow, upper-case names such as CALLS, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
-    /// to exclude the guarded name-fallback tier's heuristic edges. Default: none excluded.
+    /// to exclude the guarded name-fallback tier's heuristic edges. "containment" is also
+    /// accepted: it drops the hops from a function to the functions declared inside it
+    /// (a returned closure has no caller of its own). Default: none excluded.
     exclude_resolution_kinds: Option<Vec<String>>,
     /// Include source snippets
     include_snippets: Option<bool>,
