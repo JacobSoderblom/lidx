@@ -645,3 +645,70 @@ fn upstream_traversal_climbs_out_of_a_local_function_to_its_parent() {
         "{explained}"
     );
 }
+
+#[test]
+fn names_inside_an_alias_body_follow_the_per_name_import_binding() {
+    // `types.ts` imports `Env` from './other' but `Handler` from a package;
+    // `other.ts` also exports its own `Handler`, which `H` must not mean.
+    let f = [
+        (
+            "src/ctx.ts",
+            "export class Context { header(n: string, v: string): void {} text(b: string): string { return b } }\n",
+        ),
+        (
+            "src/other.ts",
+            "import type { Context } from './ctx';\nexport type Env = { x: number };\nexport type Handler = (c: Context) => void;\n",
+        ),
+        (
+            "src/types.ts",
+            "import type { Env } from './other';\nimport type { Handler } from 'express';\nexport type H = Handler;\nexport type E2 = Env;\n",
+        ),
+        (
+            "src/use.ts",
+            "import type { H } from './types';\nexport const h: H = (c) => c.text('via-alias-body');\n",
+        ),
+    ];
+    let t = call_targets(&f, "src/use.h");
+    assert!(t.iter().all(|t| !t.starts_with("src/ctx.")), "{t:?}");
+    // The same alias body naming the repo's `Handler` by import still types.
+    let mut g = f.to_vec();
+    g[2] = (
+        "src/types.ts",
+        "import type { Handler } from './other';\nexport type H = Handler;\n",
+    );
+    assert_eq!(call_targets(&g, "src/use.h"), ["src/ctx.Context.text"]);
+}
+
+#[test]
+fn stored_type_signatures_keep_their_spaces() {
+    let src = "export type A<T> = T extends string\n  ? | Response\n  | Promise<Response>\n  : never;\nexport type B = (c: Context) => NotFoundResponse extends Response\n  ? Response\n  : Promise<Response>;\n";
+    let (_tmp, _root, indexer) = live(&[("src/sig.ts", src)]);
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let sig: Option<String> = conn
+        .query_row(
+            "SELECT signature FROM symbols WHERE graph_version = ? AND qualname = 'src/sig.B'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        sig.as_deref(),
+        Some("(c: Context) => NotFoundResponse extends Response ? Response : Promise<Response>")
+    );
+}
+
+#[test]
+fn containment_hops_can_be_excluded_by_name() {
+    let files = cx_files();
+    let impact = rpc_call(
+        &files,
+        "analyze_impact",
+        serde_json::json!({"qualname": "src/common.cxCommon", "direction": "upstream", "exclude_resolution_kinds": ["containment"]}),
+    );
+    let names = qualnames(&impact["affected"]);
+    assert!(
+        !names.iter().any(|n| n == "src/context.createCssContext"),
+        "{names:?}"
+    );
+}

@@ -580,11 +580,12 @@ pub trait DeclarationIndex {
     fn inherited_members(&self, ty: &str, method: &str) -> Result<Vec<Declaration>>;
     /// The imports and enclosing namespaces of where `decl` is declared.
     fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports>;
-    /// The modules (qualname prefixes) the file `file_id` imports, as the
-    /// `IMPORTS_FILE` edges of the file name them. Empty for a language
-    /// without file-level imports.
-    fn imported_modules(&self, _file_id: i64) -> Result<Vec<String>> {
-        Ok(Vec::new())
+    /// The qualname of the declaration the file `file_id` imports under the
+    /// local `name` from a repo module (`<module>.<exported name>`), read
+    /// off the `IMPORTS_FILE` edge that binds that very name; `None` for a
+    /// name imported from a package or not imported at all.
+    fn imported_binding(&self, _file_id: i64, _name: &str) -> Result<Option<String>> {
+        Ok(None)
     }
 }
 
@@ -1159,17 +1160,26 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
         Ok(Vec::new())
     }
 
-    fn imported_modules(&self, file_id: i64) -> Result<Vec<String>> {
+    fn imported_binding(&self, file_id: i64, name: &str) -> Result<Option<String>> {
         let mut stmt = self.resolver.conn.prepare_cached(
-            "SELECT DISTINCT target_qualname FROM edges
+            "SELECT target_qualname, detail FROM edges
              WHERE kind = 'IMPORTS_FILE' AND file_id = ?1 AND graph_version = ?2
                AND target_qualname IS NOT NULL
-             ORDER BY 1",
+             ORDER BY id",
         )?;
         let rows = stmt.query_map(params![file_id, self.resolver.graph_version], |row| {
-            row.get::<_, String>(0)
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        for row in rows {
+            let (module, detail) = row?;
+            let imported = detail
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+                .and_then(|d| d.get("names")?.get(name)?.as_str().map(str::to_string));
+            if let Some(imported) = imported.filter(|i| i != "default") {
+                return Ok(Some(format!("{module}.{imported}")));
+            }
+        }
+        Ok(None)
     }
 
     fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports> {

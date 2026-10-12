@@ -154,9 +154,9 @@ fn contextual_param_type(
 }
 
 /// The alias or interface a bare `name` written in the file of `home`
-/// means: the one that file declares, else the one declaration of that name
-/// in the modules it imports (a name imported from a package, or declared
-/// in two imported modules, is none).
+/// means: the one that file declares, else the one the name is imported as
+/// (the `IMPORTS_FILE` edge that binds that very name). A name imported from
+/// a package is none.
 fn alias_declared_for(
     name: &str,
     home: &Declaration,
@@ -169,17 +169,10 @@ fn alias_declared_for(
     if !own.is_empty() {
         return Ok(own);
     }
-    let mut found: Vec<Declaration> = Vec::new();
-    for module in index.imported_modules(home.file_id)? {
-        let hits = index.declarations(DeclarationQuery::Alias(&format!("{module}.{name}")))?;
-        if let Some(first) = hits.first() {
-            if found.iter().any(|d| d.qualname != first.qualname) {
-                return Ok(Vec::new());
-            }
-            found.extend(hits);
-        }
+    match index.imported_binding(home.file_id, name)? {
+        Some(qualname) => index.declarations(DeclarationQuery::Alias(&qualname)),
+        None => Ok(Vec::new()),
     }
-    Ok(found)
 }
 
 /// The module part of a declaration's qualname (`src/types.Handler` ->
@@ -878,6 +871,12 @@ pub fn resolve_import_file_edges(
                     "src_path": file_rel_path,
                     "dst_path": dst_rel,
                     "confidence": if resolved_on_disk { 1.0 } else { 0.0 },
+                    "names": edge
+                        .detail
+                        .as_deref()
+                        .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                        .and_then(|d| d.get("names").cloned())
+                        .unwrap_or(serde_json::Value::Null),
                 })
                 .to_string(),
             ),
@@ -4288,57 +4287,62 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
     let mut bindings = ImportBindings::new();
     let mut cursor = root.walk();
     for stmt in root.named_children(&mut cursor) {
-        if stmt.kind() != "import_statement" {
+        statement_import_bindings(stmt, source, &mut bindings);
+    }
+    bindings
+}
+
+/// The names one `import` statement binds (nothing for any other node).
+fn statement_import_bindings(stmt: Node<'_>, source: &str, bindings: &mut ImportBindings) {
+    if stmt.kind() != "import_statement" {
+        return;
+    }
+    let Some(spec) = stmt
+        .child_by_field_name("source")
+        .and_then(|n| unquote_string_literal(&node_text(n, source)))
+    else {
+        return;
+    };
+    let mut stmt_cursor = stmt.walk();
+    for clause in stmt.named_children(&mut stmt_cursor) {
+        if clause.kind() != "import_clause" {
             continue;
         }
-        let Some(spec) = stmt
-            .child_by_field_name("source")
-            .and_then(|n| unquote_string_literal(&node_text(n, source)))
-        else {
-            continue;
-        };
-        let mut stmt_cursor = stmt.walk();
-        for clause in stmt.named_children(&mut stmt_cursor) {
-            if clause.kind() != "import_clause" {
-                continue;
-            }
-            let mut clause_cursor = clause.walk();
-            for part in clause.named_children(&mut clause_cursor) {
-                match part.kind() {
-                    "identifier" => {
-                        let local = node_text(part, source);
-                        bindings.insert(local, (spec.clone(), Some(DEFAULT_EXPORT.to_string())));
-                    }
-                    "namespace_import" => {
-                        let mut ns_cursor = part.walk();
-                        let local = part
-                            .named_children(&mut ns_cursor)
-                            .find(|n| n.kind() == "identifier");
-                        if let Some(local) = local {
-                            bindings.insert(node_text(local, source), (spec.clone(), None));
-                        }
-                    }
-                    "named_imports" => {
-                        let mut named_cursor = part.walk();
-                        for item in part.named_children(&mut named_cursor) {
-                            let Some(name) = item.child_by_field_name("name") else {
-                                continue;
-                            };
-                            let name = node_text(name, source);
-                            let name = unquote_string_literal(&name).unwrap_or(name);
-                            let local = item
-                                .child_by_field_name("alias")
-                                .map(|n| node_text(n, source))
-                                .unwrap_or_else(|| name.clone());
-                            bindings.insert(local, (spec.clone(), Some(name)));
-                        }
-                    }
-                    _ => {}
+        let mut clause_cursor = clause.walk();
+        for part in clause.named_children(&mut clause_cursor) {
+            match part.kind() {
+                "identifier" => {
+                    let local = node_text(part, source);
+                    bindings.insert(local, (spec.clone(), Some(DEFAULT_EXPORT.to_string())));
                 }
+                "namespace_import" => {
+                    let mut ns_cursor = part.walk();
+                    let local = part
+                        .named_children(&mut ns_cursor)
+                        .find(|n| n.kind() == "identifier");
+                    if let Some(local) = local {
+                        bindings.insert(node_text(local, source), (spec.clone(), None));
+                    }
+                }
+                "named_imports" => {
+                    let mut named_cursor = part.walk();
+                    for item in part.named_children(&mut named_cursor) {
+                        let Some(name) = item.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let name = node_text(name, source);
+                        let name = unquote_string_literal(&name).unwrap_or(name);
+                        let local = item
+                            .child_by_field_name("alias")
+                            .map(|n| node_text(n, source))
+                            .unwrap_or_else(|| name.clone());
+                        bindings.insert(local, (spec.clone(), Some(name)));
+                    }
+                }
+                _ => {}
             }
         }
     }
-    bindings
 }
 
 /// Names bound from `require(..)` / `import(..)` at any scope.
@@ -6828,6 +6832,13 @@ fn qualify_declared_name(name: &str, ctx: &Context) -> Option<String> {
     None
 }
 
+/// Type text with its whitespace runs collapsed to one space and no leading
+/// `|` (a multi-line union), for a stored signature or an origin.
+fn collapse_type_text(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined.trim_start_matches('|').trim_start().to_string()
+}
+
 /// A declared callable type (an annotation node, or the type node of `as
 /// T`) as the origin of a callback's parameter types: a function type kept
 /// as written, a type name (or a union of them) qualified through
@@ -6838,7 +6849,7 @@ fn callable_origin_text(node: Node<'_>, ctx: &Context, source: &str) -> Option<P
     } else {
         node
     };
-    let text = collapse_call_target_whitespace(&node_text(ty, source));
+    let text = collapse_type_text(&node_text(ty, source));
     if text.is_empty() || text.len() > MAX_CALLABLE_TEXT {
         return None;
     }
@@ -7585,7 +7596,7 @@ fn alias_signature(node: Node<'_>, source: &str) -> Option<String> {
     if callable_type_shape(value) != Some(true) {
         return None;
     }
-    let text = collapse_call_target_whitespace(&node_text(value, source));
+    let text = collapse_type_text(&node_text(value, source));
     (text.len() <= MAX_CALLABLE_TEXT).then_some(text)
 }
 
@@ -7611,7 +7622,7 @@ fn interface_call_signature(node: Node<'_>, source: &str) -> Option<String> {
         .child_by_field_name("type_parameters")
         .map(|t| node_text(t, source))
         .unwrap_or_default();
-    let text = collapse_call_target_whitespace(&format!("{generics}{params} => {ret}"));
+    let text = collapse_type_text(&format!("{generics}{params} => {ret}"));
     (text.len() <= MAX_CALLABLE_TEXT).then_some(text)
 }
 
@@ -7808,11 +7819,19 @@ fn push_imports_edge(
 ) {
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    // The names the statement binds (`local` -> exported name), so the
+    // `IMPORTS_FILE` edge can say which name came from which module.
+    let mut bindings = ImportBindings::new();
+    statement_import_bindings(node, source, &mut bindings);
+    let names: serde_json::Map<String, serde_json::Value> = bindings
+        .into_iter()
+        .filter_map(|(local, (_, imported))| Some((local, json!(imported?))))
+        .collect();
     output.edges.push(EdgeInput {
         kind: "IMPORTS".to_string(),
         source_qualname: Some(ctx.module.clone()),
         target_qualname: Some(target),
-        detail: None,
+        detail: (!names.is_empty()).then(|| json!({ "names": names }).to_string()),
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
