@@ -274,6 +274,11 @@ func useRoot() int { return apply(cobra.NoArgs) }
 #[test]
 fn the_module_root_package_is_resolvable() {
     assert_eq!(ref_targets(ROOT, "doc/doc.useRoot"), ["cobra.NoArgs"]);
+    // Bound through the import, not by coinciding with the `cobra` qualname.
+    assert_eq!(
+        edge_targets_with_resolution(ROOT, "doc/doc.useRoot", "REFERENCES"),
+        [("cobra.NoArgs".to_string(), "import".to_string())]
+    );
 }
 
 const NESTED: &[(&str, &str)] = &[

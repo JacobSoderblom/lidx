@@ -888,7 +888,9 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
             .get(&base)
             .filter(|_| !ctx.bound_names.contains(&base))
         {
-            (format!("{base}.{field}"), format!("{path}|{field}"), false)
+            // The import path in the target text keeps a same-named package
+            // directory from matching it as an exact qualname.
+            (format!("{path}.{field}"), format!("{path}|{field}"), false)
         } else {
             let ty =
                 ctx.param_types.get(&base).map(String::as_str).or_else(|| {
