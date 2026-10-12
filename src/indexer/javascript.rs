@@ -2613,6 +2613,7 @@ fn push_field(
     name: String,
     private: bool,
     ctx: &Context,
+    source: &str,
     output: &mut ExtractedFile,
 ) {
     if name.is_empty() {
@@ -2623,8 +2624,17 @@ fn push_field(
     if private {
         output.private_qualnames.push(qualname.clone());
     }
+    // `request = (..) => ..` is callable: a method with the arrow's signature.
+    let function_value = node
+        .child_by_field_name("value")
+        .filter(|v| is_function_value(*v));
     output.symbols.push(SymbolInput {
-        kind: "field".to_string(),
+        kind: if function_value.is_some() {
+            "method"
+        } else {
+            "field"
+        }
+        .to_string(),
         name,
         qualname: qualname.clone(),
         start_line,
@@ -2633,7 +2643,7 @@ fn push_field(
         end_col,
         start_byte,
         end_byte,
-        signature: None,
+        signature: function_value.and_then(|f| extract_signature(f, source)),
         docstring: None,
         identity: None,
     });
@@ -2664,7 +2674,7 @@ fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
     }
     let name = node_text(name_node, source);
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-    push_field(node, name, is_private_member(node, source), ctx, output);
+    push_field(node, name, is_private_member(node, source), ctx, source, output);
     // Calls in the initializer (`request = (..) => this.fetch(..)`,
     // `#root = new Node()`) belong to the field. An arrow value keeps the
     // lexical `this`; a `function` value rebinds it (`walk_node`).
@@ -2711,7 +2721,7 @@ fn handle_parameter_properties(
             continue;
         };
         if is_property && pattern.kind() == "identifier" {
-            push_field(param, node_text(pattern, source), private, ctx, output);
+            push_field(param, node_text(pattern, source), private, ctx, source, output);
         }
     }
 }
@@ -3296,7 +3306,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         match chained_call_target(target_node, ctx, source) {
             Some((target, receiver_type)) => (Some(target), receiver_type, Vec::new()),
             None => {
-                let target = resolve_call_target(&raw, ctx);
+                // A bare callee bound by a parameter or local declaration is
+                // that local, never a module-level or imported symbol.
+                let target = if target_node.kind() == "identifier"
+                    && is_shadowing_local(ctx, &raw)
+                {
+                    None
+                } else {
+                    resolve_call_target(&raw, ctx)
+                };
                 let receiver_type = infer_receiver_type(target_node, source, ctx);
                 let import_candidates: Vec<String> =
                     import_placeholder(&raw, ctx).into_iter().collect();
@@ -3566,20 +3584,41 @@ fn collect_return_types(root: Node<'_>, source: &str) -> HashMap<String, String>
             "function_declaration"
             | "method_definition"
             | "method_signature"
-            | "abstract_method_signature" => {
+            | "abstract_method_signature"
+            | "variable_declarator"
+            | "public_field_definition"
+            | "field_definition" => {
+                // `const f = (): T => ..` / `field = (): T => ..` is typed
+                // by the arrow's own return annotation.
+                let function = match node.kind() {
+                    "variable_declarator" | "public_field_definition" | "field_definition" => {
+                        node.child_by_field_name("value")
+                            .filter(|v| is_function_value(*v))
+                    }
+                    _ => Some(node),
+                };
                 let key = match (node.kind(), class) {
                     ("function_declaration", _) => node
                         .child_by_field_name("name")
                         .map(|n| node_text(n, source)),
+                    ("variable_declarator", _) => node
+                        .child_by_field_name("name")
+                        .filter(|n| n.kind() == "identifier")
+                        .map(|n| node_text(n, source)),
                     (_, Some(class)) => node
                         .child_by_field_name("name")
+                        .or_else(|| node.child_by_field_name("property"))
                         .map(|n| format!("{class}.{}", node_text(n, source))),
                     _ => None,
                 };
-                let ret = node
-                    .child_by_field_name("return_type")
+                let value_kind = !matches!(
+                    node.kind(),
+                    "variable_declarator" | "public_field_definition" | "field_definition"
+                ) || function.is_some();
+                let ret = function
+                    .and_then(|f| f.child_by_field_name("return_type"))
                     .map(|r| classify_annotation(&annotation_text(r, source)));
-                if let Some(key) = key {
+                if let Some(key) = key.filter(|_| value_kind) {
                     let ty = match ret {
                         Some(LocalType::Known(ty)) if ty != "this" => Some(ty),
                         _ => None,
@@ -3737,6 +3776,16 @@ fn enter_scope(ctx: &mut Context) {
     let mut outer = (*ctx.outer_locals).clone();
     outer.extend(ctx.local_types.keys().cloned());
     ctx.outer_locals = Rc::new(outer);
+}
+
+/// A name bound by a parameter or declaration of the enclosing function
+/// that this file does not also declare at module scope: a call to it can
+/// only be the local.
+fn is_shadowing_local(ctx: &Context, name: &str) -> bool {
+    ctx.fn_depth > 0
+        && ctx.local_types.contains_key(name)
+        && !ctx.required_names.contains(name)
+        && !ctx.declared_names.contains(name)
 }
 
 /// A bare call target bound by a parameter, destructuring or `let`/`const`
@@ -5976,11 +6025,34 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
         let container = container_qualname(&ctx.module, &ctx.class_stack);
         return Some(format!("{container}.{}", parts.join(".")));
     }
+    // A bare name is never a class member in JS/TS (there is no implicit
+    // `this`): it names a module-level (or enclosing namespace) binding.
     if parts.len() == 1 {
-        let container = container_qualname(&ctx.module, &ctx.class_stack);
+        let container = container_qualname(&ctx.module, namespace_stack(ctx));
+        return Some(format!("{container}.{raw}"));
+    }
+    // `Class.member(..)` / `obj.method(..)` rooted in this file's own
+    // top-level declaration is that declaration's member.
+    if is_same_file_declaration_root(parts[0], ctx) {
+        let container = container_qualname(&ctx.module, namespace_stack(ctx));
         return Some(format!("{container}.{raw}"));
     }
     Some(raw.to_string())
+}
+
+/// The leading `class_stack` entries that are TS namespaces.
+fn namespace_stack(ctx: &Context) -> &[String] {
+    &ctx.class_stack[..ctx.ns_depth.min(ctx.class_stack.len())]
+}
+
+/// `root` names a declaration of this file (class, interface, enum, type,
+/// function, variable) rather than an import or a name shadowed by a
+/// local binding of the enclosing function.
+fn is_same_file_declaration_root(root: &str, ctx: &Context) -> bool {
+    (ctx.declared_types.contains(root) || ctx.declared_names.contains(root))
+        && !ctx.import_bindings.contains_key(root)
+        && !ctx.required_names.contains(root)
+        && !(ctx.fn_depth > 0 && ctx.local_types.contains_key(root))
 }
 
 /// `text` is spelled like a plain type name: identifier characters, plus
@@ -6063,9 +6135,6 @@ fn is_lambda_node(kind: &str) -> bool {
 /// (`class_attr_types` is empty). `fn_depth` is deliberately not bumped,
 /// so a named `function` declared inside still gets its own symbol and
 /// its calls, exactly as before.
-// ponytail: object-literal properties get no symbols of their own, so
-// `apiClient = { get: () => f() }` attributes `f` to `apiClient`, not
-// `apiClient.get`.
 fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<Context> {
     let owner = ctx.fn_owner.as_ref()?;
     let kind = node.kind();
@@ -6074,7 +6143,8 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
         return None;
     }
     let mut next_ctx = ctx.clone();
-    next_ctx.current_scope = owner.clone();
+    next_ctx.current_scope =
+        object_literal_member_qualname(node, owner, source).unwrap_or_else(|| owner.clone());
     next_ctx.fn_owner = None;
     if !is_lambda_node(kind) {
         enter_scope(&mut next_ctx);
@@ -6082,6 +6152,38 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
         next_ctx.this_rebound = true;
     }
     Some(next_ctx)
+}
+
+/// The qualname `emit_object_literal_methods` gave `node` when it is a
+/// function-valued member (`key: () => ..`, `key() {..}`) of the object
+/// literal that is `owner`'s whole initializer (`const owner = { .. }`).
+fn object_literal_member_qualname(node: Node<'_>, owner: &str, source: &str) -> Option<String> {
+    let parent = node.parent()?;
+    let (key, object) = match parent.kind() {
+        "object" if node.kind() == "method_definition" => {
+            (node.child_by_field_name("name")?, parent)
+        }
+        "pair"
+            if parent
+                .child_by_field_name("value")
+                .is_some_and(|v| v.id() == node.id()) =>
+        {
+            (parent.child_by_field_name("key")?, parent.parent()?)
+        }
+        _ => return None,
+    };
+    if object.kind() != "object"
+        || !matches!(key.kind(), "property_identifier" | "identifier")
+        || !object.parent().is_some_and(|decl| {
+            decl.kind() == "variable_declarator"
+                && decl
+                    .child_by_field_name("value")
+                    .is_some_and(|v| v.id() == object.id())
+        })
+    {
+        return None;
+    }
+    Some(format!("{owner}.{}", node_text(key, source)))
 }
 
 /// Parameter names (+ inferred types, where explicitly annotated) bound by
@@ -6838,6 +6940,18 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
     "JSON",
     "Math",
     "Buffer",
+    "Awaited",
+    "ReturnType",
+    "Parameters",
+    "InstanceType",
+    "ConstructorParameters",
+    "ThisType",
+    "Iterable",
+    "Iterator",
+    "AsyncIterable",
+    "AsyncIterator",
+    "Generator",
+    "AsyncGenerator",
 ];
 
 /// Global JS/TS *runtime* constructors/functions a bare `Name(...)`/`new
@@ -6888,6 +7002,66 @@ const JS_TS_GLOBAL_CALLABLES: &[&str] = &[
     "TextDecoder",
     "WeakRef",
 ];
+
+/// Runtime global objects whose members are called with a receiver
+/// (`JSON.parse(..)`, `document.createElement(..)`). Never a repo symbol
+/// unless the file imports, declares or locally binds the same name: a
+/// same-named method elsewhere in the repo must not catch the call.
+const JS_TS_GLOBAL_OBJECTS: &[&str] = &[
+    "JSON",
+    "Math",
+    "Number",
+    "Object",
+    "Array",
+    "String",
+    "Boolean",
+    "Symbol",
+    "BigInt",
+    "Promise",
+    "Reflect",
+    "Date",
+    "RegExp",
+    "Intl",
+    "Atomics",
+    "WebAssembly",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Proxy",
+    "Error",
+    "Function",
+    "console",
+    "document",
+    "window",
+    "globalThis",
+    "navigator",
+    "location",
+    "history",
+    "localStorage",
+    "sessionStorage",
+    "caches",
+    "crypto",
+    "performance",
+    "process",
+    "Buffer",
+    "URL",
+    "Response",
+    "Request",
+    "Headers",
+];
+
+/// Whether `name` is a `JS_TS_GLOBAL_OBJECTS` entry this file neither
+/// imports, requires, declares nor binds locally.
+fn is_unshadowed_global_object(name: &str, ctx: &Context) -> bool {
+    JS_TS_GLOBAL_OBJECTS.contains(&name)
+        && !ctx.import_bindings.contains_key(name)
+        && !ctx.required_names.contains(name)
+        && !ctx.declared_names.contains(name)
+        && !ctx.declared_types.contains(name)
+        && !ctx.local_types.contains_key(name)
+        && !ctx.outer_locals.contains(name)
+}
 
 /// Whether `name` is a `JS_TS_GLOBAL_CALLABLES` entry not shadowed in
 /// `ctx` — by a top-level `import` binding of that name, or by a
@@ -6962,6 +7136,13 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         return ReceiverType::Known(ty);
     }
     let object = peel_expression(object);
+    {
+        let (root, _) = member_chain_root(object);
+        if root.kind() == "identifier" && is_unshadowed_global_object(&node_text(root, source), ctx)
+        {
+            return ReceiverType::Unresolved;
+        }
+    }
     if object.kind() == "subscript_expression" {
         return match subscript_element_type(object, source, ctx) {
             Some(ty) => ReceiverType::Known(ty),
@@ -7119,11 +7300,36 @@ fn classify_annotation(text: &str) -> LocalType {
     if text.is_empty() {
         return LocalType::Other;
     }
+    let text = strip_type_arguments(text).unwrap_or(text);
     if text.contains(['<', '[', '|', '&', '(', ')', '{']) {
         return LocalType::Other;
     }
     let bare = text.rsplit('.').next().unwrap_or(text).trim();
     classify_type_name(bare)
+}
+
+/// `Name<Args>` as `Name`, when the whole text is one plain (possibly
+/// qualified) type name applied to type arguments: the `<` opened right
+/// after the name closes at the very end (`Foo<A> & Bar<B>` is not one).
+fn strip_type_arguments(text: &str) -> Option<&str> {
+    let open = text.find('<')?;
+    if !text.ends_with('>') || !is_type_name_text(&text[..open], true) || open == 0 {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, ch) in text.char_indices().skip(open) {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 && i + 1 != text.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(&text[..open])
 }
 
 /// `classify_annotation` for a declared name (parameter, local, field): a

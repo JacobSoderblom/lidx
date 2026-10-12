@@ -1727,7 +1727,8 @@ impl<'c> Resolver<'c> {
             }
             return Ok(exactly_one(admitted.into_iter()).map(|c| c.id));
         }
-        let resolved = collapse_exact_candidates(&candidates);
+        let resolved = collapse_exact_candidates(&candidates)
+            .or_else(|| (!types_only).then(|| merged_declaration_value(&candidates)).flatten());
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
             self.saw_repo_ambiguous = true;
@@ -3194,6 +3195,42 @@ fn collapse_exact_candidates(candidates: &[ExactCandidate]) -> Option<i64> {
     }
     let by_kind: Vec<(i64, &str)> = candidates.iter().map(|c| (c.id, c.kind.as_str())).collect();
     same_kind_min(&by_kind)
+}
+
+/// TypeScript declaration merging: one file declares a name as a type
+/// (`interface`/`type`) and as exactly one value (`const`, `let`/`var`,
+/// `function`, `class`), the `type DIRTY` + `const DIRTY` and
+/// `interface ZodType` + `const ZodType` shapes. A call or `new` reaches the
+/// value; the type half is no competitor. `None` for any other mix,
+/// including a type-only pair, two values, or declarations in several files.
+fn merged_declaration_value(candidates: &[ExactCandidate]) -> Option<i64> {
+    const TYPE_KINDS: [&str; 2] = ["interface", "type"];
+    const VALUE_KINDS: [&str; 4] = ["const", "variable", "function", "class"];
+    let first = candidates.first()?;
+    if !is_js_family_path(&first.path)
+        || candidates.iter().any(|c| c.file_id != first.file_id)
+        || candidates.iter().any(|c| {
+            !TYPE_KINDS.contains(&c.kind.as_str()) && !VALUE_KINDS.contains(&c.kind.as_str())
+        })
+    {
+        return None;
+    }
+    let mut values = candidates
+        .iter()
+        .filter(|c| VALUE_KINDS.contains(&c.kind.as_str()));
+    let value = values.next()?;
+    if values.next().is_some() || !candidates.iter().any(|c| TYPE_KINDS.contains(&c.kind.as_str()))
+    {
+        return None;
+    }
+    Some(value.id)
+}
+
+fn is_js_family_path(path: &str) -> bool {
+    matches!(
+        path.rsplit('.').next(),
+        Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs")
+    )
 }
 
 /// The kinds a C# `partial` declaration can have (each can be split across
