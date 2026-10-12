@@ -83,11 +83,12 @@ nested/nested.NestedArgs CALLS nested/nested.Inner exact
 # receiver type yet.
 nested/nested.Chain CALLS nested/nested.A exact
 
-# Calls in closures belong to the enclosing declaration.
+# Calls in closures belong to the enclosing declaration; a package-level
+# variable's initializer is sourced from the module, like its value references.
 nested/nested.GoClosure CALLS nested/nested.Helper exact
 nested/nested.DeferClosure CALLS nested/nested.Helper exact
 nested/nested.TestRun CALLS nested/nested.Helper exact
 # t.Run is a method of a foreign type: nothing in the repo to bind.
 nested/nested.TestRun CALLS UNRESOLVED
-nested/nested.hooks CALLS nested/nested.Helper exact
+nested/nested CALLS nested/nested.Helper exact
 nested/nested.Builder.C CALLS nested/nested.Helper exact

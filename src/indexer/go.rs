@@ -540,19 +540,16 @@ fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),
                 source_qualname: Some(ctx.module.clone()),
-                target_qualname: Some(qualname.clone()),
+                target_qualname: Some(qualname),
                 detail: None,
                 evidence_snippet: None,
                 ..Default::default()
             });
-            // The initializer (`var hooks = []func(){ func(){ Helper() } }`,
-            // `var x = build()`) belongs to the variable.
-            let mut var_ctx = ctx.clone();
-            var_ctx.current_scope = qualname;
-            walk_children(child, &var_ctx, source, output);
-        } else {
-            walk_children(child, ctx, source, output);
         }
+        // The initializer (`var hooks = []func(){ func(){ Helper() } }`,
+        // `var x = build()`) is sourced from the module, like the value
+        // references in a package-level dispatch table.
+        walk_children(child, ctx, source, output);
     }
 }
 
@@ -1873,9 +1870,10 @@ var (
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
         );
-        assert_eq!(targets("pkg/file.hooks"), ["pkg/file.InVar"]);
-        assert_eq!(targets("pkg/file.built"), ["pkg/file.Build"]);
-        assert_eq!(targets("pkg/file.grouped"), ["pkg/file.Group"]);
+        assert_eq!(
+            targets("pkg/file"),
+            ["pkg/file.Build", "pkg/file.Group", "pkg/file.InVar"]
+        );
     }
 
     #[test]
