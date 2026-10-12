@@ -35,6 +35,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     deferred_rpc: None,
     untyped_receiver_is_external: true,
     deferred_receiver: Some(resolve_deferred),
+    ..LanguageProfile::DEFAULT
 };
 
 /// `LanguageProfile::normalize_import_target` for Rust: rewrite

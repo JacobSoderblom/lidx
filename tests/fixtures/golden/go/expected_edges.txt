@@ -23,7 +23,7 @@ caller/caller.CallSamePackageOtherFile CALLS caller/sibling.siblingUtil
 
 # Package-qualified call to an exported function across packages.
 # other.FormatGreeting is a same-named decoy.
-caller/caller.CallImportedHelper CALLS helper/helper.FormatGreeting  # xfail: pkg.Func calls are not bound through the import path
+caller/caller.CallImportedHelper CALLS helper/helper.FormatGreeting import
 
 # Exported function calling an unexported one in its own package.
 # other.decorate is a same-named decoy.
@@ -44,7 +44,7 @@ caller/caller.CallInterface CALLS animals/animals.Speaker.Say  # xfail: interfac
 
 # Ambiguous name: Run exists in ambiguous_a and ambiguous_b; the call is
 # qualified with ambiguous_a.
-caller/caller.CallAmbiguous CALLS ambiguous_a/run.Run  # xfail: pkg.Func calls are not bound through the import path
+caller/caller.CallAmbiguous CALLS ambiguous_a/run.Run import
 
 # External call: fmt is never indexed, so this binds to the external stub
 # symbol (issue #80) instead of staying unresolved.
@@ -94,3 +94,35 @@ nested/nested.TestRun CALLS nested/nested.Helper exact
 nested/nested.TestRun CALLS UNRESOLVED
 nested/nested CALLS nested/nested.Helper exact
 nested/nested.Builder.C CALLS nested/nested.Helper exact
+
+# --- Issue #422: calls bound through imports and packages ---
+
+# path.Join / filepath.Join are the standard library's, never the repo's
+# same-named Join; they bind to external stubs keyed by import path.
+stdlib_shadow/use.JoinAll CALLS ext:path.Join external
+stdlib_shadow/use.JoinAll CALLS ext:path/filepath.Join external
+# A bare name is the package's own function, found in a sibling file.
+stdlib_shadow/use.JoinLocal CALLS stdlib_shadow/shadow.Join exact
+
+# Both validate_pkga and validate_pkgb declare Validate; the caller imports one.
+validate_caller/caller.UseValidate CALLS validate_pkgb/b.Validate import
+# A conversion to a repo type is no call edge.
+validate_caller/caller.Convert CALLS UNRESOLVED
+# A bare call to a function declared in a sibling file of the package.
+validate_caller/caller.UseLocal CALLS validate_caller/sibling.sibling exact
+
+# The imported package's declared name (`package renamed`) differs from its
+# directory (renamed_dir): the call binds to it, not to a name guess.
+renamed_caller/caller.UseRenamed CALLS renamed_dir/renamed.Do import
+
+# A function-typed package variable and a constant are no declarations: the
+# call to Printer stays unresolved (never bound to the variable), Real binds.
+fnvar/use.Use CALLS fnvar/vars.Real exact
+fnvar/use.Use CALLS UNRESOLVED
+
+# A nested module (its own go.mod, unrelated path) imports a package of the
+# root module that is also in the repository: bound, not an external stub.
+nestedmod/use.UseHelper CALLS helper/helper.FormatGreeting import
+
+# A package vendored into the repository (vendor/<import path>).
+vendor_user/use.UseVendored CALLS vendor/example.com/thirdparty/lib/lib.Vendored import

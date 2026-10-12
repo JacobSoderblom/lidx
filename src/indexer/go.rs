@@ -1,8 +1,9 @@
-use crate::db::resolver::{LanguageProfile, VisibilityRule};
+use crate::db::resolver::{GO_IMPORTED_PACKAGE, GO_SAME_PACKAGE, LanguageProfile, VisibilityRule};
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::go_repo::{GoRepo, ImportTarget};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
@@ -13,8 +14,9 @@ use crate::indexer::tree_helpers::{
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
 
@@ -25,6 +27,8 @@ use tree_sitter::{Node, Parser};
 /// `ExtractedFile::private_qualnames`.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::GoCapitalization,
+    two_segment: false,
+    call_refused_kinds: &["class", "interface", "type", "variable"],
     ..LanguageProfile::DEFAULT
 };
 
@@ -73,14 +77,32 @@ struct GrpcClientInfo {
 
 pub struct GoExtractor {
     parser: Parser,
+    /// The repo's Go modules, scanned on first use in an index run.
+    repo: RefCell<Option<(PathBuf, Rc<GoRepo>)>>,
 }
 
 impl GoExtractor {
+    /// The repo's Go modules, scanned once per index run.
+    fn repo(&self, repo_root: &Path) -> Rc<GoRepo> {
+        let mut slot = self.repo.borrow_mut();
+        match slot.as_ref() {
+            Some((root, repo)) if root == repo_root => repo.clone(),
+            _ => {
+                let repo = Rc::new(GoRepo::scan(repo_root));
+                *slot = Some((repo_root.to_path_buf(), repo.clone()));
+                repo
+            }
+        }
+    }
+
     pub fn new() -> Result<Self> {
         let mut parser = Parser::new();
         let language = tree_sitter_go::LANGUAGE;
         parser.set_language(&language.into())?;
-        Ok(Self { parser })
+        Ok(Self {
+            parser,
+            repo: RefCell::new(None),
+        })
     }
 }
 
@@ -129,6 +151,11 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
         Ok(output)
     }
 
+    fn begin_run(&mut self) {
+        // A go.mod edited since the last run must be seen, as a fresh index would.
+        *self.repo.borrow_mut() = None;
+    }
+
     fn resolve_imports(
         &self,
         repo_root: &Path,
@@ -136,7 +163,8 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
         _module_name: &str,
         edges: &mut Vec<EdgeInput>,
     ) {
-        bind_value_reference_imports(repo_root, file_rel_path, edges);
+        let repo = self.repo(repo_root);
+        bind_import_candidates(&repo, repo_root, file_rel_path, edges);
         // For now, just add detail field with import path
         for edge in edges.iter_mut() {
             if edge.kind == "IMPORTS"
@@ -690,13 +718,40 @@ fn emit_calls_edge(
         return;
     }
     let mut target = resolve_call_target(&raw, ctx);
+    let mut import_candidates = Vec::new();
     let mut receiver_type = ReceiverType::NotTracked;
+    let mut local_call = false;
+    match callee_parts(function_node, source) {
+        // `pkg.Func(..)` through an import (not rebound locally): the call is
+        // bound by the import path, never by the name `Func` alone.
+        Some((Some(base), name)) if !ctx.bound_names.contains(&base) => {
+            if let Some(path) = ctx.imports.get(&base) {
+                target = Some(format!("{path}.{name}"));
+                import_candidates.push(format!("{path}|{name}"));
+            } else {
+                import_candidates.push(format!("{GO_UNKNOWN_QUALIFIER}{base}|{name}"));
+            }
+        }
+        // `Func(..)`: a function of the calling file's package (a sibling
+        // file's included), unless a local variable of that name is called.
+        Some((None, name)) => {
+            if ctx.bound_names.contains(&name) {
+                target = None;
+                local_call = true;
+            } else {
+                let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
+                import_candidates.push(format!("{GO_SAME_PACKAGE}{dir}|{name}"));
+            }
+        }
+        _ => {}
+    }
     // A method called on a call result or other expression (`a.B().C()`,
     // `f()[i].M()`) has no printable receiver. It keeps the method name as
     // its target and an untyped receiver, so the resolver neither guesses a
     // same-named symbol nor drops it: it is stored as an unresolved
     // reference a receiver-typing pass can finish later.
     if target.is_none()
+        && !local_call
         && function_node.kind() == "selector_expression"
         && let Some(field) = function_node.child_by_field_name("field")
     {
@@ -705,7 +760,7 @@ fn emit_calls_edge(
     }
     // The callee text, whitespace-collapsed, shows the receiver expression
     // of a call whose target is only a method name, or of one with no
-    // target (`f()(x)`).
+    // target (`f()(x)`, a called local).
     let detail = if receiver_type == ReceiverType::Unresolved || target.is_none() {
         Some(collapse_call_target_whitespace(&raw))
     } else {
@@ -714,6 +769,7 @@ fn emit_calls_edge(
     output.edges.push(EdgeInput {
         target_qualname: target,
         detail,
+        import_candidates,
         receiver_type,
         // A bare identifier callee (`foo()`) vs. a selector expression
         // (`pkg.Func()`, `obj.Method()`) — see `EdgeInput::bare_call`'s
@@ -736,6 +792,29 @@ fn site_edge(kind: &str, node: Node<'_>, ctx: &Context, source: &str) -> EdgeInp
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         ..Default::default()
+    }
+}
+
+/// `(qualifier, name)` of a callee that is a plain or package-qualified name:
+/// `Func` -> `(None, Func)`, `pkg.Func` -> `(Some(pkg), Func)`. `None` for any
+/// other callee (`a.b.C`, `a.B().C`, `f()`).
+fn callee_parts(function_node: Node<'_>, source: &str) -> Option<(Option<String>, String)> {
+    match function_node.kind() {
+        "identifier" | "type_identifier" => Some((None, node_text(function_node, source))),
+        "selector_expression" => {
+            let operand = function_node.child_by_field_name("operand")?;
+            let field = function_node.child_by_field_name("field")?;
+            (operand.kind() == "identifier")
+                .then(|| (Some(node_text(operand, source)), node_text(field, source)))
+        }
+        "qualified_type" => Some((
+            Some(node_text(
+                function_node.child_by_field_name("package")?,
+                source,
+            )),
+            node_text(function_node.child_by_field_name("name")?, source),
+        )),
+        _ => None,
     }
 }
 
@@ -803,93 +882,163 @@ fn is_builtin_callee(function_node: Node<'_>, raw: &str, ctx: &Context) -> bool 
         && (GO_BUILTINS.contains(&raw) || GO_PREDECLARED_TYPES.contains(&raw))
 }
 
-/// Maps each package-qualified value reference (`pkg.Handler`, candidate
-/// `<import path>|Handler`) onto the repo directory its import path names:
-/// only a path under the nearest `go.mod`'s module path is in this repo (the
-/// module path itself is the module's root package). A reference through any
-/// other import is foreign and its edge is dropped; the candidate becomes
-/// `><dir>|Handler` otherwise.
-fn bind_value_reference_imports(repo_root: &Path, file_rel_path: &str, edges: &mut Vec<EdgeInput>) {
-    let is_import_ref = |e: &EdgeInput| {
-        e.kind == edge_views::REFERENCES
+/// `?<qualifier>|Name`: a call `qualifier.Name()` whose qualifier is not an
+/// import alias the file's text names, not a local, and so is a package-level
+/// variable or an import whose package name differs from its path's last
+/// element. Only the hook, which can read the imported package's own
+/// `package` clause, tells them apart.
+const GO_UNKNOWN_QUALIFIER: char = '?';
+
+/// Binds the package-qualified references and calls of a file (candidate
+/// `<import path>|Name`) to the repository, with the hook's view of the
+/// repo's Go modules (`GoRepo`). An import path inside an in-repo module (the
+/// nearest or any other `go.mod`'s path, a `replace` target, or a vendored
+/// copy) names a package directory: the candidate becomes `><dir>|Name`.
+/// Any other import is foreign: a value reference through it is dropped; a
+/// call through it keeps its `<import path>|Name` candidate, which the
+/// resolver binds to an external stub and never to a same-named repo symbol.
+/// Without any `go.mod` nothing is known about the imports, so a call is left
+/// to the name tiers as `<last path element>.Name`.
+fn bind_import_candidates(
+    repo: &GoRepo,
+    repo_root: &Path,
+    file_rel_path: &str,
+    edges: &mut Vec<EdgeInput>,
+) {
+    let starts_with_marker = |e: &EdgeInput, m: char| {
+        e.import_candidates
+            .first()
+            .is_some_and(|c| c.starts_with(m))
+    };
+    if edges
+        .iter()
+        .any(|e| e.kind == edge_views::CALLS && starts_with_marker(e, GO_UNKNOWN_QUALIFIER))
+    {
+        bind_unknown_qualifiers(repo, repo_root, file_rel_path, edges);
+    }
+    let is_import_edge = |e: &EdgeInput| {
+        (e.kind == edge_views::REFERENCES || e.kind == edge_views::CALLS)
             && e.import_candidates
                 .first()
-                .is_some_and(|c| !c.starts_with('='))
+                .is_some_and(|c| !c.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE]))
     };
-    if !edges.iter().any(is_import_ref) {
+    if !edges.iter().any(is_import_edge) {
         return;
     }
-    let module = nearest_go_module(repo_root, file_rel_path);
     edges.retain_mut(|edge| {
-        if !is_import_ref(edge) {
+        if !is_import_edge(edge) {
             return true;
         }
-        let Some((module_path, module_dir)) = &module else {
-            return false;
-        };
-        let bound = edge.import_candidates.iter().find_map(|candidate| {
-            let (import_path, member) = candidate.split_once('|')?;
-            let rest = if import_path == module_path {
-                ""
-            } else {
-                import_path
-                    .strip_prefix(module_path.as_str())?
-                    .strip_prefix('/')?
-            };
-            let dir = match (module_dir.as_str(), rest) {
-                ("", rest) => rest.to_string(),
-                (dir, "") => dir.to_string(),
-                (dir, rest) => format!("{dir}/{rest}"),
-            };
-            Some(format!(">{dir}|{member}"))
-        });
-        match bound {
-            Some(candidate) => {
-                edge.import_candidates = vec![candidate];
-                true
+        let is_call = edge.kind == edge_views::CALLS;
+        let (import_path, member) = edge.import_candidates[0]
+            .split_once('|')
+            .unwrap_or_default();
+        let (import_path, member) = (import_path.to_string(), member.to_string());
+        if !repo.has_modules() {
+            // Nothing is known about what the path names: a call falls back
+            // to its `<last path element>.Name` text for the name tiers.
+            if is_call {
+                edge.target_qualname =
+                    default_package_name(&import_path).map(|pkg| format!("{pkg}.{member}"));
+                edge.import_candidates.clear();
             }
-            None => false,
+            return is_call;
         }
+        // Every candidate that names a package of this repository (several
+        // when an unknown qualifier could be any of a file's imports).
+        let in_repo: Vec<String> = edge
+            .import_candidates
+            .iter()
+            .filter_map(|candidate| {
+                let (path, member) = candidate.split_once('|')?;
+                match repo.resolve_import(repo_root, file_rel_path, path) {
+                    ImportTarget::InRepo(dir) => {
+                        Some(format!("{GO_IMPORTED_PACKAGE}{dir}|{member}"))
+                    }
+                    ImportTarget::Foreign => None,
+                }
+            })
+            .collect();
+        if in_repo.is_empty() {
+            // A call keeps its foreign `<import path>|Name` candidate (bound
+            // to an external stub); a value reference through it is dropped.
+            return is_call;
+        }
+        edge.import_candidates = in_repo;
+        true
     });
 }
 
-/// The `module` path of the nearest `go.mod` at or above `file_rel_path`'s
-/// directory, with that `go.mod`'s directory relative to the repo root.
-fn nearest_go_module(repo_root: &Path, file_rel_path: &str) -> Option<(String, String)> {
-    let mut dir = Path::new(file_rel_path).parent()?.to_path_buf();
-    loop {
-        let go_mod = repo_root.join(&dir).join("go.mod");
-        if let Ok(text) = std::fs::read_to_string(&go_mod) {
-            let path = text.lines().find_map(|line| {
-                let rest = line.trim().strip_prefix("module")?;
-                let path = rest.trim().trim_matches('"');
-                (!path.is_empty() && rest.starts_with(char::is_whitespace))
-                    .then(|| path.to_string())
-            })?;
-            return Some((path, dir.to_string_lossy().replace('\\', "/")));
+/// Resolve the `?qualifier|Name` call candidates of one file. The qualifier
+/// names an unaliased import of this repository whose *declared* package name
+/// it is (`package validate` in directory `validate_pkgb`); a package whose
+/// directory holds no Go file yet could be any name, so it stays a candidate
+/// (a later sync retries it once the package exists). Otherwise the
+/// qualifier is a package variable or a foreign import and the call is left
+/// as plain text for the name tiers.
+fn bind_unknown_qualifiers(
+    repo: &GoRepo,
+    repo_root: &Path,
+    file_rel_path: &str,
+    edges: &mut [EdgeInput],
+) {
+    // Declared name -> import paths, and the paths whose name is not known.
+    let mut by_declared_name: HashMap<String, Vec<String>> = HashMap::new();
+    let mut unnamed: Vec<String> = Vec::new();
+    if let Ok(source) = std::fs::read_to_string(repo_root.join(file_rel_path))
+        && let Ok(mut extractor) = GoExtractor::new()
+        && let Some(tree) = extractor.parser.parse(&source, None)
+    {
+        for (alias, path) in collect_import_specs(tree.root_node(), &source) {
+            if alias.is_some() {
+                continue;
+            }
+            if let ImportTarget::InRepo(dir) = repo.resolve_import(repo_root, file_rel_path, &path)
+            {
+                match repo.package_name(repo_root, &dir) {
+                    Some(name) => by_declared_name.entry(name).or_default().push(path),
+                    None => unnamed.push(path),
+                }
+            }
         }
-        if !dir.pop() {
-            return None;
+    }
+    for edge in edges.iter_mut() {
+        if edge.kind != edge_views::CALLS
+            || !edge
+                .import_candidates
+                .first()
+                .is_some_and(|c| c.starts_with(GO_UNKNOWN_QUALIFIER))
+        {
+            continue;
         }
+        let candidate = edge.import_candidates.remove(0);
+        edge.import_candidates.clear();
+        let Some((qualifier, member)) =
+            candidate[GO_UNKNOWN_QUALIFIER.len_utf8()..].split_once('|')
+        else {
+            continue;
+        };
+        let paths = by_declared_name
+            .get(qualifier)
+            .into_iter()
+            .flatten()
+            .chain(&unnamed);
+        edge.import_candidates = paths.map(|path| format!("{path}|{member}")).collect();
     }
 }
 
-/// Import alias (or the path's last element) -> import path.
-fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, String> {
-    fn walk(node: Node<'_>, source: &str, out: &mut HashMap<String, String>) {
+/// `(explicit alias, import path)` of every import of the file, `_` and `.`
+/// imports excluded.
+fn collect_import_specs(root: Node<'_>, source: &str) -> Vec<(Option<String>, String)> {
+    fn walk(node: Node<'_>, source: &str, out: &mut Vec<(Option<String>, String)>) {
         if node.kind() == "import_spec" {
             if let Some(path) = node.child_by_field_name("path") {
                 let path = extract_string_literal(path, source);
                 let alias = node
                     .child_by_field_name("name")
-                    .map(|n| node_text(n, source))
-                    .or_else(|| default_package_name(&path));
-                if let Some(alias) = alias
-                    && !path.is_empty()
-                    && alias != "_"
-                    && alias != "."
-                {
-                    out.insert(alias, path);
+                    .map(|n| node_text(n, source));
+                if !path.is_empty() && !matches!(alias.as_deref(), Some("_" | ".")) {
+                    out.push((alias, path));
                 }
             }
             return;
@@ -899,9 +1048,20 @@ fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, Strin
             walk(child, source, out);
         }
     }
-    let mut out = HashMap::new();
+    let mut out = Vec::new();
     walk(root, source, &mut out);
     out
+}
+
+/// Import alias (or the path's guessed package name) -> import path.
+fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, String> {
+    collect_import_specs(root, source)
+        .into_iter()
+        .filter_map(|(alias, path)| {
+            let alias = alias.or_else(|| default_package_name(&path))?;
+            Some((alias, path))
+        })
+        .collect()
 }
 
 /// The name an import binds without an alias: its last path element, or the
@@ -912,6 +1072,17 @@ fn default_package_name(path: &str) -> Option<String> {
     let is_major =
         last.len() > 1 && last.starts_with('v') && last[1..].chars().all(|c| c.is_ascii_digit());
     let name = if is_major { parts.next()? } else { last };
+    // `gopkg.in/yaml.v3` declares package `yaml`.
+    let name = match name.rsplit_once(".v") {
+        Some((base, version))
+            if !base.is_empty()
+                && !version.is_empty()
+                && version.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => name,
+    };
     (!name.is_empty()).then(|| name.replace('-', "_"))
 }
 
@@ -1003,7 +1174,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         }
         (
             format!("{}.{name}", ctx.module),
-            format!("={dir}|{name}"),
+            format!("{GO_SAME_PACKAGE}{dir}|{name}"),
             true,
         )
     } else {
@@ -1028,7 +1199,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
                 })?;
             (
                 format!("{}.{ty}.{field}", ctx.module),
-                format!("={dir}|{ty}.{field}"),
+                format!("{GO_SAME_PACKAGE}{dir}|{ty}.{field}"),
                 false,
             )
         }
@@ -1908,13 +2079,95 @@ var (
         );
     }
 
+    /// `(target, candidates)` of every CALLS edge after the import hook ran
+    /// in a repo whose `go.mod` (if any) is `go_mod`.
+    fn bound_calls(go_mod: Option<&str>, source: &str) -> Vec<(Option<String>, Vec<String>)> {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(go_mod) = go_mod {
+            std::fs::write(dir.path().join("go.mod"), go_mod).unwrap();
+        }
+        let mut extractor = GoExtractor::new().unwrap();
+        let mut out = extractor.extract(source, "pkg/file").unwrap();
+        extractor.resolve_imports(dir.path(), "pkg/file.go", "pkg/file", &mut out.edges);
+        out.edges
+            .into_iter()
+            .filter(|e| e.kind == "CALLS")
+            .map(|e| (e.target_qualname, e.import_candidates))
+            .collect()
+    }
+
+    const IMPORTING: &str = r#"
+package pkg
+
+import (
+    "path/filepath"
+    yaml "gopkg.in/yaml.v3"
+    "example.com/m/lib"
+    "example.com/m"
+)
+
+func F(lib2 int) {
+    filepath.Join("a")
+    yaml.Marshal(1)
+    lib.Do()
+    m.Root()
+    Sibling()
+    lib2.X()
+    local := 1
+    local()
+}
+"#;
+
     #[test]
-    fn rebound_builtin_name_is_a_call() {
+    fn calls_carry_package_candidates_for_imports_and_siblings() {
+        let calls = bound_calls(Some("module example.com/m\n"), IMPORTING);
+        let c = |t: &str, cand: &[&str]| {
+            (
+                Some(t.to_string()),
+                cand.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            calls,
+            [
+                // Foreign imports keep their path (bound to an external stub).
+                c("path/filepath.Join", &["path/filepath|Join"]),
+                c("gopkg.in/yaml.v3.Marshal", &["gopkg.in/yaml.v3|Marshal"]),
+                // In-module imports name the package directory.
+                c("example.com/m/lib.Do", &[">lib|Do"]),
+                c("example.com/m.Root", &[">|Root"]),
+                // A bare name is a function of the calling file's package.
+                c("pkg/file.Sibling", &["=pkg|Sibling"]),
+                // A local receiver is no import; a called local is no function.
+                c("lib2.X", &[]),
+                (None, vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_go_mod_imports_are_left_to_the_name_tiers() {
+        let calls = bound_calls(None, IMPORTING);
+        assert_eq!(
+            &calls[..4],
+            [
+                (Some("filepath.Join".to_string()), vec![]),
+                (Some("yaml.Marshal".to_string()), vec![]),
+                (Some("lib.Do".to_string()), vec![]),
+                (Some("m.Root".to_string()), vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn rebound_builtin_name_is_a_call_of_a_local() {
         let edges = call_edges("package pkg\nfunc F() {\n    len := g()\n    len(1)\n}\n");
+        // Recorded (not dropped as a builtin) but unresolved: it calls the
+        // local, never a package-level `len`.
         assert!(
             edges
                 .iter()
-                .any(|(_, t, _)| t.as_deref() == Some("pkg/file.len"))
+                .any(|(_, t, d)| t.is_none() && d.as_deref() == Some("len"))
         );
     }
 
