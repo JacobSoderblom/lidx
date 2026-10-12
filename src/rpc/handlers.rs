@@ -1563,6 +1563,61 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
     }))
 }
 
+/// One-line summary per method, listed by `help` with no argument.
+const METHOD_SUMMARIES: &[(&str, &str)] = &[
+    ("help", "Param schema of one method, or this list"),
+    ("search", "Regex/literal text search with enclosing symbols"),
+    ("outline", "Symbol skeleton of one file with line ranges"),
+    ("read_symbol", "Exact source of one or more symbols"),
+    (
+        "explain_symbol",
+        "Source, callers, callees, tests of a symbol",
+    ),
+    ("trace_flow", "Call chain from a symbol across languages"),
+    (
+        "analyze_impact",
+        "Transitive blast radius of changing a symbol",
+    ),
+    ("analyze_diff", "What a diff or changed files affect"),
+    ("gather_context", "LLM-ready context bundle from seeds"),
+    ("context", "Compact cross-file context for a file"),
+    ("orient", "Architecture overview of the repo"),
+    ("onboard", "Composite first-look orientation"),
+    ("reindex", "Reindex the repository"),
+    ("top_complexity", "Most complex symbols"),
+    ("repo_map", "Ranked map of the repo's key symbols"),
+    ("dead_symbols", "Symbols with no incoming references"),
+];
+
+pub(super) fn handle_help(_indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: HelpParams = super::parse_params("help", params)?;
+    let Some(method) = params.method else {
+        let methods: Vec<Value> = METHOD_SUMMARIES
+            .iter()
+            .map(|(name, summary)| json!({"name": name, "summary": summary}))
+            .collect();
+        return Ok(json!({
+            "methods": methods,
+            "next": "call help with {method: <name>} for that method's param schema",
+        }));
+    };
+    if !METHOD_LIST.contains(&method.as_str()) {
+        anyhow::bail!(
+            "unknown method '{method}'. Valid methods: {}",
+            METHOD_LIST.join(", ")
+        );
+    }
+    let summary = METHOD_SUMMARIES
+        .iter()
+        .find(|(name, _)| *name == method)
+        .map_or("", |(_, summary)| *summary);
+    Ok(json!({
+        "method": method,
+        "summary": summary,
+        "params": super::method_param_schema(&method),
+    }))
+}
+
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ContextParams = super::parse_params("context", params)?;
     super::validate::require_one_of(

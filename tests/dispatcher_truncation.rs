@@ -162,6 +162,7 @@ fn probe_params(method: &str) -> Value {
         "analyze_diff" => json!({"paths": ["leaves.py"]}),
         "gather_context" => json!({"seeds": [{"type": "symbol", "qualname": "hub.hub_root"}]}),
         "context" => json!({"path": "hub.py"}),
+        "help" => json!({"method": "search"}),
         "orient" | "onboard" | "reindex" | "top_complexity" | "repo_map" | "dead_symbols" => {
             json!({})
         }

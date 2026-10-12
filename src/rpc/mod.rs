@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 pub(crate) use compact::compact_symbol_value;
-#[cfg(test)]
 pub(crate) use schema::method_param_schema;
 
 #[derive(Deserialize)]
@@ -340,6 +339,16 @@ struct ContextParams {
     extra: HashMap<String, Value>,
 }
 
+/// Params for `help`: per-method parameter schemas, on demand.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct HelpParams {
+    /// Method to describe; omit to list every method with a one-line summary
+    method: Option<String>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
+}
+
 /// Params for `outline`: a compact, no-bodies skeleton of a file's symbols.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct OutlineParams {
@@ -401,6 +410,7 @@ struct ReadSymbolParams {
 const MAX_RESPONSE_LIMIT: usize = 500;
 
 pub const METHOD_LIST: &[&str] = &[
+    "help",
     "search",
     "outline",
     "read_symbol",
@@ -562,6 +572,11 @@ const METHOD_SPECS: &[MethodSpec] = &[
         run: handlers::handle_search_rg,
     },
     MethodSpec {
+        name: "help",
+        sizing: Sizing::Uncapped,
+        run: handlers::handle_help,
+    },
+    MethodSpec {
         name: "outline",
         sizing: Sizing::Capped,
         run: reading::handle_outline,
@@ -692,6 +707,7 @@ params_extra!(
     ExplainSymbolParams,
     TraceFlowParams,
     ContextParams,
+    HelpParams,
     OutlineParams,
     ReadSymbolParams,
 );

@@ -206,6 +206,7 @@ the lidx tool covers the rest (orient, analyze_impact, analyze_diff, gather_cont
 
 /// Methods only reachable through the generic `lidx` tool.
 const GENERIC_METHODS: &[&str] = &[
+    "help",
     "orient",
     "analyze_impact",
     "analyze_diff",
@@ -234,6 +235,7 @@ const TOOL_DESCRIPTION: &str = r#"Code index, everything the lidx_* tools do not
 - analyze_diff {diff | paths}: what a diff or changed files affect.
 - gather_context {seeds:[{"type":"symbol","qualname":..}|{"type":"file","path":..}|{"type":"search","query":..}], max_bytes}: LLM-ready context bundle.
 - Also: context {path}, onboard, repo_map, top_complexity, dead_symbols, reindex.
+- help {method?}: full param schema of any method (including the lidx_* ones); no method lists them all.
 Unknown params are ignored and reported in _meta.ignored_params."#;
 
 /// A job-named tool: a typed top-level schema routed to one RPC method.
@@ -668,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_visible_text_mentions_every_method_and_no_phantom_help() {
+    fn agent_visible_text_mentions_every_method() {
         let text = agent_visible_text();
         for method in rpc::METHOD_LIST {
             assert!(
@@ -676,10 +678,6 @@ mod tests {
                 "tool description/instructions do not mention dispatchable method '{method}'"
             );
         }
-        assert!(
-            !text.to_lowercase().contains("help"),
-            "tool description/instructions mention a 'help' method, which is not dispatchable"
-        );
     }
 
     #[test]
@@ -771,6 +769,56 @@ mod tests {
                 .is_none(),
             "params must stay a plain object; per-method docs live in the description"
         );
+    }
+
+    #[test]
+    fn tools_list_payload_stays_under_size_ceiling() {
+        // main advertised 21,460 bytes (about 5,365 tokens at chars/4); the
+        // issue requires at least a 50% cut, so the hard ceiling is 10,000.
+        let (mut state, _repo) = mcp_state("sizeceiling");
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let resp = handle_message(msg, &mut state).unwrap();
+        let bytes = serde_json::to_string(&resp["result"]).unwrap().len();
+        assert!(
+            bytes <= 10_000,
+            "tools/list payload is {bytes} bytes, ceiling 10000"
+        );
+    }
+
+    #[test]
+    fn help_tool_serves_every_schema_removed_from_tools_list() {
+        let (mut state, _repo) = mcp_state("help");
+        let listing = call_tool(&mut state, "help", json!({}))["structuredContent"].clone();
+        let names: Vec<&str> = listing["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap())
+            .collect();
+        for method in rpc::METHOD_LIST {
+            assert!(names.contains(method), "help listing lacks '{method}'");
+            let detail =
+                call_tool(&mut state, "help", json!({"method": method}))["structuredContent"]
+                    .clone();
+            assert_eq!(detail["method"], *method);
+            assert!(
+                detail["params"]["type"] == "object",
+                "help for '{method}' has no object schema: {detail}"
+            );
+        }
+        // context used to have an empty schema; it must expose `path`.
+        let ctx = call_tool(&mut state, "help", json!({"method": "context"}))["structuredContent"]
+            .clone();
+        assert!(ctx["params"]["properties"].get("path").is_some());
+        // Params dropped from lidx_search's up-front schema stay discoverable.
+        let search =
+            call_tool(&mut state, "help", json!({"method": "search"}))["structuredContent"].clone();
+        assert!(search["params"]["properties"].get("scope").is_some());
+        // Unknown method names the valid ones.
+        let msg = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "lidx", "arguments": {"method": "help", "params": {"method": "nope"}}}});
+        let resp = handle_message(msg, &mut state).unwrap();
+        assert!(resp.to_string().contains("Valid methods"), "{resp}");
     }
 
     #[test]
