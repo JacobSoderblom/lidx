@@ -6814,11 +6814,7 @@ fn apply_contextual_params(
 
 /// `infer_local_types` for a function expression's own scope, with its
 /// contextually typed parameters.
-fn infer_scope_types(
-    node: Node<'_>,
-    ctx: &Context,
-    source: &str,
-) -> HashMap<String, LocalType> {
+fn infer_scope_types(node: Node<'_>, ctx: &Context, source: &str) -> HashMap<String, LocalType> {
     let mut types = infer_local_types(node, source);
     apply_contextual_params(&mut types, node, ctx, source);
     types
@@ -6942,10 +6938,14 @@ fn collect_local_functions(
                 continue;
             }
             "variable_declarator" => {
+                // `const f = function g() {}` is declared by the expression's
+                // own name, not `f`: tsc keys its calls to `g`, so it is no
+                // symbol here (its calls stay with the enclosing function).
                 if let Some(name) = node
                     .child_by_field_name("name")
                     .filter(|n| n.kind() == "identifier")
-                    && function_initializer(node).is_some()
+                    && function_initializer(node)
+                        .is_some_and(|f| f.child_by_field_name("name").is_none())
                 {
                     record(node_text(name, source), node.start_byte());
                     continue;

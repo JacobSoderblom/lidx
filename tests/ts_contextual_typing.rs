@@ -89,10 +89,7 @@ fn files() -> Vec<(&'static str, &'static str)> {
 fn callback_passed_to_a_function_takes_the_declared_parameter_type() {
     assert_eq!(
         sorted(call_targets(&files(), "src/use.mw")),
-        [
-            "src/ctx.Context.header",
-            "src/req.HonoRequest.query"
-        ]
+        ["src/ctx.Context.header", "src/req.HonoRequest.query"]
     );
 }
 
@@ -135,7 +132,8 @@ fn disagreeing_alias_declarations_leave_the_parameter_untyped() {
     ));
     let t = call_targets(&f, "src/use.notFound");
     assert!(
-        t.iter().all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
+        t.iter()
+            .all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
         "{t:?}"
     );
 }
@@ -153,7 +151,8 @@ fn an_unknown_callee_does_not_type_its_callback() {
     ];
     let t = call_targets(&f, "src/app.run");
     assert!(
-        t.iter().all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
+        t.iter()
+            .all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
         "{t:?}"
     );
 }
@@ -201,9 +200,7 @@ fn local_functions_are_symbols_qualified_under_their_parent() {
     );
     assert_eq!(call_targets(&f, "src/loc.outer.inner"), ["src/loc.outer.g"]);
     assert_eq!(call_targets(&f, "src/loc.Box.run.step"), ["src/loc.helper"]);
-    assert!(
-        call_targets(&f, "src/loc.Box.run").contains(&"src/loc.Box.run.step".to_string())
-    );
+    assert!(call_targets(&f, "src/loc.Box.run").contains(&"src/loc.Box.run.step".to_string()));
 }
 
 #[test]
@@ -253,7 +250,8 @@ fn editing_the_parent_of_local_functions_matches_a_fresh_index() {
     snapshot_equals_fresh(&indexer, &base);
 
     // The local function is renamed: the old symbol and its edges go.
-    let renamed = LOCALS.replace("const f = () => helper();", "const f2 = () => other();")
+    let renamed = LOCALS
+        .replace("const f = () => helper();", "const f2 = () => other();")
         .replace("f();", "f2();");
     common::write_files(&root, &[("src/loc.ts", &renamed)]);
     indexer.sync_rel_paths(&["src/loc.ts".to_string()]).unwrap();
@@ -262,7 +260,9 @@ fn editing_the_parent_of_local_functions_matches_a_fresh_index() {
     snapshot_equals_fresh(&indexer, &[("src/loc.ts", &renamed)]);
 
     // A second local of the same name makes the name ambiguous.
-    let twin = format!("{renamed}export function twin() {{\n  const a = () => 1;\n  a();\n  {{ const a = () => 2; a(); }}\n}}\n");
+    let twin = format!(
+        "{renamed}export function twin() {{\n  const a = () => 1;\n  a();\n  {{ const a = () => 2; a(); }}\n}}\n"
+    );
     common::write_files(&root, &[("src/loc.ts", &twin)]);
     indexer.sync_rel_paths(&["src/loc.ts".to_string()]).unwrap();
     snapshot_equals_fresh(&indexer, &[("src/loc.ts", &twin)]);
@@ -278,7 +278,10 @@ fn editing_the_parent_of_local_functions_matches_a_fresh_index() {
 fn editing_the_alias_file_retypes_the_callbacks_like_a_fresh_index() {
     let base = files();
     let (_tmp, root, mut indexer) = live(&base);
-    assert_eq!(targets(&indexer, "src/use.notFound"), ["src/ctx.Context.text"]);
+    assert_eq!(
+        targets(&indexer, "src/use.notFound"),
+        ["src/ctx.Context.text"]
+    );
     snapshot_equals_fresh(&indexer, &base);
 
     // The alias now hands its callback a different class.
@@ -286,10 +289,18 @@ fn editing_the_alias_file_retypes_the_callbacks_like_a_fresh_index() {
         "export type NotFoundHandler<E = any> = (c: Context<E>) =>",
         "export type NotFoundHandler<E = any> = (c: import('./decoy').Decoy) =>",
     );
-    let retyped = format!("import type {{ Decoy }} from './decoy';\n{}", retyped.replace("import('./decoy').Decoy", "Decoy"));
+    let retyped = format!(
+        "import type {{ Decoy }} from './decoy';\n{}",
+        retyped.replace("import('./decoy').Decoy", "Decoy")
+    );
     common::write_files(&root, &[("src/types.ts", &retyped)]);
-    indexer.sync_rel_paths(&["src/types.ts".to_string()]).unwrap();
-    assert_eq!(targets(&indexer, "src/use.notFound"), ["src/decoy.Decoy.text"]);
+    indexer
+        .sync_rel_paths(&["src/types.ts".to_string()])
+        .unwrap();
+    assert_eq!(
+        targets(&indexer, "src/use.notFound"),
+        ["src/decoy.Decoy.text"]
+    );
     let mut after = files();
     after[0] = ("src/types.ts", &retyped);
     snapshot_equals_fresh(&indexer, &after);
@@ -300,18 +311,27 @@ fn editing_the_alias_file_retypes_the_callbacks_like_a_fresh_index() {
         "",
     );
     common::write_files(&root, &[("src/types.ts", &gone)]);
-    indexer.sync_rel_paths(&["src/types.ts".to_string()]).unwrap();
-    assert!(targets(&indexer, "src/use.notFound")
-        .iter()
-        .all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")));
+    indexer
+        .sync_rel_paths(&["src/types.ts".to_string()])
+        .unwrap();
+    assert!(
+        targets(&indexer, "src/use.notFound")
+            .iter()
+            .all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy."))
+    );
     let mut after = files();
     after[0] = ("src/types.ts", &gone);
     snapshot_equals_fresh(&indexer, &after);
 
     // And it comes back.
     common::write_files(&root, &[("src/types.ts", TYPES)]);
-    indexer.sync_rel_paths(&["src/types.ts".to_string()]).unwrap();
-    assert_eq!(targets(&indexer, "src/use.notFound"), ["src/ctx.Context.text"]);
+    indexer
+        .sync_rel_paths(&["src/types.ts".to_string()])
+        .unwrap();
+    assert_eq!(
+        targets(&indexer, "src/use.notFound"),
+        ["src/ctx.Context.text"]
+    );
     snapshot_equals_fresh(&indexer, &base);
 }
 
@@ -332,7 +352,13 @@ fn rpc_call(files: &[(&str, &str)], method: &str, params: serde_json::Value) -> 
 
 #[test]
 fn local_functions_are_not_dead_and_not_listed_at_the_top_level() {
-    let files = [("src/hidden.ts", HIDDEN), ("src/user.ts", "import { widget } from './hidden';\nwidget();\n")];
+    let files = [
+        ("src/hidden.ts", HIDDEN),
+        (
+            "src/user.ts",
+            "import { widget } from './hidden';\nwidget();\n",
+        ),
+    ];
     let dead = rpc_call(
         &files,
         "dead_symbols",
@@ -345,16 +371,29 @@ fn local_functions_are_not_dead_and_not_listed_at_the_top_level() {
         .filter_map(|s| s["qualname"].as_str())
         .collect();
     assert!(dead.contains(&"src/hidden.deadTopLevel"), "{dead:?}");
-    assert!(dead.iter().all(|d| !d.starts_with("src/hidden.widget.")), "{dead:?}");
+    assert!(
+        dead.iter().all(|d| !d.starts_with("src/hidden.widget.")),
+        "{dead:?}"
+    );
 
     let map = rpc_call(&files, "repo_map", serde_json::json!({}));
     let text = map["text"].as_str().unwrap();
-    assert!(!text.contains("unusedLocal") && !text.contains("neverCalled"), "{text}");
+    assert!(
+        !text.contains("unusedLocal") && !text.contains("neverCalled"),
+        "{text}"
+    );
     assert!(!text.contains("**used**"), "{text}");
 
     // The outline still shows them, nested under their parent.
-    let outline = rpc_call(&files, "outline", serde_json::json!({"path": "src/hidden.ts"}));
-    let entries = outline["entries"].as_array().or_else(|| outline["symbols"].as_array()).unwrap();
+    let outline = rpc_call(
+        &files,
+        "outline",
+        serde_json::json!({"path": "src/hidden.ts"}),
+    );
+    let entries = outline["entries"]
+        .as_array()
+        .or_else(|| outline["symbols"].as_array())
+        .unwrap();
     let local = entries
         .iter()
         .find(|e| e["qualname"] == "src/hidden.widget.used")

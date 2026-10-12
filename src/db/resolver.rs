@@ -3836,7 +3836,14 @@ fn query_exact_candidates(
     caller_file: &str,
     caller_scope: Option<&str>,
 ) -> Result<Vec<ExactCandidate>> {
-    query_exact_candidates_with(stmt, qualname, graph_version, caller_file, caller_scope, false)
+    query_exact_candidates_with(
+        stmt,
+        qualname,
+        graph_version,
+        caller_file,
+        caller_scope,
+        false,
+    )
 }
 
 /// `query_exact_candidates`, keeping the functions declared inside other
