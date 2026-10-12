@@ -1,4 +1,6 @@
-use crate::db::resolver::{DeclarationIndex, DeclarationQuery, LanguageProfile, VisibilityRule};
+use crate::db::resolver::{
+    Declaration, DeclarationIndex, DeclarationQuery, LanguageProfile, VisibilityRule,
+};
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
@@ -98,24 +100,31 @@ const MAX_ALIAS_DEPTH: usize = 4;
 /// parameter type every declaration of the callable type agrees on (a
 /// callable alias such as `MiddlewareHandler`, an inline function type, or
 /// the declared type of the callee's parameter the callback is passed
-/// for). Differing or unreadable declarations give `None`, never a guess;
-/// so does a type parameter (`E`), which names no repo type.
+/// for). The alias and the callee are named by qualname -- the extractor
+/// resolved them through the file's imports, and one that is not a repo
+/// declaration (a package's `use`, an `express` `Handler`) arrives empty --
+/// so a same-named declaration elsewhere is never a candidate. Differing or
+/// unreadable declarations give `None`, never a guess; so does a type
+/// parameter (`E`), which names no repo type.
 fn contextual_param_type(
     param: &ParamType,
     index: &dyn DeclarationIndex,
 ) -> Result<Option<String>> {
-    let callable_texts: Vec<String> = match &param.origin {
-        ParamOrigin::Callable(text) => vec![text.clone()],
+    // (callable type text, declaration its bare names are written in; `None`
+    // when the names in it are qualnames already)
+    let callee_decls: Vec<Declaration>;
+    let callables: Vec<(String, Option<&Declaration>)> = match &param.origin {
+        ParamOrigin::Callable(text) => vec![(text.clone(), None)],
         ParamOrigin::Argument { callee, arg_index } => {
-            let decls = match callee.rsplit_once('.') {
-                Some((ty, method)) => index.inherited_members(ty, method)?,
-                None => index.declarations(DeclarationQuery::Function(callee))?,
-            };
-            if decls.is_empty() {
+            if callee.is_empty() {
+                return Ok(None);
+            }
+            callee_decls = index.declarations(DeclarationQuery::Callable(callee))?;
+            if callee_decls.is_empty() {
                 return Ok(None);
             }
             let mut texts = Vec::new();
-            for decl in &decls {
+            for decl in &callee_decls {
                 let Some(text) = decl
                     .signature
                     .as_deref()
@@ -123,14 +132,14 @@ fn contextual_param_type(
                 else {
                     return Ok(None);
                 };
-                texts.push(text);
+                texts.push((text, Some(decl)));
             }
             texts
         }
     };
     let mut agreed: Option<String> = None;
-    for text in &callable_texts {
-        let Some(ty) = callable_param_type(text, param.index, index, 0)? else {
+    for (text, scope) in &callables {
+        let Some(ty) = callable_param_type(text, param.index, index, 0, *scope)? else {
             return Ok(None);
         };
         match &agreed {
@@ -144,15 +153,54 @@ fn contextual_param_type(
     }
 }
 
+/// The alias or interface a bare `name` written in the file of `home`
+/// means: the one that file declares, else the one declaration of that name
+/// in the modules it imports (a name imported from a package, or declared
+/// in two imported modules, is none).
+fn alias_declared_for(
+    name: &str,
+    home: &Declaration,
+    index: &dyn DeclarationIndex,
+) -> Result<Vec<Declaration>> {
+    let own = index.declarations(DeclarationQuery::Alias(&format!(
+        "{}.{name}",
+        module_of(&home.qualname)
+    )))?;
+    if !own.is_empty() {
+        return Ok(own);
+    }
+    let mut found: Vec<Declaration> = Vec::new();
+    for module in index.imported_modules(home.file_id)? {
+        let hits = index.declarations(DeclarationQuery::Alias(&format!("{module}.{name}")))?;
+        if let Some(first) = hits.first() {
+            if found.iter().any(|d| d.qualname != first.qualname) {
+                return Ok(Vec::new());
+            }
+            found.extend(hits);
+        }
+    }
+    Ok(found)
+}
+
+/// The module part of a declaration's qualname (`src/types.Handler` ->
+/// `src/types`).
+fn module_of(qualname: &str) -> &str {
+    qualname.rsplit_once('.').map_or(qualname, |(module, _)| module)
+}
+
 /// The type name of parameter `param_index` of the callable type `text`: a
 /// function type (`(c: Context<E>, next: Next) => R`), the name of an alias
 /// or interface with a call signature, or a union of those (an
-/// `undefined`/`null` member is ignored). Every member must agree.
+/// `undefined`/`null` member is ignored). Every member must agree. A name
+/// is a qualname when `scope` is `None`; otherwise it is bare and declared
+/// in the module `scope` (an alias body's own file): a name that module
+/// imports is not followed.
 fn callable_param_type(
     text: &str,
     param_index: usize,
     index: &dyn DeclarationIndex,
     depth: usize,
+    scope: Option<&Declaration>,
 ) -> Result<Option<String>> {
     if depth > MAX_ALIAS_DEPTH {
         return Ok(None);
@@ -187,22 +235,29 @@ fn callable_param_type(
                 }
                 // `(A | B)`: a parenthesised union.
                 Some((inner, rest)) if rest.trim().is_empty() => {
-                    callable_param_type(inner, param_index, index, depth + 1)?
+                    callable_param_type(inner, param_index, index, depth + 1, scope)?
                 }
                 _ => None,
             }
         } else {
-            let name = strip_type_arguments(member).unwrap_or(member);
-            if !is_type_name_text(name, true) || name.is_empty() {
-                return Ok(None);
-            }
-            let name = name.rsplit('.').next().unwrap_or(name);
-            let decls = index.declarations(DeclarationQuery::Alias(name))?;
+            let decls = match scope {
+                None if member.contains(IMPORT_PLACEHOLDER_SEP) => Vec::new(),
+                None => index.declarations(DeclarationQuery::Alias(member))?,
+                Some(home) => {
+                    let name = strip_type_arguments(member).unwrap_or(member);
+                    if !is_type_name_text(name, false) || name.is_empty() {
+                        return Ok(None);
+                    }
+                    alias_declared_for(name, home, index)?
+                }
+            };
             let mut found: Option<String> = None;
             let mut ok = !decls.is_empty();
             for decl in &decls {
                 let ty = match decl.signature.as_deref() {
-                    Some(sig) => callable_param_type(sig, param_index, index, depth + 1)?,
+                    Some(sig) => {
+                        callable_param_type(sig, param_index, index, depth + 1, Some(decl))?
+                    }
                     None => None,
                 };
                 match (&found, ty) {
@@ -243,6 +298,8 @@ fn split_top_level(text: &str, sep: char) -> Vec<&str> {
                 '(' | '[' | '{' | '<' => depth += 1,
                 ')' | ']' | '}' => depth -= 1,
                 '>' if prev != '=' => depth -= 1,
+                // The `=` of `=>` is no separator (`cb: (c: X) => void = f`).
+                '=' if sep == '=' && text[i + 1..].starts_with('>') => {}
                 c if c == sep && depth == 0 => {
                     parts.push(&text[start..i]);
                     start = i + ch.len_utf8();
@@ -783,6 +840,9 @@ pub fn resolve_import_file_edges(
                 None => ReceiverType::Known(local.clone()),
             };
         }
+        if let ReceiverType::Deferred(call) = &mut edge.receiver_type {
+            rewrite_deferred_origins(call, &mut rewrite);
+        }
     }
     let mut resolved = Vec::new();
     for edge in edges.iter() {
@@ -826,6 +886,41 @@ pub fn resolve_import_file_edges(
         });
     }
     edges.extend(resolved);
+}
+
+/// Rewrites the import placeholders in the callable origin of a contextual
+/// callback parameter (`DeferredBase::Param`) into qualnames in the imported
+/// file. A name whose specifier is no repo file (a package) is emptied: the
+/// parameter then stays untyped instead of taking the type of a same-named
+/// repo declaration.
+fn rewrite_deferred_origins(
+    call: &mut DeferredReturn,
+    rewrite: &mut impl FnMut(&str) -> Option<String>,
+) {
+    match &mut call.base {
+        DeferredBase::Param(param) => match &mut param.origin {
+            ParamOrigin::Callable(text) => {
+                if text.contains(IMPORT_PLACEHOLDER_SEP) {
+                    *text = split_top_level(text, '|')
+                        .into_iter()
+                        .map(|member| match member.trim() {
+                            m if m.contains(IMPORT_PLACEHOLDER_SEP) => rewrite(m),
+                            m => Some(m.to_string()),
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        .map(|members| members.join(" | "))
+                        .unwrap_or_default();
+                }
+            }
+            ParamOrigin::Argument { callee, .. } => {
+                if callee.contains(IMPORT_PLACEHOLDER_SEP) {
+                    *callee = rewrite(callee).unwrap_or_default();
+                }
+            }
+        },
+        DeferredBase::Call(inner) => rewrite_deferred_origins(inner, rewrite),
+        _ => {}
+    }
 }
 
 /// Name of the default export in `chase_export` lookups, and of the symbol an
@@ -1970,11 +2065,77 @@ fn extract_with_parser(
     walk_node(root, &ctx, source, &mut output);
     bind_next_routes_to_handlers(&mut output, module_name);
     dedup_namespace_symbols(&mut output);
+    drop_ambiguous_locals(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
     finish_value_references(&mut output);
     collect_type_references(root, &ctx, source, &mut output);
     output.export_surface = Some(surface_hash(root, source, &http_wrappers));
     Ok(output)
+}
+
+/// Takes back the local function symbols a qualname cannot tell apart: one
+/// whose own qualname is declared twice, or one inside a parent that is
+/// (`describe` blocks declaring the same `function Comp` each hold a
+/// `prefetch`). The qualname would bind every call to one of the copies, so
+/// these are no symbols, exactly like a name declared twice in one function:
+/// calls inside them stay with the nearest surviving enclosing symbol and
+/// calls to them are left unresolved.
+fn drop_ambiguous_locals(output: &mut ExtractedFile) {
+    if output.local_qualnames.is_empty() {
+        return;
+    }
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for symbol in &output.symbols {
+        *counts.entry(symbol.qualname.as_str()).or_default() += 1;
+    }
+    let mut locals: Vec<&String> = output.local_qualnames.iter().collect();
+    locals.sort_by_key(|q| q.len());
+    let mut removed: HashSet<String> = HashSet::new();
+    for qualname in locals {
+        let Some((parent, _)) = qualname.rsplit_once('.') else {
+            continue;
+        };
+        let count = |q: &str| counts.get(q).copied().unwrap_or(0);
+        if count(qualname) > 1 || count(parent) > 1 || removed.contains(parent) {
+            removed.insert(qualname.clone());
+        }
+    }
+    if removed.is_empty() {
+        return;
+    }
+    let survivor = |qualname: &str| -> String {
+        let mut current = qualname;
+        while removed.contains(current) {
+            match current.rsplit_once('.') {
+                Some((parent, _)) => current = parent,
+                None => break,
+            }
+        }
+        current.to_string()
+    };
+    output.symbols.retain(|s| !removed.contains(&s.qualname));
+    output.local_qualnames.retain(|q| !removed.contains(q));
+    output.private_qualnames.retain(|q| !removed.contains(q));
+    let mut kept = Vec::with_capacity(output.edges.len());
+    for mut edge in std::mem::take(&mut output.edges) {
+        if let Some(source) = edge.source_qualname.as_deref().filter(|q| removed.contains(*q)) {
+            edge.source_qualname = Some(survivor(source));
+        }
+        if let Some(target) = edge
+            .target_qualname
+            .as_deref()
+            .filter(|q| removed.contains(*q))
+        {
+            if edge.kind != "CALLS" {
+                continue;
+            }
+            edge.detail = Some(target.rsplit('.').next().unwrap_or(target).to_string());
+            edge.target_qualname = None;
+            edge.receiver_type = ReceiverType::Unresolved;
+        }
+        kept.push(edge);
+    }
+    output.edges = kept;
 }
 
 /// An App Router `HTTP_ROUTE` edge belongs to its method's handler symbol
@@ -6636,16 +6797,64 @@ const RETURN_TYPED_KINDS: &[&str] = &[
 /// The longest callable type text kept in a deferred marker.
 const MAX_CALLABLE_TEXT: usize = 300;
 
-/// A declared type (an annotation node, or the type node of `as T`) as the
-/// callable type text a callback is checked against.
-fn callable_origin_text(node: Node<'_>, source: &str) -> Option<ParamOrigin> {
+/// The declaration `name` (a bare or dotted type or function name as
+/// written) refers to, found through this file's imports or its own
+/// declarations: the qualname when it is declared here, an import
+/// placeholder (`resolve_import_file_edges` rewrites it to the qualname in
+/// the imported file, or drops it when the specifier is no repo file) when
+/// it is imported. `None` for a global, a shadowed name or an undeclared
+/// one: it is never looked up by its bare name.
+fn qualify_declared_name(name: &str, ctx: &Context) -> Option<String> {
+    let root = name.split('.').next()?;
+    if ctx.scope_bindings.contains(root) || ctx.local_fns.contains_key(root) {
+        return None;
+    }
+    if ctx.import_bindings.contains_key(root) {
+        return import_placeholder_unshadowed(name, ctx);
+    }
+    if ctx.required_names.contains(root) {
+        return None;
+    }
+    if ctx.declared_types.contains(root) || ctx.declared_names.contains(root) {
+        let container = container_qualname(&ctx.module, namespace_stack(ctx));
+        return Some(format!("{container}.{name}"));
+    }
+    None
+}
+
+/// A declared callable type (an annotation node, or the type node of `as
+/// T`) as the origin of a callback's parameter types: a function type kept
+/// as written, a type name (or a union of them) qualified through
+/// `qualify_declared_name`. `None` when any name cannot be qualified.
+fn callable_origin_text(node: Node<'_>, ctx: &Context, source: &str) -> Option<ParamOrigin> {
     let ty = if node.kind() == "type_annotation" {
         node.named_child(0)?
     } else {
         node
     };
     let text = collapse_call_target_whitespace(&node_text(ty, source));
-    (!text.is_empty() && text.len() <= MAX_CALLABLE_TEXT).then_some(ParamOrigin::Callable(text))
+    if text.is_empty() || text.len() > MAX_CALLABLE_TEXT {
+        return None;
+    }
+    let is_function_type = text.starts_with(['(', '<'])
+        && paren_group(strip_leading_type_params(&text))
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with("=>"));
+    if is_function_type {
+        return Some(ParamOrigin::Callable(text));
+    }
+    let mut members = Vec::new();
+    for member in split_top_level(&text, '|') {
+        let member = member.trim();
+        if member.is_empty() || member == "undefined" || member == "null" {
+            continue;
+        }
+        let name = strip_type_arguments(member).unwrap_or(member);
+        if !is_type_name_text(name, true) {
+            return None;
+        }
+        members.push(qualify_declared_name(name, ctx)?);
+    }
+    (!members.is_empty()).then(|| ParamOrigin::Callable(members.join(" | ")))
 }
 
 /// Where the function expression `node` gets its parameter types from, when
@@ -6670,19 +6879,19 @@ fn contextual_origin(node: Node<'_>, ctx: &Context, source: &str) -> Option<Para
                 if parent.named_child(0)?.id() != child.id() {
                     return None;
                 }
-                return callable_origin_text(parent.named_child(1)?, source);
+                return callable_origin_text(parent.named_child(1)?, ctx, source);
             }
             "variable_declarator" | "public_field_definition" | "field_definition" => {
                 if parent.child_by_field_name("value")?.id() != child.id() {
                     return None;
                 }
-                return callable_origin_text(parent.child_by_field_name("type")?, source);
+                return callable_origin_text(parent.child_by_field_name("type")?, ctx, source);
             }
             "return_statement" => {
                 let mut up = parent.parent();
                 while let Some(n) = up {
                     if RETURN_TYPED_KINDS.contains(&n.kind()) {
-                        return callable_origin_text(n.child_by_field_name("return_type")?, source);
+                        return callable_origin_text(n.child_by_field_name("return_type")?, ctx, source);
                     }
                     up = n.parent();
                 }
@@ -6692,7 +6901,7 @@ fn contextual_origin(node: Node<'_>, ctx: &Context, source: &str) -> Option<Para
                 if parent.child_by_field_name("body")?.id() != child.id() {
                     return None;
                 }
-                return callable_origin_text(parent.child_by_field_name("return_type")?, source);
+                return callable_origin_text(parent.child_by_field_name("return_type")?, ctx, source);
             }
             "arguments" => return argument_origin(parent, child, ctx, source),
             _ => return None,
@@ -6726,17 +6935,7 @@ fn argument_origin(
     }
     let callee = peel_expression(call.child_by_field_name("function")?);
     let callee_text = match callee.kind() {
-        "identifier" => {
-            let name = node_text(callee, source);
-            if ctx.scope_bindings.contains(&name) || ctx.local_fns.contains_key(&name) {
-                return None;
-            }
-            match ctx.import_bindings.get(&name) {
-                // `import { a as b }`: the declaration is named `a`.
-                Some((_, Some(imported))) if imported != DEFAULT_EXPORT => imported.clone(),
-                _ => name,
-            }
-        }
+        "identifier" => qualify_declared_name(&node_text(callee, source), ctx)?,
         "member_expression" => {
             let object = peel_expression(callee.child_by_field_name("object")?);
             if object.kind() != "identifier" {
@@ -6744,18 +6943,24 @@ fn argument_origin(
             }
             let method = node_text(callee.child_by_field_name("property")?, source);
             let root = node_text(object, source);
+            if !is_type_name_text(&method, false) {
+                return None;
+            }
             match ctx.local_types.get(&root) {
-                Some(LocalType::Known(ty)) if is_type_name_text(ty, false) => {
-                    format!("{ty}.{method}")
+                // A method of a typed receiver: the method of that type.
+                Some(LocalType::Known(ty)) if is_type_name_text(ty, true) => {
+                    qualify_declared_name(&format!("{ty}.{method}"), ctx)?
                 }
                 // `ns.fn(..)` on a namespace import is the module's `fn`.
-                None if matches!(ctx.import_bindings.get(&root), Some((_, None))) => method,
+                None if matches!(ctx.import_bindings.get(&root), Some((_, None))) => {
+                    qualify_declared_name(&format!("{root}.{method}"), ctx)?
+                }
                 _ => return None,
             }
         }
         _ => return None,
     };
-    if callee_text.is_empty() || !is_simple_call_target(&callee_text) {
+    if callee_text.is_empty() {
         return None;
     }
     Some(ParamOrigin::Argument {

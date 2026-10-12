@@ -124,16 +124,35 @@ fn rest_parameter_and_union_alias_and_assertion_type_a_callback() {
 }
 
 #[test]
-fn disagreeing_alias_declarations_leave_the_parameter_untyped() {
+fn a_same_named_alias_elsewhere_does_not_change_which_one_the_import_names() {
     let mut f = files();
     f.push((
         "src/other.ts",
         "import type { Decoy } from './decoy';\nexport type NotFoundHandler = (c: Decoy) => void;\n",
     ));
-    let t = call_targets(&f, "src/use.notFound");
+    f.push((
+        "src/use2.ts",
+        "import type { NotFoundHandler } from './other';\nexport const h2: NotFoundHandler = (c) => c.text('z');\n",
+    ));
+    // `use.ts` imports the `types` one, `use2.ts` the `other` one.
+    assert_eq!(call_targets(&f, "src/use.notFound"), ["src/ctx.Context.text"]);
+    assert_eq!(call_targets(&f, "src/use2.h2"), ["src/decoy.Decoy.text"]);
+}
+
+#[test]
+fn disagreeing_halves_of_one_alias_leave_the_parameter_untyped() {
+    let mut f = files();
+    f.push((
+        "src/types2.ts",
+        "import type { Context } from './ctx';\nimport type { Decoy } from './decoy';\nexport type Both = (c: Context) => void;\nexport interface Both { (c: Decoy): void }\n",
+    ));
+    f.push((
+        "src/use3.ts",
+        "import type { Both } from './types2';\nexport const h3: Both = (c) => c.text('z');\n",
+    ));
+    let t = call_targets(&f, "src/use3.h3");
     assert!(
-        t.iter()
-            .all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
+        t.iter().all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
         "{t:?}"
     );
 }
@@ -443,4 +462,92 @@ fn an_interface_with_one_call_signature_types_its_callback() {
         ),
     ];
     assert_eq!(call_targets(&f, "src/use.h"), ["src/ctx.Context.text"]);
+}
+
+const EXT_CTX: &str = "export class Context { header(n: string, v: string): void {} text(b: string): string { return b } json(o: any): string { return '' } }\n";
+const EXT_MINE: &str = "import type { Context } from './ctx';\nexport type Handler = (c: Context) => void;\nexport function use(cb: Handler): void {}\nexport function on(h: Handler): void {}\n";
+const EXT_USE: &str = r#"import { use } from 'react';
+import type { Handler } from 'express';
+import { on } from './mine';
+export function run() {
+  use((c) => c.text('react-use'));
+  const h: Handler = (c) => c.header('x', 'y');
+  on((c) => c.json({}));
+}
+"#;
+
+#[test]
+fn names_imported_from_packages_never_type_a_callback_through_a_repo_twin() {
+    let f = [
+        ("src/ctx.ts", EXT_CTX),
+        ("src/mine.ts", EXT_MINE),
+        ("src/external.ts", EXT_USE),
+    ];
+    let mut t = call_targets(&f, "src/external.run");
+    t.extend(call_targets(&f, "src/external.run.h"));
+    // `on` is the repo's: its callback is a Context. `use` and `Handler`
+    // come from packages: their callbacks stay untyped.
+    assert!(t.contains(&"src/ctx.Context.json".to_string()), "{t:?}");
+    assert!(!t.contains(&"src/ctx.Context.text".to_string()), "{t:?}");
+    assert!(!t.contains(&"src/ctx.Context.header".to_string()), "{t:?}");
+}
+
+#[test]
+fn a_barrel_re_export_still_types_the_callback() {
+    let f = [
+        ("src/ctx.ts", EXT_CTX),
+        ("src/mine.ts", EXT_MINE),
+        ("src/index.ts", "export { on, type Handler } from './mine';\n"),
+        (
+            "src/use.ts",
+            "import { on, type Handler } from './index';\nexport function run() {\n  on((c) => c.json({}));\n  const h: Handler = (c) => c.text('x');\n}\n",
+        ),
+    ];
+    let mut t = call_targets(&f, "src/use.run");
+    t.extend(call_targets(&f, "src/use.run.h"));
+    assert!(t.contains(&"src/ctx.Context.json".to_string()), "{t:?}");
+    assert!(t.contains(&"src/ctx.Context.text".to_string()), "{t:?}");
+}
+
+#[test]
+fn inline_function_typed_parameters_type_the_callback() {
+    let ctx = "export class Context { header(n: string, v: string): void {} text(b: string): string { return b } query(n: string): string { return n } }\n";
+    let api = "import type { Context } from './ctx';\nexport type Handler = (c: Context) => void;\nexport function viaAlias(cb: Handler): void {}\nexport function viaInline(cb: (c: Context) => void): void {}\nexport function viaInlineDefault(cb: (c: Context) => void = () => {}): void {}\nexport function viaAliasDefault(cb: Handler = () => {}): void {}\n";
+    let usage = "import { viaAlias, viaInline, viaInlineDefault, viaAliasDefault } from './api';\nexport function run() {\n  viaAlias((c) => c.text('alias'));\n  viaInline((c) => c.header('inline', 'v'));\n  viaInlineDefault((c) => c.query('inline-default'));\n  viaAliasDefault((c) => c.query('alias-default'));\n}\nexport const top = viaInline((c) => c.header('inline-top', 'v'));\n";
+    let f = [("src/ctx.ts", ctx), ("src/api.ts", api), ("src/use.ts", usage)];
+    let t = call_targets(&f, "src/use.run");
+    for want in [
+        "src/ctx.Context.text",
+        "src/ctx.Context.header",
+        "src/ctx.Context.query",
+    ] {
+        assert_eq!(t.iter().filter(|x| *x == want).count(), if want.ends_with("query") { 2 } else { 1 }, "{want} in {t:?}");
+    }
+    assert!(call_targets(&f, "src/use.top").contains(&"src/ctx.Context.header".to_string()));
+}
+
+#[test]
+fn locals_under_duplicated_parents_are_ambiguous_and_get_no_symbol() {
+    let src = "function helper() {}\ndescribe('a', () => {\n  function Comp() {\n    function prefetch() { helper(); }\n    prefetch();\n  }\n});\ndescribe('b', () => {\n  function Comp() {\n    function prefetch() { helper(); }\n    prefetch();\n  }\n});\n";
+    let f = [("src/dup2.ts", src)];
+    let (_tmp, _root, indexer) = live(&f);
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM symbols WHERE graph_version = ? AND qualname LIKE '%.prefetch'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0);
+    let bound: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = 'CALLS' AND t.name = 'prefetch'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bound, 0);
 }

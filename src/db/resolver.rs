@@ -545,10 +545,9 @@ pub enum DeclarationQuery<'a> {
     /// Methods named `method` on a type named `ty` (`ty.method`, or
     /// `<namespace>.ty.method`; dot-separated qualnames).
     Member { ty: &'a str, method: &'a str },
-    /// A type alias or interface named `name` (TypeScript callable types).
+    /// A type alias or interface with exactly this qualname (TypeScript
+    /// callable types).
     Alias(&'a str),
-    /// A function named `name` (a bare callee), at any nesting.
-    Function(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -570,6 +569,12 @@ pub trait DeclarationIndex {
     fn inherited_members(&self, ty: &str, method: &str) -> Result<Vec<Declaration>>;
     /// The imports and enclosing namespaces of where `decl` is declared.
     fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports>;
+    /// The modules (qualname prefixes) the file `file_id` imports, as the
+    /// `IMPORTS_FILE` edges of the file name them. Empty for a language
+    /// without file-level imports.
+    fn imported_modules(&self, _file_id: i64) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 /// See `LanguageProfile::deferred_receiver`. `Ok(None)`: not this
@@ -1017,15 +1022,9 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 method.to_string(),
                 format!(".{ty}.{method}"),
             ),
-            DeclarationQuery::Alias(name) => (
-                "s.kind IN ('type', 'interface') AND s.name = ?1",
-                name.to_string(),
-                String::new(),
-                String::new(),
-            ),
-            DeclarationQuery::Function(name) => (
-                "s.kind = 'function' AND s.name = ?1",
-                name.to_string(),
+            DeclarationQuery::Alias(qualname) => (
+                "s.kind IN ('type', 'interface') AND s.qualname = ?1",
+                qualname.to_string(),
                 String::new(),
                 String::new(),
             ),
@@ -1129,6 +1128,19 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
             }
         }
         Ok(Vec::new())
+    }
+
+    fn imported_modules(&self, file_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.resolver.conn.prepare_cached(
+            "SELECT DISTINCT target_qualname FROM edges
+             WHERE kind = 'IMPORTS_FILE' AND file_id = ?1 AND graph_version = ?2
+               AND target_qualname IS NOT NULL
+             ORDER BY 1",
+        )?;
+        let rows = stmt.query_map(params![file_id, self.resolver.graph_version], |row| {
+            row.get::<_, String>(0)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports> {
