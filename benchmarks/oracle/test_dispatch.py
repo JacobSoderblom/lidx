@@ -47,6 +47,28 @@ class RustDispatch(unittest.TestCase):
         self.assertTrue(sc.is_test_path("crates/x/tests/foo.rs"))
         self.assertFalse(sc.is_test_path("crates/x/src/foo.rs"))
 
+    def test_path_only_test_rule_is_repowises_and_keeps_helpers(self):
+        for path in ("tests/it.rs", "crates/x/tests/foo.rs", "crates/x/test/a.rs", "src/a.test.rs", "Tests/x.rs"):
+            self.assertTrue(sc.is_path_test(path), path)
+        # path-only: tests.rs / *_tests.rs files, testutil modules, benches and examples are all kept
+        for path in ("crates/searcher/src/testutil.rs", "crates/x/src/tests.rs", "crates/x/src/a_tests.rs",
+                     "crates/globset/benches/bench.rs", "crates/grep/examples/simplegrep.rs", "src/contest/a.rs"):
+            self.assertFalse(sc.is_path_test(path), path)
+
+    def test_cfg_test_keeps_its_own_rule_apart_from_the_path_rule(self):
+        self.assertTrue(sc.is_test_path("crates/x/src/tests.rs"))
+        self.assertFalse(sc.is_path_test("crates/x/src/tests.rs"))
+
+    def test_modules_gated_in_their_parent_are_test_files(self):
+        text = "#[cfg(test)]\nmod testutil;\n#[cfg(test)]\npub(crate) mod fixtures;\nmod real;\n#[cfg(test)]\nmod inline { fn t() {} }\n"
+        self.assertEqual(sc.gated_modules(text), ["testutil", "fixtures"])
+        self.assertEqual(sc.gated_modules("// #[cfg(test)]\nmod commented;\n"), [])
+        files, d = sc.module_files("crates/searcher/src/lib.rs", "testutil")
+        self.assertEqual(files, {"crates/searcher/src/testutil.rs", "crates/searcher/src/testutil/mod.rs"})
+        self.assertEqual(d, "crates/searcher/src/testutil/")
+        files, d = sc.module_files("src/walk.rs", "helpers")  # a non-mod.rs parent keeps its children in a directory
+        self.assertEqual(files, {"src/walk/helpers.rs", "src/walk/helpers/mod.rs"})
+
 
 FIXTURE = """\
 interface Shape { area(): number }

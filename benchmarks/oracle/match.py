@@ -144,8 +144,40 @@ def pick_res(kinds):
     return sorted(kinds)[0] if kinds else "none"
 
 
-def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
-    """Compare lidx edges of the given kinds against the oracle. Returns (summary, fn_list, fp_list, extra)."""
+def repowise_ts_scope(oracle):
+    """The TypeScript oracle as repowise's `tsc` oracle emits it (graph/experiments/g4-oracle-anchored/oracle-ts/oracle.mjs).
+
+    repowise (1) records no call made outside a function (module level): the edge is not emitted and the caller position is
+    kept out of the judged set; (2) withholds a call resolved to an abstract target (an interface or type-literal member, an
+    abstract method, a function-typed field: anything without a body): the edge is not emitted and the enclosing function
+    stops being judged. Our oracle marks (2) as `dispatch` and (1) as a caller on line 0, so both are recognisable.
+
+    Returns (oracle without those edges, set of caller keys that stay out of the judged set). Everything else, including
+    capture gaps (nested functions lidx has no symbol for), stays in the recall denominator as it does for repowise.
+    """
+    kept, withheld = [], set()
+    for e in oracle["edges"]:
+        module_level = e["caller"]["line"] == 0
+        if module_level or e.get("dispatch"):
+            # the enclosing named functions stop being judged; the file's `<module>` only when the call is at module level
+            withheld.update([okey_of(e["caller"])] + list(e.get("caller_alts", []))
+                            + [k for k in e.get("caller_chain", []) if not k.endswith(":0")])
+            continue
+        kept.append(e)
+    out = dict(oracle)
+    out["edges"] = kept
+    return out, withheld
+
+
+def okey_of(d):
+    return "%s:%d" % (d["file"], d["line"])
+
+
+def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_callers=None):
+    """Compare lidx edges of the given kinds against the oracle. Returns (summary, fn_list, fp_list, extra).
+
+    withheld_callers: caller keys the oracle declines to judge (see repowise_ts_scope); an unmatched lidx edge from one is
+    ungradable (`caller_withheld`), a matched one still counts."""
     sym_keys = {s["key"] for s in syms.values() if "key" in s}
     # Declaration merging (an interface and a const of the same name, overloads) is one declaration: compare
     # declarations by (file, qualname) whenever lidx has a symbol at the position.
@@ -212,6 +244,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
     # a caller that carries an oracle edge (including an alt or lifted caller) is a judgeable caller, so lidx edges
     # from e.g. a `const X = core.$constructor(...)` container are graded, not dropped as "not judged"
     ocallers_c |= {cn(k) for r in oedges for k in r["cks"]}
+    withheld_c = {cn(k) for k in (withheld_callers or ())}
 
     # ---- lidx side ---------------------------------------------------
     def span(a, b):
@@ -283,6 +316,8 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
             reason = "caller_file_not_covered"
         elif not oracle.get("exhaustive_callers") and cn(csym["key"]) not in ocallers_c:
             reason = "caller_not_judged"
+        elif cn(csym["key"]) in withheld_c:
+            reason = "caller_withheld"
         elif (tsym["file"] not in ofiles and not (is_test_file(lang, tsym["file"]) and not is_test_file(lang, csym["file"]))
               and not any("%s:%d" % (csym["file"], ln) in ext_sites for ln in p["span"])):
             # a callee in a file the oracle did not analyse (build tags, other scope) cannot be judged ... unless the

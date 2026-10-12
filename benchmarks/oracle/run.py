@@ -47,7 +47,11 @@ def cells_for(repo):
         return [{"id": "go/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": ["-tests"]},
                 {"id": "go/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
     if lang == "rust":
-        return [{"id": "rust/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": ["--no-tests"]},
+        # path_tests_excluded is repowise's cell (test files by path only, #[cfg(test)] code kept); no_tests is our stricter
+        # variant (also drops #[cfg(test)] items and modules gated in their parent) and is a diagnostic row only
+        return [{"id": "rust/%s/path_tests_excluded" % n, "repo": n, "lang": lang, "variant": "path_tests_excluded",
+                 "args": ["--path-tests-excluded"]},
+                {"id": "rust/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": ["--no-tests"]},
                 {"id": "rust/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": []}]
     return [{"id": "%s/%s" % (lang, n), "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
 
@@ -245,6 +249,15 @@ def main():
             summ, fn, fp, gap, ungr = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS",))
             summ_r, fn_r, fp_r, _, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES", "USES"))
             res["calls"] = summ
+            if cell["lang"] == "ts":
+                # the repowise-comparable TypeScript grading: no module-level callers, no abstract targets (see
+                # match.repowise_ts_scope); `calls` stays the stricter grading and is a diagnostic row
+                o_cmp, withheld = match.repowise_ts_scope(oracle)
+                comp = match.grade(o_cmp, syms, edges, repo["lang"], src, ("CALLS",), withheld_callers=withheld)[0]
+                comp["oracle_edges_removed"] = len(oracle["edges"]) - len(o_cmp["edges"])
+                comp["module_level_removed"] = sum(1 for e in oracle["edges"] if e["caller"]["line"] == 0)
+                comp["abstract_target_removed"] = sum(1 for e in oracle["edges"] if e.get("dispatch"))
+                res["comparable"] = comp  # other languages: `calls` is the comparable grading
             res["calls_plus_references"] = {k: summ_r[k] for k in ("graded", "tp", "fp", "precision", "precision_ci", "recall", "recall_ci",
                                                                    "matched_oracle_edges")}
             res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES", "USES")}

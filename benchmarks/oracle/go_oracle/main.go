@@ -257,8 +257,12 @@ func main() {
 			}
 			return ""
 		}
-		// A closure callee is reported as its outermost enclosing declaration: that
-		// is the named function a graph can point at (repowise scores it the same way).
+		// A closure callee is reported as its outermost enclosing declaration: that is the
+		// named function a graph can point at. repowise keys a closure callee at the function
+		// literal itself, which no graph has a symbol for, so none of its closure edges can be
+		// matched by anyone; here none of ours is matched either (0 in every cell), so the choice
+		// does not change a numerator. Keyed at the literal, edges into different literals of one
+		// declaration would count as separate pairs, which could only enlarge a denominator.
 		closure := isClosure(to)
 		ct, why := declOf(to)
 		if why != "" {

@@ -18,12 +18,18 @@ REPOWISE = {
     "go/syft/tests":          (0.982, 0.341, 22590, 7648),
     "ts/zod":                 (0.995, 0.796, 1269, 899),
     "ts/hono":                (0.976, 0.806, 706, 528),
-    "rust/ripgrep/no_tests":  (0.852, 0.532, 4555, 2520),
-    "rust/fd/no_tests":       (0.899, 0.619, 231, 139),
+    "rust/ripgrep/path_tests_excluded": (0.852, 0.532, 4555, 2520),
+    "rust/fd/path_tests_excluded":      (0.899, 0.619, 231, 139),
 }
 
 ORDER = ["go/cobra/tests", "go/cobra/no_tests", "go/gitleaks/no_tests", "go/gitleaks/tests", "go/syft/no_tests", "go/syft/tests",
-         "ts/zod", "ts/hono", "rust/ripgrep/no_tests", "rust/ripgrep/tests", "rust/fd/no_tests", "rust/fd/tests"]
+         "ts/zod", "ts/hono", "rust/ripgrep/path_tests_excluded", "rust/ripgrep/no_tests", "rust/ripgrep/tests",
+         "rust/fd/path_tests_excluded", "rust/fd/no_tests", "rust/fd/tests"]
+
+
+def comparable(c):
+    """The grading that is set against repowise: TypeScript uses repowise's scope, the others the cell's own grading."""
+    return c.get("comparable", c["calls"])
 
 
 def wilson(k, n, z=1.96):
@@ -73,11 +79,24 @@ def build(results_dir):
     w("")
     w("## Head-to-head with repowise")
     w("")
-    w("Precision = lidx edges the compiler confirms / lidx edges the compiler can judge. Recall = compiler edges "
+    w("Every row grades lidx the way repowise grades its own tool, so the verdicts are neither flattered nor penalised by scope. "
+      "Precision = lidx edges the compiler confirms / lidx edges the compiler can judge. Recall = compiler edges "
       "matched (dispatch edges included) / **all** in-scope compiler edges, capture gaps and unindexed callees "
-      "charged to lidx: the denominator repowise uses. repowise columns are their published point estimates "
+      "charged to lidx: the denominator repowise uses. The scope differences handled here:")
+    w("")
+    w("- **TypeScript**: repowise's `tsc` oracle emits no call made outside a function (module level) and withholds every "
+      "call resolved to an abstract target (interface or type-literal member, abstract method, function-typed field), "
+      "together with the function that makes it. The TypeScript rows drop the same edges from the denominator and leave "
+      "those callers unjudged for precision. The stricter grading is in the diagnostic table below.")
+    w("- **Rust**: repowise excludes test files by path only (`tests/` or `test/` directories) and keeps `#[cfg(test)]` code. "
+      "The `path_tests_excluded` cell does the same. The `#[cfg(test)]`-excluded cell is in the diagnostic table.")
+    w("- **Go**: unchanged; the cells already match (closure callees are keyed at the enclosing declaration here and at the "
+      "literal in repowise, see the README).")
+    w("")
+    w("repowise columns are their published point estimates "
       "(`docs/BENCHMARKS.md`, repowise main, 2026-10-03) with Wilson intervals computed by us from the edge counts of the "
-      "same cells in repowise-bench. ahead / tied / behind compares the two intervals, never the point estimates.")
+      "same cells in repowise-bench. **ahead / tied / behind compares the two 95% intervals** (ahead: lidx's lower bound is above "
+      "repowise's upper bound; behind: lidx's upper bound is below repowise's lower bound; otherwise tied), never the point estimates.")
     w("")
     w("| Cell | lidx P [95% CI] | repowise P [95% CI] | P | lidx R [95% CI] | repowise R [95% CI] | R | oracle edges (lidx / repowise) |")
     w("|---|---|---|---|---|---|---|---|")
@@ -86,19 +105,53 @@ def build(results_dir):
         rw = REPOWISE.get(cid)
         if not c or not rw:
             continue
-        s = c["calls"]
+        s = comparable(c)
         pci, rci = rw_ci(rw[0], rw[3]), rw_ci(rw[1], rw[2])
         w("| %s | %.3f %s | %.3f %s | **%s** | %.3f %s | %.3f %s | **%s** | %d / %d |" % (
             cid, s["precision"], ci(s["precision_ci"]), rw[0], ci(pci), verdict(s["precision_ci"], pci),
             s["recall_comparable"], ci(s["recall_comparable_ci"]), rw[1], ci(rci), verdict(s["recall_comparable_ci"], rci),
             s["oracle_edges"], rw[2]))
     w("")
-    w("Not published by repowise, so not compared: cobra without tests, the Rust with-tests variants, TypeScript with tests.")
+    w("Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests.")
     w("")
+    w("### Stricter variants (diagnostic, no verdict)")
+    w("")
+    w("The same repositories graded with our own, stricter scope. They answer \"how good is lidx\", not \"how does it compare\": "
+      "the repowise value shown is the one for the cell it is comparable to, for reference only.")
+    w("")
+    w("| Cell | Scope | lidx P [95% CI] | lidx R [95% CI] | oracle edges | repowise-comparable cell P / R |")
+    w("|---|---|---|---|---:|---|")
+    strict = [("ts/zod", "ts/zod", "module-level callers and abstract targets kept (dispatch counted in recall)"),
+              ("ts/hono", "ts/hono", "module-level callers and abstract targets kept (dispatch counted in recall)"),
+              ("rust/ripgrep/no_tests", "rust/ripgrep/path_tests_excluded", "`#[cfg(test)]` items and cfg-gated modules also excluded"),
+              ("rust/fd/no_tests", "rust/fd/path_tests_excluded", "`#[cfg(test)]` items and cfg-gated modules also excluded")]
+    for cid, rid, why in strict:
+        c = cells.get(cid)
+        if not c:
+            continue
+        s = c["calls"]
+        cc = comparable(cells[rid]) if rid in cells else None
+        ref = "%s / %s" % (pct(cc["precision"]), pct(cc["recall_comparable"])) if cc else "-"
+        w("| %s | %s | %s %s | %s %s | %d | %s |" % (cid, why, pct(s["precision"]), ci(s["precision_ci"]), pct(s["recall_comparable"]),
+                                                  ci(s["recall_comparable_ci"]), s["oracle_edges"], ref))
+    w("")
+    tsc = [(cid, comparable(cells[cid])) for cid in ("ts/zod", "ts/hono") if cid in cells]
+    if tsc:
+        w("TypeScript scope effect: " + "; ".join(
+            "%s removes %d module-level and %d abstract-target oracle edges (%d distinct, some are both) and withholds %d lidx edges from precision (caller not judged by the oracle)"
+            % (cid, s.get("module_level_removed", 0), s.get("abstract_target_removed", 0), s.get("oracle_edges_removed", 0),
+               s["ungradable"].get("caller_withheld", 0)) for cid, s in tsc) + ".")
+        w("")
+    rs = [(cid, cells[cid]["calls"]) for cid in ("rust/ripgrep/path_tests_excluded", "rust/fd/path_tests_excluded") if cid in cells]
+    if rs:
+        w("Rust denominators: " + "; ".join("%s %d compiler edges here against %d in repowise-bench (%+.1f%%)" % (
+            cid, s["oracle_edges"], REPOWISE[cid][2], 100 * (s["oracle_edges"] / REPOWISE[cid][2] - 1)) for cid, s in rs) + ".")
+        w("")
     w("## Diagnostic columns")
     w("")
     w("`recall (static)` is over static edges whose caller and callee lidx indexes (dispatch, capture gaps out); "
-      "`recall incl. dispatch` adds dispatch back; `recall comparable` is the head-to-head figure above.")
+      "`recall incl. dispatch` adds dispatch back; `recall comparable` is the head-to-head figure for cells graded the same way "
+      "as repowise (for TypeScript the head-to-head table uses repowise's narrower scope, so its figure differs from this column).")
     w("")
     w("| Cell | Oracle | Oracle edges | static edges judged | dispatch edges | capture gap | graded lidx edges | P | recall (static) | recall incl. dispatch | recall comparable |")
     w("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
@@ -113,8 +166,8 @@ def build(results_dir):
             pct(s["recall_comparable"])))
     w("")
     w("`tests` = test files are part of the analysed program and test functions are roots; `no_tests` = production code only "
-      "(roots: `main`, or for a library with no `main` package its exported surface; Rust drops `tests/` directories and "
-      "`#[cfg(test)]` items). lidx indexes the whole repository once; edges from files or functions the compiler did not "
+      "(roots: `main`, or for a library with no `main` package its exported surface; Rust `path_tests_excluded` drops "
+      "files under `tests/` or `test/` directories, Rust `no_tests` also drops `#[cfg(test)]` items and modules gated by it). lidx indexes the whole repository once; edges from files or functions the compiler did not "
       "analyse are excluded from precision and listed as ungradable.")
     w("")
     tc = meta.get("toolchains", {})
@@ -162,6 +215,12 @@ def build(results_dir):
         w("- oracle: %s, %d edges: %d static with an indexed caller, %d dispatch (%d of them found), %d capture gap" % (
             c.get("oracle_mode"), s["oracle_edges"], s["oracle_edges_caller_indexed"], s.get("dispatch_edges", 0), s.get("dispatch_matched", 0),
             s["capture_gap_edges"]))
+        if "comparable" in c:
+            cs = c["comparable"]
+            w("- repowise-comparable scope: %d oracle edges (%d module-level and %d abstract-target edges removed), P %s %s, R %s %s; "
+              "the figures in this section are the stricter grading" % (
+                  cs["oracle_edges"], cs["module_level_removed"], cs["abstract_target_removed"], pct(cs["precision"]), ci(cs["precision_ci"]),
+                  pct(cs["recall_comparable"]), ci(cs["recall_comparable_ci"])))
         w("- unresolved-site exclusion: %d lidx pairs left out; precision would be %s if they were counted wrong" % (
             s.get("unresolved_pairs_excluded", 0), pct(s.get("precision_if_unresolved_counted_wrong"))))
         w("- recall when both ends are indexed symbols: %s (%d oracle edges); caller lifted to an enclosing declaration for %d edges; capture gap reasons: %s" % (

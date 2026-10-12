@@ -197,6 +197,15 @@ def is_test_path(path):
     return "tests" in parts[:-1] or name in ("tests.rs", "test.rs") or name.endswith("_tests.rs")
 
 
+def is_path_test(path):
+    """repowise's test rule for these cells (`is_test_file` in graph/experiments/g9-language-oracles/join.py), path only: a
+    `test/` or `tests/` directory at the root or anywhere below, plus the `.test.`, `.tests/` and `.testutils/` spellings.
+    It looks at nothing inside a file, so `#[cfg(test)]` code and `testutil.rs`-style helpers stay in scope."""
+    p = path.lower()
+    return (p.startswith(("test/", "tests/")) or "/test/" in p or "/tests/" in p
+            or ".test." in p or ".tests/" in p or ".testutils/" in p)
+
+
 ITEM_RE = re.compile(r"^(?:pub\s*(?:\([^)]*\))?\s*)?(?:(?:unsafe|async|const|extern(?:\s+\"[^\"]*\")?)\s+)*(fn|mod|impl|trait|struct|enum|union|static|type|use|const)\b")
 
 
@@ -259,6 +268,33 @@ def _item_end(clean, i):
     return len(clean) - 1
 
 
+GATED_MOD_RE = re.compile(r"mod\s+(r#)?(\w+)\s*;")
+
+
+def gated_modules(text):
+    """Names of out-of-line modules declared under `#[cfg(test)]` (`#[cfg(test)] mod testutil;`): their file is test code
+    even though nothing inside it carries the attribute."""
+    clean = STRIP_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    names = []
+    for m in CFG_TEST_RE.finditer(clean):
+        close = clean.find("]", m.end())
+        start = _skip_attrs(clean, close + 1)
+        head = ITEM_RE.match(clean[start:start + 200])
+        if head and head.group(1) == "mod":
+            g = GATED_MOD_RE.search(clean[start:start + 200])
+            if g:
+                names.append(g.group(2))
+    return names
+
+
+def module_files(parent_path, name):
+    """(files, directory prefix) an out-of-line `mod name;` declared in parent_path resolves to."""
+    d, base = os.path.split(parent_path)
+    if base not in ("mod.rs", "lib.rs", "main.rs"):
+        d = os.path.join(d, base[:-3])
+    return {os.path.join(d, name + ".rs"), os.path.join(d, name, "mod.rs")}, os.path.join(d, name) + "/"
+
+
 def test_regions(text):
     """0-based (first_line, last_line) ranges of the single item (module, fn, impl, struct field, statement) that
     follows each `#[cfg(test)]`."""
@@ -288,7 +324,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
     ap.add_argument("--scip", required=True)
-    ap.add_argument("--no-tests", action="store_true", help="drop tests/ directories, tests.rs files and #[cfg(test)] items")
+    ap.add_argument("--no-tests", action="store_true",
+                    help="drop tests/ directories, tests.rs files, #[cfg(test)] items and modules gated by #[cfg(test)] in their parent")
+    ap.add_argument("--path-tests-excluded", action="store_true",
+                    help="repowise's rule: drop files by path only (is_path_test); #[cfg(test)] code stays in scope")
     a = ap.parse_args()
     repo = os.path.realpath(a.repo)
     data = open(a.scip, "rb").read()
@@ -301,17 +340,25 @@ def main():
     ctors = {}  # tuple-struct / variant symbol -> same
     regions = {}  # path -> test regions (--no-tests)
     texts = {}
+    if a.path_tests_excluded:
+        docs = [d for d in docs if not (d["path"].endswith(".rs") and is_path_test(d["path"]))]
     if a.no_tests:
         kept = []
+        gated_files, gated_dirs = set(), []
         for d in docs:
             if d["path"].endswith(".rs") and is_test_path(d["path"]):
                 continue
             kept.append(d)
             try:
-                regions[d["path"]] = test_regions(open(os.path.join(repo, d["path"]), encoding="utf-8", errors="replace").read())
+                text = open(os.path.join(repo, d["path"]), encoding="utf-8", errors="replace").read()
             except OSError:
-                regions[d["path"]] = []
-        docs = kept
+                text = ""
+            regions[d["path"]] = test_regions(text)
+            for name in gated_modules(text):
+                fs, dr = module_files(d["path"], name)
+                gated_files |= fs
+                gated_dirs.append(dr)
+        docs = [d for d in kept if d["path"] not in gated_files and not d["path"].startswith(tuple(gated_dirs))]
 
     def in_test(path, line0):
         return any(a0 <= line0 <= b0 for a0, b0 in regions.get(path, ()))
@@ -328,7 +375,7 @@ def main():
                 ctors.setdefault(o["symbol"], (d["path"], l + 1, ctor_name(o["symbol"])))
 
     impl_idx = trait_impl_index(defs)
-    out = {"repo": repo, "tests": not a.no_tests, "files": [], "callers": [], "edges": [], "refs": [], "dropped": defaultdict(int), "unresolved_sites": [], "ext_sites": []}
+    out = {"repo": repo, "tests": not (a.no_tests or a.path_tests_excluded), "files": [], "callers": [], "edges": [], "refs": [], "dropped": defaultdict(int), "unresolved_sites": [], "ext_sites": []}
     ext = set()
     seen, seen_ref = {}, {}
     callers = set()

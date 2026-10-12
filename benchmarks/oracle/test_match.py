@@ -115,5 +115,68 @@ class Grade(unittest.TestCase):
         self.assertEqual(summ["tp"], 1)
 
 
+def ts_edge(caller_line, callee_line, name="g", **kw):
+    e = {"caller": {"file": "a.ts", "line": caller_line, "name": "c%d" % caller_line},
+         "callee": {"file": "a.ts", "line": callee_line, "name": name}, "sites": ["a.ts:%d" % (caller_line + 1)]}
+    e.update(kw)
+    return e
+
+
+def ts_oracle(edges):
+    callers = [e["caller"] for e in edges]
+    return {"files": ["a.ts"], "callers": callers, "edges": edges, "exhaustive_callers": True}
+
+
+class RepowiseTypeScriptScope(unittest.TestCase):
+    """repowise's tsc oracle emits no module-level call and withholds abstract targets (and the function calling them)."""
+
+    def setUp(self):
+        self.syms = {1: sym(1, "a.ts", 0, "<module>", kind="module"), 2: sym(2, "a.ts", 1, "f"), 3: sym(3, "a.ts", 5, "g"),
+                     4: sym(4, "a.ts", 9, "h"), 5: sym(5, "a.ts", 20, "k"), 6: sym(6, "a.ts", 30, "z")}
+        self.src = match.Sources("/nonexistent")
+
+    def edges_of(self, *pairs):
+        return [dict(edge(s, t, 3), epath="a.ts") for s, t in pairs]
+
+    def test_module_level_and_abstract_edges_leave_the_denominator(self):
+        o = ts_oracle([ts_edge(1, 5), ts_edge(0, 5, name="g"), ts_edge(9, 20, dispatch=True), ts_edge(9, 5)])
+        scoped, withheld = match.repowise_ts_scope(o)
+        self.assertEqual(len(scoped["edges"]), 2)
+        self.assertEqual(len(o["edges"]), 4)  # the input is untouched
+        self.assertEqual(withheld, {"a.ts:0", "a.ts:9"})
+        strict, *_ = match.grade(o, self.syms, self.edges_of((2, 3)), "ts", self.src)
+        comp, *_ = match.grade(scoped, self.syms, self.edges_of((2, 3)), "ts", self.src, withheld_callers=withheld)
+        self.assertEqual(strict["oracle_edges"], 4)
+        self.assertEqual(comp["oracle_edges"], 2)
+        self.assertEqual(comp["recall_comparable"], 0.5)
+
+    def test_capture_gaps_stay_in_the_denominator(self):
+        o = ts_oracle([ts_edge(1, 5), ts_edge(1, 77, name="nested")])  # the second callee is not a symbol lidx indexes
+        scoped, _ = match.repowise_ts_scope(o)
+        comp, *_ = match.grade(scoped, self.syms, self.edges_of((2, 3)), "ts", self.src)
+        self.assertEqual((comp["oracle_edges"], comp["capture_gap_edges"]), (2, 1))
+        self.assertEqual(comp["recall_comparable"], 0.5)
+
+    def test_unmatched_edge_from_a_withheld_caller_is_ungradable_but_a_match_still_counts(self):
+        o = ts_oracle([ts_edge(9, 20, dispatch=True), ts_edge(9, 5)])
+        scoped, withheld = match.repowise_ts_scope(o)
+        comp, *_ = match.grade(scoped, self.syms, self.edges_of((4, 3), (4, 6)), "ts", self.src, withheld_callers=withheld)
+        self.assertEqual((comp["tp"], comp["fp"]), (1, 0))  # h -> g matches the static oracle edge
+        self.assertEqual(comp["ungradable"], {"caller_withheld": 1})  # h -> z does not, but h is not judged
+        strict, *_ = match.grade(o, self.syms, self.edges_of((4, 3), (4, 6)), "ts", self.src)
+        self.assertEqual((strict["tp"], strict["fp"]), (1, 1))  # the stricter grading counts it wrong
+
+    def test_module_symbol_edges_are_not_judged(self):
+        o = ts_oracle([ts_edge(0, 5)])
+        scoped, withheld = match.repowise_ts_scope(o)
+        comp, *_ = match.grade(scoped, self.syms, self.edges_of((1, 5)), "ts", self.src, withheld_callers=withheld)
+        self.assertEqual(comp["graded"], 0)
+
+    def test_nested_call_withholds_enclosing_functions_but_not_the_module(self):
+        o = ts_oracle([ts_edge(9, 20, dispatch=True, caller_chain=["a.ts:1", "a.ts:0"])])
+        _, withheld = match.repowise_ts_scope(o)
+        self.assertEqual(withheld, {"a.ts:9", "a.ts:1"})
+
+
 if __name__ == "__main__":
     unittest.main()
