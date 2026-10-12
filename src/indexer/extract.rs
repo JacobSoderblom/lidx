@@ -162,6 +162,29 @@ pub enum DeferredBase {
     /// these absolute qualname candidates. `DeferredReturn::method` holds
     /// the callee's bare name and is not consulted.
     Function(Vec<String>),
+    /// TypeScript: the type of a callback parameter that gets its type from
+    /// context (`createMiddleware(async (c, next) => ..)`). `method` names
+    /// a property of that type; empty means the parameter itself.
+    Param(ParamType),
+}
+
+/// "Parameter `index` of the callable type `origin` names": the contextual
+/// type of an untyped callback parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParamType {
+    pub origin: ParamOrigin,
+    pub index: usize,
+}
+
+/// Where a callback's contextual callable type comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParamOrigin {
+    /// A function type or alias by name (`MiddlewareHandler`), written as
+    /// the annotation of the variable or return type the callback fills.
+    Callable(String),
+    /// The type of parameter `arg_index` of `callee` (`createMiddleware`, or
+    /// `Type.method`), as declared.
+    Argument { callee: String, arg_index: usize },
 }
 
 /// "The parameter at `index` (or named `name`) of the `arg_count`-argument
@@ -205,6 +228,18 @@ impl DeferredReturn {
         }
     }
 
+    /// A property (`method`; empty for none) of a contextually typed callback
+    /// parameter.
+    pub fn on_param(param: ParamType, method: &str) -> Self {
+        Self {
+            base: DeferredBase::Param(param),
+            method: method.to_string(),
+            awaited: false,
+            static_only: false,
+            name_only: false,
+        }
+    }
+
     pub fn on_call(inner: DeferredReturn, method: &str, awaited: bool) -> Self {
         Self {
             base: DeferredBase::Call(Box::new(inner)),
@@ -218,7 +253,7 @@ impl DeferredReturn {
     /// How many calls this nests (1 for a call on a type).
     pub fn depth(&self) -> usize {
         match &self.base {
-            DeferredBase::Type(_) | DeferredBase::Function(_) => 1,
+            DeferredBase::Type(_) | DeferredBase::Function(_) | DeferredBase::Param(_) => 1,
             DeferredBase::Call(inner) => 1 + inner.depth(),
         }
     }

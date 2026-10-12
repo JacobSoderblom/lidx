@@ -545,6 +545,10 @@ pub enum DeclarationQuery<'a> {
     /// Methods named `method` on a type named `ty` (`ty.method`, or
     /// `<namespace>.ty.method`; dot-separated qualnames).
     Member { ty: &'a str, method: &'a str },
+    /// A type alias or interface named `name` (TypeScript callable types).
+    Alias(&'a str),
+    /// A function named `name` (a bare callee), at any nesting.
+    Function(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -1007,6 +1011,18 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 format!("{ty}.{method}"),
                 method.to_string(),
                 format!(".{ty}.{method}"),
+            ),
+            DeclarationQuery::Alias(name) => (
+                "s.kind IN ('type', 'interface') AND s.name = ?1",
+                name.to_string(),
+                String::new(),
+                String::new(),
+            ),
+            DeclarationQuery::Function(name) => (
+                "s.kind = 'function' AND s.name = ?1",
+                name.to_string(),
+                String::new(),
+                String::new(),
             ),
         };
         let mut stmt = self.resolver.conn.prepare_cached(&format!(

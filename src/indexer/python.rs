@@ -1149,6 +1149,7 @@ fn deferred_class(
     let returns = match &call.base {
         DeferredBase::Function(candidates) => function_returns(candidates, index)?,
         DeferredBase::Type(ty) => member_returns(ty, &call.method, index)?,
+        DeferredBase::Param(_) => return Ok(None),
         DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
         DeferredBase::Call(inner) => match deferred_class(inner, index, depth + 1)? {
             Some(ty) => member_returns(&ty, &call.method, index)?,
