@@ -1,0 +1,15 @@
+[
+{"callee":{"file":"src/core/finalize.ts","line":217,"name":"handleCrossReference"},"caller":{"file":"src/plugins/mapset.ts","line":253,"name":"add"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:260"]},
+{"callee":{"file":"src/core/finalize.ts","line":217,"name":"handleCrossReference"},"caller":{"file":"src/plugins/mapset.ts","line":68,"name":"set"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:77"]},
+{"callee":{"file":"src/core/immerClass.ts","line":201,"name":"shouldUseStrictIteration"},"caller":{"file":"src/core/current.ts","line":21,"name":"currentImpl"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/core/current.ts:31"]},
+{"callee":{"file":"src/core/immerClass.ts","line":83,"name":"produce"},"caller":{"file":"src/core/immerClass.ts","line":90,"name":"curriedProduce"},"category":"recorded_as_uses","detail":{"edge_kind":"USES","lidx_target":"src/types/types-internal.ts:46"},"fanout":1,"sites":["src/core/immerClass.ts:95"]},
+{"callee":{"file":"src/core/proxy.ts","line":342,"name":"markChanged"},"caller":{"file":"src/plugins/mapset.ts","line":100,"name":"clear"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:105"]},
+{"callee":{"file":"src/core/proxy.ts","line":342,"name":"markChanged"},"caller":{"file":"src/plugins/mapset.ts","line":253,"name":"add"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:258"]},
+{"callee":{"file":"src/core/proxy.ts","line":342,"name":"markChanged"},"caller":{"file":"src/plugins/mapset.ts","line":265,"name":"delete"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:273"]},
+{"callee":{"file":"src/core/proxy.ts","line":342,"name":"markChanged"},"caller":{"file":"src/plugins/mapset.ts","line":282,"name":"clear"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:287"]},
+{"callee":{"file":"src/core/proxy.ts","line":342,"name":"markChanged"},"caller":{"file":"src/plugins/mapset.ts","line":68,"name":"set"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:73"]},
+{"callee":{"file":"src/core/proxy.ts","line":342,"name":"markChanged"},"caller":{"file":"src/plugins/mapset.ts","line":82,"name":"delete"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:90"]},
+{"callee":{"file":"src/core/scope.ts","line":39,"name":"getCurrentScope"},"caller":{"file":"src/plugins/mapset.ts","line":215,"name":"constructor"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:220"]},
+{"callee":{"file":"src/core/scope.ts","line":39,"name":"getCurrentScope"},"caller":{"file":"src/plugins/mapset.ts","line":38,"name":"constructor"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:43"]},
+{"callee":{"file":"src/utils/common.ts","line":89,"name":"each"},"caller":{"file":"src/plugins/mapset.ts","line":100,"name":"clear"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/plugins/mapset.ts:107"]}
+]

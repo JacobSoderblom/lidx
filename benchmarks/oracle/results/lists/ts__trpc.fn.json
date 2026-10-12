@@ -1,0 +1,3 @@
+[
+{"callee":{"file":"packages/server/src/vendor/unpromise/unpromise.ts","line":60,"name":"Unpromise"},"caller":{"file":"packages/server/src/vendor/unpromise/unpromise.ts","line":236,"name":"createSubscribablePromise"},"category":"wrong_target","detail":{"lidx_target":"packages/server/src/vendor/unpromise/unpromise.ts:84","resolution_kind":"exact","same_file":true},"fanout":1,"sites":["packages/server/src/vendor/unpromise/unpromise.ts:237"]}
+]

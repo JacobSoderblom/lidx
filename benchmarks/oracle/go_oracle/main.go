@@ -81,7 +81,11 @@ func main() {
 			packages.NeedDeps | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedModule,
 		Dir:   root,
 		Tests: *tests,
-		Env:   append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-mod=mod"),
+		// The corpus is untrusted: packages.Load only runs `go list`, which never runs `go generate`; CGO_ENABLED=0 stops
+		// the cgo tool (and any C compiler) from running on cgo packages; -mod=readonly never rewrites go.mod/go.sum;
+		// GOWORK=off and GOPACKAGESDRIVER=off keep a go.work file or a driver binary on PATH from changing what is loaded;
+		// GOFLAGS is replaced so an inherited -toolexec or -overlay cannot apply.
+		Env: append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOWORK=off", "GOPACKAGESDRIVER=off"),
 	}
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {

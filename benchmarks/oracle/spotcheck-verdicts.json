@@ -1,5 +1,5 @@
 {
- "_notes": "**How the rules were iterated.** The first samples found artefacts and mis-bucketed exclusions well above 10%; every item below was read by hand and led to a rule change before the final samples were drawn:\n\n- Review of the first report (5 of 14 dispatch FNs mis-bucketed): TypeScript marked calls to a single-initialiser `const X = core.$constructor(...)` as dispatch (281 of 359 TypeScript dispatch edges), and Rust marked 449 inherent methods and 54 tuple-struct constructors as trait dispatch because the symbol was split on `/`. Both rules were rewritten and have unit tests.\n- Bucket sample, Go `callee_file_not_covered`: 10 of 10 were production code resolved to a symbol in a `_test.go` file, an edge that cannot exist; the exclusion hid wrong edges. They are now counted as wrong edges (category `calls_test_code`). The same rule covers Rust and TypeScript. One further item was hidden behind a build tag although the oracle knew the site calls the standard library; sites the oracle knows call code outside the repo are now graded.\n- Bucket sample, TypeScript `caller_not_judged`: 17 of 17 were mis-bucketed (export-list entries and shorthand properties at module level, class-field initialisers that only name a function, `export default function` callers). tsc analyses every call in a covered file, so the TypeScript oracle now judges every caller in the analysed files.\n- Bucket sample, `oracle_unresolved_site`: 5 of 6 TypeScript items and 10 of 10 Rust items withheld an edge for a different call on the same line, or for an enum-variant constructor whose in-repo lookalike is a wrong edge. An unresolved call now withholds only a lidx edge whose callee has the same name; Rust variant constructor sites count as sites that call outside the repository.\n- Bucket sample, Rust `callee_file_not_covered`: 2 of 2 were production code calling into `tests/`. Fixed with the `calls_test_code` rule.\n- FP/FN samples before the final round: 3 of 20 TypeScript FPs were matching artefacts (calls from several module-level containers merged into one oracle edge that kept only the first container as an acceptable caller; `const objectKeys: ObjectConstructor[\"keys\"]` resolved to lib.d.ts instead of the in-repo const; a local `const match = ... as Router[\"match\"]` resolved to the interface member). A Rust edge to `SinkContext::bytes` was missing from the oracle because `#[cfg(test)]` on a struct field made the region detector swallow the next function; regions are now computed per gated item.\n- Earlier rounds (first report): 9 of 20 Go FNs were dispatch fan-out and 5 of 20 TypeScript FNs had a nested callee lidx cannot index; Go range-over-func bodies, generic instances and unreachable \"judgeable\" callers, JSX, tagged templates, enum-variant constructors, merged declarations.\n\n**Rust re-sample on the comparison cells.** After the comparison moved to repowise's scope, the Rust sample was redrawn from the `path_tests_excluded` lists (20 FP + 20 FN + 10 per bucket) and read against the source. It found one defect in the SCIP reader: a caller was keyed by its symbol, so `build.rs` and `crates/core/main.rs`, which both define `main()` in one package, shared one caller and the edge `main -> run` of `crates/core/main.rs` was attributed to `build.rs` (a `caller_not_judged` item that should have been graded). Callers are now keyed by their own definition occurrence and the cells were regenerated. It also found one oracle artefact: an FP whose call sits under `#[cfg(feature = \"pcre2\")]`, which rust-analyzer did not enable. Linux-only tests (`#[cfg(target_os = \"linux\")]`) are correctly absent from an oracle that ran on macOS and are not judged. The TypeScript and Go samples were redrawn too (the regenerated lists differ slightly from run to run on merged declarations, so some sampled ids changed) and the new items were read.\n\nThe final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, one an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but \"unreachable from main\" rests on RTA, which is sound for what it keeps and silent about code it never reaches.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
+ "_notes": "**How the rules were iterated.** The first samples found artefacts and mis-bucketed exclusions well above 10%; every item below was read by hand and led to a rule change before the final samples were drawn:\n\n- Review of the first report (5 of 14 dispatch FNs mis-bucketed): TypeScript marked calls to a single-initialiser `const X = core.$constructor(...)` as dispatch (281 of 359 TypeScript dispatch edges), and Rust marked 449 inherent methods and 54 tuple-struct constructors as trait dispatch because the symbol was split on `/`. Both rules were rewritten and have unit tests.\n- Bucket sample, Go `callee_file_not_covered`: 10 of 10 were production code resolved to a symbol in a `_test.go` file, an edge that cannot exist; the exclusion hid wrong edges. They are now counted as wrong edges (category `calls_test_code`). The same rule covers Rust and TypeScript. One further item was hidden behind a build tag although the oracle knew the site calls the standard library; sites the oracle knows call code outside the repo are now graded.\n- Bucket sample, TypeScript `caller_not_judged`: 17 of 17 were mis-bucketed (export-list entries and shorthand properties at module level, class-field initialisers that only name a function, `export default function` callers). tsc analyses every call in a covered file, so the TypeScript oracle now judges every caller in the analysed files.\n- Bucket sample, `oracle_unresolved_site`: 5 of 6 TypeScript items and 10 of 10 Rust items withheld an edge for a different call on the same line, or for an enum-variant constructor whose in-repo lookalike is a wrong edge. An unresolved call now withholds only a lidx edge whose callee has the same name; Rust variant constructor sites count as sites that call outside the repository.\n- Bucket sample, Rust `callee_file_not_covered`: 2 of 2 were production code calling into `tests/`. Fixed with the `calls_test_code` rule.\n- FP/FN samples before the final round: 3 of 20 TypeScript FPs were matching artefacts (calls from several module-level containers merged into one oracle edge that kept only the first container as an acceptable caller; `const objectKeys: ObjectConstructor[\"keys\"]` resolved to lib.d.ts instead of the in-repo const; a local `const match = ... as Router[\"match\"]` resolved to the interface member). A Rust edge to `SinkContext::bytes` was missing from the oracle because `#[cfg(test)]` on a struct field made the region detector swallow the next function; regions are now computed per gated item.\n- Earlier rounds (first report): 9 of 20 Go FNs were dispatch fan-out and 5 of 20 TypeScript FNs had a nested callee lidx cannot index; Go range-over-func bodies, generic instances and unreachable \"judgeable\" callers, JSX, tagged templates, enum-variant constructors, merged declarations.\n\n**Rust re-sample on the comparison cells.** After the comparison moved to repowise's scope, the Rust sample was redrawn from the `path_tests_excluded` lists (20 FP + 20 FN + 10 per bucket) and read against the source. It found one defect in the SCIP reader: a caller was keyed by its symbol, so `build.rs` and `crates/core/main.rs`, which both define `main()` in one package, shared one caller and the edge `main -> run` of `crates/core/main.rs` was attributed to `build.rs` (a `caller_not_judged` item that should have been graded). Callers are now keyed by their own definition occurrence and the cells were regenerated. It also found one oracle artefact: an FP whose call sits under `#[cfg(feature = \"pcre2\")]`, which rust-analyzer did not enable. Linux-only tests (`#[cfg(target_os = \"linux\")]`) are correctly absent from an oracle that ran on macOS and are not judged. The TypeScript and Go samples were redrawn too (the regenerated lists differ slightly from run to run on merged declarations, so some sampled ids changed) and the new items were read.\n\n**Re-sample after the harness-safety change (issue 432).** Rust build scripts and proc macros no longer run (fd lost one oracle edge, 257 to 256; ripgrep is unchanged), and lidx on main had moved since the last sample, so every list changed. All three samples were redrawn from the regenerated lists (20 FP + 20 FN per language where the list is that long, TypeScript has 15 FPs, plus up to 10 per bucket) and the 167 items without an earlier verdict were read against the source, one reader per language: 109 lidx errors, 59 correct exclusions, 1 oracle artefact, 2 matching artefacts (Go: a call to a local closure collapses to the enclosing test function, which lidx has no symbol for), no mis-bucketed exclusion. The held-out cells are not sampled.\n\nThe final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, one an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but \"unreachable from main\" rests on RTA, which is sound for what it keeps and silent about code it never reaches.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
  "49129eee": {
   "note": "path.Join resolved to the in-repo unknown.Join",
   "verdict": "lidx_error"
@@ -887,5 +887,689 @@
  "e9f34c08": {
   "verdict": "correct_exclusion",
   "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "4dc6938b": {
+  "verdict": "lidx_error",
+  "note": "value.IsValid() is reflect.Value.IsValid on a reflect value; lidx bound the bare name to syft pkg.IsValid."
+ },
+ "e6d1ff38": {
+  "verdict": "lidx_error",
+  "note": "scanner.Scan() is bufio.Scanner.Scan; lidx bound the bare name to the cobra command constructor commands.Scan."
+ },
+ "b2758501": {
+  "verdict": "lidx_error",
+  "note": "cmd.Context() is cobra Command.Context (external); lidx bound it to the pkgtest helper Context(t) in a test-support package."
+ },
+ "cb5113f0": {
+  "verdict": "lidx_error",
+  "note": "flags is a pflag.FlagSet, so HasAvailableFlags is pflag's; lidx bound the bare name to cobra Command.HasAvailableFlags."
+ },
+ "0def503e": {
+  "verdict": "lidx_error",
+  "note": "digest.SHA256.FromString is the go-digest package function; lidx bound it to the pkgtest CatalogTester.FromString method."
+ },
+ "1929fe20": {
+  "verdict": "lidx_error",
+  "note": "log.Warn(args...) calls the imported logging library's logger; lidx pointed production code at a method on a bufferLogger in a _test.go file."
+ },
+ "313bd620": {
+  "verdict": "lidx_error",
+  "note": "file.Name() is os.File.Name on an os.CreateTemp result; lidx bound it to cobra Command.Name."
+ },
+ "19f97d96": {
+  "verdict": "lidx_error",
+  "note": "t.Error is testing.T.Error; lidx bound it to completions flagCompError.Error."
+ },
+ "51089b32": {
+  "verdict": "lidx_error",
+  "note": "buf.String() is bytes.Buffer.String; lidx bound it to the test-only customMultiString.String in completions_test.go."
+ },
+ "30786759": {
+  "verdict": "lidx_error",
+  "note": "buf.String() is bytes.Buffer.String; lidx bound it to customMultiString.String in another test file."
+ },
+ "8a2cf5e2": {
+  "verdict": "lidx_error",
+  "note": "multierror.Append is the imported hashicorp package function; lidx bound it to internal/unknown Append."
+ },
+ "727a9780": {
+  "verdict": "lidx_error",
+  "note": "packageurl.FromString is an external package function; lidx bound it to the pkgtest CatalogTester.FromString method."
+ },
+ "77a3a757": {
+  "verdict": "lidx_error",
+  "note": "scanner.Scan() is bufio.Scanner.Scan; lidx bound it to the cobra command constructor commands.Scan."
+ },
+ "00c64afb": {
+  "verdict": "lidx_error",
+  "note": "logger is a zerolog.Logger obtained from logContext.Logger(), so logger.Trace() is zerolog; lidx bound it to gitleaks logging.Trace."
+ },
+ "967c6b4a": {
+  "verdict": "lidx_error",
+  "note": "buf.String() is bytes.Buffer.String; lidx bound it to customMultiString.String in a different test file."
+ },
+ "af7ab77a": {
+  "verdict": "lidx_error",
+  "note": "t.Error is testing.T.Error; lidx bound it to completions flagCompError.Error."
+ },
+ "2b2e5e66": {
+  "verdict": "lidx_error",
+  "note": "t.Execute is text/template Template.Execute on a parsed template; lidx bound it to cobra Command.Execute."
+ },
+ "5ab779a2": {
+  "verdict": "lidx_error",
+  "note": "ctx.Done() is context.Context.Done; lidx bound it to the unrelated ui action.Action.Done method."
+ },
+ "f08c2167": {
+  "verdict": "lidx_error",
+  "note": "scanner.Scan() is bufio.Scanner.Scan; lidx bound it to the cobra command constructor commands.Scan."
+ },
+ "ae77a32b": {
+  "verdict": "lidx_error",
+  "note": "regexp.MustCompile calls the repo's own regexp wrapper (stdlib_regex.go, !gore2regex); the call is real and lidx emitted no edge at the site."
+ },
+ "57f5e478": {
+  "verdict": "lidx_error",
+  "note": "s.Artifacts.Packages.Add(syftPkg) is a real call to Collection.Add through a field chain; lidx has no edge."
+ },
+ "d7c3b4da": {
+  "verdict": "lidx_error",
+  "note": "locations.Add(evidence...) on a LocationSet local is a real call to LocationSet.Add; lidx missed it."
+ },
+ "560fe21a": {
+  "verdict": "lidx_error",
+  "note": "WithParserByGlobs is a method chained on generic.NewCataloger(...) at line 24; lidx has no edge for the chained call."
+ },
+ "637614f9": {
+  "verdict": "lidx_error",
+  "note": "regexp.MustCompile on the repo's regexp wrapper package is a real call; lidx recorded no edge."
+ },
+ "6171df4d": {
+  "verdict": "lidx_error",
+  "note": "WithSearchRemoteLicenses is chained on DefaultCatalogerConfig() (a value-returning builder); the call is real and lidx missed it."
+ },
+ "b19b7bc9": {
+  "verdict": "lidx_error",
+  "note": "regexp.MustCompile on the repo's regexp wrapper package is a real call; lidx recorded no edge."
+ },
+ "873dd10e": {
+  "verdict": "lidx_error",
+  "note": "WithFilesConfig is a method in a builder chain at line 66; real call, lidx has no edge."
+ },
+ "934142af": {
+  "verdict": "lidx_error",
+  "note": "squashedCoords is a file.NewLocationSet() so Contains resolves to LocationSet.Contains; real call, lidx missed it."
+ },
+ "7158e467": {
+  "verdict": "lidx_error",
+  "note": "squashedCoords.Empty() is LocationSet.Empty on a NewLocationSet() local; real call, lidx missed it."
+ },
+ "9b3b9898": {
+  "verdict": "lidx_error",
+  "note": "found.Set / spdxMap.Set call the generic ptrMap[T].Set method; real call, lidx has no edge."
+ },
+ "d18f1a96": {
+  "verdict": "lidx_error",
+  "note": "regexp.MustCompile on the repo's regexp wrapper package is a real call; lidx recorded no edge."
+ },
+ "b817a93e": {
+  "verdict": "lidx_error",
+  "note": "l.ID() is the Coordinates.ID method promoted through the embedded field of Location; real call, lidx missed it."
+ },
+ "9ed4d0d6": {
+  "verdict": "lidx_error",
+  "note": "licenseLocations is a NewLocationSet() local so ToSlice() is LocationSet.ToSlice, called at lines 259 and 261; lidx missed both."
+ },
+ "2cbb70c9": {
+  "verdict": "lidx_error",
+  "note": "WithDefaultImagePullSource is chained in a builder expression at line 231; real call, lidx has no edge."
+ },
+ "ecad8ae9": {
+  "verdict": "lidx_error",
+  "note": "set.Add(l.Coordinates) calls CoordinateSet.Add on a local set; real call, lidx missed it."
+ },
+ "cf7bed97": {
+  "verdict": "lidx_error",
+  "note": "c.Add(p) in NewCollection is a direct call to the Collection.Add method on the receiver being built; lidx has no edge."
+ },
+ "ea2b5003": {
+  "verdict": "lidx_error",
+  "note": "m.FileContentsVersionMatcher(...) is a method on the ContextualEvidenceMatchers value m; real call, lidx has no edge."
+ },
+ "4b0d9ce9": {
+  "verdict": "matching_artefact",
+  "note": "The edge is TestGetEnvConfig to itself: the deferred func literal inside the t.Run closure is collapsed to its enclosing declaration; lidx has no symbol for closures."
+ },
+ "922ec878": {
+  "verdict": "matching_artefact",
+  "note": "The edge is TestDisableDescriptions to itself from calling the local closure run(); closures collapse to the enclosing declaration, so there is no distinct callee symbol."
+ },
+ "75c02407": {
+  "verdict": "correct_exclusion",
+  "note": "r.ReadSeekCloser.Seek goes through an embedded io.ReadSeekCloser interface; bufferedSeekReader.Seek is only a possible target."
+ },
+ "135012ee": {
+  "verdict": "correct_exclusion",
+  "note": "resolver is the file.Resolver interface parameter; FiletreeResolver is one possible implementation."
+ },
+ "cccff107": {
+  "verdict": "correct_exclusion",
+  "note": "catalogerFactory() is a func-typed parameter, so NewELFPackageCataloger is one possible target of a func value call."
+ },
+ "df64ce88": {
+  "verdict": "correct_exclusion",
+  "note": "defer restoreStdout() calls a func value returned by CaptureStdoutToTraceLog; AllLocations only shares the func() signature via its closure."
+ },
+ "637302ef": {
+  "verdict": "correct_exclusion",
+  "note": "p.PersistentPreRun(c, args) calls a func-typed field; TestExecuteContext is a possible target through a closure it contains."
+ },
+ "49cfef18": {
+  "verdict": "correct_exclusion",
+  "note": "defer restoreStdout() calls a func value; run() only matches through the func() literal inside it collapsed to run."
+ },
+ "e314833f": {
+  "verdict": "correct_exclusion",
+  "note": "syftjson.NewFormatEncoder() returns the sbom.FormatEncoder interface, so Encode is interface dispatch."
+ },
+ "c06ea452": {
+  "verdict": "correct_exclusion",
+  "note": "filePrepender(filename) is a func-typed parameter; GenMarkdown is a possible target through its identity func literal."
+ },
+ "e6321f5d": {
+  "verdict": "correct_exclusion",
+  "note": "defer cleanupFn() calls a func value; capture is the possible target through the func it returns."
+ },
+ "a826b4bb": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "427dcfb4": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "c7fbf8cd": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "251a2e91": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "dc9c220d": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "0e6798c4": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "bbc680b6": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "fb40aefe": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "2a038eee": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "a555780b": {
+  "verdict": "correct_exclusion",
+  "note": "The caller lives in a _test.go file, which the no_tests variant leaves out of the analysed program."
+ },
+ "6e9ee834": {
+  "verdict": "correct_exclusion",
+  "note": "trackParserMetadata is in the pkgtest test-support package, which only tests import, so RTA from main cannot reach it."
+ },
+ "fc70b59c": {
+  "verdict": "correct_exclusion",
+  "note": "MetadataTracker.RecordParserPackageMetadata is in the pkgtest test-support package, not reachable from main."
+ },
+ "587cfc3b": {
+  "verdict": "correct_exclusion",
+  "note": "redactor.go is the format/internal/testutil test helper package, used only by tests, so unreachable from main."
+ },
+ "c5bea892": {
+  "verdict": "correct_exclusion",
+  "note": "DefaultEncodersConfig is only called by format.Encoders(), which nothing in non-test code calls, so it is unreachable from main."
+ },
+ "e51bada6": {
+  "verdict": "correct_exclusion",
+  "note": "trackCatalogerMetadata is a pkgtest test-support method, unreachable from main."
+ },
+ "0428afaf": {
+  "verdict": "correct_exclusion",
+  "note": "hasFileDigests is in pkgtest test-support code, unreachable from main (and v.IsValid is reflect, a separate bad edge)."
+ },
+ "267aebd3": {
+  "verdict": "correct_exclusion",
+  "note": "UnindexedDirectory.newLocation belongs to a type only constructed in tests, so RTA from main never reaches it."
+ },
+ "9f47d80a": {
+  "verdict": "correct_exclusion",
+  "note": "ObservingResolver.FilesByGlob is a pkgtest test-support method, unreachable from main."
+ },
+ "35ab27e4": {
+  "verdict": "correct_exclusion",
+  "note": "aggregateObservations is in pkgtest metadata_tracker.go, test-support code unreachable from main."
+ },
+ "7b58747a": {
+  "verdict": "correct_exclusion",
+  "note": "hasIntegrityHash is in pkgtest test-support code, unreachable from main (and v.IsValid is reflect, a separate bad edge)."
+ },
+ "96957793": {
+  "verdict": "lidx_error",
+  "note": "z.minLength(..) is the local z object member (core.minLength factory), resolved to the v3 ZodString.minLength getter"
+ },
+ "e31377fd": {
+  "verdict": "lidx_error",
+  "note": "z.maxLength(..) is the local z object member (core.maxLength factory), resolved to the v3 ZodString.maxLength getter"
+ },
+ "95d314a1": {
+  "verdict": "lidx_error",
+  "note": "z.null() is a factory on the local z object, resolved to the getter Mocker.null in a v3 test helper"
+ },
+ "66d81675": {
+  "verdict": "lidx_error",
+  "note": "_installedGroups.get(proto) is a Map/WeakMap get, resolved to the in-repo $ZodRegistry.get"
+ },
+ "1d3cb379": {
+  "verdict": "lidx_error",
+  "note": "this.clone(..) inside the ZodObject methods is the schema instance method, resolved to the standalone util.clone function"
+ },
+ "fece06d1": {
+  "verdict": "lidx_error",
+  "note": "this.check(..) is the ZodType instance method (interface member), resolved to the module-level function check at schemas.ts:2622"
+ },
+ "ad76bd61": {
+  "verdict": "lidx_error",
+  "note": "this.safeParse(..) in the v4 ZodType methods resolved to the unrelated v3 ZodType.safeParse"
+ },
+ "53602dc7": {
+  "verdict": "lidx_error",
+  "note": "this.check(..) is the ZodType instance method, resolved to the module-level function check"
+ },
+ "47851047": {
+  "verdict": "lidx_error",
+  "note": "this.check(..) on a ZodArray is the instance method, resolved to the module-level function check"
+ },
+ "7a7cd409": {
+  "verdict": "lidx_error",
+  "note": "this.check(..) on a ZodNumber is the instance method, resolved to the module-level function check"
+ },
+ "b3f8dc2e": {
+  "verdict": "lidx_error",
+  "note": "opts.maxAge.toString() is Number.toString, resolved to the in-repo JSXNode.toString"
+ },
+ "4be2975e": {
+  "verdict": "lidx_error",
+  "note": "c.res.headers.set(..) is Headers.set on the response, resolved to the in-repo Context.set"
+ },
+ "913a697a": {
+  "verdict": "lidx_error",
+  "note": "RECOGNIZED_KEYS.has(key) is a Set.has on a local Set, resolved to $ZodRegistry.has"
+ },
+ "9162c596": {
+  "verdict": "lidx_error",
+  "note": "middleware.map(..) is Array.prototype.map, resolved to the in-repo Children.map"
+ },
+ "f6f2ef33": {
+  "verdict": "lidx_error",
+  "note": "proxyCallback.toString() is Function.toString on a proxy, resolved to the in-repo JSXNode.toString"
+ },
+ "6c8b5f58": {
+  "verdict": "lidx_error",
+  "note": "People.parse(people) on a z.array(..) schema was recorded as a USES edge to People only, no CALLS edge to ZodType.parse"
+ },
+ "083ce40d": {
+  "verdict": "lidx_error",
+  "note": "z.union(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "eda8f656": {
+  "verdict": "lidx_error",
+  "note": "z.iso.date(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "6cdf21ac": {
+  "verdict": "lidx_error",
+  "note": "z.url(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "154e2f1c": {
+  "verdict": "lidx_error",
+  "note": "z.cuid2(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "0d57b2c1": {
+  "verdict": "lidx_error",
+  "note": "z.never(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "840a6c58": {
+  "verdict": "lidx_error",
+  "note": "z.tuple(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "2a84c159": {
+  "verdict": "lidx_error",
+  "note": "z.record(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "bdcaf8c9": {
+  "verdict": "lidx_error",
+  "note": "z.intersection(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "170ebda7": {
+  "verdict": "lidx_error",
+  "note": "z.xid(..) on the local z object was recorded as a USES edge to z (from-json-schema.ts:9), no CALLS edge to the factory"
+ },
+ "9d290b7a": {
+  "verdict": "lidx_error",
+  "note": "z.<factory>(..) with z imported from \"zod/v3\" (a workspace package) was marked external (ext:z.*), though tsc resolves it to the in-repo static create in v3/types.ts"
+ },
+ "76978468": {
+  "verdict": "lidx_error",
+  "note": "z.<factory>(..) with z imported from \"zod/v3\" (a workspace package) was marked external (ext:z.*), though tsc resolves it to the in-repo static create in v3/types.ts"
+ },
+ "d2c0c729": {
+  "verdict": "lidx_error",
+  "note": "z.<factory>(..) with z imported from \"zod/v3\" (a workspace package) was marked external (ext:z.*), though tsc resolves it to the in-repo static create in v3/types.ts"
+ },
+ "e529f471": {
+  "verdict": "lidx_error",
+  "note": "isObject(input) inside the inst._zod.parse arrow has no edge at all, while handleCatchall called later in the same arrow was captured"
+ },
+ "d36c7947": {
+  "verdict": "lidx_error",
+  "note": "ctx.get(key) on a contextually typed Context parameter is a real call to Context.get; no edge recorded at that line"
+ },
+ "cd68a9bc": {
+  "verdict": "lidx_error",
+  "note": "c.req.header(..) on a contextually typed Context parameter is a real call to HonoRequest.header; no edge recorded"
+ },
+ "6dc89045": {
+  "verdict": "lidx_error",
+  "note": "ctx.external.registry.get(..) is a real call to $ZodRegistry.get through a property chain; no edge recorded"
+ },
+ "e153d138": {
+  "verdict": "lidx_error",
+  "note": "status.dirty() inside the addIssue arrow is a real call to ParseStatus.dirty; status comes from a destructured method result and no edge was recorded"
+ },
+ "a9f24443": {
+  "verdict": "lidx_error",
+  "note": "option._parseAsync(..) is a real call to ZodType._parseAsync on a map lookup result; no edge recorded"
+ },
+ "5e67c657": {
+  "verdict": "lidx_error",
+  "note": "this._def.left._parseAsync(..) is a real call to ZodType._parseAsync through a property chain; no edge recorded"
+ },
+ "e8be4068": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a *.test.ts(x) module; the hono cell analyses src without tests"
+ },
+ "cdf82cf4": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a *.test.ts(x) module; the hono cell analyses src without tests"
+ },
+ "69356f20": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a *.test.ts(x) module; the hono cell analyses src without tests"
+ },
+ "26afef04": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a *.test.ts(x) module; the hono cell analyses src without tests"
+ },
+ "a92366bc": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a *.test.ts(x) module; the hono cell analyses src without tests"
+ },
+ "c88029dc": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a *.test.ts(x) module; the hono cell analyses src without tests"
+ },
+ "6d1a74c5": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a *.test.ts(x) module; the hono cell analyses src without tests"
+ },
+ "28bae14f": {
+  "verdict": "correct_exclusion",
+  "note": "packages/bench is outside the zod cell subdir packages/zod/src, so the oracle did not analyse it"
+ },
+ "60ade1ad": {
+  "verdict": "correct_exclusion",
+  "note": "packages/bench is outside the zod cell subdir packages/zod/src, so the oracle did not analyse it"
+ },
+ "da015c28": {
+  "verdict": "correct_exclusion",
+  "note": "packages/bench is outside the zod cell subdir packages/zod/src, so the oracle did not analyse it"
+ },
+ "9a8bb644": {
+  "verdict": "correct_exclusion",
+  "note": "tsc cannot resolve Deno.mkdir at ssg.ts:16 (same name as the callee mkdir); the lidx edge to the bun mkdir is likely wrong but not gradable"
+ },
+ "ab4a32e9": {
+  "verdict": "correct_exclusion",
+  "note": "tsc cannot resolve Deno.writeFile at ssg.ts:13 (same name as the callee writeFile); the edge to the bun writeFile is likely wrong but not gradable"
+ },
+ "1b0602cd": {
+  "verdict": "correct_exclusion",
+  "note": "tsc cannot resolve write(path, data) at ssg.ts:15 (write is destructured from the Bun global), same name as the callee"
+ },
+ "7848ad0b": {
+  "verdict": "oracle_artefact",
+  "note": "hiargs.rs matcher_pcre2 body is #[cfg(feature = \"pcre2\")] and pcre2 is not a default feature, so rust-analyzer never saw builder.ucp(true) on the pcre2 RegexMatcherBuilder; lidx's edge is right."
+ },
+ "ccc8fcfd": {
+  "verdict": "lidx_error",
+  "note": "walk.rs:431 calls std io::Error::new, not the regex crate's Error::new; lidx bound the path call to an unrelated in-repo Error::new (the site is also inside cfg(not(any(windows, unix))) code)."
+ },
+ "c5034245": {
+  "verdict": "lidx_error",
+  "note": ".max_depth(config.max_depth) at walk.rs:365 is a method on the ignore WalkBuilder (external to fd), not fd's Opts::max_depth; wrong bare-name target."
+ },
+ "d90cace9": {
+  "verdict": "lidx_error",
+  "note": "LineMatchKind::Candidate(i) is an enum variant constructor in the matcher crate, not the globset Candidate struct; lidx matched on the bare name."
+ },
+ "7cc0a960": {
+  "verdict": "lidx_error",
+  "note": "self.clone() in Config::build_many clones Config (#[derive(Clone)] in regex/config.rs), not ignore's Error::clone; wrong target."
+ },
+ "54b92b6b": {
+  "verdict": "lidx_error",
+  "note": "File::open(path) is std::fs::File::open, not MmapChoice::open; bare-name mismatch."
+ },
+ "86027300": {
+  "verdict": "lidx_error",
+  "note": "format.parse::<HyperlinkFormat>() is str::parse (FromStr), not the crate's flags::parse::parse function."
+ },
+ "108685ce": {
+  "verdict": "lidx_error",
+  "note": "Mode::Generate(genmode) is an enum variant constructor on args.mode.update(..), not the unit struct Generate; the real callee is Mode::update."
+ },
+ "c3f32029": {
+  "verdict": "lidx_error",
+  "note": "File::open(path) is std::fs::File::open, not MmapChoice::open; bare-name mismatch."
+ },
+ "b6ba068c": {
+  "verdict": "lidx_error",
+  "note": "File::open(path) is std::fs::File::open, not MmapChoice::open; bare-name mismatch."
+ },
+ "825df57c": {
+  "verdict": "lidx_error",
+  "note": "s.parse::<Span>() is str::parse into an external type, not FormatTemplate::parse; wrong bare-name target."
+ },
+ "421ab799": {
+  "verdict": "lidx_error",
+  "note": "w in LineBuffered(ref w) is a termcolor StandardStream/BufferedStandardStream, so is_synchronous is termcolor's (external), not CounterWriter::is_synchronous."
+ },
+ "9041b5e8": {
+  "verdict": "lidx_error",
+  "note": "self.wtr is a generic W: WriteColor, so the call resolves to the external termcolor::WriteColor::supports_color declaration; the edge to cli StandardStream::supports_color is a bare-name guess."
+ },
+ "07f8f7f9": {
+  "verdict": "lidx_error",
+  "note": "ent in from_entry is a std fs::DirEntry (walk.rs:328), so ent.file_type() is std's, not the ignore DirEntry::file_type."
+ },
+ "8cca5df8": {
+  "verdict": "lidx_error",
+  "note": "w is a termcolor stream (StandardStreamKind variants), so supports_hyperlinks resolves to termcolor, not CounterWriter::supports_hyperlinks."
+ },
+ "4cf0e064": {
+  "verdict": "lidx_error",
+  "note": "Error::Io(std::io::Error::new(..)) at lib.rs:140 calls std io::Error::new, not the regex crate's Error::new."
+ },
+ "384a9a1d": {
+  "verdict": "lidx_error",
+  "note": "PatternSource::File(path) is an enum variant constructor, not the unit struct File that implements Flag."
+ },
+ "84a1d75a": {
+  "verdict": "lidx_error",
+  "note": "self.clone() in Ignore::add_parents clones Ignore (derive Clone), not ignore's Error::clone."
+ },
+ "0035b6b1": {
+  "verdict": "lidx_error",
+  "note": "self::Literal::exact in production Extractor::extract_concat resolves to Literal::exact (literal.rs:455); lidx bound it to the helper exact in #[cfg(test)] mod tests (literal.rs:676), a production-to-test edge."
+ },
+ "81b165ff": {
+  "verdict": "lidx_error",
+  "note": "simplegrep.rs:40 calls StandardBuilder::build on a builder chain; lidx only recorded the cli::stdout argument call as external and has no edge to printer's build."
+ },
+ "c4f2b0c1": {
+  "verdict": "lidx_error",
+  "note": "Chained SearcherBuilder::new().line_number(false).multi_line(true).build() in a plain #[test] fn; lidx did not type the builder chain and missed the build edge."
+ },
+ "ce347352": {
+  "verdict": "lidx_error",
+  "note": "RegexMatcherBuilder::new().build(\"test\") in json.rs test (grep_regex imported at line 903); lidx missed the build call on the chained receiver."
+ },
+ "15aa4909": {
+  "verdict": "lidx_error",
+  "note": "RegexMatcher::new(..) at standard.rs:3382 uses grep_regex::RegexMatcher imported in mod tests; lidx did not resolve the cross-crate path call."
+ },
+ "e68136a1": {
+  "verdict": "lidx_error",
+  "note": ".line_number(true) chained on SearcherBuilder in a normal test fn; lidx missed the method call on the builder chain."
+ },
+ "351728b1": {
+  "verdict": "lidx_error",
+  "note": "dent is a local DirEntry (from DirEntry::new_raw at walk.rs:1809); dent.file_type() is DirEntry::file_type and lidx missed it."
+ },
+ "84cc03d1": {
+  "verdict": "lidx_error",
+  "note": "Separator is `use ...lowargs::ContextSeparator as Separator` inside the fn; lidx treated Separator::new as external instead of resolving the alias to ContextSeparator::new."
+ },
+ "b88a9b98": {
+  "verdict": "lidx_error",
+  "note": ".invert_match(true) chained on SearcherBuilder in a normal test fn; lidx missed it."
+ },
+ "1b89f533": {
+  "verdict": "lidx_error",
+  "note": "Error::Io(err).with_depth(depth).with_path(ent.path()) is a real call to Error::with_path on a chained receiver; lidx missed it."
+ },
+ "c6aeaf84": {
+  "verdict": "lidx_error",
+  "note": ".multi_line(true) chained on SearcherBuilder in a normal test fn; lidx missed it."
+ },
+ "948c8089": {
+  "verdict": "lidx_error",
+  "note": "ov.matched(..) returns ignore::Match so .is_none() is Match::is_none (lib.rs:427); lidx did not type the receiver and missed it."
+ },
+ "1ef2b28f": {
+  "verdict": "lidx_error",
+  "note": "core.rs:32 has `type Range = Match;` so range.end() is matcher Match::end; lidx did not resolve the type alias and missed it."
+ },
+ "acbe956f": {
+  "verdict": "lidx_error",
+  "note": "Chained SearcherBuilder ... .line_number(true).build() in a normal test fn; lidx missed the build edge."
+ },
+ "4e176012": {
+  "verdict": "lidx_error",
+  "note": "range is Range::new(..), and Range is `type Range = Match`, so range.end() calls Match::end; lidx missed the alias."
+ },
+ "14fdf69e": {
+  "verdict": "lidx_error",
+  "note": "Error::Io(err).with_path(git_dir_path()) is a real call to Error::with_path; lidx missed it on the variant-constructor receiver."
+ },
+ "ecca7b6f": {
+  "verdict": "lidx_error",
+  "note": "Chained SearcherBuilder ... .line_number(true).build() in a normal test fn; lidx missed the build edge."
+ },
+ "cce9bf2a": {
+  "verdict": "lidx_error",
+  "note": "RegexMatcher::new(..) in a normal test fn with grep_regex::RegexMatcher imported; lidx did not resolve the cross-crate call."
+ },
+ "a8175630": {
+  "verdict": "lidx_error",
+  "note": "RegexMatcher::new(\"Watson\") in a normal test fn with grep_regex::RegexMatcher imported; lidx did not resolve the cross-crate call."
+ },
+ "5d1aeae3": {
+  "verdict": "lidx_error",
+  "note": "work.dent.path() at walk.rs:1726 is DirEntry::path on a field receiver; lidx missed the call."
+ },
+ "cb548fbf": {
+  "verdict": "correct_exclusion",
+  "note": "caps.get(0) goes through the Captures trait; get is declared at matcher lib.rs:390 inside trait Captures."
+ },
+ "e926b5cc": {
+  "verdict": "correct_exclusion",
+  "note": "(*self).non_matching_bytes() in impl Matcher for &M dispatches to Matcher::non_matching_bytes, a method declared in trait Matcher (lib.rs:1065)."
+ },
+ "95b94969": {
+  "verdict": "correct_exclusion",
+  "note": "mat.flag.update(..) is called through the Flag trait object; update is declared in trait Flag (mod.rs:177)."
+ },
+ "e98da0b5": {
+  "verdict": "correct_exclusion",
+  "note": "flag.doc_choices() is called on a Flag trait object; doc_choices is declared in trait Flag (mod.rs:149)."
+ },
+ "c1854c62": {
+  "verdict": "correct_exclusion",
+  "note": "self.shortest_match(..) in impl Matcher for RegexMatcher resolves to the trait method declared in trait Matcher (lib.rs:1010); RegexMatcher does not override it."
+ },
+ "d6507e6c": {
+  "verdict": "correct_exclusion",
+  "note": "flag.doc_choices() on a Flag trait object; method declared in trait Flag."
+ },
+ "87e63b84": {
+  "verdict": "correct_exclusion",
+  "note": "(*self).capture_index(..) in impl Matcher for &M goes through trait Matcher, where capture_index is declared (lib.rs:611)."
+ },
+ "51b9a6c9": {
+  "verdict": "correct_exclusion",
+  "note": "matcher.is_match(..) is the Matcher trait method (lib.rs:974) called on pcre2 RegexMatcher, which does not override it."
+ },
+ "422a664d": {
+  "verdict": "correct_exclusion",
+  "note": "Caller is in fd's tests/tests.rs, under a tests/ directory excluded from the path_tests_excluded cell."
+ },
+ "792376a2": {
+  "verdict": "correct_exclusion",
+  "note": "Caller is in fd's tests/tests.rs, under a tests/ directory excluded from the cell."
+ },
+ "e89e7090": {
+  "verdict": "correct_exclusion",
+  "note": "Caller is in fd's tests/tests.rs, under a tests/ directory excluded from the cell."
+ },
+ "e6cd0aed": {
+  "verdict": "correct_exclusion",
+  "note": "Caller is in crates/matcher/tests/test_matcher.rs, under a tests/ directory excluded from the cell."
+ },
+ "beee6aae": {
+  "verdict": "correct_exclusion",
+  "note": "Caller is in fd's tests/tests.rs, under a tests/ directory excluded from the cell."
+ },
+ "cb08c15f": {
+  "verdict": "correct_exclusion",
+  "note": "Caller is in fd's tests/tests.rs, under a tests/ directory excluded from the cell."
+ },
+ "92d8691d": {
+  "verdict": "correct_exclusion",
+  "note": "Caller is in fd's tests/tests.rs, under a tests/ directory excluded from the cell."
+ },
+ "c4be5523": {
+  "verdict": "correct_exclusion",
+  "note": "same_file_system test (walk.rs:2494-2495) is #[cfg(target_os = \"linux\")], so on macOS rust-analyzer does not analyse it and it cannot be judged."
+ },
+ "e9b2c00d": {
+  "verdict": "correct_exclusion",
+  "note": "convert_to_hyperlink_path test is #[cfg(windows)], absent from the macOS oracle; also its lidx callee is the cfg(unix) from_path."
  }
 }
