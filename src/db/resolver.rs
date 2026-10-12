@@ -5053,6 +5053,10 @@ impl Db {
         symbols_deleted_this_batch: bool,
         context: &str,
     ) -> Result<(usize, usize)> {
+        // First: symbols are final by now, and a NULL-target derived edge
+        // (its interface or type was deleted) must go before the reconcile
+        // below mistakes it for an unresolved reference.
+        self.rederive_go_implements(graph_version)?;
         let reconciled = self.reconcile_unresolved_reference_store(graph_version)?;
         if reconciled > 0 {
             eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after {context}");
