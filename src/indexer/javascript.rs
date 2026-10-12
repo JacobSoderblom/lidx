@@ -1,9 +1,10 @@
-use crate::db::resolver::{LanguageProfile, VisibilityRule};
+use crate::db::resolver::{DeclarationIndex, LanguageProfile, VisibilityRule};
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, EdgeInput, ExtractedFile, PinnedType, ReceiverType, SymbolInput,
+    CallShape, DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile,
+    MAX_DEFERRED_DEPTH, PinnedType, ReceiverType, SymbolInput,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -32,8 +33,70 @@ use tree_sitter::{Node, Parser};
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
+    deferred_receiver: Some(resolve_deferred),
     ..LanguageProfile::DEFAULT
 };
+
+/// `LanguageProfile::deferred_receiver`: the type of a property chain off a
+/// typed receiver (`c.req` with `c: Context`), read from the declared
+/// getter return types (`get req(): HonoRequest`). `""` when it cannot be
+/// told: never a guess.
+fn resolve_deferred(
+    marker: &DeferredMarker,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Option<String>>> {
+    match marker {
+        DeferredMarker::Return(call) => Ok(Some(Some(
+            deferred_property_type(call, index, 0)?.unwrap_or_default(),
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn deferred_property_type(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+) -> Result<Option<String>> {
+    let owner = match &call.base {
+        DeferredBase::Type(ty) => ty.clone(),
+        DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
+        DeferredBase::Call(inner) => match deferred_property_type(inner, index, depth + 1)? {
+            Some(ty) => ty,
+            None => return Ok(None),
+        },
+        DeferredBase::Function(_) => return Ok(None),
+    };
+    let mut agreed: Option<String> = None;
+    for decl in index.inherited_members(&owner, &call.method)? {
+        let Some(ret) = getter_return_type(decl.signature.as_deref()) else {
+            return Ok(None);
+        };
+        match &agreed {
+            Some(prev) if *prev != ret => return Ok(None),
+            _ => agreed = Some(ret),
+        }
+    }
+    match agreed {
+        Some(ty) if index.is_repo_type(&ty)? => Ok(Some(ty)),
+        _ => Ok(None),
+    }
+}
+
+/// The type name a zero-parameter `(): Type<Args>` signature (a getter, as
+/// `handle_method` records it) is declared to return.
+fn getter_return_type(signature: Option<&str>) -> Option<String> {
+    let rest = signature?.strip_prefix("()")?;
+    let ret = rest.trim_start().strip_prefix(':')?.trim();
+    let ret = strip_type_arguments(ret).unwrap_or(ret);
+    if ret.is_empty() || !is_type_name_text(ret, true) {
+        return None;
+    }
+    match classify_type_name(ret.rsplit('.').next().unwrap_or(ret)) {
+        LocalType::Known(ty) => Some(ty),
+        _ => None,
+    }
+}
 
 const JS_TS_EXTENSIONS: &[&str] = &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "d.ts"];
 const HTTP_METHOD_NAMES: &[&str] = &[
@@ -100,6 +163,10 @@ struct Context {
     /// never merged across functions. See `python::infer_receiver_type` for
     /// the mechanism this mirrors.
     local_types: Rc<HashMap<String, LocalType>>,
+    /// The subset of `local_types` names bound by an enclosing function or
+    /// arrow scope (parameters, locals), as opposed to module-level
+    /// bindings: only these shadow a module declaration.
+    scope_bindings: Rc<HashSet<String>>,
     /// Type-annotated fields and constructor parameter properties of the
     /// *directly* enclosing class, read once when entering the class body —
     /// see `collect_class_level_attr_types`. Used only to resolve a
@@ -123,6 +190,9 @@ struct Context {
     /// the module's own locals), so a nested function sees them as locals
     /// too — see `enter_scope`.
     outer_locals: Rc<HashSet<String>>,
+    /// Source text of the `extends` target of the class whose body is being
+    /// walked, the callee of its `super(..)` calls.
+    superclass: Option<String>,
     /// Names this file declares (any function/class/enum/namespace, plus
     /// module-level variables) — see `collect_declared_names`.
     declared_names: Rc<HashSet<String>>,
@@ -169,6 +239,10 @@ enum LocalType {
     /// a subscript read of the name (`x[i].m()`) uses it; anywhere else it
     /// behaves like `Other`.
     Elements(String),
+    /// Initialised from a call to this file's function of this name
+    /// (`const p = getProcessor(event)`): typed by that function's declared
+    /// return type, looked up in `Context::return_types` where it is used.
+    ReturnOf(String),
     /// Builtin type, untyped parameter, destructured binding, loop/catch
     /// target, or anything else not explicitly recognized. A name landing
     /// here (rather than simply absent from the map) still gates
@@ -1579,6 +1653,7 @@ fn extract_with_parser(
     let grpc_evidence = Rc::new(collect_grpc_evidence(root, source));
     let grpc_clients = collect_grpc_clients(root, source, &grpc_evidence);
     let http_wrappers = Rc::new(collect_http_wrappers(root, source));
+    let module_types = Rc::new(infer_module_level_types(root, source));
     let ctx = Context {
         string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
             crate::indexer::string_consts::ConstLang::JavaScript,
@@ -1597,12 +1672,14 @@ fn extract_with_parser(
         http_wrappers: Rc::clone(&http_wrappers),
         grpc_clients,
         grpc_evidence,
-        local_types: Rc::new(infer_module_level_types(root, source)),
+        local_types: Rc::clone(&module_types),
+        scope_bindings: Rc::new(HashSet::new()),
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
         import_bindings: Rc::new(collect_import_bindings(root, source)),
         required_names: Rc::new(collect_required_names(root, source)),
         outer_locals: Rc::new(HashSet::new()),
+        superclass: None,
         declared_names: Rc::new(collect_declared_names(root, source)),
         declared_types: Rc::new(collect_declared_types(root, source)),
         return_types: Rc::new(collect_return_types(root, source)),
@@ -2318,6 +2395,15 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
+    if is_lambda_node(node.kind()) {
+        let mut next_ctx = ctx.clone();
+        set_lambda_scope(&mut next_ctx, node, ctx, source);
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
+        return;
+    }
     if is_dynamic_this_function_node(node.kind()) {
         // Not a symbol: its calls belong to the enclosing one, with their
         // own locals and a rebound `this`.
@@ -2442,9 +2528,17 @@ fn handle_class_named(
         ..Default::default()
     });
 
-    handle_class_heritage(node, &qualname, source, output);
+    handle_class_heritage(node, &qualname, ctx, source, output);
 
     let mut next_ctx = ctx.clone();
+    next_ctx.superclass = collect_clause_targets_from(node, "extends_clause", source)
+        .into_iter()
+        .next()
+        .or_else(|| {
+            node.child_by_field_name("superclass")
+                .map(|n| node_text(n, source))
+        })
+        .filter(|base| !base.is_empty());
     next_ctx.class_stack.push(name);
     next_ctx.this_rebound = false;
     next_ctx.current_scope = qualname.clone();
@@ -2457,9 +2551,21 @@ fn handle_class_named(
     }
 }
 
+/// A heritage target rooted in this file's own declaration is qualified by
+/// module, so the exact tier (and its merged-declaration rule) binds it.
+fn heritage_target(target: &str, ctx: &Context) -> String {
+    let root = target.split('.').next().unwrap_or(target);
+    if is_same_file_declaration_root(root, ctx) {
+        resolve_call_target(target, ctx).unwrap_or_else(|| target.to_string())
+    } else {
+        target.to_string()
+    }
+}
+
 fn handle_class_heritage(
     node: Node<'_>,
     class_qualname: &str,
+    ctx: &Context,
     source: &str,
     output: &mut ExtractedFile,
 ) {
@@ -2477,9 +2583,10 @@ fn handle_class_heritage(
             continue;
         }
         output.edges.push(EdgeInput {
-            kind: "EXTENDS".to_string(),
+            kind: edge_views::EXTENDS.to_string(),
             source_qualname: Some(class_qualname.to_string()),
-            target_qualname: Some(target),
+            import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
+            target_qualname: Some(heritage_target(&target, ctx)),
             detail: None,
             evidence_snippet: None,
             ..Default::default()
@@ -2491,9 +2598,10 @@ fn handle_class_heritage(
             continue;
         }
         output.edges.push(EdgeInput {
-            kind: "IMPLEMENTS".to_string(),
+            kind: edge_views::IMPLEMENTS.to_string(),
             source_qualname: Some(class_qualname.to_string()),
-            target_qualname: Some(target),
+            import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
+            target_qualname: Some(heritage_target(&target, ctx)),
             detail: None,
             evidence_snippet: None,
             ..Default::default()
@@ -2513,9 +2621,10 @@ fn handle_interface(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
             continue;
         }
         output.edges.push(EdgeInput {
-            kind: "EXTENDS".to_string(),
+            kind: edge_views::EXTENDS.to_string(),
             source_qualname: Some(qualname.clone()),
-            target_qualname: Some(target),
+            import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
+            target_qualname: Some(heritage_target(&target, ctx)),
             detail: None,
             evidence_snippet: None,
             ..Default::default()
@@ -2613,6 +2722,7 @@ fn push_field(
     name: String,
     private: bool,
     ctx: &Context,
+    source: &str,
     output: &mut ExtractedFile,
 ) {
     if name.is_empty() {
@@ -2623,8 +2733,17 @@ fn push_field(
     if private {
         output.private_qualnames.push(qualname.clone());
     }
+    // `request = (..) => ..` is callable: a method with the arrow's signature.
+    let function_value = node
+        .child_by_field_name("value")
+        .filter(|v| is_function_value(*v));
     output.symbols.push(SymbolInput {
-        kind: "field".to_string(),
+        kind: if function_value.is_some() {
+            "method"
+        } else {
+            "field"
+        }
+        .to_string(),
         name,
         qualname: qualname.clone(),
         start_line,
@@ -2633,7 +2752,7 @@ fn push_field(
         end_col,
         start_byte,
         end_byte,
-        signature: None,
+        signature: function_value.and_then(|f| extract_signature(f, source)),
         docstring: None,
         identity: None,
     });
@@ -2664,7 +2783,14 @@ fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
     }
     let name = node_text(name_node, source);
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-    push_field(node, name, is_private_member(node, source), ctx, output);
+    push_field(
+        node,
+        name,
+        is_private_member(node, source),
+        ctx,
+        source,
+        output,
+    );
     // Calls in the initializer (`request = (..) => this.fetch(..)`,
     // `#root = new Node()`) belong to the field. An arrow value keeps the
     // lexical `this`; a `function` value rebinds it (`walk_node`).
@@ -2674,7 +2800,7 @@ fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         next_ctx.this_rebound = false;
         next_ctx.current_scope = qualname;
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_module_level_types(value, source));
+        set_function_scope(&mut next_ctx, infer_module_level_types(value, source));
         walk_node(value, &next_ctx, source, output);
     }
 }
@@ -2711,7 +2837,14 @@ fn handle_parameter_properties(
             continue;
         };
         if is_property && pattern.kind() == "identifier" {
-            push_field(param, node_text(pattern, source), private, ctx, output);
+            push_field(
+                param,
+                node_text(pattern, source),
+                private,
+                ctx,
+                source,
+                output,
+            );
         }
     }
 }
@@ -3285,18 +3418,43 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
-    let Some(target_node) = call_target_node(node) else {
+    let Some(mut target_node) = call_target_node(node) else {
         return register_handled;
     };
+    // `await c.req.json<T>()` parses as a call whose callee is the `await`
+    // expression: the callee is its operand.
+    while target_node.kind() == "await_expression" {
+        let Some(operand) = target_node.named_child(0) else {
+            break;
+        };
+        target_node = operand;
+    }
     let raw = node_text(target_node, source);
     if raw.is_empty() {
+        return register_handled;
+    }
+    // `super(..)` constructs the base class: the same edge `new Base(..)`
+    // would make, from the constructor that calls it.
+    if target_node.kind() == "super" {
+        if let (Some(base), false) = (ctx.superclass.as_deref(), ctx.this_rebound) {
+            output
+                .edges
+                .push(super_constructor_edge(node, base, ctx, source));
+        }
         return register_handled;
     }
     let (target, receiver_type, import_candidates) =
         match chained_call_target(target_node, ctx, source) {
             Some((target, receiver_type)) => (Some(target), receiver_type, Vec::new()),
             None => {
-                let target = resolve_call_target(&raw, ctx);
+                // A bare callee bound by a parameter or local declaration is
+                // that local, never a module-level or imported symbol.
+                let target = if target_node.kind() == "identifier" && is_shadowing_local(ctx, &raw)
+                {
+                    None
+                } else {
+                    resolve_call_target(&raw, ctx)
+                };
                 let receiver_type = infer_receiver_type(target_node, source, ctx);
                 let import_candidates: Vec<String> =
                     import_placeholder(&raw, ctx).into_iter().collect();
@@ -3350,6 +3508,34 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         ..Default::default()
     });
     register_handled
+}
+
+fn super_constructor_edge(node: Node<'_>, base: &str, ctx: &Context, source: &str) -> EdgeInput {
+    let target = resolve_call_target(base, ctx);
+    let import_candidates: Vec<String> = import_placeholder(base, ctx).into_iter().collect();
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    EdgeInput {
+        kind: edge_views::CALLS.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        detail: target.is_none().then(|| base.to_string()),
+        target_qualname: target,
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        import_candidates,
+        bare_call: !base.contains('.'),
+        call_shape: Some(CallShape {
+            arg_count: node
+                .child_by_field_name("arguments")
+                .map_or(0, |args| args.named_child_count() as u32),
+            is_new: true,
+            implicit_this: false,
+            is_ref: false,
+        }),
+        ..Default::default()
+    }
 }
 
 /// Pins a known receiver type to the declaration this file means by its
@@ -3528,6 +3714,7 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
                     let name = node_text(object, source);
                     match ctx.local_types.get(&name) {
                         Some(LocalType::Known(ty)) => ty.clone(),
+                        Some(LocalType::ReturnOf(f)) => ctx.return_types.get(f)?.clone(),
                         Some(_) => return None,
                         None => name,
                     }
@@ -3566,20 +3753,40 @@ fn collect_return_types(root: Node<'_>, source: &str) -> HashMap<String, String>
             "function_declaration"
             | "method_definition"
             | "method_signature"
-            | "abstract_method_signature" => {
+            | "abstract_method_signature"
+            | "variable_declarator"
+            | "public_field_definition"
+            | "field_definition" => {
+                // `const f = (): T => ..` / `field = (): T => ..` is typed
+                // by the arrow's own return annotation.
+                let function = match node.kind() {
+                    "variable_declarator" | "public_field_definition" | "field_definition" => node
+                        .child_by_field_name("value")
+                        .filter(|v| is_function_value(*v)),
+                    _ => Some(node),
+                };
                 let key = match (node.kind(), class) {
                     ("function_declaration", _) => node
                         .child_by_field_name("name")
                         .map(|n| node_text(n, source)),
+                    ("variable_declarator", _) => node
+                        .child_by_field_name("name")
+                        .filter(|n| n.kind() == "identifier")
+                        .map(|n| node_text(n, source)),
                     (_, Some(class)) => node
                         .child_by_field_name("name")
+                        .or_else(|| node.child_by_field_name("property"))
                         .map(|n| format!("{class}.{}", node_text(n, source))),
                     _ => None,
                 };
-                let ret = node
-                    .child_by_field_name("return_type")
+                let value_kind = !matches!(
+                    node.kind(),
+                    "variable_declarator" | "public_field_definition" | "field_definition"
+                ) || function.is_some();
+                let ret = function
+                    .and_then(|f| f.child_by_field_name("return_type"))
                     .map(|r| classify_annotation(&annotation_text(r, source)));
-                if let Some(key) = key {
+                if let Some(key) = key.filter(|_| value_kind) {
                     let ty = match ret {
                         Some(LocalType::Known(ty)) if ty != "this" => Some(ty),
                         _ => None,
@@ -3737,6 +3944,12 @@ fn enter_scope(ctx: &mut Context) {
     let mut outer = (*ctx.outer_locals).clone();
     outer.extend(ctx.local_types.keys().cloned());
     ctx.outer_locals = Rc::new(outer);
+}
+
+/// A name bound by a parameter or declaration of an enclosing function or
+/// arrow, even one a module declaration shares: a call to it is the local.
+fn is_shadowing_local(ctx: &Context, name: &str) -> bool {
+    ctx.scope_bindings.contains(name) && !ctx.required_names.contains(name)
 }
 
 /// A bare call target bound by a parameter, destructuring or `let`/`const`
@@ -5976,11 +6189,33 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
         let container = container_qualname(&ctx.module, &ctx.class_stack);
         return Some(format!("{container}.{}", parts.join(".")));
     }
+    // A bare name is never a class member in JS/TS (there is no implicit
+    // `this`): it names a module-level (or enclosing namespace) binding.
+    let module_container = container_qualname(&ctx.module, namespace_stack(ctx));
     if parts.len() == 1 {
-        let container = container_qualname(&ctx.module, &ctx.class_stack);
-        return Some(format!("{container}.{raw}"));
+        return Some(format!("{module_container}.{raw}"));
+    }
+    // `Class.member(..)` / `obj.method(..)` rooted in this file's own
+    // top-level declaration is that declaration's member.
+    if is_same_file_declaration_root(parts[0], ctx) {
+        return Some(format!("{module_container}.{raw}"));
     }
     Some(raw.to_string())
+}
+
+/// The leading `class_stack` entries that are TS namespaces.
+fn namespace_stack(ctx: &Context) -> &[String] {
+    &ctx.class_stack[..ctx.ns_depth.min(ctx.class_stack.len())]
+}
+
+/// `root` names a declaration of this file (class, interface, enum, type,
+/// function, variable) rather than an import or a name shadowed by a
+/// local binding of the enclosing function.
+fn is_same_file_declaration_root(root: &str, ctx: &Context) -> bool {
+    (ctx.declared_types.contains(root) || ctx.declared_names.contains(root))
+        && !ctx.import_bindings.contains_key(root)
+        && !ctx.required_names.contains(root)
+        && !ctx.scope_bindings.contains(root)
 }
 
 /// `text` is spelled like a plain type name: identifier characters, plus
@@ -6029,7 +6264,7 @@ fn rebind_this_scope(node: Node<'_>, ctx: &Context, source: &str) -> Context {
     next_ctx.fn_depth += 1;
     next_ctx.this_rebound = true;
     enter_scope(&mut next_ctx);
-    next_ctx.local_types = Rc::new(infer_local_types(node, source));
+    set_function_scope(&mut next_ctx, infer_local_types(node, source));
     next_ctx
 }
 
@@ -6063,9 +6298,6 @@ fn is_lambda_node(kind: &str) -> bool {
 /// (`class_attr_types` is empty). `fn_depth` is deliberately not bumped,
 /// so a named `function` declared inside still gets its own symbol and
 /// its calls, exactly as before.
-// ponytail: object-literal properties get no symbols of their own, so
-// `apiClient = { get: () => f() }` attributes `f` to `apiClient`, not
-// `apiClient.get`.
 fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<Context> {
     let owner = ctx.fn_owner.as_ref()?;
     let kind = node.kind();
@@ -6074,14 +6306,77 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
         return None;
     }
     let mut next_ctx = ctx.clone();
-    next_ctx.current_scope = owner.clone();
+    next_ctx.current_scope =
+        object_literal_member_qualname(node, owner, source).unwrap_or_else(|| owner.clone());
     next_ctx.fn_owner = None;
     if !is_lambda_node(kind) {
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        set_function_scope(&mut next_ctx, infer_local_types(node, source));
         next_ctx.this_rebound = true;
+    } else {
+        // The module-wide map folds every module-level arrow's parameters
+        // together (`c: Context` here, `c: Foo` there collapse to `Other`).
+        // This arrow's own parameters and locals win over that.
+        set_lambda_scope(&mut next_ctx, node, ctx, source);
     }
     Some(next_ctx)
+}
+
+/// Enters a function scope of its own: `types` replace the enclosing
+/// scope's local types; they join the enclosing functions' scope bindings.
+fn set_function_scope(ctx: &mut Context, types: HashMap<String, LocalType>) {
+    let mut bound = (*ctx.scope_bindings).clone();
+    bound.extend(types.keys().cloned());
+    ctx.scope_bindings = Rc::new(bound);
+    ctx.local_types = Rc::new(types);
+}
+
+/// Enters the arrow function `node`'s scope: the enclosing scope's local
+/// types and scope bindings plus the arrow's own parameters and locals,
+/// which shadow them.
+fn set_lambda_scope(next_ctx: &mut Context, node: Node<'_>, ctx: &Context, source: &str) {
+    let own = infer_local_types(node, source);
+    if own.is_empty() {
+        return;
+    }
+    let mut types = (*ctx.local_types).clone();
+    let mut bound = (*ctx.scope_bindings).clone();
+    bound.extend(own.keys().cloned());
+    types.extend(own);
+    next_ctx.local_types = Rc::new(types);
+    next_ctx.scope_bindings = Rc::new(bound);
+}
+
+/// The qualname `emit_object_literal_methods` gave `node` when it is a
+/// function-valued member (`key: () => ..`, `key() {..}`) of the object
+/// literal that is `owner`'s whole initializer (`const owner = { .. }`).
+fn object_literal_member_qualname(node: Node<'_>, owner: &str, source: &str) -> Option<String> {
+    let parent = node.parent()?;
+    let (key, object) = match parent.kind() {
+        "object" if node.kind() == "method_definition" => {
+            (node.child_by_field_name("name")?, parent)
+        }
+        "pair"
+            if parent
+                .child_by_field_name("value")
+                .is_some_and(|v| v.id() == node.id()) =>
+        {
+            (parent.child_by_field_name("key")?, parent.parent()?)
+        }
+        _ => return None,
+    };
+    if object.kind() != "object"
+        || !matches!(key.kind(), "property_identifier" | "identifier")
+        || !object.parent().is_some_and(|decl| {
+            decl.kind() == "variable_declarator"
+                && decl
+                    .child_by_field_name("value")
+                    .is_some_and(|v| v.id() == object.id())
+        })
+    {
+        return None;
+    }
+    Some(format!("{owner}.{}", node_text(key, source)))
 }
 
 /// Parameter names (+ inferred types, where explicitly annotated) bound by
@@ -6153,7 +6448,7 @@ fn handle_function_named(
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        set_function_scope(&mut next_ctx, infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -6221,7 +6516,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         next_ctx.this_rebound = false;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        set_function_scope(&mut next_ctx, infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -6838,6 +7133,18 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
     "JSON",
     "Math",
     "Buffer",
+    "Awaited",
+    "ReturnType",
+    "Parameters",
+    "InstanceType",
+    "ConstructorParameters",
+    "ThisType",
+    "Iterable",
+    "Iterator",
+    "AsyncIterable",
+    "AsyncIterator",
+    "Generator",
+    "AsyncGenerator",
 ];
 
 /// Global JS/TS *runtime* constructors/functions a bare `Name(...)`/`new
@@ -6888,6 +7195,50 @@ const JS_TS_GLOBAL_CALLABLES: &[&str] = &[
     "TextDecoder",
     "WeakRef",
 ];
+
+/// Runtime global namespaces and singletons that are never constructed or
+/// called themselves (`JSON.parse(..)`, `document.createElement(..)`), so
+/// they are not in `JS_TS_GLOBAL_CALLABLES`. A member call whose receiver
+/// root is one of these, or a `JS_TS_GLOBAL_CALLABLES` entry (`Number.isFinite`,
+/// `Promise.all`), and that this file does not import, declare or bind, is
+/// never a repo symbol: see `is_unshadowed_global_receiver`.
+/// (`JS_TS_BUILTIN_TYPES` is the unrelated list of annotation names that
+/// carry no repo type.)
+const JS_TS_GLOBAL_NAMESPACES: &[&str] = &[
+    "JSON",
+    "Math",
+    "Reflect",
+    "Intl",
+    "Atomics",
+    "WebAssembly",
+    "console",
+    "document",
+    "window",
+    "globalThis",
+    "navigator",
+    "location",
+    "history",
+    "localStorage",
+    "sessionStorage",
+    "caches",
+    "crypto",
+    "performance",
+    "process",
+    "Buffer",
+];
+
+/// Whether `name` is a global receiver (`JS_TS_GLOBAL_NAMESPACES` or
+/// `JS_TS_GLOBAL_CALLABLES`) this file neither imports, requires, declares
+/// nor binds locally.
+fn is_unshadowed_global_receiver(name: &str, ctx: &Context) -> bool {
+    (JS_TS_GLOBAL_NAMESPACES.contains(&name) || JS_TS_GLOBAL_CALLABLES.contains(&name))
+        && !ctx.import_bindings.contains_key(name)
+        && !ctx.required_names.contains(name)
+        && !ctx.declared_names.contains(name)
+        && !ctx.declared_types.contains(name)
+        && !ctx.local_types.contains_key(name)
+        && !ctx.outer_locals.contains(name)
+}
 
 /// Whether `name` is a `JS_TS_GLOBAL_CALLABLES` entry not shadowed in
 /// `ctx` — by a top-level `import` binding of that name, or by a
@@ -6962,6 +7313,15 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         return ReceiverType::Known(ty);
     }
     let object = peel_expression(object);
+    // `JSON.parse(..)`, `document.x.y(..)`: a runtime global is never a repo symbol.
+    {
+        let (root, _) = member_chain_root(object);
+        if root.kind() == "identifier"
+            && is_unshadowed_global_receiver(&node_text(root, source), ctx)
+        {
+            return ReceiverType::Unresolved;
+        }
+    }
     if object.kind() == "subscript_expression" {
         return match subscript_element_type(object, source, ctx) {
             Some(ty) => ReceiverType::Known(ty),
@@ -7002,15 +7362,59 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if hops == 0 {
         return match ctx.local_types.get(&root_name) {
             Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
+            Some(LocalType::ReturnOf(f)) => match ctx.return_types.get(f) {
+                Some(ty) => ReceiverType::Known(ty.clone()),
+                None => ReceiverType::Unresolved,
+            },
             Some(_) => ReceiverType::Unresolved,
             None => ReceiverType::NotTracked,
         };
+    }
+    if let Some(chain) = property_chain_receiver(&root_name, object, source, ctx) {
+        return chain;
     }
     if ctx.local_types.contains_key(&root_name) {
         ReceiverType::Unresolved
     } else {
         ReceiverType::NotTracked
     }
+}
+
+/// `root.a.b.m()` with `root` typed: a deferred receiver naming the type of
+/// the property chain `a.b`, which the resolver reads off declared getter
+/// return types. `None` when `root` has no known type or the chain is not
+/// plain property names.
+fn property_chain_receiver(
+    root_name: &str,
+    object: Node<'_>,
+    source: &str,
+    ctx: &Context,
+) -> Option<ReceiverType> {
+    let root_type = match ctx.local_types.get(root_name)? {
+        LocalType::Known(ty) => ty.clone(),
+        LocalType::ReturnOf(f) => ctx.return_types.get(f)?.clone(),
+        _ => return None,
+    };
+    let mut names = Vec::new();
+    let mut current = object;
+    while current.kind() == "member_expression" {
+        let property = current.child_by_field_name("property")?;
+        if property.kind() != "property_identifier" {
+            return None;
+        }
+        names.push(node_text(property, source));
+        current = current.child_by_field_name("object")?;
+    }
+    names.reverse();
+    let (first, rest) = names.split_first()?;
+    if names.len() > MAX_DEFERRED_DEPTH {
+        return None;
+    }
+    let mut call = DeferredReturn::on_type(&root_type, first, false, false);
+    for name in rest {
+        call = DeferredReturn::on_call(call, name, false);
+    }
+    Some(ReceiverType::Deferred(call))
 }
 
 /// The element type of `container[index]` when `container` is `this.field`
@@ -7119,11 +7523,36 @@ fn classify_annotation(text: &str) -> LocalType {
     if text.is_empty() {
         return LocalType::Other;
     }
+    let text = strip_type_arguments(text).unwrap_or(text);
     if text.contains(['<', '[', '|', '&', '(', ')', '{']) {
         return LocalType::Other;
     }
     let bare = text.rsplit('.').next().unwrap_or(text).trim();
     classify_type_name(bare)
+}
+
+/// `Name<Args>` as `Name`, when the whole text is one plain (possibly
+/// qualified) type name applied to type arguments: the `<` opened right
+/// after the name closes at the very end (`Foo<A> & Bar<B>` is not one).
+fn strip_type_arguments(text: &str) -> Option<&str> {
+    let open = text.find('<')?;
+    if !text.ends_with('>') || !is_type_name_text(&text[..open], true) || open == 0 {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, ch) in text.char_indices().skip(open) {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 && i + 1 != text.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(&text[..open])
 }
 
 /// `classify_annotation` for a declared name (parameter, local, field): a
@@ -7253,6 +7682,19 @@ fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
     {
         return classify_annotation(&node_text(ctor, source));
     }
+    // `f(..)` / `await f(..)` / `f(..)!`: typed by `f`'s declared return type.
+    let call = peel_expression(value);
+    let call = if call.kind() == "await_expression" {
+        call.named_child(0).map(peel_expression).unwrap_or(call)
+    } else {
+        call
+    };
+    if call.kind() == "call_expression"
+        && let Some(callee) = call.child_by_field_name("function")
+        && callee.kind() == "identifier"
+    {
+        return LocalType::ReturnOf(node_text(callee, source));
+    }
     LocalType::Other
 }
 
@@ -7268,7 +7710,9 @@ fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
 /// one of those, folding its parameters into this same map.
 fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
-    if let Some(params) = function_node.child_by_field_name("parameters") {
+    if is_lambda_node(function_node.kind()) {
+        collect_lambda_parameter_bindings(function_node, source, &mut bindings);
+    } else if let Some(params) = function_node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
         for param in params.named_children(&mut cursor) {
             collect_param_bindings(param, source, &mut bindings);
@@ -7423,11 +7867,13 @@ fn collect_statement_bindings(
     if is_local_scope_boundary(node.kind()) {
         return;
     }
+    // A nested arrow function is a scope of its own: `walk_node` binds its
+    // parameters and locals when it enters it, so they never leak into the
+    // enclosing scope (two sibling callbacks taking `c: Context` and
+    // `c: Other` must not collapse each other's types, and a callback
+    // parameter must not shadow an import used elsewhere in the function).
     if is_lambda_node(node.kind()) {
-        collect_lambda_parameter_bindings(node, source, bindings);
-        // No `return`: still recurse into children below (the body may
-        // declare further locals, or contain a nested arrow function whose
-        // own parameters also need folding in).
+        return;
     }
     match node.kind() {
         "lexical_declaration" | "variable_declaration" => {
@@ -8228,6 +8674,21 @@ client.sayHello({ name: "world" }, () => {});
     }
 
     #[test]
+    fn global_receiver_lists_do_not_overlap() {
+        // `JS_TS_GLOBAL_CALLABLES` (constructible/callable globals) and
+        // `JS_TS_GLOBAL_NAMESPACES` (never called themselves) together are
+        // the global receivers; an entry in both would be redundant.
+        for name in super::JS_TS_GLOBAL_NAMESPACES {
+            assert!(
+                !super::JS_TS_GLOBAL_CALLABLES.contains(name),
+                "{name} is in both global lists"
+            );
+        }
+        assert!(super::JS_TS_GLOBAL_NAMESPACES.contains(&"JSON"));
+        assert!(super::JS_TS_GLOBAL_CALLABLES.contains(&"Promise"));
+    }
+
+    #[test]
     fn const_arrow_calls_attribute_to_const_tsx() {
         let source = r#"
 import { useState } from 'react';
@@ -8277,8 +8738,11 @@ const cfg = buildConfig();
         let mut extractor = super::TypescriptExtractor::new().unwrap();
         let file = extractor.extract(source, "lib.api").unwrap();
         assert_eq!(call_source(&file, "fetchItem"), "lib.api.load");
-        assert_eq!(call_source(&file, "apiClientFetch"), "lib.api.apiClient");
-        assert_eq!(call_source(&file, "apiPost"), "lib.api.apiClient");
+        assert_eq!(
+            call_source(&file, "apiClientFetch"),
+            "lib.api.apiClient.get"
+        );
+        assert_eq!(call_source(&file, "apiPost"), "lib.api.apiClient.post");
         assert_eq!(call_source(&file, "buildConfig"), "lib.api");
     }
 

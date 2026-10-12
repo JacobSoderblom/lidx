@@ -51,10 +51,10 @@ downstream.useEntry CALLS caller.entry import
 # --- Issue #75: stricter name fallback and visibility rules ---
 
 # Plain call to a private static method on its own class -- unaffected by
-# the new visibility guard (same file). Resolves via the two-segment
-# fallback (`SecretHelper.doSecret` is kept as literal call-site text, not
-# rewritten to `this.doSecret`), not exact.
-visibilityPrivateOwner.SecretHelper.callLocally CALLS visibilityPrivateOwner.SecretHelper.doSecret two_segment
+# the new visibility guard (same file). The call-site text
+# `SecretHelper.doSecret` is rooted in this file's own class, so it is
+# qualified by module (#426) and binds exact.
+visibilityPrivateOwner.SecretHelper.callLocally CALLS visibilityPrivateOwner.SecretHelper.doSecret exact
 
 # Unimported `SecretHelper.doSecret()`, whose only definition is private
 # and in a different file. Before #75 this was the sole two-segment match
@@ -75,3 +75,7 @@ commonjsExportUse.useHelperOne CALLS commonjsExportOwner.helperOne bare_name
 
 # The module-level `require(...)` call itself: `require` is never indexed.
 commonjsExportUse CALLS UNRESOLVED
+
+# --- Issue #426 follow-up: a two-segment tier fixture. `Registry` is not
+# imported or declared here, so `Registry.lookup` is matched by its tail.
+twoSegmentCaller.useRegistry CALLS twoSegmentOwner.Registry.lookup two_segment
