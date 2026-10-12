@@ -79,6 +79,14 @@ pub fn index_repo(prefix: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, P
     (tmp, root, db_path)
 }
 
+/// `index_repo` followed by a live `Indexer` over the result, for scenarios
+/// that edit files and `sync_rel_paths` afterwards.
+pub fn live_indexer(prefix: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Indexer) {
+    let (tmp, root, db_path) = index_repo(prefix, files);
+    let indexer = Indexer::new(root.clone(), db_path).unwrap();
+    (tmp, root, indexer)
+}
+
 /// `index_repo` returning the edge snapshot -- the synthetic-tree
 /// counterpart to `fresh_reindex_snapshot`, for scenarios with no fixture
 /// to copy at all. Keep the returned `TempDir` bound for as long as the

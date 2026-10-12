@@ -89,7 +89,8 @@ fn interface_multiple_extends_yield_one_edge_each() {
         .filter(|e| e.kind == "EXTENDS" && e.source_qualname.as_deref() == Some("m.C"))
         .filter_map(|e| e.target_qualname.as_deref())
         .collect();
-    assert_eq!(targets, vec!["A", "B", "ns.D"]);
+    // Same-file bases are module-qualified; `ns.D` is not declared here.
+    assert_eq!(targets, vec!["m.A", "m.B", "ns.D"]);
 }
 
 #[test]
@@ -407,8 +408,8 @@ fn class_generic_heritage_strips_type_arguments() {
             .filter_map(|e| e.target_qualname.as_deref())
             .collect()
     };
-    assert_eq!(of("EXTENDS"), vec!["Base"]);
-    assert_eq!(of("IMPLEMENTS"), vec!["I"]);
+    assert_eq!(of("EXTENDS"), vec!["m.Base"]);
+    assert_eq!(of("IMPLEMENTS"), vec!["m.I"]);
 }
 
 #[test]
