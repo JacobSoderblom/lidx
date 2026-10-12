@@ -43,6 +43,7 @@ never an annotated-tag object, and `run.py` compares commit shas, so a cached cl
 | Go | cobra, gitleaks, syft | `golang.org/x/tools/go/callgraph/rta` over the type-checked program | with and without test files |
 | TypeScript | zod (`packages/zod/src`), hono (`src`) | `typescript` 5.9.3 checker API | production code in the scoped directory |
 | Rust | ripgrep 15.2.0, fd v10.5.0 | rust-analyzer 1.94 `scip` | `path_tests_excluded` (the repowise-comparable cell), `no_tests` (stricter, diagnostic) and `tests` |
+| Rust, held-out | bat v0.25.0, tokei v12.1.2, xsv 0.13.0, lidx @ ccc405a | rust-analyzer 1.94 `scip` | `path_tests_excluded` only (`"held_out"` in the lock): not used while developing the Rust extractor, they check that a change tuned on ripgrep and fd generalises; no repowise figure |
 
 Corpus repositories are untrusted: nothing from them is built, tested or installed. Go is only type-checked (`go list`
 may download modules); TypeScript uses the compiler API without installing the repository's dependencies (calls into
