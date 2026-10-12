@@ -936,6 +936,14 @@ pub struct ExplainSymbolResult {
     pub callees: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callees_total: Option<usize>,
+    /// Symbol-use edges that are not execution edges (`USES`, `CONFIG_BIND`,
+    /// `REFERENCES`, type relations), grouped by edge kind and capped per
+    /// kind with a per-kind `total`. They are kept out of `callers`/`callees`
+    /// so those counts only hold things that can run the symbol. Present when
+    /// `callers` or `callees` is requested and at least one such edge exists;
+    /// incoming relations come with `callers`, outgoing with `callees`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relations: Option<std::collections::BTreeMap<String, ExplainRelationGroup>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tests: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -959,6 +967,31 @@ pub struct ExplainSymbolResult {
     pub next_hops: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+/// One non-execution symbol-use edge (see `edge_views::is_relation`) touching
+/// an explained symbol.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExplainRelation {
+    pub symbol: Symbol,
+    /// `incoming`: `symbol` uses the explained symbol; `outgoing`: the
+    /// explained symbol uses `symbol`.
+    pub direction: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
+}
+
+/// Cap on items per edge kind in `ExplainSymbolResult::relations`.
+pub const RELATIONS_PER_KIND: usize = 5;
+
+/// The relations of one edge kind: at most `RELATIONS_PER_KIND` items out of
+/// `total` distinct related symbols.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExplainRelationGroup {
+    pub total: usize,
+    pub items: Vec<ExplainRelation>,
 }
 
 #[derive(Debug, Clone, Serialize)]

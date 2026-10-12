@@ -197,6 +197,13 @@ pub const NON_USAGE: &[&str] = &[IMPORTS, IMPORTS_FILE, CONTAINS];
 /// Structural edges: declaration nesting, not a dependency on the target.
 pub const STRUCTURAL: &[&str] = &[CONTAINS, MODULE_FILE];
 
+/// Whether `kind` is a symbol-use relation that is not an execution edge:
+/// the kinds `explain_symbol` reports under `relations` instead of
+/// `callers`/`callees`.
+pub fn is_relation(kind: &str) -> bool {
+    contains(SYMBOL_USE, kind) && !contains(EXECUTION, kind)
+}
+
 /// Whether `kind` belongs to `set`.
 pub fn contains(set: &[&str], kind: &str) -> bool {
     set.contains(&kind)
@@ -378,6 +385,28 @@ mod tests {
         );
         assert_eq!(members(STRUCTURAL), of(&["CONTAINS", "MODULE_FILE"]));
         assert_eq!(members(RPC_BOUND), of(&["RPC_IMPL", "RPC_CALL"]));
+    }
+
+    #[test]
+    fn relations_are_symbol_use_outside_execution() {
+        let relations: BTreeSet<&str> = SYMBOL_USE
+            .iter()
+            .copied()
+            .filter(|k| is_relation(k))
+            .collect();
+        assert_eq!(
+            relations,
+            of(&[
+                "EXTENDS",
+                "IMPLEMENTS",
+                "INHERITS",
+                "USES",
+                "CONFIG_BIND",
+                "REFERENCES"
+            ])
+        );
+        assert!(!is_relation("CALLS"));
+        assert!(!is_relation("IMPORTS"));
     }
 
     #[test]
