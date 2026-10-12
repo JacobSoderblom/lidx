@@ -129,6 +129,103 @@ fn is_locally_bound_bare_call(r: &Reference<'_>) -> bool {
         && r.receiver_type == Some("")
 }
 
+/// Whether an edge is a value reference (a function used as a value, not
+/// called): kind `REFERENCES` -- or `USES` once stored against a constant,
+/// see [`stored_edge_kind`] -- with the `ref` call shape. The SQL
+/// extractor's foreign-key `REFERENCES` edges have no shape.
+pub(crate) fn is_value_reference(edge_kind: &str, call_shape: Option<CallShape>) -> bool {
+    (edge_kind == edge_views::REFERENCES || edge_kind == edge_views::USES)
+        && call_shape.is_some_and(|shape| shape.is_ref)
+}
+
+/// SQL predicate (over a `kind` column and a `call_shape` column) matching
+/// exactly the rows [`is_value_reference`] accepts, so counts and summaries
+/// can include or exclude value references with one definition.
+pub(crate) fn value_reference_sql(kind_col: &str, shape_col: &str) -> String {
+    format!(
+        "({kind_col} IN ('{}', '{}') AND COALESCE({shape_col}, '') IN ('{}', '{}'))",
+        edge_views::REFERENCES,
+        edge_views::USES,
+        CallShape::REF_ENCODING,
+        CallShape::REF_THIS_ENCODING,
+    )
+}
+
+/// `symbols.kind` of `id`.
+pub(crate) fn symbol_kind(conn: &Connection, id: i64) -> Result<Option<String>> {
+    Ok(conn
+        .prepare_cached("SELECT kind FROM symbols WHERE id = ?")?
+        .query_row([id], |row| row.get(0))
+        .optional()?)
+}
+
+/// Whether a symbol kind is data rather than a function: what a value
+/// reference to it reads. Such an edge is stored as `USES`.
+fn is_data_symbol_kind(kind: Option<&str>) -> bool {
+    matches!(kind, Some("const" | "variable" | "static"))
+}
+
+/// The `edges.kind` to store for an edge bound to `target_id`. A value
+/// reference to a function, method or class is `REFERENCES`; one that lands
+/// on a constant or variable reads data and is `USES`. Every other edge keeps
+/// its kind. One rule for the insert, the retry insert and every rebind.
+pub(crate) fn stored_edge_kind(
+    conn: &Connection,
+    edge_kind: &str,
+    call_shape: Option<CallShape>,
+    target_id: i64,
+) -> Result<String> {
+    if !is_value_reference(edge_kind, call_shape) {
+        return Ok(edge_kind.to_string());
+    }
+    Ok(
+        if is_data_symbol_kind(symbol_kind(conn, target_id)?.as_deref()) {
+            edge_views::USES
+        } else {
+            edge_views::REFERENCES
+        }
+        .to_string(),
+    )
+}
+
+/// The kind an unresolved value reference is stored under (always
+/// `REFERENCES`: the `USES` form needs a bound constant).
+fn store_edge_kind(edge_kind: &str, call_shape: Option<CallShape>) -> &str {
+    if is_value_reference(edge_kind, call_shape) {
+        edge_views::REFERENCES
+    } else {
+        edge_kind
+    }
+}
+
+/// Drops every value-reference edge whose source and target a `CALLS` edge
+/// also joins (the call is the stronger statement; a pair gets no duplicate).
+/// `file_id` limits the pass to one file's edges. Run after any step that can
+/// add a `CALLS` edge or resolve a reference.
+pub(crate) fn drop_references_shadowed_by_calls(
+    conn: &Connection,
+    graph_version: i64,
+    file_id: Option<i64>,
+) -> Result<usize> {
+    Ok(conn.execute(
+        &format!(
+            "DELETE FROM edges
+             WHERE graph_version = ?1 AND {value_ref}
+               AND target_symbol_id IS NOT NULL
+               AND (?2 IS NULL OR file_id = ?2)
+               AND EXISTS (
+                 SELECT 1 FROM edges c
+                 WHERE c.kind = '{calls}' AND c.graph_version = ?1
+                   AND c.source_symbol_id = edges.source_symbol_id
+                   AND c.target_symbol_id = edges.target_symbol_id
+               )",
+            value_ref = value_reference_sql("kind", "call_shape"),
+            calls = edge_views::CALLS,
+        ),
+        params![graph_version, file_id],
+    )?)
+}
+
 /// How a resolved target was found. `as_str` is the `edges.resolution_kind`
 /// column value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1084,6 +1181,56 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        if !is_value_reference(r.edge_kind, r.call_shape) {
+            return self.resolve_tiers_and_refine(r, symbol_map);
+        }
+        // A value reference (`map(handler)`) is looked up exactly like a bare
+        // or qualified call to the same text -- same tiers, same scoping --
+        // and then judged by `filter_value_reference`.
+        let as_call = Reference {
+            edge_kind: "CALLS",
+            ..*r
+        };
+        let resolution = self.resolve_tiers_and_refine(&as_call, symbol_map)?;
+        self.filter_value_reference(r, resolution)
+    }
+
+    /// Keep a value reference's resolution only when it is trustworthy and
+    /// names something callable: an exact / import / receiver-type /
+    /// inherited match (never the heuristic name tiers or an external stub)
+    /// whose target is a function or class -- a method only when the
+    /// reference is qualified, since a bare identifier cannot name one. A
+    /// constant or variable is kept too (stored as a plain `USES`, see
+    /// [`stored_edge_kind`]: a data read, not a function named).
+    fn filter_value_reference(
+        &mut self,
+        r: &Reference<'_>,
+        resolution: Resolution,
+    ) -> Result<Resolution> {
+        let Resolution::Resolved { target_id, kind } = resolution else {
+            return Ok(resolution);
+        };
+        let refuse = Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        if matches!(
+            kind,
+            ResolutionKind::TwoSegment | ResolutionKind::BareName | ResolutionKind::External { .. }
+        ) {
+            return refuse;
+        }
+        let target_kind = symbol_kind(self.conn, target_id)?;
+        let allowed = match target_kind.as_deref() {
+            Some("function" | "class") => true,
+            Some("method") => !r.bare_call,
+            other => is_data_symbol_kind(other),
+        };
+        if allowed { Ok(resolution) } else { refuse }
+    }
+
+    fn resolve_tiers_and_refine(
+        &mut self,
+        r: &Reference<'_>,
+        symbol_map: &HashMap<String, i64>,
+    ) -> Result<Resolution> {
         // A deferred argument (`new(..)` passed to a call) becomes the type of
         // the callee's parameter, then resolves as `new T(..)` would.
         if let Some(marker @ DeferredMarker::Argument(_)) = r.deferred {
@@ -1187,24 +1334,6 @@ impl<'c> Resolver<'c> {
                 })
                 .optional()?;
             if kind.as_deref() == Some("interface") {
-                return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
-            }
-        }
-        // A value reference (`cb ?? fallback`) names something callable or a
-        // value; `toBeInstanceOf(Foo)` passes a class around, it uses none.
-        if let (Some(shape), Resolution::Resolved { target_id, .. }) = (r.call_shape, resolution)
-            && shape.is_ref
-        {
-            let kind: Option<String> = self
-                .conn
-                .query_row("SELECT kind FROM symbols WHERE id = ?", [target_id], |r| {
-                    r.get(0)
-                })
-                .optional()?;
-            if !matches!(
-                kind.as_deref(),
-                Some("function" | "const" | "variable" | "method")
-            ) {
                 return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
             }
         }
@@ -1343,7 +1472,11 @@ impl<'c> Resolver<'c> {
             if r.edge_kind == "IMPORTS" && r.source_lang == "csharp" && self.saw_ambiguous {
                 return Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous));
             }
-            if !types_only
+            if !types_only && r.source_lang == "go" {
+                if let Some((id, kind)) = self.resolve_go_package_member(r.import_candidates)? {
+                    return Ok(resolved(id, kind));
+                }
+            } else if !types_only
                 && let Some(id) = self.resolve_import(
                     r.import_candidates,
                     symbol_map,
@@ -2341,6 +2474,65 @@ impl<'c> Resolver<'c> {
         Ok(None)
     }
 
+    /// Go package-scope lookup. A candidate is `<mark><dir>|<member>` (see
+    /// the Go extractor's value references): `<dir>` is a repo directory --
+    /// every file of a Go package shares one -- and `<member>` is `Name` or
+    /// `Type.Method`. `=` marks the referencing file's own package (an
+    /// `exact` binding); `>` a package its import names (`import`; the Go
+    /// extractor's import hook already mapped the import path through
+    /// `go.mod`, dropping foreign ones). Go qualnames are
+    /// `<dir>/<file-stem>.<member>`, so a package spans several modules; the
+    /// candidate binds only when exactly one symbol across them matches.
+    fn resolve_go_package_member(
+        &mut self,
+        candidates: &[String],
+    ) -> Result<Option<(i64, ResolutionKind)>> {
+        let gv = self.graph_version;
+        let mut found: Option<(i64, ResolutionKind)> = None;
+        for candidate in candidates {
+            let Some((place, member)) = candidate.split_once('|') else {
+                continue;
+            };
+            let (want_dir, kind) = if let Some(dir) = place.strip_prefix('=') {
+                (dir, ResolutionKind::Exact)
+            } else if let Some(dir) = place.strip_prefix('>') {
+                (dir, ResolutionKind::Import)
+            } else {
+                continue;
+            };
+            let name = member.rsplit('.').next().unwrap_or(member);
+            let rows: Vec<(i64, String)> = self
+                .conn
+                .prepare_cached(
+                    "SELECT s.id, s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+                     WHERE s.name = ?1 AND s.graph_version = ?2 AND f.language = 'go'
+                       AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
+                )?
+                .query_map(params![name, gv], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let dot_member = format!(".{member}");
+            let mut hits = rows.iter().filter_map(|(id, qualname)| {
+                let module = qualname.strip_suffix(&dot_member)?;
+                let dir = module.rsplit_once('/').map_or("", |(dir, _)| dir);
+                (dir == want_dir).then_some(*id)
+            });
+            let Some(id) = hits.next() else { continue };
+            if hits.next().is_some() {
+                self.saw_ambiguous = true;
+                return Ok(None);
+            }
+            match found {
+                None => found = Some((id, kind)),
+                Some((existing, _)) if existing == id => {}
+                Some(_) => {
+                    self.saw_ambiguous = true;
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// Resolve an `IMPORTS_FILE` edge's ordered candidate list (see
     /// `EdgeInput::import_candidates` / `python::resolve_import_file_edges`)
     /// to the first candidate naming exactly one `module`-kind symbol.
@@ -2709,7 +2901,10 @@ pub(crate) const EXTERNAL_FILE_PATH: &str = "<external>";
 /// them to `ext:` stubs is pure noise. They stay unresolved (and retryable)
 /// until an in-repo target appears.
 fn never_external(r: &Reference<'_>) -> bool {
-    r.edge_kind == "USES" && r.source_lang == "csharp"
+    (r.edge_kind == "USES" && r.source_lang == "csharp")
+        // A function passed as a value is mostly a local or a framework
+        // name: never worth a stub symbol.
+        || r.call_shape.is_some_and(|shape| shape.is_ref)
 }
 
 /// The `ext:` marker every external stub qualname starts with.
@@ -2845,6 +3040,16 @@ struct ReferenceContext {
 }
 
 impl ReferenceContext {
+    /// The decoded `call_shape` column.
+    fn shape(&self) -> Option<CallShape> {
+        self.call_shape.as_deref().and_then(CallShape::decode)
+    }
+
+    /// The `edges.kind` to store once this reference binds to `target_id`.
+    fn kind_for_target(&self, conn: &Connection, target_id: i64) -> Result<String> {
+        stored_edge_kind(conn, &self.edge_kind, self.shape(), target_id)
+    }
+
     /// The stored deferred marker, if any.
     fn marker(&self) -> Option<DeferredMarker> {
         DeferredMarker::decode(self.deferred_kind.as_deref()?, self.deferred.as_deref()?)
@@ -2922,7 +3127,7 @@ pub(crate) fn bound_target_qualname(
 /// callee's name again once unbound.
 static UPDATE_EDGE_TARGET_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "UPDATE edges SET target_symbol_id = ?1, resolution_kind = ?2,
+        "UPDATE edges SET target_symbol_id = ?1, resolution_kind = ?2, kind = ?5,
            target_qualname = CASE WHEN deferred_kind = '{DEFERRED_KIND_ARGUMENT}'
              THEN COALESCE((SELECT qualname FROM symbols WHERE id = ?1), ?4)
              ELSE target_qualname END
@@ -3370,7 +3575,8 @@ impl Db {
                             target_id,
                             kind.as_str(),
                             edge_id,
-                            row.ctx.deferred_callee()
+                            row.ctx.deferred_callee(),
+                            row.ctx.kind_for_target(&tx, target_id)?
                         ])?;
                         reconciled += 1;
                     }
@@ -3403,7 +3609,7 @@ impl Db {
                             stored_edge_id,
                             row.source_symbol_id,
                             row.file_id,
-                            &row.ctx.edge_kind,
+                            store_edge_kind(&row.ctx.edge_kind, row.ctx.shape()),
                             reference_name,
                             name_tail,
                             reason.as_str(),
@@ -3431,6 +3637,9 @@ impl Db {
             }
         }
 
+        if reconciled > 0 {
+            drop_references_shadowed_by_calls(&tx, graph_version, None)?;
+        }
         tx.commit()?;
         Ok(reconciled)
     }
@@ -3673,7 +3882,8 @@ impl Db {
                                 target_id,
                                 kind.as_str(),
                                 edge_id,
-                                row.ctx.deferred_callee()
+                                row.ctx.deferred_callee(),
+                                row.ctx.kind_for_target(&tx, target_id)?
                             ])?;
                         }
                         None => {
@@ -3681,7 +3891,7 @@ impl Db {
                                 row.file_id,
                                 row.source_symbol_id,
                                 target_id,
-                                &row.ctx.edge_kind,
+                                row.ctx.kind_for_target(&tx, target_id)?,
                                 bound_target_qualname(
                                     &tx,
                                     row.ctx.deferred_kind.as_deref()
@@ -3730,6 +3940,9 @@ impl Db {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![max_inheritance_edge_id.to_string()],
         )?;
+        if total_resolved > 0 {
+            drop_references_shadowed_by_calls(&tx, graph_version, None)?;
+        }
         tx.commit()?;
         Ok(total_resolved)
     }
@@ -3872,14 +4085,18 @@ impl Db {
 
             for row in &rows {
                 match row.ctx.resolve(&mut resolver, &empty_symbol_map)? {
+                    // A different target, or the same one whose kind now
+                    // stores differently (a constant became a function).
                     Resolution::Resolved { target_id, kind }
-                        if target_id != row.target_symbol_id =>
+                        if target_id != row.target_symbol_id
+                            || row.ctx.kind_for_target(&tx, target_id)? != row.ctx.edge_kind =>
                     {
                         update_edge.execute(params![
                             target_id,
                             kind.as_str(),
                             row.edge_id,
-                            row.ctx.deferred_callee()
+                            row.ctx.deferred_callee(),
+                            row.ctx.kind_for_target(&tx, target_id)?
                         ])?;
                         total_resolved += 1;
                     }
@@ -3892,7 +4109,8 @@ impl Db {
                             None::<i64>,
                             None::<String>,
                             row.edge_id,
-                            row.ctx.deferred_callee()
+                            row.ctx.deferred_callee(),
+                            &row.ctx.edge_kind
                         ])?;
                         total_resolved += 1;
                     }
@@ -3919,8 +4137,26 @@ impl Db {
             }
         }
 
+        if total_resolved > 0 {
+            drop_references_shadowed_by_calls(&tx, graph_version, None)?;
+        }
         tx.commit()?;
         Ok(total_resolved)
+    }
+
+    /// Re-judge every bound value reference. Its target depends on symbols
+    /// outside its own file (a function that became a constant, a second
+    /// candidate that made the name ambiguous), which neither the store
+    /// retry nor a carried-forward edge notices.
+    pub fn retry_value_reference_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "",
+            &format!(
+                "AND e.target_symbol_id IS NOT NULL AND {}",
+                value_reference_sql("e.kind", "e.call_shape")
+            ),
+        )
     }
 
     /// Unresolved reference counts by reason, grouped by language, for the
@@ -3932,14 +4168,15 @@ impl Db {
         graph_version: i64,
     ) -> Result<Vec<crate::model::UnresolvedReferenceSummary>> {
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT COALESCE(f.language, 'unknown'), ur.reason, COUNT(*)
              FROM unresolved_references ur
              JOIN files f ON f.id = ur.file_id
-             WHERE ur.graph_version = ?
+             WHERE ur.graph_version = ?1 AND NOT {value_ref}
              GROUP BY f.language, ur.reason
              ORDER BY f.language, ur.reason",
-        )?;
+            value_ref = value_reference_sql("ur.edge_kind", "ur.call_shape"),
+        ))?;
         let rows = stmt.query_map(params![graph_version], |row| {
             Ok(crate::model::UnresolvedReferenceSummary {
                 language: row.get(0)?,
@@ -3955,7 +4192,9 @@ impl Db {
     /// signal `trace_flow`/`analyze_impact` attach to a traversal (issue
     /// #81): a traversed symbol had at least one outgoing reference the
     /// write path couldn't attribute a target to, so the traversed graph
-    /// may be missing edges from it.
+    /// may be missing edges from it. Value references that did not resolve
+    /// are left out: they are mostly locals and parameters, and nothing is
+    /// known to be missing for them.
     ///
     /// Deliberately the same query for both traversal directions. For a
     /// downstream trace this is exact: a pending row's source symbol is
@@ -3987,7 +4226,9 @@ impl Db {
         }
         let sql = format!(
             "SELECT COUNT(*) FROM unresolved_references \
-             WHERE source_symbol_id IN ({placeholders}) AND graph_version = ?"
+             WHERE source_symbol_id IN ({placeholders}) AND graph_version = ? \
+               AND NOT {}",
+            value_reference_sql("edge_kind", "call_shape")
         );
         let conn = self.read_conn()?;
         let mut params: Vec<&dyn rusqlite::ToSql> = symbol_ids
@@ -4025,6 +4266,11 @@ impl Db {
             eprintln!(
                 "lidx: re-judged {deferred_rejudged} deferred-receiver edge(s) after {context}"
             );
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let value_rejudged = self.retry_value_reference_edges(graph_version)?;
+        if value_rejudged > 0 {
+            eprintln!("lidx: re-judged {value_rejudged} value reference edge(s) after {context}");
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
         let store_resolved =

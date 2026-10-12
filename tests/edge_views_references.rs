@@ -2,9 +2,9 @@
 //! alive (`dead_symbols`), not an execution target (`trace_flow`), and is
 //! reported under `explain_symbol`'s `other_edges`, never `callers`.
 //!
-//! The edge is inserted straight into the database: no extractor emits
-//! `REFERENCES` between symbols yet, and the named edge views must already
-//! place it correctly when one does.
+//! The edge is inserted straight into the database, so the source holds no
+//! real value reference (the extractors emit those) and the baseline is
+//! "nothing uses `registered`".
 
 mod common;
 
@@ -14,7 +14,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::path::Path;
 
-const SRC: &str = "def registered():\n    return 1\n\n\ndef orphan():\n    return 2\n\n\ndef table():\n    return [registered]\n";
+const SRC: &str = "def registered():\n    return 1\n\n\ndef orphan():\n    return 2\n\n\ndef table():\n    return 1\n";
 
 fn call(indexer: &mut Indexer, method: &str, params: Value) -> Value {
     rpc::handle_method(indexer, method, params).unwrap()

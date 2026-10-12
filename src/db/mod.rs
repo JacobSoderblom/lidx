@@ -1682,12 +1682,16 @@ impl Db {
                     )?,
                     None => edge.target_qualname.clone(),
                 };
+                let stored_kind = match resolution.target_id() {
+                    Some(id) => resolver::stored_edge_kind(&tx, &edge.kind, edge.call_shape, id)?,
+                    None => edge.kind.clone(),
+                };
                 let edge_id = if resolution.target_id().is_some() || is_bridge {
                     insert_stmt.execute(params![
                         file_id,
                         source_id,
                         resolution.target_id(),
-                        &edge.kind,
+                        &stored_kind,
                         stored_target.as_deref(),
                         edge.detail.as_deref(),
                         edge.evidence_snippet.as_deref(),
@@ -1750,6 +1754,7 @@ impl Db {
                 }
             }
         }
+        resolver::drop_references_shadowed_by_calls(&tx, graph_version, Some(file_id))?;
         tx.commit()?;
         Ok(count)
     }

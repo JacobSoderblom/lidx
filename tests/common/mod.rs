@@ -167,3 +167,136 @@ pub fn call_targets(files: &[(&str, &str)], caller: &str) -> Vec<String> {
         .map(|r| r.unwrap())
         .collect()
 }
+
+/// Indexes `files` in a fresh repo and returns the sorted targets of the
+/// `kind` edges leaving the symbol `caller` (resolved qualname, else the raw
+/// target text).
+pub fn edge_targets(files: &[(&str, &str)], caller: &str, kind: &str) -> Vec<String> {
+    let (_tmp, root, db_path) = index_repo("lidx-edge-targets-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(t.qualname, e.target_qualname, '') FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = ? AND s.qualname = ?",
+        )
+        .unwrap();
+    let mut out: Vec<String> = stmt
+        .query_map(rusqlite::params![gv, kind, caller], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    out.sort();
+    out
+}
+
+/// `REFERENCES` targets of `caller` after indexing `files`.
+pub fn ref_targets(files: &[(&str, &str)], caller: &str) -> Vec<String> {
+    edge_targets(files, caller, "REFERENCES")
+}
+
+/// How an index of `files` accounts for unresolved value references.
+pub struct UnresolvedAccounting {
+    /// `unresolved_references` rows of kind `REFERENCES`.
+    pub value_reference_rows: i64,
+    /// Rows of every other kind that have a source symbol.
+    pub other_rows: i64,
+    /// `Db::unresolved_reference_summary` total.
+    pub summary_total: i64,
+    /// `Db::unresolved_reference_count_for_symbols` over every symbol.
+    pub counted_for_symbols: i64,
+}
+
+impl UnresolvedAccounting {
+    /// Unresolved value references are stored but never counted: the summary
+    /// and the per-symbol count see only the other rows.
+    pub fn assert_value_references_not_counted(&self) {
+        let total_rows: i64 = self.other_rows;
+        assert_eq!(self.counted_for_symbols, total_rows, "per-symbol count");
+        assert!(
+            self.summary_total >= self.counted_for_symbols,
+            "summary counts the other rows too"
+        );
+    }
+}
+
+/// Indexes `files` and reports the unresolved-reference accounting.
+pub fn unresolved_accounting(files: &[(&str, &str)]) -> UnresolvedAccounting {
+    let (_tmp, root, db_path) = index_repo("lidx-unresolved-refs-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let db = indexer.db();
+    let gv = db.current_graph_version().unwrap();
+    let conn = db.read_conn().unwrap();
+    let value_reference_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references WHERE edge_kind = 'REFERENCES'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let other_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references
+             WHERE edge_kind != 'REFERENCES' AND source_symbol_id IS NOT NULL
+               AND graph_version = ?",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let ids: Vec<i64> = conn
+        .prepare("SELECT id FROM symbols WHERE graph_version = ?")
+        .unwrap()
+        .query_map([gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let summary_total = db
+        .unresolved_reference_summary(gv)
+        .unwrap()
+        .iter()
+        .map(|row| row.count)
+        .sum();
+    let counted_for_symbols = db.unresolved_reference_count_for_symbols(&ids, gv).unwrap();
+    UnresolvedAccounting {
+        value_reference_rows,
+        other_rows,
+        summary_total,
+        counted_for_symbols,
+    }
+}
+
+/// `(target qualname, resolution_kind)` of the `kind` edges leaving `caller`,
+/// sorted.
+pub fn edge_targets_with_resolution(
+    files: &[(&str, &str)],
+    caller: &str,
+    kind: &str,
+) -> Vec<(String, String)> {
+    let (_tmp, root, db_path) = index_repo("lidx-edge-resolution-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(t.qualname, e.target_qualname, ''), COALESCE(e.resolution_kind, '')
+             FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = ? AND s.qualname = ?",
+        )
+        .unwrap();
+    let mut out: Vec<(String, String)> = stmt
+        .query_map(rusqlite::params![gv, kind, caller], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    out.sort();
+    out
+}

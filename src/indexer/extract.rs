@@ -449,17 +449,42 @@ pub struct CallShape {
     /// `is_new` (an object creation has no receiver concept), so the
     /// encoding has one prefix at most; `encode` gives `is_new` precedence.
     pub implicit_this: bool,
-    /// TS/JS: not a call at all but a function or const used as a value
-    /// (`cb ?? fallback`, `register(handler)`). Persisted as `"ref"`. The
-    /// resolver binds such a reference only to something callable.
+    /// Not a call at all but a function used as a value (`cb ?? fallback`,
+    /// `register(handler)`, `.Select(Parse)`) -- the shape of a `REFERENCES`
+    /// edge. Persisted as `"ref"`. The resolver binds such a reference only
+    /// to something callable (`Resolver::filter_value_reference`).
     pub is_ref: bool,
 }
 
 impl CallShape {
+    /// `call_shape` column text of a value reference.
+    pub const REF_ENCODING: &'static str = "ref";
+    /// `call_shape` column text of a value reference with an implicit
+    /// receiver (C# `Select(Parse)` inside a type body).
+    pub const REF_THIS_ENCODING: &'static str = "ref:this";
+
+    /// The shape of a value reference (a function used as a value, not
+    /// called): see `is_ref`.
+    pub fn value_reference() -> Self {
+        Self {
+            arg_count: 0,
+            is_new: false,
+            implicit_this: false,
+            is_ref: true,
+        }
+    }
+
     /// The `call_shape` column text: `"<n>"` or `"new:<n>"`.
     pub fn encode(self) -> String {
         if self.is_ref {
-            "ref".to_string()
+            // A value reference keeps its implicit receiver (C# `Select(Parse)`
+            // inside a type body) across a re-resolution from the stored row.
+            if self.implicit_this {
+                "ref:this"
+            } else {
+                "ref"
+            }
+            .to_string()
         } else if self.is_new {
             format!("new:{}", self.arg_count)
         } else if self.implicit_this {
@@ -471,11 +496,11 @@ impl CallShape {
 
     /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
-        if raw == "ref" {
+        if raw == Self::REF_ENCODING || raw == Self::REF_THIS_ENCODING {
             return Some(Self {
                 arg_count: 0,
                 is_new: false,
-                implicit_this: false,
+                implicit_this: raw == Self::REF_THIS_ENCODING,
                 is_ref: true,
             });
         }
