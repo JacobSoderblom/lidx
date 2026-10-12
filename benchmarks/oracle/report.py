@@ -286,7 +286,12 @@ def build(results_dir):
         w("- oracle: %s, %d edges: %d static with an indexed caller, %d dispatch (%d of them found), %d capture gap" % (
             c.get("oracle_mode"), s["oracle_edges"], s["oracle_edges_caller_indexed"], s.get("dispatch_edges", 0), s.get("dispatch_matched", 0),
             s["capture_gap_edges"]))
-        if "comparable" in c:
+        if c["lang"] == "go" and "comparable" in c:
+            cs = c["comparable"]
+            w("- repowise rules (no interface edges, no dispatch credit): P %s %s, R %s %s; the figures in this section are the "
+              "dispatch-credited, lidx-native grading" % (
+                  pct(cs["precision"]), ci(cs["precision_ci"]), pct(cs["recall_comparable"]), ci(cs["recall_comparable_ci"])))
+        elif "comparable" in c:
             cs = c["comparable"]
             w("- repowise-comparable scope: %d oracle edges (%d module-level and %d abstract-target edges removed), P %s %s, R %s %s; "
               "the figures in this section are the stricter grading" % (
