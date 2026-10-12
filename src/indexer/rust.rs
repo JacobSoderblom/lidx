@@ -43,6 +43,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
         classify: classify_twin,
     },
     package_dir: Some(cargo_package_dir),
+    ..LanguageProfile::DEFAULT
 };
 
 /// What a cfg-gated declaration's signature starts with.

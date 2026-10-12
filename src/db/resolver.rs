@@ -482,6 +482,17 @@ pub(crate) struct LanguageProfile {
     /// whose qualnames restart at each package root (`crate::`): among
     /// same-qualname candidates, those in the caller's package win.
     pub package_dir: Option<fn(path: &str) -> &str>,
+    /// Whether a receiver-less `Type.name` target may bind through the
+    /// two-segment tier (`resolve_by_name`). Off for Go, where a dotted
+    /// call target is a package or local receiver the extractor already
+    /// bound through the imports, so a name match only guesses (0.58-0.68
+    /// precise on syft).
+    pub two_segment: bool,
+    /// Symbol kinds a `CALLS` edge never targets, whichever tier bound them:
+    /// Go's `T(x)` converts, and a function-typed package variable or
+    /// constant is no declaration (`HelpPrinter(..)` runs whatever it holds).
+    /// Such a call stays unresolved. Empty for most languages.
+    pub call_refused_kinds: &'static [&'static str],
 }
 
 /// See `LanguageProfile::same_file_twins`.
@@ -593,6 +604,8 @@ impl LanguageProfile {
         deferred_receiver: None,
         same_file_twins: SameFileTwins::Overloads,
         package_dir: None,
+        two_segment: true,
+        call_refused_kinds: &[],
     };
 }
 
@@ -1237,7 +1250,8 @@ impl<'c> Resolver<'c> {
     ) -> Result<Resolution> {
         self.caller_scope = r.source_qualname.map(str::to_string);
         if !is_value_reference(r.edge_kind, r.call_shape) {
-            return self.resolve_tiers_and_refine(r, symbol_map);
+            let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
+            return self.refuse_uncallable_kind(r, resolution);
         }
         // A value reference (`map(handler)`) is looked up exactly like a bare
         // or qualified call to the same text -- same tiers, same scoping --
@@ -1248,6 +1262,29 @@ impl<'c> Resolver<'c> {
         };
         let resolution = self.resolve_tiers_and_refine(&as_call, symbol_map)?;
         self.filter_value_reference(r, resolution)
+    }
+
+    /// A call never targets a kind its language's profile refuses
+    /// (`LanguageProfile::call_refused_kinds`): whatever tier bound one, the
+    /// call stays unresolved.
+    fn refuse_uncallable_kind(
+        &mut self,
+        r: &Reference<'_>,
+        resolution: Resolution,
+    ) -> Result<Resolution> {
+        let Resolution::Resolved { target_id, .. } = resolution else {
+            return Ok(resolution);
+        };
+        let refused = profile_for(r.source_lang).call_refused_kinds;
+        if refused.is_empty() || r.edge_kind != "CALLS" {
+            return Ok(resolution);
+        }
+        Ok(match symbol_kind(self.conn, target_id)? {
+            Some(kind) if refused.contains(&kind.as_str()) => {
+                Resolution::Unresolved(UnresolvedReason::NoCandidates)
+            }
+            _ => resolution,
+        })
     }
 
     /// Keep a value reference's resolution only when it is trustworthy and
@@ -1569,8 +1606,14 @@ impl<'c> Resolver<'c> {
                 return Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous));
             }
             if !types_only && r.source_lang == "go" {
-                if let Some((id, kind)) = self.resolve_go_package_member(r.import_candidates)? {
+                let is_call = r.edge_kind == "CALLS" && !r.call_shape.is_some_and(|c| c.is_ref);
+                if let Some((id, kind)) =
+                    self.resolve_go_package_member(r.import_candidates, r.bare_call)?
+                {
                     return Ok(resolved(id, kind));
+                }
+                if is_call && let Some(miss) = self.go_package_member_miss(r)? {
+                    return Ok(miss);
                 }
             } else if !types_only
                 && let Some(id) = self.resolve_import(
@@ -2195,7 +2238,8 @@ impl<'c> Resolver<'c> {
                     exclude_method: edge_kind == "CALLS" && bare_call,
                     enforce_visibility: true,
                 };
-                if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
+                if profile_for(source_lang).two_segment
+                    && let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
                     && let Some(id) = self.unique_by_pattern(
                         &seg,
                         (&dot, &colons),
@@ -2647,6 +2691,7 @@ impl<'c> Resolver<'c> {
     fn resolve_go_package_member(
         &mut self,
         candidates: &[String],
+        bare: bool,
     ) -> Result<Option<(i64, ResolutionKind)>> {
         let gv = self.graph_version;
         let mut found: Option<(i64, ResolutionKind)> = None;
@@ -2654,9 +2699,9 @@ impl<'c> Resolver<'c> {
             let Some((place, member)) = candidate.split_once('|') else {
                 continue;
             };
-            let (want_dir, kind) = if let Some(dir) = place.strip_prefix('=') {
+            let (want_dir, kind) = if let Some(dir) = place.strip_prefix(GO_SAME_PACKAGE) {
                 (dir, ResolutionKind::Exact)
-            } else if let Some(dir) = place.strip_prefix('>') {
+            } else if let Some(dir) = place.strip_prefix(GO_IMPORTED_PACKAGE) {
                 (dir, ResolutionKind::Import)
             } else {
                 continue;
@@ -2665,12 +2710,19 @@ impl<'c> Resolver<'c> {
             let rows: Vec<(i64, String)> = self
                 .conn
                 .prepare_cached(
-                    "SELECT s.id, s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+                    "SELECT s.id, s.qualname, s.kind FROM symbols s JOIN files f ON f.id = s.file_id
                      WHERE s.name = ?1 AND s.graph_version = ?2 AND f.language = 'go'
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
                 )?
-                .query_map(params![name, gv], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
+                .query_map(params![name, gv], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                // A bare `Name()` never dispatches to a method.
+                .filter(|(_, _, kind)| !(bare && kind == "method"))
+                .map(|(id, qualname, _)| (id, qualname))
+                .collect();
             let dot_member = format!(".{member}");
             let mut hits = rows.iter().filter_map(|(id, qualname)| {
                 let module = qualname.strip_suffix(&dot_member)?;
@@ -2692,6 +2744,36 @@ impl<'c> Resolver<'c> {
             }
         }
         Ok(found)
+    }
+
+    /// A Go call whose package candidate (`=dir|Name`, `>dir|Name`,
+    /// `<import path>|Name`) found no member. The name tiers must not guess
+    /// then: in Go a bare name and a package-qualified name each denote one
+    /// package, so a same-named symbol elsewhere is never the callee. A
+    /// package of this repo that lacks the member is a plain miss (retried
+    /// when the package changes); a package outside it is external. `None`
+    /// when the call carries no package candidate.
+    fn go_package_member_miss(&mut self, r: &Reference<'_>) -> Result<Option<Resolution>> {
+        let Some(first) = r.import_candidates.first() else {
+            return Ok(None);
+        };
+        if first.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE]) {
+            return Ok(Some(Resolution::Unresolved(if self.saw_ambiguous {
+                UnresolvedReason::Ambiguous
+            } else {
+                UnresolvedReason::NoCandidates
+            })));
+        }
+        if never_external(r) {
+            return Ok(None);
+        }
+        self.stub_resolution(
+            r.source_lang,
+            r.target_qualname,
+            r.import_candidates,
+            false,
+            false,
+        )
     }
 
     /// Resolve an `IMPORTS_FILE` edge's ordered candidate list (see
@@ -3067,6 +3149,13 @@ fn never_external(r: &Reference<'_>) -> bool {
         // name: never worth a stub symbol.
         || r.call_shape.is_some_and(|shape| shape.is_ref)
 }
+
+/// Place markers of a Go package candidate `<marker><dir>|Name`: `=` the
+/// referencing file's own package, `>` a package its import names (already
+/// mapped to a repo directory by the Go import hook). Shared by the Go
+/// extractor, which writes them, and `Resolver::resolve_go_package_member`.
+pub(crate) const GO_SAME_PACKAGE: char = '=';
+pub(crate) const GO_IMPORTED_PACKAGE: char = '>';
 
 /// The `ext:` marker every external stub qualname starts with.
 const EXTERNAL_STUB_PREFIX: &str = "ext:";
