@@ -339,6 +339,16 @@ struct ContextParams {
     extra: HashMap<String, Value>,
 }
 
+/// Params for `help`: per-method parameter schemas, on demand.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct HelpParams {
+    /// Method to describe; omit to list every method with a one-line summary
+    method: Option<String>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
+}
+
 /// Params for `outline`: a compact, no-bodies skeleton of a file's symbols.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct OutlineParams {
@@ -400,6 +410,7 @@ struct ReadSymbolParams {
 const MAX_RESPONSE_LIMIT: usize = 500;
 
 pub const METHOD_LIST: &[&str] = &[
+    "help",
     "search",
     "outline",
     "read_symbol",
@@ -550,6 +561,8 @@ enum Sizing {
 /// one place so the two cannot drift apart.
 struct MethodSpec {
     name: &'static str,
+    /// One line shown by `help` with no argument.
+    summary: &'static str,
     sizing: Sizing,
     run: fn(&mut Indexer, Value) -> Result<Value>,
 }
@@ -557,80 +570,106 @@ struct MethodSpec {
 const METHOD_SPECS: &[MethodSpec] = &[
     MethodSpec {
         name: "search",
+        summary: "Regex/literal text search with enclosing symbols",
         sizing: Sizing::Capped,
         run: handlers::handle_search_rg,
     },
     MethodSpec {
+        name: "help",
+        summary: "Param schema of one method, or this list of methods",
+        sizing: Sizing::Uncapped,
+        run: handlers::handle_help,
+    },
+    MethodSpec {
         name: "outline",
+        summary: "Symbol skeleton of one file with line ranges",
         sizing: Sizing::Capped,
         run: reading::handle_outline,
     },
     MethodSpec {
         name: "read_symbol",
+        summary: "Exact source of one or more symbols",
         sizing: Sizing::SelfBudgeting,
         run: reading::handle_read_symbol,
     },
     MethodSpec {
         name: "explain_symbol",
+        summary: "Source, callers, callees, tests of a symbol",
         sizing: Sizing::SelfBudgeting,
         run: handlers::handle_explain_symbol,
     },
     MethodSpec {
         name: "trace_flow",
+        summary: "Call chain from a symbol across languages",
         sizing: Sizing::SelfBudgeting,
         run: handlers::handle_trace_flow,
     },
     MethodSpec {
         name: "analyze_impact",
+        summary: "Transitive blast radius of changing a symbol",
         sizing: Sizing::Capped,
         run: handlers::handle_analyze_impact,
     },
     MethodSpec {
         name: "analyze_diff",
+        summary: "What a diff or changed files affect",
         sizing: Sizing::SelfBudgeting,
         run: handlers::handle_analyze_diff,
     },
     MethodSpec {
         name: "gather_context",
+        summary: "LLM-ready context bundle from seeds",
         sizing: Sizing::SelfBudgeting,
         run: handlers::handle_gather_context,
     },
     MethodSpec {
         name: "orient",
+        summary: "Architecture overview of the repo",
         sizing: Sizing::SelfBudgeting,
         run: handlers::handle_orient,
     },
     MethodSpec {
         name: "onboard",
+        summary: "Composite first-look orientation",
         sizing: Sizing::Uncapped,
         run: handlers::handle_onboard,
     },
     MethodSpec {
         name: "reindex",
+        summary: "Reindex the repository",
         sizing: Sizing::Capped,
         run: handlers::handle_reindex,
     },
     MethodSpec {
         name: "top_complexity",
+        summary: "Most complex symbols",
         sizing: Sizing::Capped,
         run: handlers::handle_top_complexity,
     },
     MethodSpec {
         name: "context",
+        summary: "Compact cross-file context for a file",
         sizing: Sizing::Uncapped,
         run: handlers::handle_context,
     },
     MethodSpec {
         name: "repo_map",
+        summary: "Ranked map of the repo's key symbols",
         sizing: Sizing::SelfBudgeting,
         run: handlers::handle_repo_map,
     },
     MethodSpec {
         name: "dead_symbols",
+        summary: "Symbols with no incoming references",
         sizing: Sizing::Capped,
         run: handlers::handle_dead_symbols,
     },
 ];
+
+/// (name, one-line summary) for every dispatchable method.
+pub(crate) fn method_summaries() -> impl Iterator<Item = (&'static str, &'static str)> {
+    METHOD_SPECS.iter().map(|s| (s.name, s.summary))
+}
 
 /// Whether `method` sizes its own output (see `Sizing::SelfBudgeting`).
 pub fn is_self_budgeting(method: &str) -> bool {
@@ -691,6 +730,7 @@ params_extra!(
     ExplainSymbolParams,
     TraceFlowParams,
     ContextParams,
+    HelpParams,
     OutlineParams,
     ReadSymbolParams,
 );
@@ -815,7 +855,15 @@ fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result
         obj.insert("max_bytes".into(), json!(b));
         budget = Some((cap, b));
     }
-    let mut value = (spec.run)(indexer, params.clone()).map(hoist_symbol_run_metadata)?;
+    // `help` returns schemas, whose `properties` maps can look Symbol-shaped.
+    let hoist = |v: Value| {
+        if method == "help" {
+            v
+        } else {
+            hoist_symbol_run_metadata(v)
+        }
+    };
+    let mut value = (spec.run)(indexer, params.clone()).map(hoist)?;
     // That budget covers only the paginated payload, so when the whole
     // response still overshoots the cap, re-run with the budget reduced by the
     // overshoot; the generic pass below stays as the last-resort backstop.
@@ -834,7 +882,7 @@ fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result
                 .map_or(b, |u| (u as usize).min(b));
             b = used.saturating_sub(size - cap).max(1);
             params["max_bytes"] = json!(b);
-            value = (spec.run)(indexer, params.clone()).map(hoist_symbol_run_metadata)?;
+            value = (spec.run)(indexer, params.clone()).map(hoist)?;
         }
     }
 

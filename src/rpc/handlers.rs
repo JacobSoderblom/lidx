@@ -255,6 +255,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     via_interface: false,
                     file_level: false,
                     evidence: edge.evidence_snippet,
+                    evidence_line: edge.evidence_start_line,
                     edge_kind: edge.kind,
                     protocol_context: None,
                     resolution_kind: edge.resolution_kind,
@@ -523,6 +524,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         caller_refs.push(ExplainRef {
                             symbol: caller_sym,
                             evidence,
+                            evidence_line: edge.evidence_start_line,
                             edge_kind: "CALLS".to_string(),
                             protocol_context: None,
                             resolution_kind: edge.resolution_kind.clone(),
@@ -639,6 +641,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 callee_refs.push(ExplainRef {
                                     symbol: callee_sym,
                                     evidence,
+                                    evidence_line: edge.evidence_start_line,
                                     edge_kind: "CALLS".to_string(),
                                     protocol_context: None,
                                     resolution_kind: edge.resolution_kind.clone(),
@@ -688,6 +691,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             callee_refs.push(ExplainRef {
                                 symbol: callee_sym,
                                 evidence,
+                                evidence_line: edge.evidence_start_line,
                                 edge_kind: "CALLS".to_string(),
                                 protocol_context: None,
                                 resolution_kind: edge.resolution_kind.clone(),
@@ -775,6 +779,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 test_refs.push(ExplainRef {
                     symbol: test_sym,
                     evidence: edge.evidence_snippet.clone(),
+                    evidence_line: edge.evidence_start_line,
                     edge_kind: "CALLS".to_string(),
                     protocol_context: None,
                     resolution_kind: edge.resolution_kind.clone(),
@@ -1175,6 +1180,8 @@ fn cross_boundary_refs(
                 via_interface: false,
                 file_level: false,
                 evidence: hop.snippet,
+                // TraceHop carries no evidence line (bridged hops cross files).
+                evidence_line: None,
                 edge_kind,
                 protocol_context: hop.protocol_context,
                 resolution_kind: hop.resolution_kind,
@@ -1196,6 +1203,7 @@ fn cross_boundary_refs(
                         via_interface: false,
                         file_level: false,
                         evidence: edge.evidence_snippet,
+                        evidence_line: edge.evidence_start_line,
                         edge_kind: edge.kind,
                         protocol_context: None,
                         resolution_kind: edge.resolution_kind,
@@ -1553,6 +1561,34 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
     Ok(json!({
         "results": results,
         "counts": { "results": count },
+    }))
+}
+
+pub(super) fn handle_help(_indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: HelpParams = super::parse_params("help", params)?;
+    let Some(method) = params.method else {
+        let methods: Vec<Value> = super::method_summaries()
+            .map(|(name, summary)| json!({"name": name, "summary": summary}))
+            .collect();
+        return Ok(json!({
+            "methods": methods,
+            "next": "call help with {method: <name>} for that method's param schema",
+        }));
+    };
+    if !METHOD_LIST.contains(&method.as_str()) {
+        anyhow::bail!(
+            "unknown method '{method}'. Valid methods: {}",
+            METHOD_LIST.join(", ")
+        );
+    }
+    let summary = super::method_summaries()
+        .find(|(name, _)| *name == method)
+        .map(|(_, s)| s)
+        .ok_or_else(|| anyhow::anyhow!("method '{method}' has no summary"))?;
+    Ok(json!({
+        "method": method,
+        "summary": summary,
+        "params": super::method_param_schema(&method),
     }))
 }
 

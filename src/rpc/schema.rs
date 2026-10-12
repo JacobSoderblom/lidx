@@ -8,12 +8,14 @@ pub(super) fn schema_value<T: schemars::JsonSchema>() -> Value {
 }
 
 /// Return a simplified JSON Schema for the params struct of the given method.
+/// Not advertised up front over MCP (the tool descriptions carry a short guide);
+/// agents fetch it on demand through the `help` method.
 pub fn method_param_schema(method: &str) -> Value {
     use super::{
         AnalyzeDiffParams, AnalyzeImpactParams, ContextParams, DeadSymbolsParams,
-        ExplainSymbolParams, GatherContextParams, OnboardParams, OrientParams, OutlineParams,
-        ReadSymbolParams, ReindexParams, RepoMapParams, RgParams, TopComplexityParams,
-        TraceFlowParams,
+        ExplainSymbolParams, GatherContextParams, HelpParams, OnboardParams, OrientParams,
+        OutlineParams, ReadSymbolParams, ReindexParams, RepoMapParams, RgParams,
+        TopComplexityParams, TraceFlowParams,
     };
     match method {
         "search" => schema_value::<RgParams>(),
@@ -25,6 +27,7 @@ pub fn method_param_schema(method: &str) -> Value {
         "analyze_diff" => schema_value::<AnalyzeDiffParams>(),
         "gather_context" => schema_value::<GatherContextParams>(),
         "context" => schema_value::<ContextParams>(),
+        "help" => schema_value::<HelpParams>(),
         "orient" => schema_value::<OrientParams>(),
         "onboard" => schema_value::<OnboardParams>(),
         "reindex" => schema_value::<ReindexParams>(),
