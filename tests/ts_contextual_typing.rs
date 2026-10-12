@@ -314,3 +314,94 @@ fn editing_the_alias_file_retypes_the_callbacks_like_a_fresh_index() {
     assert_eq!(targets(&indexer, "src/use.notFound"), ["src/ctx.Context.text"]);
     snapshot_equals_fresh(&indexer, &base);
 }
+
+const HIDDEN: &str = r#"export function widget() {
+  const unusedLocal = () => 1;
+  function neverCalled() {}
+  const used = () => 2;
+  return used();
+}
+export function deadTopLevel() {}
+"#;
+
+fn rpc_call(files: &[(&str, &str)], method: &str, params: serde_json::Value) -> serde_json::Value {
+    let (_tmp, root, db_path) = common::index_repo("lidx-ts-ctx-rpc-", files);
+    let mut indexer = Indexer::new(root, db_path).unwrap();
+    lidx::rpc::handle_method(&mut indexer, method, params).unwrap()
+}
+
+#[test]
+fn local_functions_are_not_dead_and_not_listed_at_the_top_level() {
+    let files = [("src/hidden.ts", HIDDEN), ("src/user.ts", "import { widget } from './hidden';\nwidget();\n")];
+    let dead = rpc_call(
+        &files,
+        "dead_symbols",
+        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false}),
+    );
+    let dead: Vec<&str> = dead["dead_symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["qualname"].as_str())
+        .collect();
+    assert!(dead.contains(&"src/hidden.deadTopLevel"), "{dead:?}");
+    assert!(dead.iter().all(|d| !d.starts_with("src/hidden.widget.")), "{dead:?}");
+
+    let map = rpc_call(&files, "repo_map", serde_json::json!({}));
+    let text = map["text"].as_str().unwrap();
+    assert!(!text.contains("unusedLocal") && !text.contains("neverCalled"), "{text}");
+    assert!(!text.contains("**used**"), "{text}");
+
+    // The outline still shows them, nested under their parent.
+    let outline = rpc_call(&files, "outline", serde_json::json!({"path": "src/hidden.ts"}));
+    let entries = outline["entries"].as_array().or_else(|| outline["symbols"].as_array()).unwrap();
+    let local = entries
+        .iter()
+        .find(|e| e["qualname"] == "src/hidden.widget.used")
+        .unwrap_or_else(|| panic!("{outline}"));
+    assert_eq!(local["parent"], "src/hidden.widget");
+}
+
+#[test]
+fn a_local_function_never_stands_in_for_a_member_of_a_same_named_type() {
+    let src = r#"export interface $constructor { init(a: number): void }
+export function $constructor(name: string): $constructor {
+  function init(a: number) {}
+  return { init } as $constructor;
+}
+export function user(x: $constructor) {
+  x.init(1);
+}
+"#;
+    let (_tmp, _root, indexer) = live(&[("src/ctor.ts", src)]);
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let bound: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = 'CALLS' AND s.qualname = 'src/ctor.user'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bound, 0);
+}
+
+#[test]
+fn an_interface_with_one_call_signature_types_its_callback() {
+    let f = [
+        ("src/ctx.ts", CTX),
+        ("src/req.ts", REQ),
+        ("src/decoy.ts", DECOY),
+        (
+            "src/h.ts",
+            "import type { Context } from './ctx';\nexport interface Handler { (c: Context): Response }\n",
+        ),
+        (
+            "src/use.ts",
+            "import type { Handler } from './h';\nexport const h: Handler = (c) => c.text('x');\n",
+        ),
+    ];
+    assert_eq!(call_targets(&f, "src/use.h"), ["src/ctx.Context.text"]);
+}

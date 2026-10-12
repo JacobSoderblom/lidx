@@ -304,6 +304,8 @@ impl Db {
             "SELECT f.path, f.language, COUNT(s.id) as sym_count
              FROM files f
              LEFT JOIN symbols s ON s.file_id = f.id AND s.graph_version = ?
+               -- A function declared inside another is no module-level symbol.
+               AND (s.visibility IS NULL OR s.visibility NOT LIKE '%local%')
              WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
                AND f.language != 'external'",
         );

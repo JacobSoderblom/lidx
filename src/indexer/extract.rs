@@ -641,6 +641,11 @@ pub struct ExtractedFile {
     /// to `private` by `Db::set_private_symbols`; only the C# deferred
     /// `Type.Method()` receiver reads it.
     pub static_member_qualnames: Vec<String>,
+    /// Qualnames of functions declared inside another function (TypeScript/
+    /// JavaScript, `mod.outer.f`): recorded as the `local` modifier. They are
+    /// bound only by their exact qualname, never by a name-fallback tier --
+    /// their `outer.f` shape is also how a member `f` of a type `outer` reads.
+    pub local_qualnames: Vec<String>,
     /// JS/TS only: hash of the file's export surface (see
     /// `javascript::export_surface_hash`), stored so a later sync can tell a
     /// body-only edit from one that changes what importers resolve.

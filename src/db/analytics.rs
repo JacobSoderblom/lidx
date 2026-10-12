@@ -368,6 +368,7 @@ impl Db {
              LEFT JOIN edges e ON e.target_symbol_id = s.id AND e.kind = 'CALLS' AND e.graph_version = ?
              WHERE s.graph_version = ?
                AND s.kind IN ('function','method','class','struct','interface','service')
+               AND (s.visibility IS NULL OR s.visibility NOT LIKE '%local%')
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> =
@@ -453,7 +454,9 @@ impl Db {
              JOIN files f ON s.file_id = f.id
              WHERE s.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-               AND s.kind != 'external'",
+               AND s.kind != 'external'
+               -- A function declared inside another is no top-level symbol.
+               AND (s.visibility IS NULL OR s.visibility NOT LIKE '%local%')",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
@@ -619,6 +622,9 @@ impl Db {
         let call_reaches = super::graph_query::call_reaches_impl_sql("ce");
         let is_override = super::graph_query::has_modifier_sql("s", "override");
         let is_private = super::graph_query::has_modifier_sql("s", "private");
+        // A function declared inside another is only reachable through its
+        // parent, which is judged itself.
+        let is_local = super::graph_query::has_modifier_sql("s", "local");
         let external_base = super::graph_query::external_base_member_sql("s", gv);
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let reachability = edge_views::sql_list(edge_views::REACHABILITY);
@@ -651,6 +657,7 @@ impl Db {
                                              'generateStaticParams')
                               AND (f.path LIKE 'app/%' OR f.path LIKE '%/app/%'
                                    OR f.path LIKE 'pages/%' OR f.path LIKE '%/pages/%'))
+                     AND NOT {is_local}
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
                      -- Operators and finalizers are invoked implicitly (#247).
                      AND NOT (f.language = 'csharp' AND (s.name LIKE 'operator %'

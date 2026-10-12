@@ -825,6 +825,10 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
        AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
        AND (:exclude_method = 0 OR s.kind != 'method')
+       -- A function declared inside another (`mod.outer.f`) is bound by its
+       -- exact qualname only: the name tiers would read it as member `f` of
+       -- a type `outer`.
+       AND (s.visibility IS NULL OR s.visibility NOT LIKE '%local%')
        AND s.graph_version = :gv
        AND (f.deleted_version IS NULL OR f.deleted_version > :gv)
        AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = :lang
@@ -850,6 +854,7 @@ const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname, s.kind, s.signature, f.lang
      WHERE s.name IN (:tail, '.' || :tail)
        AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+       AND (s.visibility IS NULL OR s.visibility NOT LIKE '%local%')
        AND s.graph_version = :gv
        AND (f.deleted_version IS NULL OR f.deleted_version > :gv)";
 
@@ -896,7 +901,7 @@ static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
 /// that judgment needs to see every candidate, not just the first two.
-const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature, f.language FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
+const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature, f.language, s.visibility FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
 /// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
@@ -1208,6 +1213,12 @@ pub(crate) struct Resolver<'c> {
     /// several same-qualname candidates would otherwise collapse or
     /// refuse: see `arity_admits`.
     arity: Option<Arity>,
+    /// The reference being resolved is a bare call (`f()`) or the CONTAINS
+    /// edge of its parent, the only shapes that can name a function declared
+    /// inside another (`mod.outer.f`, visibility `local`): every other lookup
+    /// skips those, since the qualname also reads as member `f` of a type
+    /// `outer`.
+    binds_local_functions: bool,
     /// Qualname of the symbol making the reference being resolved: which
     /// fn-local twins it can see.
     caller_scope: Option<String>,
@@ -1247,6 +1258,7 @@ impl<'c> Resolver<'c> {
             saw_repo_ambiguous: false,
             saw_private: false,
             arity: None,
+            binds_local_functions: false,
             caller_scope: None,
             call_receiver: None,
             merged_half: MergedHalf::Value,
@@ -1410,6 +1422,8 @@ impl<'c> Resolver<'c> {
             },
             None => r,
         };
+        self.binds_local_functions = (r.bare_call && r.edge_kind == edge_views::CALLS)
+            || r.edge_kind == edge_views::CONTAINS;
         self.arity = match r.call_shape {
             Some(shape) if !shape.is_new && !shape.is_ref => Some(Arity {
                 args: shape.arg_count as usize,
@@ -1849,12 +1863,13 @@ impl<'c> Resolver<'c> {
             return Ok(Some(id));
         }
         let gv = self.graph_version;
-        let mut candidates = query_exact_candidates(
+        let mut candidates = query_exact_candidates_with(
             &mut self.exact,
             qualname,
             gv,
             caller_file,
             self.caller_scope.as_deref(),
+            self.binds_local_functions,
         )?;
         if types_only {
             candidates.retain(|c| !matches!(c.kind.as_str(), "module" | "namespace"));
@@ -3411,7 +3426,23 @@ static UPDATE_EDGE_TARGET_SQL: LazyLock<String> = LazyLock::new(|| {
 /// map entirely, so the SQL fallback re-judges it the same way.
 pub(crate) fn build_exact_symbol_map(symbols: &[crate::model::Symbol]) -> HashMap<String, i64> {
     let mut by_qualname: HashMap<&str, Vec<(i64, &str)>> = HashMap::new();
+    let callables: std::collections::HashSet<&str> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind.as_str(), "function" | "method"))
+        .map(|s| s.qualname.as_str())
+        .collect();
     for symbol in symbols {
+        // A function declared inside another is bound by a bare call only
+        // (`Resolver::binds_local_functions`): the SQL path knows which
+        // those are, this map does not.
+        if symbol.kind == "function"
+            && symbol
+                .qualname
+                .rsplit_once('.')
+                .is_some_and(|(parent, _)| callables.contains(parent))
+        {
+            continue;
+        }
         // Every symbol here already comes from the one file this batch just
         // wrote, so there's no file to compare (unlike
         // `collapse_exact_candidates`'s cross-file rows) — `same_kind_min`
@@ -3574,6 +3605,8 @@ struct ExactCandidate {
     kind: String,
     signature: Option<String>,
     language: String,
+    /// A function declared inside another (visibility `local`).
+    local: bool,
 }
 
 impl ExactCandidate {
@@ -3803,6 +3836,20 @@ fn query_exact_candidates(
     caller_file: &str,
     caller_scope: Option<&str>,
 ) -> Result<Vec<ExactCandidate>> {
+    query_exact_candidates_with(stmt, qualname, graph_version, caller_file, caller_scope, false)
+}
+
+/// `query_exact_candidates`, keeping the functions declared inside other
+/// functions (visibility `local`) when `with_local`: they are bound by a
+/// bare call only, never as a member of a same-named type.
+fn query_exact_candidates_with(
+    stmt: &mut Statement<'_>,
+    qualname: &str,
+    graph_version: i64,
+    caller_file: &str,
+    caller_scope: Option<&str>,
+    with_local: bool,
+) -> Result<Vec<ExactCandidate>> {
     let rows = stmt.query_map(params![qualname, graph_version], |row| {
         Ok((
             ExactCandidate {
@@ -3812,6 +3859,9 @@ fn query_exact_candidates(
                 kind: row.get(2)?,
                 signature: row.get(4)?,
                 language: row.get(5)?,
+                local: row
+                    .get::<_, Option<String>>(6)?
+                    .is_some_and(|v| v.split_whitespace().any(|m| m == "local")),
             },
             row.get::<_, String>(3)?,
         ))
@@ -3821,6 +3871,9 @@ fn query_exact_candidates(
         let (candidate, path) = row?;
         // Issue #102: fixture symbols are never targets from outside them.
         if is_fixture_path(&path) && !is_fixture_path(caller_file) {
+            continue;
+        }
+        if candidate.local && !with_local {
             continue;
         }
         candidates.push(candidate);

@@ -1777,10 +1777,12 @@ impl Db {
         graph_version: i64,
         private_qualnames: &[String],
         static_member_qualnames: &[String],
+        local_qualnames: &[String],
         override_symbols: &[(String, i64)],
     ) -> Result<()> {
         if private_qualnames.is_empty()
             && static_member_qualnames.is_empty()
+            && local_qualnames.is_empty()
             && override_symbols.is_empty()
         {
             self.conn().execute(
@@ -1790,9 +1792,11 @@ impl Db {
             )?;
             return Ok(());
         }
-        // `visibility` is a space-separated modifier list: `private`, `static`.
+        // `visibility` is a space-separated modifier list: `private`, `static`,
+        // `local`, `override`.
         let private_ph = vec!["?"; private_qualnames.len()].join(",");
         let static_ph = vec!["?"; static_member_qualnames.len()].join(",");
+        let local_ph = vec!["?"; local_qualnames.len()].join(",");
         // Overloads share a qualname, so an override is keyed by its line too.
         let override_test = if override_symbols.is_empty() {
             "0".to_string()
@@ -1807,12 +1811,14 @@ impl Db {
                 SET visibility = NULLIF(TRIM(
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
                     || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
+                    || CASE WHEN qualname IN ({local_ph}) THEN ' local' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END), '')
              WHERE file_id = ? AND graph_version = ?"
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
             .iter()
             .chain(static_member_qualnames)
+            .chain(local_qualnames)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
         for (qualname, line) in override_symbols {

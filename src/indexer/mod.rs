@@ -769,6 +769,7 @@ impl Indexer {
                 self.graph_version,
                 &extracted.private_qualnames,
                 &extracted.static_member_qualnames,
+                &extracted.local_qualnames,
                 &extracted.override_symbols,
             )?;
         }
@@ -1057,6 +1058,7 @@ impl Indexer {
             self.graph_version,
             &extracted.private_qualnames,
             &extracted.static_member_qualnames,
+            &extracted.local_qualnames,
             &extracted.override_symbols,
         )?;
 

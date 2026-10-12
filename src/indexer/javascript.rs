@@ -332,10 +332,10 @@ fn declared_param_type_text(sig: &str, index: usize) -> Option<String> {
         None => return None,
     };
     let colon = split_top_level(param, ':');
-    let mut ty = param[colon.first()?.len() + 1..].trim();
     if colon.len() < 2 {
         return None;
     }
+    let mut ty = param[colon.first()?.len() + 1..].trim();
     if let Some(eq) = split_top_level(ty, '=').first() {
         ty = eq.trim();
     }
@@ -7036,6 +7036,7 @@ fn handle_local_function(
     });
     // Unreachable from other files: the name-fallback tiers skip it there.
     output.private_qualnames.push(local.qualname.clone());
+    output.local_qualnames.push(local.qualname.clone());
     let mut next_ctx = if is_declarator {
         ctx.clone()
     } else {
