@@ -334,6 +334,13 @@ impl ReadSymbolEntry {
 /// `Db::edges_for_symbols_with_dispatch` (interface method -> implementor).
 pub const INTERFACE_DISPATCH_KIND: &str = "interface_dispatch";
 
+/// `resolution_kind` of the synthetic CALLS edges `Db::edges_for_symbols_with_dispatch`
+/// builds from a function's parent to a function declared inside it (a
+/// `local` symbol): whatever reaches the parent reaches the closure it holds
+/// or returns, so upstream traversals climb out of it. Labelled as
+/// containment, not as a call.
+pub const CONTAINMENT_KIND: &str = "containment";
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Edge {
     pub id: i64,
@@ -388,6 +395,12 @@ impl Edge {
     /// stored in the index (it has no row, so `id` is 0).
     pub fn is_synthetic(&self) -> bool {
         self.id == 0 && self.resolution_kind.as_deref() == Some(INTERFACE_DISPATCH_KIND)
+    }
+
+    /// Whether this edge is a synthetic parent-to-local-function hop (see
+    /// [`CONTAINMENT_KIND`]).
+    pub fn is_containment(&self) -> bool {
+        self.id == 0 && self.resolution_kind.as_deref() == Some(CONTAINMENT_KIND)
     }
 }
 

@@ -1,6 +1,8 @@
 use crate::config::Config;
 use crate::indexer::differ::SymbolDiff;
-use crate::indexer::extract::{DeferredMarker, EdgeInput, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    DeferredMarker, EdgeInput, ReceiverType, SymbolInput, SymbolModifiers,
+};
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use crate::model::{Edge, GraphVersion, Symbol};
 use anyhow::{Context, Result};
@@ -1760,7 +1762,7 @@ impl Db {
     }
 
     /// Set `symbols.visibility` for `file_id`'s symbols in `graph_version`
-    /// from `private_qualnames` (see `ExtractedFile::private_qualnames`):
+    /// from the file's modifiers (see `ExtractedFile::modifiers`):
     /// `'private'` for a qualname in the list, `NULL` (unrestricted) for
     /// every other symbol in the file. Always resets the whole file's
     /// symbols in one statement — not just the ones currently in the
@@ -1771,20 +1773,19 @@ impl Db {
     /// Called once per file, after that file's symbols are inserted/
     /// updated and before its edges are resolved (visibility is a
     /// cross-file resolver input — see `db::resolver::VisibilityRule`).
-    pub fn set_private_symbols(
+    pub fn set_symbol_modifiers(
         &mut self,
         file_id: i64,
         graph_version: i64,
-        private_qualnames: &[String],
-        static_member_qualnames: &[String],
-        local_qualnames: &[String],
-        override_symbols: &[(String, i64)],
+        modifiers: SymbolModifiers<'_>,
     ) -> Result<()> {
-        if private_qualnames.is_empty()
-            && static_member_qualnames.is_empty()
-            && local_qualnames.is_empty()
-            && override_symbols.is_empty()
-        {
+        let SymbolModifiers {
+            private,
+            statics,
+            local,
+            overrides,
+        } = modifiers;
+        if private.is_empty() && statics.is_empty() && local.is_empty() && overrides.is_empty() {
             self.conn().execute(
                 "UPDATE symbols SET visibility = NULL
                  WHERE file_id = ? AND graph_version = ? AND visibility IS NOT NULL",
@@ -1794,16 +1795,17 @@ impl Db {
         }
         // `visibility` is a space-separated modifier list: `private`, `static`,
         // `local`, `override`.
-        let private_ph = vec!["?"; private_qualnames.len()].join(",");
-        let static_ph = vec!["?"; static_member_qualnames.len()].join(",");
-        let local_ph = vec!["?"; local_qualnames.len()].join(",");
+        let placeholders = |n: usize| vec!["?"; n].join(",");
+        let private_ph = placeholders(private.len());
+        let static_ph = placeholders(statics.len());
+        let local_ph = placeholders(local.len());
         // Overloads share a qualname, so an override is keyed by its line too.
-        let override_test = if override_symbols.is_empty() {
+        let override_test = if overrides.is_empty() {
             "0".to_string()
         } else {
             format!(
                 "(qualname, start_line) IN (VALUES {})",
-                vec!["(?,?)"; override_symbols.len()].join(",")
+                vec!["(?,?)"; overrides.len()].join(",")
             )
         };
         let sql = format!(
@@ -1811,17 +1813,18 @@ impl Db {
                 SET visibility = NULLIF(TRIM(
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
                     || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
-                    || CASE WHEN qualname IN ({local_ph}) THEN ' local' ELSE '' END
+                    || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END), '')
-             WHERE file_id = ? AND graph_version = ?"
+             WHERE file_id = ? AND graph_version = ?",
+            local_modifier = graph_query::LOCAL_MODIFIER
         );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = private
             .iter()
-            .chain(static_member_qualnames)
-            .chain(local_qualnames)
+            .chain(statics)
+            .chain(local)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
-        for (qualname, line) in override_symbols {
+        for (qualname, line) in overrides {
             params.push(Box::new(qualname.clone()));
             params.push(Box::new(*line));
         }

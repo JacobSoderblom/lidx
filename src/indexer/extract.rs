@@ -655,6 +655,29 @@ pub struct ExtractedFile {
     /// dispatch only pairs a base-class member with an override.
     pub override_symbols: Vec<(String, i64)>,
 }
+
+/// The declaration modifiers one file's extraction recorded, written to
+/// `symbols.visibility` (a space-separated list) by `Db::set_symbol_modifiers`.
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolModifiers<'a> {
+    pub private: &'a [String],
+    pub statics: &'a [String],
+    pub local: &'a [String],
+    /// `(qualname, start_line)`: overloads share a qualname.
+    pub overrides: &'a [(String, i64)],
+}
+
+impl ExtractedFile {
+    /// This file's recorded modifiers.
+    pub fn modifiers(&self) -> SymbolModifiers<'_> {
+        SymbolModifiers {
+            private: &self.private_qualnames,
+            statics: &self.static_member_qualnames,
+            local: &self.local_qualnames,
+            overrides: &self.override_symbols,
+        }
+    }
+}
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;
 use std::path::Path;

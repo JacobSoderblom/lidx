@@ -357,7 +357,9 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<(String, Symbol, i64)>> {
-        let mut sql = String::from(
+        let is_local =
+            super::graph_query::has_modifier_sql("s", super::graph_query::LOCAL_MODIFIER);
+        let mut sql = format!(
             "SELECT
                 s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                 s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
@@ -368,8 +370,8 @@ impl Db {
              LEFT JOIN edges e ON e.target_symbol_id = s.id AND e.kind = 'CALLS' AND e.graph_version = ?
              WHERE s.graph_version = ?
                AND s.kind IN ('function','method','class','struct','interface','service')
-               AND (s.visibility IS NULL OR s.visibility NOT LIKE '%local%')
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+               AND NOT {is_local}
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)"
         );
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&graph_version, &graph_version, &graph_version];
@@ -448,7 +450,9 @@ impl Db {
         // Issue #80: excludes external stub symbols (`kind = 'external'`)
         // -- they'd otherwise show up as their own noise bucket in the
         // repo map's "Patterns" section.
-        let mut sql = String::from(
+        let is_local =
+            super::graph_query::has_modifier_sql("s", super::graph_query::LOCAL_MODIFIER);
+        let mut sql = format!(
             "SELECT s.kind, COUNT(*) as cnt
              FROM symbols s
              JOIN files f ON s.file_id = f.id
@@ -456,7 +460,7 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                AND s.kind != 'external'
                -- A function declared inside another is no top-level symbol.
-               AND (s.visibility IS NULL OR s.visibility NOT LIKE '%local%')",
+               AND NOT {is_local}"
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
@@ -624,7 +628,8 @@ impl Db {
         let is_private = super::graph_query::has_modifier_sql("s", "private");
         // A function declared inside another is only reachable through its
         // parent, which is judged itself.
-        let is_local = super::graph_query::has_modifier_sql("s", "local");
+        let is_local =
+            super::graph_query::has_modifier_sql("s", super::graph_query::LOCAL_MODIFIER);
         let external_base = super::graph_query::external_base_member_sql("s", gv);
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let reachability = edge_views::sql_list(edge_views::REACHABILITY);

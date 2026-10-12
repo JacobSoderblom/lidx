@@ -185,7 +185,9 @@ fn alias_declared_for(
 /// The module part of a declaration's qualname (`src/types.Handler` ->
 /// `src/types`).
 fn module_of(qualname: &str) -> &str {
-    qualname.rsplit_once('.').map_or(qualname, |(module, _)| module)
+    qualname
+        .rsplit_once('.')
+        .map_or(qualname, |(module, _)| module)
 }
 
 /// The type name of parameter `param_index` of the callable type `text`: a
@@ -2118,7 +2120,11 @@ fn drop_ambiguous_locals(output: &mut ExtractedFile) {
     output.private_qualnames.retain(|q| !removed.contains(q));
     let mut kept = Vec::with_capacity(output.edges.len());
     for mut edge in std::mem::take(&mut output.edges) {
-        if let Some(source) = edge.source_qualname.as_deref().filter(|q| removed.contains(*q)) {
+        if let Some(source) = edge
+            .source_qualname
+            .as_deref()
+            .filter(|q| removed.contains(*q))
+        {
             edge.source_qualname = Some(survivor(source));
         }
         if let Some(target) = edge
@@ -6891,7 +6897,11 @@ fn contextual_origin(node: Node<'_>, ctx: &Context, source: &str) -> Option<Para
                 let mut up = parent.parent();
                 while let Some(n) = up {
                     if RETURN_TYPED_KINDS.contains(&n.kind()) {
-                        return callable_origin_text(n.child_by_field_name("return_type")?, ctx, source);
+                        return callable_origin_text(
+                            n.child_by_field_name("return_type")?,
+                            ctx,
+                            source,
+                        );
                     }
                     up = n.parent();
                 }
@@ -6901,7 +6911,11 @@ fn contextual_origin(node: Node<'_>, ctx: &Context, source: &str) -> Option<Para
                 if parent.child_by_field_name("body")?.id() != child.id() {
                     return None;
                 }
-                return callable_origin_text(parent.child_by_field_name("return_type")?, ctx, source);
+                return callable_origin_text(
+                    parent.child_by_field_name("return_type")?,
+                    ctx,
+                    source,
+                );
             }
             "arguments" => return argument_origin(parent, child, ctx, source),
             _ => return None,

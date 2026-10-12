@@ -135,7 +135,10 @@ fn a_same_named_alias_elsewhere_does_not_change_which_one_the_import_names() {
         "import type { NotFoundHandler } from './other';\nexport const h2: NotFoundHandler = (c) => c.text('z');\n",
     ));
     // `use.ts` imports the `types` one, `use2.ts` the `other` one.
-    assert_eq!(call_targets(&f, "src/use.notFound"), ["src/ctx.Context.text"]);
+    assert_eq!(
+        call_targets(&f, "src/use.notFound"),
+        ["src/ctx.Context.text"]
+    );
     assert_eq!(call_targets(&f, "src/use2.h2"), ["src/decoy.Decoy.text"]);
 }
 
@@ -152,7 +155,8 @@ fn disagreeing_halves_of_one_alias_leave_the_parameter_untyped() {
     ));
     let t = call_targets(&f, "src/use3.h3");
     assert!(
-        t.iter().all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
+        t.iter()
+            .all(|t| !t.starts_with("src/ctx.") && !t.starts_with("src/decoy.")),
         "{t:?}"
     );
 }
@@ -497,7 +501,10 @@ fn a_barrel_re_export_still_types_the_callback() {
     let f = [
         ("src/ctx.ts", EXT_CTX),
         ("src/mine.ts", EXT_MINE),
-        ("src/index.ts", "export { on, type Handler } from './mine';\n"),
+        (
+            "src/index.ts",
+            "export { on, type Handler } from './mine';\n",
+        ),
         (
             "src/use.ts",
             "import { on, type Handler } from './index';\nexport function run() {\n  on((c) => c.json({}));\n  const h: Handler = (c) => c.text('x');\n}\n",
@@ -514,14 +521,22 @@ fn inline_function_typed_parameters_type_the_callback() {
     let ctx = "export class Context { header(n: string, v: string): void {} text(b: string): string { return b } query(n: string): string { return n } }\n";
     let api = "import type { Context } from './ctx';\nexport type Handler = (c: Context) => void;\nexport function viaAlias(cb: Handler): void {}\nexport function viaInline(cb: (c: Context) => void): void {}\nexport function viaInlineDefault(cb: (c: Context) => void = () => {}): void {}\nexport function viaAliasDefault(cb: Handler = () => {}): void {}\n";
     let usage = "import { viaAlias, viaInline, viaInlineDefault, viaAliasDefault } from './api';\nexport function run() {\n  viaAlias((c) => c.text('alias'));\n  viaInline((c) => c.header('inline', 'v'));\n  viaInlineDefault((c) => c.query('inline-default'));\n  viaAliasDefault((c) => c.query('alias-default'));\n}\nexport const top = viaInline((c) => c.header('inline-top', 'v'));\n";
-    let f = [("src/ctx.ts", ctx), ("src/api.ts", api), ("src/use.ts", usage)];
+    let f = [
+        ("src/ctx.ts", ctx),
+        ("src/api.ts", api),
+        ("src/use.ts", usage),
+    ];
     let t = call_targets(&f, "src/use.run");
     for want in [
         "src/ctx.Context.text",
         "src/ctx.Context.header",
         "src/ctx.Context.query",
     ] {
-        assert_eq!(t.iter().filter(|x| *x == want).count(), if want.ends_with("query") { 2 } else { 1 }, "{want} in {t:?}");
+        assert_eq!(
+            t.iter().filter(|x| *x == want).count(),
+            if want.ends_with("query") { 2 } else { 1 },
+            "{want} in {t:?}"
+        );
     }
     assert!(call_targets(&f, "src/use.top").contains(&"src/ctx.Context.header".to_string()));
 }
@@ -550,4 +565,83 @@ fn locals_under_duplicated_parents_are_ambiguous_and_get_no_symbol() {
         )
         .unwrap();
     assert_eq!(bound, 0);
+}
+
+const CX_COMMON: &str = "export const cxCommon = (args: string[]): string[] => args;\n";
+const CX_CONTEXT: &str = r#"import { cxCommon } from './common';
+export const createCssContext = (id: string) => {
+  const cx = (...args: string[]) => cxCommon(args);
+  function getContent() { return cxCommon([id]); }
+  return { cx, getContent };
+};
+"#;
+const CX_USER: &str = "import { createCssContext } from './context';\nexport function render() {\n  const { cx } = createCssContext('a');\n  return cx('x');\n}\n";
+
+fn cx_files() -> [(&'static str, &'static str); 3] {
+    [
+        ("src/common.ts", CX_COMMON),
+        ("src/context.ts", CX_CONTEXT),
+        ("src/user.ts", CX_USER),
+    ]
+}
+
+fn qualnames(value: &serde_json::Value) -> Vec<String> {
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(q) = map.get("qualname").and_then(|q| q.as_str()) {
+                    out.push(q.to_string());
+                }
+                map.values().for_each(|v| walk(v, out));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, &mut out);
+    out
+}
+
+#[test]
+fn upstream_traversal_climbs_out_of_a_local_function_to_its_parent() {
+    let files = cx_files();
+    // Nothing calls the returned closures: `createCssContext` reaches
+    // `cxCommon` only because it contains `cx` and `getContent`.
+    let impact = rpc_call(
+        &files,
+        "analyze_impact",
+        serde_json::json!({"qualname": "src/common.cxCommon", "direction": "upstream"}),
+    );
+    let names = qualnames(&impact["affected"]);
+    for want in [
+        "src/context.createCssContext.cx",
+        "src/context.createCssContext.getContent",
+        "src/context.createCssContext",
+    ] {
+        assert!(names.iter().any(|n| n == want), "{want} in {names:?}");
+    }
+
+    let trace = rpc_call(
+        &files,
+        "trace_flow",
+        serde_json::json!({"start_qualname": "src/common.cxCommon", "direction": "upstream"}),
+    );
+    let text = trace.to_string();
+    assert!(text.contains("src/context.createCssContext"), "{text}");
+    assert!(
+        text.contains("containment"),
+        "labelled as containment: {text}"
+    );
+
+    let explained = rpc_call(
+        &files,
+        "explain_symbol",
+        serde_json::json!({"qualname": "src/context.createCssContext.getContent"}),
+    );
+    let callers = qualnames(&explained["callers"]);
+    assert!(
+        callers.iter().any(|n| n == "src/context.createCssContext"),
+        "{explained}"
+    );
 }
