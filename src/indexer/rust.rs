@@ -4,8 +4,8 @@ use crate::db::resolver::{
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    DeclIdentity, DeferredMarker, DeferredSource, EdgeInput, ExtractedFile, ImplIdentity,
-    ReceiverType, RustDeferred, Step, SymbolInput, pinning_new_edges,
+    CallShape, DeclIdentity, DeferredMarker, DeferredSource, EdgeInput, ExtractedFile,
+    ImplIdentity, ReceiverType, RustDeferred, Step, SymbolInput, pinning_new_edges,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -103,6 +103,11 @@ struct Context {
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
+    /// Names the current function binds itself (parameters and every
+    /// pattern: `let`, `for`, `match` arms, closures), so a value use of one
+    /// is a variable and never a reference to a same-named item
+    /// (`collect_bound_names`); empty outside a function body.
+    bound_names: Rc<HashSet<String>>,
     /// Set on entry to a trait declaration's own body (default methods)
     /// or a `impl Trait for Type` block's body (trait method
     /// implementations) — either way, the method's real visibility is the
@@ -279,6 +284,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
+            bound_names: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
             adts: Rc::new(collect_adts(root, source)),
             returns: Rc::new(collect_returns(root, source)),
@@ -397,6 +403,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     }
     if node.kind() == "call_expression" {
         handle_call(node, ctx, source, output);
+    }
+    if matches!(node.kind(), "identifier" | "scoped_identifier")
+        && let Some(edge) = value_reference_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
     }
     match node.kind() {
         "macro_invocation" => {
@@ -644,6 +655,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
+    next_ctx.bound_names = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
     walk_node(body, &next_ctx, source, output);
 }
@@ -806,6 +818,9 @@ fn handle_function(
         let mut shadowed = HashSet::new();
         collect_shadowed_names(node, source, &mut shadowed);
         next_ctx.shadowed_names = Rc::new(shadowed);
+        let mut bound = HashSet::new();
+        collect_bound_names(node, source, &mut bound);
+        next_ctx.bound_names = Rc::new(bound);
 
         // In a trait declaration `Self` is not the trait.
         let self_ty = ctx
@@ -1132,6 +1147,119 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         receiver_type: infer_receiver_type(function_node, source, ctx),
         ..Default::default()
     });
+}
+
+/// Every name `node` (a function item) binds: parameters and the patterns of
+/// `let`, `for`, `if let` / `while let`, `match` arms and closures. Over-
+/// approximate on purpose (a path or constructor inside a pattern is kept
+/// too): a missed reference is cheaper than one bound to a local's namesake.
+fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    fn identifiers(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+        if node.kind() == "identifier" {
+            out.insert(node_text(node, source));
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            identifiers(child, source, out);
+        }
+    }
+    let pattern = match node.kind() {
+        "parameter" | "let_declaration" | "for_expression" | "let_condition" => {
+            node.child_by_field_name("pattern")
+        }
+        "closure_parameters" | "match_pattern" => Some(node),
+        _ => None,
+    };
+    if let Some(pattern) = pattern {
+        identifiers(pattern, source, out);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_bound_names(child, source, out);
+    }
+}
+
+/// `REFERENCES` edge for a function used as a value, not called: an
+/// identifier or path (`Foo::bar`, `module::f`) passed as a call argument
+/// (`Some(f)` and `iter.map(f)` included) or given as a struct field's value
+/// (`Config { on_done: f }`, `Config { f }`). A bare name is an item of the
+/// enclosing module -- never an associated item, which needs `Self::` -- and
+/// a name the function binds itself is a variable.
+fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let parent = node.parent()?;
+    let is_field_value = |p: Node<'_>| {
+        p.kind() == "field_initializer" && p.child_by_field_name("value") == Some(node)
+    };
+    let in_value_position = match parent.kind() {
+        "arguments" => parent
+            .parent()
+            .is_some_and(|c| c.kind() == "call_expression"),
+        "shorthand_field_initializer" => node.kind() == "identifier",
+        _ => is_field_value(parent),
+    };
+    // A path that is itself a segment of a longer path is not the whole value.
+    if !in_value_position || is_call_callee(node) {
+        return None;
+    }
+    let raw = collapse_call_target_whitespace(&node_text(node, source));
+    if !is_simple_call_target(&raw) || raw.contains('.') {
+        return None;
+    }
+    let bare = node.kind() == "identifier";
+    let (target, import_candidates) = if bare {
+        if ctx.bound_names.contains(&raw) || is_std_type_name(&raw) {
+            return None;
+        }
+        // `shadowed_names` holds every value use of a name, this one
+        // included; only a glob `use` inside the body voids the import.
+        let imported = if ctx.shadowed_names.contains("*") {
+            Vec::new()
+        } else {
+            ctx.imports.get(&raw).cloned().unwrap_or_default()
+        };
+        (format!("{}::{raw}", ctx.module), imported)
+    } else {
+        let first = raw.split("::").next().unwrap_or_default();
+        if ctx.bound_names.contains(first) {
+            return None;
+        }
+        qualified_value_path(&raw, ctx)?
+    };
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: "REFERENCES".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(target),
+        import_candidates,
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        bare_call: bare,
+        call_shape: Some(CallShape::value_reference()),
+        ..Default::default()
+    })
+}
+
+/// Target and import candidates of a qualified value path (`Foo::bar`,
+/// `util::f`): an anchored path (`crate::`, `self::`, `super::`, `Self::`) as
+/// the call resolver reads it; otherwise its first segment through the
+/// scope's `use` bindings, else relative to the current module.
+fn qualified_value_path(raw: &str, ctx: &Context) -> Option<(String, Vec<String>)> {
+    if matches!(
+        raw.split("::").next(),
+        Some("crate" | "self" | "super" | "Self")
+    ) {
+        return Some((resolve_call_target(raw, ctx)?, Vec::new()));
+    }
+    let (first, rest) = raw.split_once("::")?;
+    let expanded: Vec<String> = ctx
+        .imports
+        .get(first)
+        .map(|targets| targets.iter().map(|t| format!("{t}::{rest}")).collect())
+        .unwrap_or_default();
+    Some((format!("{}::{raw}", ctx.module), expanded))
 }
 
 /// `x.method()` where `x` is a plain local/param with a locally-inferred
@@ -3621,7 +3749,7 @@ fn is_std_type_name(name: &str) -> bool {
 }
 
 /// Emits `USES` edges for type references (field/param/return types, struct
-/// literals) and functions passed as values (`get_or_init(Config::from_env)`),
+/// literals) and paths passed as arguments (`get_or_init(Config::from_env)`),
 /// none of which are calls. Sourced from the enclosing module: `dead_symbols`
 /// only needs to know the target is referenced somewhere.
 fn collect_uses(
@@ -3639,12 +3767,10 @@ fn collect_uses(
     }
     if !matches!(node.kind(), "use_declaration" | "attribute_item") {
         let parent = node.parent();
-        let is_value_arg =
-            node.kind() == "identifier" && parent.is_some_and(|p| p.kind() == "arguments");
         let is_ref = matches!(
             node.kind(),
             "type_identifier" | "scoped_type_identifier" | "scoped_identifier"
-        ) || is_value_arg;
+        );
         let is_inner_path = parent
             .is_some_and(|p| matches!(p.kind(), "scoped_type_identifier" | "scoped_identifier"));
         let is_definition_name = parent.is_some_and(|p| {
