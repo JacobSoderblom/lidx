@@ -2195,6 +2195,7 @@ fn call_shape(node: Node<'_>) -> CallShape {
         arg_count,
         is_new: node.kind() != "invocation_expression",
         implicit_this: false,
+        is_ref: false,
     }
 }
 

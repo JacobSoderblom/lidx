@@ -58,6 +58,7 @@
 //! are still open (#75).
 
 use super::Db;
+use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
     CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
@@ -359,12 +360,6 @@ pub(crate) struct LanguageProfile {
     /// suffix. Off for languages whose candidates are already absolute
     /// (Rust), where a suffix hit would be a same-named local module.
     pub import_suffix_matching: bool,
-    /// Whether `resolve_import`, when no candidate hits, retries each with
-    /// its last segment stripped (`mod.x.m` -> `mod.x`), so a member call on
-    /// an imported binding whose members aren't indexed (a JS/TS object
-    /// literal) binds to the binding itself. Only a `const`/`variable`
-    /// parent counts, never a class/module (issue #113).
-    pub import_member_fallback: bool,
     /// How the guarded name-fallback tier (`Resolver::same_lang_lookup`,
     /// tier 5 only — see the module doc) decides whether a same-language,
     /// same-kind, cross-file candidate is visible to the reference. Never
@@ -459,7 +454,6 @@ impl LanguageProfile {
         normalize_import_target: None,
         import_miss: ImportMissPolicy::Refuse,
         import_suffix_matching: true,
-        import_member_fallback: false,
         visibility: VisibilityRule::None,
         deferred_rpc: None,
         untyped_receiver_is_external: true,
@@ -723,10 +717,13 @@ const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname, s.kind, s.signature, f.lang
 /// `resolve_via_inheritance` doesn't break ties on it, so interleaving the
 /// two tables' own orders via `UNION ALL` (rather than a single merged
 /// order) doesn't change its result, only harmless to iterate.
-const HIERARCHY_SQL: &str = "SELECT target_symbol_id, target_qualname
+static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
+    let hierarchy = edge_views::sql_list(edge_views::TYPE_HIERARCHY);
+    format!(
+        "SELECT target_symbol_id, target_qualname
      FROM edges
      WHERE source_symbol_id = ?1
-       AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
+       AND kind IN ({hierarchy})
        AND graph_version = ?2
        AND target_qualname IS NOT NULL
 
@@ -735,10 +732,12 @@ const HIERARCHY_SQL: &str = "SELECT target_symbol_id, target_qualname
      SELECT NULL, reference_name
      FROM unresolved_references
      WHERE source_symbol_id = ?1
-       AND edge_kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
+       AND edge_kind IN ({hierarchy})
        AND graph_version = ?2
        AND edge_id IS NULL
-       AND reference_name IS NOT NULL";
+       AND reference_name IS NOT NULL"
+    )
+});
 
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
@@ -900,7 +899,7 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
         let mut seen: std::collections::HashSet<i64> = frontier.iter().copied().collect();
         for _ in 0..MAX_INHERITANCE_DEPTH {
             let mut level: Vec<(Option<i64>, String)> = Vec::new();
-            let mut hierarchy = conn.prepare_cached(HIERARCHY_SQL)?;
+            let mut hierarchy = conn.prepare_cached(&HIERARCHY_SQL)?;
             for &id in &frontier {
                 let rows = hierarchy.query_map(params![id, gv], |row| {
                     Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
@@ -1062,7 +1061,7 @@ impl<'c> Resolver<'c> {
             any_lang: conn.prepare(ANY_LANG_SQL)?,
             same_lang_scan: conn.prepare(&SAME_LANG_SQL.replace(NAME_PREFILTER, ""))?,
             any_lang_scan: conn.prepare(&ANY_LANG_SQL.replace(NAME_PREFILTER, ""))?,
-            hierarchy: conn.prepare(HIERARCHY_SQL)?,
+            hierarchy: conn.prepare(&HIERARCHY_SQL)?,
             import_suffix: conn.prepare(IMPORT_SUFFIX_SQL)?,
             repo_python_module: conn.prepare(REPO_PYTHON_MODULE_SQL)?,
             module_exact: conn.prepare(MODULE_EXACT_SQL)?,
@@ -1148,7 +1147,7 @@ impl<'c> Resolver<'c> {
             None => r,
         };
         self.arity = match r.call_shape {
-            Some(shape) if !shape.is_new => Some(Arity {
+            Some(shape) if !shape.is_new && !shape.is_ref => Some(Arity {
                 args: shape.arg_count as usize,
                 value_receiver: r.receiver_type.is_some(),
             }),
@@ -1168,7 +1167,8 @@ impl<'c> Resolver<'c> {
         // its constructors -- bind that when exactly one matches by arity.
         if let (Some(shape), Resolution::Resolved { target_id, kind }) = (r.call_shape, resolution)
             && shape.is_new
-            && let Some(ctor) = self.constructor_for(target_id, shape, r.source_file_path)?
+            && let Some(ctor) =
+                self.constructor_for(target_id, shape, r.source_file_path, r.source_lang)?
         {
             return Ok(Resolution::Resolved {
                 target_id: ctor,
@@ -1187,6 +1187,24 @@ impl<'c> Resolver<'c> {
                 })
                 .optional()?;
             if kind.as_deref() == Some("interface") {
+                return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+            }
+        }
+        // A value reference (`cb ?? fallback`) names something callable or a
+        // value; `toBeInstanceOf(Foo)` passes a class around, it uses none.
+        if let (Some(shape), Resolution::Resolved { target_id, .. }) = (r.call_shape, resolution)
+            && shape.is_ref
+        {
+            let kind: Option<String> = self
+                .conn
+                .query_row("SELECT kind FROM symbols WHERE id = ?", [target_id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if !matches!(
+                kind.as_deref(),
+                Some("function" | "const" | "variable" | "method")
+            ) {
                 return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
             }
         }
@@ -1233,6 +1251,7 @@ impl<'c> Resolver<'c> {
         class_id: i64,
         shape: CallShape,
         caller_file: &str,
+        source_lang: &str,
     ) -> Result<Option<i64>> {
         let (qualname, kind, signature): (String, String, Option<String>) = self
             .conn
@@ -1240,6 +1259,23 @@ impl<'c> Resolver<'c> {
             .query_row(params![class_id], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?;
+        // A JS/TS class has one `<qualname>.constructor` symbol (overloads
+        // collapse); an ancestor's constructor is never bound, and a count
+        // mismatch means nothing there (any number of arguments is legal).
+        if resolution_language_family(source_lang) == "javascript" {
+            if kind != "class" {
+                return Ok(None);
+            }
+            let gv = self.graph_version;
+            let ctor_qualname = format!("{qualname}.constructor");
+            let candidates =
+                query_exact_candidates(&mut self.exact, &ctor_qualname, gv, caller_file)?;
+            let methods: Vec<ExactCandidate> = candidates
+                .into_iter()
+                .filter(|c| c.kind == "method")
+                .collect();
+            return Ok(collapse_exact_candidates(&methods));
+        }
         // A type's own signature is its primary-constructor parameter list
         // (`record R(int A)`), which `..ctor` symbols don't cover.
         // (Interfaces are `partial`-capable but have no constructors, so
@@ -1285,7 +1321,7 @@ impl<'c> Resolver<'c> {
             });
         }
 
-        let types_only = matches!(r.edge_kind, "IMPLEMENTS" | "EXTENDS" | "INHERITS");
+        let types_only = edge_views::contains(edge_views::TYPE_HIERARCHY, r.edge_kind);
         // A base-list type name carries its scope-ordered guesses (C# enclosing
         // scopes, the global namespace, then usings): the first that names a
         // type wins, like the language's own lookup -- never an ambiguity.
@@ -1821,12 +1857,26 @@ impl<'c> Resolver<'c> {
             Some("") => Ok(None),
 
             Some(known_type) => {
+                let method = qualname_trailing_name(target_qualname);
+                // A type the extractor pinned to one declaration binds only
+                // through that class and its ancestors: another class of the
+                // same name is never a candidate. A pin naming no indexed
+                // type falls back to the bare name.
+                let mut known_type = known_type;
+                if let Some(pinned) =
+                    crate::indexer::extract::ReceiverType::decode_pinned(known_type)
+                {
+                    match self.resolve_pinned_member(pinned, method, caller.file_path)? {
+                        PinnedMember::Found(id, kind) => return Ok(Some((id, kind))),
+                        PinnedMember::Missing => return Ok(None),
+                        PinnedMember::NoType => known_type = qualname_trailing_name(pinned),
+                    }
+                }
                 // C# interface receivers keep the qualifier and closed type
                 // arguments they were declared with (`N1.IA<int>`); the
                 // arguments only discriminate dispatch, never resolution.
                 let scope = self.call_scope.clone();
                 let known_type = known_type.split('<').next().unwrap_or(known_type);
-                let method = qualname_trailing_name(target_qualname);
                 if let Some(id) =
                     self.scoped_member(&scope, known_type, method, caller.file_path)?
                 {
@@ -1917,6 +1967,92 @@ impl<'c> Resolver<'c> {
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
+    }
+
+    /// `method` of the type declared as `type_qualname` (a receiver type
+    /// pinned by the extractor, see `PinnedType`): its own member, else
+    /// the nearest ancestor's along already-bound EXTENDS/IMPLEMENTS/INHERITS
+    /// edges, level by level. Two distinct members at one level is ambiguous.
+    fn resolve_pinned_member(
+        &mut self,
+        type_qualname: &str,
+        method: &str,
+        caller_file: &str,
+    ) -> Result<PinnedMember> {
+        let gv = self.graph_version;
+        let mut frontier: Vec<(i64, String)> =
+            query_exact_candidates(&mut self.exact, type_qualname, gv, caller_file)?
+                .into_iter()
+                .filter(|c| matches!(c.kind.as_str(), "class" | "interface" | "enum" | "type"))
+                .map(|c| (c.id, type_qualname.to_string()))
+                .collect();
+        if frontier.is_empty() {
+            return Ok(PinnedMember::NoType);
+        }
+        let mut seen: std::collections::HashSet<i64> = frontier.iter().map(|(id, _)| *id).collect();
+        for depth in 0..=MAX_INHERITANCE_DEPTH {
+            let mut found: Vec<i64> = Vec::new();
+            let mut qualnames: Vec<&String> = frontier.iter().map(|(_, qn)| qn).collect();
+            qualnames.dedup();
+            for qualname in qualnames {
+                let member = format!("{qualname}.{method}");
+                let hits = query_exact_candidates(&mut self.exact, &member, gv, caller_file)?;
+                if hits.is_empty() {
+                    continue;
+                }
+                match collapse_exact_candidates(&hits) {
+                    Some(id) if !found.contains(&id) => found.push(id),
+                    Some(_) => {}
+                    None => {
+                        self.saw_ambiguous = true;
+                        return Ok(PinnedMember::Missing);
+                    }
+                }
+            }
+            match found.as_slice() {
+                [] => {}
+                [id] => {
+                    let kind = if depth == 0 {
+                        ResolutionKind::ReceiverType
+                    } else {
+                        ResolutionKind::Inherited
+                    };
+                    return Ok(PinnedMember::Found(*id, kind));
+                }
+                _ => {
+                    self.saw_ambiguous = true;
+                    return Ok(PinnedMember::Missing);
+                }
+            }
+            let mut next = Vec::new();
+            for (id, _) in &frontier {
+                let rows: Vec<Option<i64>> = self
+                    .hierarchy
+                    .query_map(params![id, gv], |row| row.get::<_, Option<i64>>(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for ancestor in rows.into_iter().flatten() {
+                    if !seen.insert(ancestor) {
+                        continue;
+                    }
+                    let qualname: Option<String> = self
+                        .conn
+                        .query_row(
+                            "SELECT qualname FROM symbols WHERE id = ?",
+                            [ancestor],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if let Some(qualname) = qualname {
+                        next.push((ancestor, qualname));
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        Ok(PinnedMember::Missing)
     }
 
     /// An unqualified receiver type looked up like C# does (see
@@ -2202,41 +2338,7 @@ impl<'c> Resolver<'c> {
                 return Ok(found);
             }
         }
-        if !profile_for(source_lang).import_member_fallback {
-            return Ok(None);
-        }
-        let mut found: Option<i64> = None;
-        for candidate in candidates {
-            // Walk up one segment at a time (`api.users.list` -> `api.users`
-            // -> `api`) until a symbol hits; only a const/variable binds, any
-            // other kind (class, module, ...) ends the walk unbound.
-            let mut rest = candidate.as_str();
-            let mut hit = None;
-            while let Some((parent, _)) = rest.rsplit_once('.') {
-                rest = parent;
-                let Some(id) = self.exact(parent, symbol_map, caller_file, false)? else {
-                    continue;
-                };
-                let kind: Option<String> = self
-                    .conn
-                    .query_row("SELECT kind FROM symbols WHERE id = ?", [id], |r| r.get(0))
-                    .optional()?;
-                if matches!(kind.as_deref(), Some("const" | "variable")) {
-                    hit = Some(id);
-                }
-                break;
-            }
-            let Some(id) = hit else { continue };
-            match found {
-                None => found = Some(id),
-                Some(existing) if existing == id => {}
-                Some(_) => {
-                    self.saw_ambiguous = true;
-                    return Ok(None);
-                }
-            }
-        }
-        Ok(found)
+        Ok(None)
     }
 
     /// Resolve an `IMPORTS_FILE` edge's ordered candidate list (see
@@ -2400,6 +2502,14 @@ impl<'c> Resolver<'c> {
         else {
             return Ok(Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)));
         };
+        // A JS/TS member of an imported repo value (`Jwt.missing` with `Jwt` a
+        // repo const/class) is a repo-side miss, never an external symbol,
+        // and no name guess may stand in for it.
+        if resolution_language_family(source_lang) == "javascript"
+            && self.import_candidate_has_repo_container(source_lang, import_candidates)?
+        {
+            return Ok(Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)));
+        }
         if !self.denotes_external_symbol(source_lang, &qualname, import_candidates)? {
             return Ok(None);
         }
@@ -2410,6 +2520,36 @@ impl<'c> Resolver<'c> {
                 via_language_fallback,
             },
         )))
+    }
+
+    /// Whether a leading part of some import candidate (`lib/api.api` of
+    /// `lib/api.api.users.list`) names a repo value or type whose member the
+    /// candidate is: a const, variable, class, interface or enum.
+    fn import_candidate_has_repo_container(
+        &mut self,
+        source_lang: &str,
+        import_candidates: &[String],
+    ) -> Result<bool> {
+        let family = resolution_language_family(source_lang);
+        let gv = self.graph_version;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT f.language FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.graph_version = ?1 AND s.qualname = ?2
+               AND s.kind IN ('const', 'variable', 'class', 'interface', 'enum')",
+        )?;
+        for candidate in import_candidates {
+            let prefixes = qualname_prefixes(candidate);
+            for prefix in &prefixes[..prefixes.len() - 1] {
+                let mut rows = stmt.query(params![gv, prefix])?;
+                while let Some(row) = rows.next()? {
+                    let language: String = row.get(0)?;
+                    if resolution_language_family(&language) == family {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Whether the stub name `qualname` (`ext:`-prefixed) can denote a real
@@ -2883,6 +3023,15 @@ fn canonical_multi_file<'a>(
     candidates
         .min_by(|a, b| (&a.path, a.id).cmp(&(&b.path, b.id)))
         .map(|c| c.id)
+}
+
+/// The outcome of `Resolver::resolve_pinned_member`.
+enum PinnedMember {
+    Found(i64, ResolutionKind),
+    /// The pinned type is indexed but neither it nor an ancestor declares the member.
+    Missing,
+    /// No indexed type has the pinned qualname.
+    NoType,
 }
 
 /// One `EXACT_SQL` row.
@@ -3362,8 +3511,11 @@ impl Db {
             .get_meta_i64("unresolved_reference_inheritance_watermark")?
             .unwrap_or(0);
         let max_inheritance_edge_id: i64 = self.read_conn()?.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM edges
-             WHERE graph_version = ? AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')",
+            &format!(
+                "SELECT COALESCE(MAX(id), 0) FROM edges
+             WHERE graph_version = ? AND kind IN ({})",
+                edge_views::sql_list(edge_views::TYPE_HIERARCHY)
+            ),
             params![graph_version],
             |row| row.get(0),
         )?;
@@ -4997,6 +5149,7 @@ mod tests {
             arg_count: 2,
             is_new: false,
             implicit_this: false,
+            is_ref: false,
         });
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
         assert!(

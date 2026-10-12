@@ -1,0 +1,948 @@
+{
+  "name": "eshop",
+  "repo": {
+    "url": "https://github.com/dotnet/eShop",
+    "commit": "dc7ea499cd356924fb6689b3702964a5869dbae9"
+  },
+  "questions": [
+    {
+      "id": "cs-callers-addsubscription",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/EventBus/Extensions/EventBusBuilderExtensions.cs",
+        "line": 20
+      },
+      "expect": [
+        {
+          "file": "src/Basket.API/Extensions/Extensions.cs",
+          "line": 19
+        },
+        {
+          "file": "src/WebApp/Extensions/Extensions.cs",
+          "line": 45
+        },
+        {
+          "file": "src/WebApp/Extensions/Extensions.cs",
+          "line": 46
+        },
+        {
+          "file": "src/WebApp/Extensions/Extensions.cs",
+          "line": 47
+        },
+        {
+          "file": "src/WebApp/Extensions/Extensions.cs",
+          "line": 48
+        },
+        {
+          "file": "src/WebApp/Extensions/Extensions.cs",
+          "line": 49
+        },
+        {
+          "file": "src/WebApp/Extensions/Extensions.cs",
+          "line": 50
+        },
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 55
+        },
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 56
+        },
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 57
+        },
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 58
+        },
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 59
+        },
+        {
+          "file": "src/PaymentProcessor/Program.cs",
+          "line": 6
+        },
+        {
+          "file": "src/Catalog.API/Extensions/Extensions.cs",
+          "line": 32
+        },
+        {
+          "file": "src/Catalog.API/Extensions/Extensions.cs",
+          "line": 33
+        },
+        {
+          "file": "src/Webhooks.API/Extensions/Extensions.cs",
+          "line": 21
+        },
+        {
+          "file": "src/Webhooks.API/Extensions/Extensions.cs",
+          "line": 22
+        },
+        {
+          "file": "src/Webhooks.API/Extensions/Extensions.cs",
+          "line": 23
+        }
+      ],
+      "tags": [
+        "extension",
+        "generic",
+        "di-registration",
+        "fluent-chain"
+      ],
+      "note": "Generic extension AddSubscription<T,TH>(this IEventBusBuilder). grep -rn AddSubscription over *.cs: 18 call sites in 6 services (Basket 1 chained, WebApp 6, Ordering 5, PaymentProcessor 1 chained, Catalog 2 chained, Webhooks 3) + the declaration; no tests; no other overloads."
+    },
+    {
+      "id": "cs-callers-ieventbus-publishasync",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/EventBus/Abstractions/IEventBus.cs",
+        "line": 5
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Application/IntegrationEvents/OrderingIntegrationEventService.cs",
+          "line": 24
+        },
+        {
+          "file": "src/PaymentProcessor/IntegrationEvents/EventHandling/OrderStatusChangedToStockConfirmedIntegrationEventHandler.cs",
+          "line": 32
+        },
+        {
+          "file": "src/OrderProcessor/Services/GracePeriodManagerService.cs",
+          "line": 60
+        },
+        {
+          "file": "src/Catalog.API/IntegrationEvents/CatalogIntegrationEventService.cs",
+          "line": 18
+        },
+        {
+          "file": "tests/Application.UnitTests/OrderProcessorTests.cs",
+          "line": 36
+        },
+        {
+          "file": "tests/Application.UnitTests/OrderProcessorTests.cs",
+          "line": 38
+        },
+        {
+          "file": "tests/Application.UnitTests/PaymentProcessorTests.cs",
+          "line": 30
+        },
+        {
+          "file": "tests/Application.UnitTests/PaymentProcessorTests.cs",
+          "line": 32
+        },
+        {
+          "file": "tests/Application.UnitTests/PaymentProcessorTests.cs",
+          "line": 36
+        },
+        {
+          "file": "tests/Application.UnitTests/PaymentProcessorTests.cs",
+          "line": 38
+        }
+      ],
+      "tags": [
+        "interface",
+        "di-resolved",
+        "tests",
+        "trap"
+      ],
+      "note": "Interface member; callers via IEventBus-typed fields/parameters. grep -rn 'PublishAsync' *.cs: 12 hits. Excluded: RabbitMQEventBus.PublishAsync declaration (impl), IntegrationEventLogService.RetrieveEventLogsPendingToPublishAsync (different name), tests/eShop.AppHost.UnitTests/AppHostConfigurationTests.cs:37 (Aspire DistributedApplicationEventing.PublishAsync, different type). NSubstitute calls on Substitute.For<IEventBus>() (Received/DidNotReceive) are syntactic invocations of the interface member and are counted."
+    },
+    {
+      "id": "cs-callers-addmigration-noseeder",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Shared/MigrateDbContextExtensions.cs",
+        "line": 10
+      },
+      "expect": [
+        {
+          "file": "src/Webhooks.API/Extensions/Extensions.cs",
+          "line": 12
+        }
+      ],
+      "tags": [
+        "overload",
+        "extension",
+        "generic",
+        "trap"
+      ],
+      "note": "AddMigration<TContext>(this IServiceCollection) -- the arity-1, no-seeder overload. grep -rn AddMigration: 7 call sites. Webhooks calls AddMigration<WebhooksContext>() with no args -> this overload. The call inside the Shared file at line 12 passes a lambda -> Func overload (line 14). Ordering/Identity/Catalog use the arity-2 overload (line 23)."
+    },
+    {
+      "id": "cs-callers-addmigration-seederfunc",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Shared/MigrateDbContextExtensions.cs",
+        "line": 14
+      },
+      "expect": [
+        {
+          "file": "src/Shared/MigrateDbContextExtensions.cs",
+          "line": 12
+        },
+        {
+          "file": "src/Shared/MigrateDbContextExtensions.cs",
+          "line": 28
+        }
+      ],
+      "tags": [
+        "overload",
+        "extension",
+        "generic",
+        "lambda-arg"
+      ],
+      "note": "AddMigration<TContext>(this IServiceCollection, Func<TContext,IServiceProvider,Task>). Callers are the two sibling overloads in the same file: line 12 (no-seeder overload forwards a (_, _) => Task.CompletedTask lambda) and line 28 (TDbSeeder overload forwards a lambda). No external caller uses the Func form directly."
+    },
+    {
+      "id": "cs-callers-addmigration-tcontext-tseeder",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Shared/MigrateDbContextExtensions.cs",
+        "line": 23
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 21
+        },
+        {
+          "file": "src/Identity.API/Program.cs",
+          "line": 12
+        },
+        {
+          "file": "src/Catalog.API/Extensions/Extensions.cs",
+          "line": 24
+        }
+      ],
+      "tags": [
+        "overload",
+        "extension",
+        "generic",
+        "di-registration"
+      ],
+      "note": "AddMigration<TContext,TDbSeeder>(this IServiceCollection): selected by two explicit type args. 3 call sites: Ordering.API Extensions.cs:21 (OrderingContext,OrderingContextSeed), Identity.API Program.cs:12, Catalog.API Extensions.cs:24."
+    },
+    {
+      "id": "cs-callers-order-ctor-full",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+        "line": 52
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Application/Commands/CreateOrderCommandHandler.cs",
+          "line": 40
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Builders.cs",
+          "line": 19
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Application/NewOrderCommandHandlerTest.cs",
+          "line": 63
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Domain/OrderAggregateTest.cs",
+          "line": 125
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Domain/OrderAggregateTest.cs",
+          "line": 148
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Domain/OrderAggregateTest.cs",
+          "line": 168
+        }
+      ],
+      "tags": [
+        "constructor",
+        "new",
+        "named-args",
+        "trap",
+        "tests"
+      ],
+      "note": "Public Order(userId,userName,address,...) ctor. grep -rn 'new Order\\b' *.cs: Order.cs:39 'new Order {' is the protected parameterless ctor (excluded); Ordering.API OrderQueries.cs:15 and tests OrdersWebApiTest.cs:110 / OrderingApiTests.cs:124 'new Order' construct the unrelated record Application.Queries.Order (excluded, trap). Builders.cs:19 uses named arguments across several lines; the name token line is 19."
+    },
+    {
+      "id": "cs-callers-order-addorderitem",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+        "line": 71
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Application/Commands/CreateOrderDraftCommandHandler.cs",
+          "line": 16
+        },
+        {
+          "file": "src/Ordering.API/Application/Commands/CreateOrderCommandHandler.cs",
+          "line": 44
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Builders.cs",
+          "line": 38
+        }
+      ],
+      "tags": [
+        "tests",
+        "optional-param"
+      ],
+      "note": "grep -rn 'AddOrderItem' *.cs: declaration + 2 comments in Order.cs (excluded) + 3 call sites. Optional 'units' parameter does not change identity."
+    },
+    {
+      "id": "cs-callers-entity-adddomainevent",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Ordering.Domain/SeedWork/Entity.cs",
+        "line": 22
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 103
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 112
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 123
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 139
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 152
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 177
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/BuyerAggregate/Buyer.cs",
+          "line": 38
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/BuyerAggregate/Buyer.cs",
+          "line": 47
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Domain/OrderAggregateTest.cs",
+          "line": 149
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Domain/OrderAggregateTest.cs",
+          "line": 173
+        }
+      ],
+      "tags": [
+        "inheritance",
+        "base-class",
+        "implicit-this",
+        "tests"
+      ],
+      "note": "Non-virtual method on abstract base Entity, invoked unqualified (inherited) in Order/Buyer and via 'this.' (Order.cs:177) and on instances in tests. grep -rn 'AddDomainEvent' *.cs: 11 hits, 1 is the declaration. Other similarly named methods (RemoveDomainEvent, ClearDomainEvents) are different declarations."
+    },
+    {
+      "id": "cs-callers-valueobject-getequalitycomponents",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Ordering.Domain/SeedWork/ValueObject.cs",
+        "line": 19
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.Domain/SeedWork/ValueObject.cs",
+          "line": 30
+        },
+        {
+          "file": "src/Ordering.Domain/SeedWork/ValueObject.cs",
+          "line": 35
+        }
+      ],
+      "tags": [
+        "abstract",
+        "virtual",
+        "interface-dispatch-rule"
+      ],
+      "note": "Abstract base declaration. Per the dispatch rule only calls typed against the base count: ValueObject.cs:30 (two calls on one line: this./other.) and :35. The overrides (Address.cs:24, ValueObjectTests.cs:133,156) are declarations, not calls."
+    },
+    {
+      "id": "cs-callers-getuseridentity-servercallcontext",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Basket.API/Extensions/ServerCallContextIdentityExtensions.cs",
+        "line": 7
+      },
+      "expect": [
+        {
+          "file": "src/Basket.API/Grpc/BasketService.cs",
+          "line": 15
+        },
+        {
+          "file": "src/Basket.API/Grpc/BasketService.cs",
+          "line": 38
+        },
+        {
+          "file": "src/Basket.API/Grpc/BasketService.cs",
+          "line": 61
+        }
+      ],
+      "tags": [
+        "extension",
+        "trap",
+        "same-name-different-service"
+      ],
+      "note": "Basket.API extension on ServerCallContext. grep -rn GetUserIdentity: also Ordering.API IIdentityService.GetUserIdentity (decl IIdentityService.cs:5, IdentityService.cs:5) with calls in OrdersApi.cs:95 and tests -- different declaration, excluded here."
+    },
+    {
+      "id": "cs-callers-iidentityservice-getuseridentity",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Ordering.API/Infrastructure/Services/IIdentityService.cs",
+        "line": 5
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Apis/OrdersApi.cs",
+          "line": 95
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Application/OrdersWebApiTest.cs",
+          "line": 91
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Application/NewOrderCommandHandlerTest.cs",
+          "line": 37
+        }
+      ],
+      "tags": [
+        "interface",
+        "same-name-different-service",
+        "tests",
+        "trap"
+      ],
+      "note": "Ordering.API interface member. OrdersApi.cs:95 goes through services.IdentityService (IIdentityService); the two test hits are NSubstitute setups on Substitute.For<IIdentityService>(). Excluded: Basket.API ServerCallContext.GetUserIdentity extension calls in BasketService.cs, and the IdentityService.cs implementation."
+    },
+    {
+      "id": "cs-callers-catalogapi-getallitems",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Catalog.API/Apis/CatalogApi.cs",
+        "line": 130
+      },
+      "expect": [
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 26
+        },
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 126
+        },
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 244
+        },
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 343
+        },
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 352
+        }
+      ],
+      "tags": [
+        "method-group",
+        "minimal-api",
+        "trap"
+      ],
+      "note": "grep -n 'GetAllItems' CatalogApi.cs: line 26 is the method-group argument v2.MapGet(\"/items\", GetAllItems); 126/244/343/352 are direct calls from GetAllItemsV1, GetItemsByName, GetItemsByBrandAndTypeId, GetItemsByBrandId. Line 21 passes GetAllItemsV1 (different method, excluded). Tests hit it only over HTTP."
+    },
+    {
+      "id": "cs-callers-ibasketrepository-updatebasketasync",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Basket.API/Repositories/IBasketRepository.cs",
+        "line": 8
+      },
+      "expect": [
+        {
+          "file": "src/Basket.API/Grpc/BasketService.cs",
+          "line": 50
+        },
+        {
+          "file": "tests/Basket.UnitTests/BasketServiceTests.cs",
+          "line": 72
+        },
+        {
+          "file": "tests/Basket.UnitTests/BasketServiceTests.cs",
+          "line": 84
+        },
+        {
+          "file": "tests/Basket.UnitTests/BasketServiceTests.cs",
+          "line": 101
+        },
+        {
+          "file": "tests/Basket.UnitTests/BasketServiceTests.cs",
+          "line": 108
+        }
+      ],
+      "tags": [
+        "interface",
+        "di-resolved",
+        "tests",
+        "trap"
+      ],
+      "note": "Interface member of IBasketRepository. BasketService.cs:50 calls through the injected IBasketRepository; BasketServiceTests hits are on Substitute.For<IBasketRepository>(). Excluded: RedisBasketRepositoryTests.cs:27 (concrete RedisBasketRepository, impl not interface), WebApp BasketService.UpdateBasketAsync and its callers, and the generated gRPC client's UpdateBasketAsync (WebApp/Services/BasketService.cs:34)."
+    },
+    {
+      "id": "cs-callers-redisbasketrepository-getbasketasync",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Basket.API/Repositories/RedisBasketRepository.cs",
+        "line": 23
+      },
+      "expect": [
+        {
+          "file": "src/Basket.API/Repositories/RedisBasketRepository.cs",
+          "line": 47
+        },
+        {
+          "file": "tests/Basket.FunctionalTests/RedisBasketRepositoryTests.cs",
+          "line": 28
+        },
+        {
+          "file": "tests/Basket.FunctionalTests/RedisBasketRepositoryTests.cs",
+          "line": 30
+        },
+        {
+          "file": "tests/Basket.FunctionalTests/RedisBasketRepositoryTests.cs",
+          "line": 48
+        }
+      ],
+      "tags": [
+        "implementation",
+        "not-interface",
+        "tests",
+        "trap"
+      ],
+      "note": "Concrete implementation. Callers typed as the concrete class: RedisBasketRepository.cs:47 (UpdateBasketAsync -> GetBasketAsync(this)) and the three calls in RedisBasketRepositoryTests on 'new RedisBasketRepository(...)'. Excluded under the interface rule: BasketService.cs:26 and BasketServiceTests (typed IBasketRepository)."
+    },
+    {
+      "id": "cs-callers-icatalogai-getembedding-string",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Catalog.API/Services/ICatalogAI.cs",
+        "line": 11
+      },
+      "expect": [
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 296
+        }
+      ],
+      "tags": [
+        "overload",
+        "interface",
+        "argument-type",
+        "trap"
+      ],
+      "note": "ICatalogAI.GetEmbeddingAsync(string text). Only CatalogApi.cs:296 (services.CatalogAI is ICatalogAI, arg text is string). CatalogAI.cs:30 and CatalogAITests.cs:19,20 call the concrete CatalogAI (impl, excluded). The CatalogItem overload (ICatalogAI.cs:14) is called at CatalogApi.cs:388,427."
+    },
+    {
+      "id": "cs-callers-icatalogai-getembedding-item",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Catalog.API/Services/ICatalogAI.cs",
+        "line": 14
+      },
+      "expect": [
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 388
+        },
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 427
+        }
+      ],
+      "tags": [
+        "overload",
+        "interface",
+        "argument-type",
+        "trap"
+      ],
+      "note": "ICatalogAI.GetEmbeddingAsync(CatalogItem item). CatalogApi.cs:388 (catalogItem is CatalogItem) and :427 (item is new CatalogItem). Line 296 passes a string -> other overload."
+    },
+    {
+      "id": "cs-callers-iorderingintegrationeventservice-addandsaveeventasync",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Ordering.API/Application/IntegrationEvents/IOrderingIntegrationEventService.cs",
+        "line": 6
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Application/DomainEventHandlers/OrderStatusChangedToStockConfirmedDomainEventHandler.cs",
+          "line": 31
+        },
+        {
+          "file": "src/Ordering.API/Application/DomainEventHandlers/OrderCancelledDomainEventHandler.cs",
+          "line": 31
+        },
+        {
+          "file": "src/Ordering.API/Application/DomainEventHandlers/OrderShippedDomainEventHandler.cs",
+          "line": 31
+        },
+        {
+          "file": "src/Ordering.API/Application/DomainEventHandlers/ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler.cs",
+          "line": 51
+        },
+        {
+          "file": "src/Ordering.API/Application/DomainEventHandlers/OrderStatusChangedToAwaitingValidationDomainEventHandler.cs",
+          "line": 34
+        },
+        {
+          "file": "src/Ordering.API/Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs",
+          "line": 39
+        },
+        {
+          "file": "src/Ordering.API/Application/Commands/CreateOrderCommandHandler.cs",
+          "line": 33
+        }
+      ],
+      "tags": [
+        "interface",
+        "di-resolved"
+      ],
+      "note": "grep -rn AddAndSaveEventAsync: interface decl, impl decl (OrderingIntegrationEventService.cs:36), 7 calls through the injected IOrderingIntegrationEventService field. ICatalogIntegrationEventService.SaveEventAndCatalogContextChangesAsync is a different service."
+    },
+    {
+      "id": "cs-callers-webapp-createorderrequest-record",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/WebApp/Services/BasketState.cs",
+        "line": 158
+      },
+      "expect": [
+        {
+          "file": "src/WebApp/Services/BasketState.cs",
+          "line": 92
+        }
+      ],
+      "tags": [
+        "record",
+        "constructor",
+        "same-name-different-service",
+        "trap"
+      ],
+      "note": "Positional record CreateOrderRequest in WebApp (primary ctor). Only 'new CreateOrderRequest(' in WebApp is BasketState.cs:92. Same-named record in Ordering.API (OrdersApi.cs:171) is constructed in tests/Ordering.FunctionalTests/OrderingApiTests.cs:150 (excluded). Type-position uses (OrderingService.cs:12, OrdersApi.cs:120) are not constructor calls."
+    },
+    {
+      "id": "cs-callers-ordering-addeventbussubscriptions",
+      "lang": "csharp",
+      "kind": "callers",
+      "target": {
+        "file": "src/Ordering.API/Extensions/Extensions.cs",
+        "line": 53
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 29
+        }
+      ],
+      "tags": [
+        "extension",
+        "private",
+        "same-name-different-service",
+        "trap"
+      ],
+      "note": "Private extension AddEventBusSubscriptions(this IEventBusBuilder) in Ordering.API. Same-named extensions exist in WebApp (Extensions.cs:43, called :18) and Webhooks.API (Extensions.cs:19, called :8); each is called once from its own file's AddApplicationServices. Only Ordering.API Extensions.cs:29 resolves here."
+    },
+    {
+      "id": "cs-impact-buyer-verifyoraddpaymentmethod",
+      "lang": "csharp",
+      "kind": "impact_direct",
+      "target": {
+        "file": "src/Ordering.Domain/AggregatesModel/BuyerAggregate/Buyer.cs",
+        "line": 29
+      },
+      "expect": [
+        {
+          "file": "src/Ordering.API/Application/DomainEventHandlers/ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler.cs",
+          "line": 20
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Domain/BuyerAggregateTest.cs",
+          "line": 35
+        },
+        {
+          "file": "tests/Ordering.UnitTests/Domain/BuyerAggregateTest.cs",
+          "line": 110
+        }
+      ],
+      "tags": [
+        "tests",
+        "enclosing-symbol"
+      ],
+      "note": "Call sites: ValidateOrAdd...DomainEventHandler.cs:34 (in Handle, decl line 20), BuyerAggregateTest.cs:50 (add_payment_success, decl 35), :125 (Add_new_PaymentMethod_raises_new_event, decl 110). Entries are the enclosing method declaration lines."
+    },
+    {
+      "id": "cs-dead-ordering-extensions",
+      "lang": "csharp",
+      "kind": "dead",
+      "scope": {
+        "path": "src/Ordering.API/Extensions",
+        "lang": "csharp"
+      },
+      "live": [
+        {
+          "file": "src/Ordering.API/Extensions/BasketItemExtensions.cs",
+          "line": 5,
+          "note": "called CreateOrderCommand.cs:70"
+        },
+        {
+          "file": "src/Ordering.API/Extensions/BasketItemExtensions.cs",
+          "line": 13,
+          "note": "called BasketItemExtensions.cs:9 and CreateOrderDraftCommandHandler.cs:13"
+        },
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 5,
+          "note": "AddApplicationServices called Ordering.API/Program.cs:4"
+        },
+        {
+          "file": "src/Ordering.API/Extensions/Extensions.cs",
+          "line": 53,
+          "note": "called Extensions.cs:29"
+        }
+      ],
+      "dead": [
+        {
+          "file": "src/Ordering.API/Extensions/LinqSelectExtensions.cs",
+          "line": 5,
+          "note": "SelectTry: no references anywhere"
+        },
+        {
+          "file": "src/Ordering.API/Extensions/LinqSelectExtensions.cs",
+          "line": 22,
+          "note": "OnCaughtException(Func<Exception,TResult>): no references"
+        },
+        {
+          "file": "src/Ordering.API/Extensions/LinqSelectExtensions.cs",
+          "line": 27,
+          "note": "OnCaughtException(Func<TSource,Exception,TResult>): no references"
+        }
+      ],
+      "tags": [
+        "extension",
+        "generic"
+      ],
+      "note": "git grep -w SelectTry / OnCaughtException: only the declarations (and their own sibling use inside LinqSelectExtensions: SelectTryResult). Public extension methods never invoked in src/tests/razor. Entry points skipped: OrderingApiTrace [LoggerMessage] partials."
+    },
+    {
+      "id": "cs-dead-src-members",
+      "lang": "csharp",
+      "kind": "dead",
+      "scope": {
+        "path": "src",
+        "lang": "csharp"
+      },
+      "live": [
+        {
+          "file": "src/Ordering.Domain/SeedWork/ValueObject.cs",
+          "line": 5,
+          "note": "EqualOperator used ValueObject.cs:16"
+        },
+        {
+          "file": "src/Ordering.Domain/SeedWork/Entity.cs",
+          "line": 33,
+          "note": "ClearDomainEvents used MediatorExtension.cs:16"
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 93,
+          "note": "SetPaymentMethodVerified used UpdateOrderWhenBuyerAndPaymentMethodVerifiedDomainEventHandler.cs:22"
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/OrderItem.cs",
+          "line": 54,
+          "note": "AddUnits used Order.cs:83"
+        },
+        {
+          "file": "src/Ordering.Domain/AggregatesModel/OrderAggregate/Order.cs",
+          "line": 185,
+          "note": "GetTotal used OrderQueries.cs:26, CreateOrderDraftCommandHandler.cs:41"
+        },
+        {
+          "file": "src/Catalog.API/Model/CatalogItem.cs",
+          "line": 62,
+          "note": "RemoveStock used Catalog OrderStatusChangedToPaid handler:17"
+        },
+        {
+          "file": "src/Catalog.API/Apis/CatalogApi.cs",
+          "line": 465,
+          "note": "GetFullPath used CatalogApi.cs:262"
+        }
+      ],
+      "dead": [
+        {
+          "file": "src/Ordering.Domain/SeedWork/ValueObject.cs",
+          "line": 40,
+          "note": "GetCopy: no references"
+        },
+        {
+          "file": "src/Ordering.Domain/SeedWork/ValueObject.cs",
+          "line": 14,
+          "note": "NotEqualOperator: no references (EqualOperator is used)"
+        },
+        {
+          "file": "src/Catalog.API/Model/CatalogItem.cs",
+          "line": 86,
+          "note": "AddStock: no references (RemoveStock is used)"
+        }
+      ],
+      "tags": [
+        "trap",
+        "domain-model",
+        "cross-project"
+      ],
+      "note": "git grep -w over *.cs and *.razor: GetCopy, NotEqualOperator, AddStock appear only at their declarations. RemoveDomainEvent (Entity.cs:28) is referenced only by a test call and is omitted from both lists (ambiguous). Note ValueObject.cs:14 vs :5 are near-identical siblings."
+    },
+    {
+      "id": "cs-trace-payment-publish-to-ordering-handler",
+      "lang": "csharp",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "src/PaymentProcessor/IntegrationEvents/EventHandling/OrderStatusChangedToStockConfirmedIntegrationEventHandler.cs",
+        "line": 9
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "src/Ordering.API/Application/IntegrationEvents/EventHandling/OrderPaymentSucceededIntegrationEventHandler.cs",
+          "line": 8
+        },
+        {
+          "file": "src/Ordering.API/Application/IntegrationEvents/EventHandling/OrderPaymentFailedIntegrationEventHandler.cs",
+          "line": 8
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "src/Ordering.API/Application/IntegrationEvents/EventHandling/OrderStockConfirmedIntegrationEventHandler.cs",
+          "line": 8
+        },
+        {
+          "file": "src/Catalog.API/IntegrationEvents/EventHandling/OrderStatusChangedToPaidIntegrationEventHandler.cs",
+          "line": 8
+        },
+        {
+          "file": "src/Webhooks.API/IntegrationEvents/OrderStatusChangedToPaidIntegrationEventHandler.cs",
+          "line": 8
+        }
+      ],
+      "tags": [
+        "integration-event",
+        "message-bus",
+        "cross-service"
+      ],
+      "note": "PaymentProcessor handler publishes OrderPaymentSucceededIntegrationEvent or OrderPaymentFailedIntegrationEvent (lines 21/25, PublishAsync :32). Ordering.API subscribes both: Extensions.cs:58-59 AddSubscription<OrderPaymentFailed..,OrderPaymentFailed..Handler> / <OrderPaymentSucceeded..,..Handler>. Wrong targets: Ordering OrderStockConfirmed handler (different event), and the same-named OrderStatusChangedToPaid handlers in Catalog/Webhooks (consume a different event)."
+    },
+    {
+      "id": "cs-trace-graceperiod-publish-to-handler",
+      "lang": "csharp",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "src/OrderProcessor/Services/GracePeriodManagerService.cs",
+        "line": 43
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "src/Ordering.API/Application/IntegrationEvents/EventHandling/GracePeriodConfirmedIntegrationEventHandler.cs",
+          "line": 15
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "src/Ordering.API/Application/IntegrationEvents/EventHandling/OrderPaymentSucceededIntegrationEventHandler.cs",
+          "line": 8
+        },
+        {
+          "file": "src/Basket.API/IntegrationEvents/EventHandling/OrderStartedIntegrationEventHandler.cs",
+          "line": 10
+        }
+      ],
+      "tags": [
+        "integration-event",
+        "message-bus",
+        "cross-service"
+      ],
+      "note": "CheckConfirmedGracePeriodOrders creates GracePeriodConfirmedIntegrationEvent and calls IEventBus.PublishAsync (:60). Only Ordering.API subscribes (Extensions.cs:55). The event type is declared in OrderProcessor/Events and mirrored in Ordering.API (same simple name)."
+    },
+    {
+      "id": "cs-trace-webapp-basket-grpc-to-server",
+      "lang": "csharp",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "src/WebApp/Services/BasketService.cs",
+        "line": 20
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "src/Basket.API/Grpc/BasketService.cs",
+          "line": 36
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "src/Basket.API/Grpc/BasketService.cs",
+          "line": 13
+        },
+        {
+          "file": "src/Basket.API/Grpc/BasketService.cs",
+          "line": 59
+        }
+      ],
+      "tags": [
+        "grpc",
+        "client-to-server",
+        "same-name-different-service",
+        "trap"
+      ],
+      "note": "WebApp BasketService.UpdateBasketAsync calls generated client basketClient.UpdateBasketAsync (line 34, Basket.BasketClient from src/Basket.API/Proto/basket.proto, rpc UpdateBasket). Server implementation: Basket.API BasketService.UpdateBasket override (BasketService.cs:36). GetBasket (13) and DeleteBasket (59) are sibling RPCs not reachable from this client method. The ClientApp has its own checked-in generated client and an unrelated BasketService."
+    }
+  ]
+}

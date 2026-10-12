@@ -1,0 +1,95 @@
+{
+  "name": "derived",
+  "tasks": [
+    {
+      "id": "derived:cs-callers-entity-adddomainevent",
+      "category": "callers",
+      "repo": {
+        "url": "https://github.com/dotnet/eShop",
+        "commit": "dc7ea499cd356924fb6689b3702964a5869dbae9"
+      },
+      "question": "I want to change the signature of `Entity.AddDomainEvent` in `src/Ordering.Domain/SeedWork/Entity.cs`. List every call site in the repository (including tests) that would need updating, with file and line."
+    },
+    {
+      "id": "derived:cs-callers-iorderingintegrationeventservice-addandsaveeventasync",
+      "category": "callers",
+      "repo": {
+        "url": "https://github.com/dotnet/eShop",
+        "commit": "dc7ea499cd356924fb6689b3702964a5869dbae9"
+      },
+      "question": "I am about to change `IOrderingIntegrationEventService.AddAndSaveEventAsync` declared in `src/Ordering.API/Application/IntegrationEvents/IOrderingIntegrationEventService.cs`. List every place that calls it (including tests), with file and line, so I can update them."
+    },
+    {
+      "id": "derived:cs-impact-buyer-verifyoraddpaymentmethod",
+      "category": "impact_direct",
+      "repo": {
+        "url": "https://github.com/dotnet/eShop",
+        "commit": "dc7ea499cd356924fb6689b3702964a5869dbae9"
+      },
+      "question": "If I change the behavior of `Buyer.VerifyOrAddPaymentMethod` in `src/Ordering.Domain/AggregatesModel/BuyerAggregate/Buyer.cs`, which methods directly call it and are therefore directly affected? Include test methods, and give the file and the line where each affected method is declared."
+    },
+    {
+      "id": "derived:cs-trace-payment-publish-to-ordering-handler",
+      "category": "trace_reaches",
+      "repo": {
+        "url": "https://github.com/dotnet/eShop",
+        "commit": "dc7ea499cd356924fb6689b3702964a5869dbae9"
+      },
+      "question": "The `Handle` method in `src/PaymentProcessor/IntegrationEvents/EventHandling/OrderStatusChangedToStockConfirmedIntegrationEventHandler.cs` (class `OrderStatusChangedToStockConfirmedIntegrationEventHandler`) runs when the payment processor receives its event. Within up to 3 downstream hops (direct calls and message-bus publish-to-subscribe hand-offs), which other handler methods in the repository does it end up reaching? Give file and line for each."
+    },
+    {
+      "id": "derived:ts-callers-checkoptionalparameter",
+      "category": "callers",
+      "repo": {
+        "url": "https://github.com/honojs/hono",
+        "commit": "5f36607f67aa9357887337328ac84a1c1d48dc04"
+      },
+      "question": "I want to change the signature of `checkOptionalParameter` in `src/utils/url.ts`. List every call site in the repository (including tests) that would need updating, with file and line."
+    },
+    {
+      "id": "derived:ts-callers-verifywithjwks",
+      "category": "callers",
+      "repo": {
+        "url": "https://github.com/honojs/hono",
+        "commit": "5f36607f67aa9357887337328ac84a1c1d48dc04"
+      },
+      "question": "I want to change the signature of `verifyWithJwks` in `src/utils/jwt/jwt.ts`. List every place it is actually called (including tests and calls through the `Jwt` object, but not re-exports or alias definitions), with file and line."
+    },
+    {
+      "id": "derived:ts-trace-servestatic",
+      "category": "trace_reaches",
+      "repo": {
+        "url": "https://github.com/honojs/hono",
+        "commit": "5f36607f67aa9357887337328ac84a1c1d48dc04"
+      },
+      "question": "Within 2 calls, which functions declared in `src/utils/url.ts`, `src/utils/mime.ts` and `src/middleware/serve-static/path.ts` does `serveStatic` in `src/middleware/serve-static/index.ts` reach (directly or through one intermediate call)? List them with file and line of each declaration."
+    },
+    {
+      "id": "derived:py-callers-baseclient-build-request",
+      "category": "callers",
+      "repo": {
+        "url": "https://github.com/encode/httpx",
+        "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+      },
+      "question": "I want to change the signature of `BaseClient.build_request` in `httpx/_client.py`. List every call site in the repository (including tests) that would need updating, with file and line."
+    },
+    {
+      "id": "derived:py-callers-response-raise-for-status",
+      "category": "callers",
+      "repo": {
+        "url": "https://github.com/encode/httpx",
+        "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+      },
+      "question": "I want to rename `Response.raise_for_status` in `httpx/_models.py`. List every call site of it in the repository (including tests, excluding docstrings and comments), with file and line."
+    },
+    {
+      "id": "derived:py-trace-client-send",
+      "category": "trace_reaches",
+      "repo": {
+        "url": "https://github.com/encode/httpx",
+        "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+      },
+      "question": "Within 3 calls, which of the functions and methods that the synchronous `Client.send` in `httpx/_client.py` reaches implement the request pipeline itself (authentication handling, redirect handling, the single-request send, building the redirect request, and the auth flow generator)? List those synchronous-path declarations with file and line (ignore the async twins and small helpers such as timeout or body-reading utilities)."
+    }
+  ]
+}

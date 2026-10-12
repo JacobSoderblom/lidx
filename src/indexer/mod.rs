@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 14;
+pub const EXTRACTOR_VERSION: i64 = 15;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -94,6 +94,8 @@ pub struct Indexer {
     /// directory; built lazily, dropped whenever `cs_globals::prepare` runs.
     cs_globals: Option<HashMap<String, Vec<String>>>,
     cs_projects: HashMap<PathBuf, String>,
+    /// Last freshness check, reused for [`crate::freshness::CACHE_TTL`].
+    freshness_cache: Option<(Instant, crate::freshness::Freshness)>,
 }
 
 /// `Indexer::index_scanned_file_symbols`'s result: one file's extracted
@@ -167,6 +169,7 @@ impl Indexer {
             extractors,
             cs_globals: None,
             cs_projects: HashMap::new(),
+            freshness_cache: None,
         })
     }
 
@@ -186,6 +189,47 @@ impl Indexer {
     /// (including a never-indexed DB), i.e. a full `reindex` must re-extract.
     pub fn extractor_version_stale(&self) -> Result<bool> {
         Ok(self.db.get_meta_i64(EXTRACTOR_VERSION_KEY)? != Some(EXTRACTOR_VERSION))
+    }
+
+    /// Index freshness, cached for one second so a burst of requests pays for
+    /// one check. A failed check yields `None` rather than failing a request.
+    pub fn freshness(&mut self) -> Option<crate::freshness::Freshness> {
+        if let Some((at, cached)) = &self.freshness_cache
+            && at.elapsed() < crate::freshness::CACHE_TTL
+        {
+            return Some(cached.clone());
+        }
+        let fresh = crate::freshness::compute(
+            &self.db,
+            &self.repo_root,
+            self.graph_version,
+            self.scan_options,
+        )
+        .ok()?;
+        self.freshness_cache = Some((Instant::now(), fresh.clone()));
+        Some(fresh)
+    }
+
+    /// Drop the cached freshness check so the next call recomputes it.
+    pub fn invalidate_freshness(&mut self) {
+        self.freshness_cache = None;
+    }
+
+    /// Record the checkout state a completed reindex/sync indexed: the HEAD
+    /// it started from (none outside git: the key is removed) and every
+    /// indexable directory then present, so a file later created in a
+    /// directory that holds no indexed files is still noticed.
+    fn record_indexed_state(&mut self, head: Option<String>) -> Result<()> {
+        self.freshness_cache = None;
+        match head {
+            Some(head) => self
+                .db
+                .set_meta_str(crate::freshness::INDEXED_HEAD_KEY, &head)?,
+            None => self.db.delete_meta(crate::freshness::INDEXED_HEAD_KEY)?,
+        }
+        let (_, dirs) = scan::list_dir(&self.repo_root, &self.repo_root, self.scan_options, false);
+        self.db
+            .set_meta_str(crate::freshness::INDEXED_DIRS_KEY, &dirs.join("\n"))
     }
 
     pub fn graph_version(&self) -> i64 {
@@ -263,6 +307,7 @@ impl Indexer {
     }
 
     fn sync_abs_paths_locked(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
+        let head_at_start = crate::freshness::current_head(&self.repo_root);
         let mut stats = SyncStats::default();
         let mut touched = false;
         let mut indexed_files = Vec::new();
@@ -439,6 +484,7 @@ impl Indexer {
                 .unwrap_or_default()
                 .as_secs() as i64;
             self.db.set_meta_i64("last_indexed", now)?;
+            self.record_indexed_state(head_at_start)?;
         }
         Ok(stats)
     }
@@ -499,7 +545,8 @@ impl Indexer {
     ) -> Result<IndexStats> {
         let started = Instant::now();
         let previous_graph_version = self.graph_version;
-        let commit_sha = crate::util::git_head_sha(&self.repo_root);
+        let scan_started_at = crate::freshness::now_secs();
+        let commit_sha = crate::freshness::current_head(&self.repo_root);
         let scanned = scan::scan_repo_with_options(&self.repo_root, self.scan_options)?;
         let existing = self.db.list_files(previous_graph_version)?;
         if scanned.is_empty() && !allow_empty {
@@ -878,10 +925,13 @@ impl Indexer {
             .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, config_fingerprint)?;
         self.db.set_meta_i64("last_indexed", now)?;
         self.db
+            .set_meta_i64(crate::freshness::INDEXED_SCAN_AT_KEY, scan_started_at)?;
+        self.db
             .set_meta_i64(EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION)?;
 
         // The version is fully populated: only now does it become current.
         self.db.promote_graph_version(self.graph_version)?;
+        self.record_indexed_state(self.commit_sha.clone())?;
 
         // Reclaim rows from graph versions this reindex just aged out. Safe to
         // run now: this reindex's own carry-forward already read everything it
@@ -972,7 +1022,19 @@ impl Indexer {
 
         // Issue #77: qualnames this sync is about to add, captured before
         // `update_file_symbols` consumes `diff` — see `sync_abs_paths`.
-        let added_qualnames: Vec<String> = diff.added.iter().map(|s| s.qualname.clone()).collect();
+        let mut added_qualnames: Vec<String> =
+            diff.added.iter().map(|s| s.qualname.clone()).collect();
+        // A `new T()` edge is bound to class `T` until `T` gains a constructor
+        // (`T.constructor`, C# `T..ctor`), which moves it: re-check the owner.
+        let owners: Vec<String> = added_qualnames
+            .iter()
+            .filter_map(|q| {
+                q.strip_suffix(".constructor")
+                    .or_else(|| q.strip_suffix("..ctor"))
+            })
+            .map(str::to_string)
+            .collect();
+        added_qualnames.extend(owners);
         // Issue #79: likewise captured before `diff` moves, for
         // `retry_unresolved_references`'s deletion-driven ambiguity retry.
         let any_deleted = !diff.deleted.is_empty();

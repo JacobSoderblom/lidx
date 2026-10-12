@@ -9,3 +9,9 @@ pnpm-lock.yaml
 worktrees/
 .agents/
 .claude/settings.local.json
+
+# lidx agent benchmark
+benchmarks/agent/.work/
+benchmarks/agent/tasks/private/
+benchmarks/agent/references/private/
+__pycache__/

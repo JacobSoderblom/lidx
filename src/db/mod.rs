@@ -317,6 +317,22 @@ impl Db {
         Ok(records)
     }
 
+    /// `(path, hash, size, modified)` of every live file, for the freshness
+    /// check's stat comparison.
+    pub fn list_file_stats(&self, graph_version: i64) -> Result<Vec<(String, String, i64, i64)>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT path, hash, size, modified
+             FROM files
+             WHERE (deleted_version IS NULL OR deleted_version > ?)
+               AND language != 'external'",
+        )?;
+        let rows = stmt.query_map(params![graph_version], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn get_file_by_path(&self, path: &str) -> Result<Option<FileRecord>> {
         self.read_conn()?
             .query_row(

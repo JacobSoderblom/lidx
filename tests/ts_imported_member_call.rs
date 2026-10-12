@@ -1,5 +1,6 @@
-//! Issue #113: `x.m()` where `x` is imported from a repo module must bind to
-//! `x` (object-literal members aren't indexed), never an `ext:` stub.
+//! Issue #113: `x.m()` where `x` is imported from a repo module binds to the
+//! member of `x` the repo declares, never an `ext:` stub. A member it does not
+//! declare stays unresolved: it never binds to `x` itself.
 
 mod common;
 
@@ -107,7 +108,7 @@ fn local_instance_call_is_not_import_bound() {
 }
 
 #[test]
-fn deep_member_chain_on_imported_object_binds_to_object() {
+fn deep_member_chain_on_imported_object_never_binds_to_the_object() {
     let t = single_call_target(&[
         (
             "lib/api.ts",
@@ -118,7 +119,7 @@ fn deep_member_chain_on_imported_object_binds_to_object() {
             "import { api } from './lib/api';\nexport function go() {\n  return api.users.list();\n}\n",
         ),
     ]);
-    assert_eq!(t, vec!["lib/api.api".to_string()]);
+    assert!(t.is_empty(), "{t:?}");
 }
 
 #[test]
@@ -130,7 +131,7 @@ fn deep_member_chain_on_imported_class_stays_unbound() {
             "import { Foo } from './c';\nexport function go() {\n  return Foo.a.b();\n}\n",
         ),
     ]);
-    assert_eq!(t, vec!["ext:Foo.a.b".to_string()]);
+    assert!(t.is_empty(), "{t:?}");
 }
 
 #[test]
