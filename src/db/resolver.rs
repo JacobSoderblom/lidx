@@ -716,10 +716,13 @@ const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname, s.kind, s.signature, f.lang
 /// `resolve_via_inheritance` doesn't break ties on it, so interleaving the
 /// two tables' own orders via `UNION ALL` (rather than a single merged
 /// order) doesn't change its result, only harmless to iterate.
-const HIERARCHY_SQL: &str = "SELECT target_symbol_id, target_qualname
+static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
+    let hierarchy = crate::edge_views::sql_list(crate::edge_views::TYPE_HIERARCHY);
+    format!(
+        "SELECT target_symbol_id, target_qualname
      FROM edges
      WHERE source_symbol_id = ?1
-       AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
+       AND kind IN ({hierarchy})
        AND graph_version = ?2
        AND target_qualname IS NOT NULL
 
@@ -728,10 +731,12 @@ const HIERARCHY_SQL: &str = "SELECT target_symbol_id, target_qualname
      SELECT NULL, reference_name
      FROM unresolved_references
      WHERE source_symbol_id = ?1
-       AND edge_kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
+       AND edge_kind IN ({hierarchy})
        AND graph_version = ?2
        AND edge_id IS NULL
-       AND reference_name IS NOT NULL";
+       AND reference_name IS NOT NULL"
+    )
+});
 
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
@@ -893,7 +898,7 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
         let mut seen: std::collections::HashSet<i64> = frontier.iter().copied().collect();
         for _ in 0..MAX_INHERITANCE_DEPTH {
             let mut level: Vec<(Option<i64>, String)> = Vec::new();
-            let mut hierarchy = conn.prepare_cached(HIERARCHY_SQL)?;
+            let mut hierarchy = conn.prepare_cached(&HIERARCHY_SQL)?;
             for &id in &frontier {
                 let rows = hierarchy.query_map(params![id, gv], |row| {
                     Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
@@ -1055,7 +1060,7 @@ impl<'c> Resolver<'c> {
             any_lang: conn.prepare(ANY_LANG_SQL)?,
             same_lang_scan: conn.prepare(&SAME_LANG_SQL.replace(NAME_PREFILTER, ""))?,
             any_lang_scan: conn.prepare(&ANY_LANG_SQL.replace(NAME_PREFILTER, ""))?,
-            hierarchy: conn.prepare(HIERARCHY_SQL)?,
+            hierarchy: conn.prepare(&HIERARCHY_SQL)?,
             import_suffix: conn.prepare(IMPORT_SUFFIX_SQL)?,
             repo_python_module: conn.prepare(REPO_PYTHON_MODULE_SQL)?,
             module_exact: conn.prepare(MODULE_EXACT_SQL)?,
@@ -1315,7 +1320,8 @@ impl<'c> Resolver<'c> {
             });
         }
 
-        let types_only = matches!(r.edge_kind, "IMPLEMENTS" | "EXTENDS" | "INHERITS");
+        let types_only =
+            crate::edge_views::contains(crate::edge_views::TYPE_HIERARCHY, r.edge_kind);
         // A base-list type name carries its scope-ordered guesses (C# enclosing
         // scopes, the global namespace, then usings): the first that names a
         // type wins, like the language's own lookup -- never an ambiguity.
@@ -3505,8 +3511,11 @@ impl Db {
             .get_meta_i64("unresolved_reference_inheritance_watermark")?
             .unwrap_or(0);
         let max_inheritance_edge_id: i64 = self.read_conn()?.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM edges
-             WHERE graph_version = ? AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')",
+            &format!(
+                "SELECT COALESCE(MAX(id), 0) FROM edges
+             WHERE graph_version = ? AND kind IN ({})",
+                crate::edge_views::sql_list(crate::edge_views::TYPE_HIERARCHY)
+            ),
             params![graph_version],
             |row| row.get(0),
         )?;

@@ -187,6 +187,16 @@ pub const ALL: &[&str] = &[
     crate::indexer::sql_extractor::REFERENCES_KIND,
 ];
 
+/// Import machinery: edges that declare an import rather than use the
+/// imported name.
+pub const IMPORT_MACHINERY: &[&str] = &[IMPORTS, IMPORTS_FILE];
+
+/// Edges that never indicate a name is used in a file (`unused_imports`).
+pub const NON_USAGE: &[&str] = &[IMPORTS, IMPORTS_FILE, CONTAINS];
+
+/// Structural edges: declaration nesting, not a dependency on the target.
+pub const STRUCTURAL: &[&str] = &[CONTAINS, MODULE_FILE];
+
 /// Whether `kind` belongs to `set`.
 pub fn contains(set: &[&str], kind: &str) -> bool {
     set.contains(&kind)
@@ -361,6 +371,12 @@ mod tests {
             members(CHANNEL_FAMILY),
             of(&["CHANNEL_PUBLISH", "CHANNEL_SUBSCRIBE"])
         );
+        assert_eq!(members(IMPORT_MACHINERY), of(&["IMPORTS", "IMPORTS_FILE"]));
+        assert_eq!(
+            members(NON_USAGE),
+            of(&["IMPORTS", "IMPORTS_FILE", "CONTAINS"])
+        );
+        assert_eq!(members(STRUCTURAL), of(&["CONTAINS", "MODULE_FILE"]));
         assert_eq!(members(RPC_BOUND), of(&["RPC_IMPL", "RPC_CALL"]));
     }
 

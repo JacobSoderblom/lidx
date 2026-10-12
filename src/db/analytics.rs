@@ -511,6 +511,8 @@ impl Db {
         let is_private = super::graph_query::has_modifier_sql("s", "private");
         let external_base = super::graph_query::external_base_member_sql("s", gv);
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
+        let reachability = crate::edge_views::sql_list(crate::edge_views::REACHABILITY);
+        let entrypoint = crate::edge_views::sql_list(crate::edge_views::ENTRYPOINT);
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id
@@ -552,7 +554,7 @@ impl Db {
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.target_symbol_id = s.id
-                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES')
+                         AND e.kind IN ({reachability})
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (
@@ -565,7 +567,7 @@ impl Db {
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.source_symbol_id = s.id
-                         AND e.kind IN ('HTTP_ROUTE', 'RPC_IMPL', 'CHANNEL_SUBSCRIBE')
+                         AND e.kind IN ({entrypoint})
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (
@@ -859,8 +861,9 @@ impl Db {
         let edges_sql = format!(
             "SELECT file_id, target_qualname, target_symbol_id FROM edges
              WHERE graph_version = ?
-               AND kind NOT IN ('IMPORTS', 'IMPORTS_FILE', 'CONTAINS')
-               AND file_id IN ({placeholders})"
+               AND kind NOT IN ({non_usage})
+               AND file_id IN ({placeholders})",
+            non_usage = crate::edge_views::sql_list(crate::edge_views::NON_USAGE)
         );
         let mut edges_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
         for id in file_ids {
@@ -887,9 +890,10 @@ impl Db {
         let ur_sql = format!(
             "SELECT file_id, reference_name FROM unresolved_references
              WHERE graph_version = ?
-               AND edge_kind NOT IN ('IMPORTS', 'IMPORTS_FILE')
+               AND edge_kind NOT IN ({import_machinery})
                AND reference_name IS NOT NULL
-               AND file_id IN ({placeholders})"
+               AND file_id IN ({placeholders})",
+            import_machinery = crate::edge_views::sql_list(crate::edge_views::IMPORT_MACHINERY)
         );
         let mut ur_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
         for id in file_ids {
