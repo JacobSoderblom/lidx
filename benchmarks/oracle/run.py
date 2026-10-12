@@ -273,6 +273,7 @@ def main():
         print("   indexed in %ss" % secs, flush=True)
         syms, edges = match.load_lidx(db, repo_dir, repo["lang"])
         src = match.Sources(repo_dir)
+        dpairs = match.go_dispatch_pairs(db, syms) if repo["lang"] == "go" else None
         for cell in cells:
             oracle, cached = get_oracle(cell, repo, repo_dir, cache, a.force)
             print("   %s: oracle %d edges%s" % (cell["id"], len(oracle["edges"]), " (cached)" if cached else ""), flush=True)
@@ -280,8 +281,8 @@ def main():
                    "cell": cell["id"], "repo": repo["name"], "lang": repo["lang"], "variant": cell["variant"],
                    "index_seconds": secs, "oracle_mode": oracle.get("mode"), "oracle_meta": oracle.get("_meta", {}),
                    "oracle_dropped": oracle.get("dropped", {})}
-            summ, fn, fp, gap, ungr = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS",))
-            summ_r, fn_r, fp_r, _, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES", "USES"))
+            summ, fn, fp, gap, ungr = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS",), dispatch_pairs=dpairs)
+            summ_r, fn_r, fp_r, _, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES", "USES"), dispatch_pairs=dpairs)
             res["calls"] = summ
             if cell["lang"] == "ts":
                 # the repowise-comparable TypeScript grading: no module-level callers, no abstract targets (see

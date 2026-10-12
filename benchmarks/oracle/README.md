@@ -107,6 +107,15 @@ calls of function values; TypeScript interface and type-literal members and abst
 initialiser is a static call); Rust methods declared on a trait (`Trait#method()`, not `impl#[T][Trait]method()`),
 which also carry the trait's in-repo implementations as acceptable targets. They stay in the comparable recall.
 
+**Go interface edges.** RTA keys a call through an interface at the concrete implementations; lidx binds it to the interface
+method (`Doer.Do`) and fans out to implementations through its dispatch machinery. The Go oracle therefore also records, per
+edge, the interface methods its dynamic call sites invoke (`callee_alts`, `file:line` of the method name). Grading a lidx edge
+to an interface method: it is a **true edge** when the caller has such a site invoking exactly that method, and a **wrong edge**
+otherwise (the call exists in no form the compiler knows). It **covers** an oracle dispatch edge to an implementation only when
+lidx's own graph links that implementation to the interface method (`match.go_dispatch_pairs`: lidx's `IMPLEMENTS` edges plus
+same-named methods), so an implementation lidx cannot reach stays a missed edge and the recall cannot be flattered by the
+mapping. Unit-tested in `test_match.py` (`GoInterfaceDispatch`).
+
 **lidx side** (`match.py`): CALLS edges whose source and target are in-repo symbols, deduplicated to (caller, callee)
 pairs, keyed the same way (name line recovered from source; `module` symbols are line 0 in every language). A lidx edge
 matches an oracle edge when both ends land on the same declaration; declarations are compared by (file, qualname) so a

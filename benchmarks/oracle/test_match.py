@@ -192,3 +192,43 @@ class RepowiseTypeScriptScope(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GoInterfaceDispatch(unittest.TestCase):
+    """A lidx edge to a Go interface method is graded against the interface methods the oracle's dynamic sites invoke."""
+
+    ORACLE = {
+        "files": ["a.go"],
+        "callers": [{"file": "a.go", "line": 1, "name": "use"}, {"file": "a.go", "line": 20, "name": "Do"}],
+        "edges": [{"caller": {"file": "a.go", "line": 1, "name": "use"}, "callee": {"file": "a.go", "line": 20, "name": "Do"},
+                   "sites": ["a.go:3"], "dispatch": True, "callee_alts": ["a.go:10"]}],
+    }
+    SYMS = {
+        1: sym(1, "a.go", 1, "use", qual="a.use"),
+        2: sym(2, "a.go", 10, "Do", "method", "a.Doer.Do"),
+        3: sym(3, "a.go", 20, "Do", "method", "a.Impl.Do"),
+        4: sym(4, "a.go", 30, "Do", "method", "a.Other.Do"),
+    }
+
+    def grade(self, edges, pairs):
+        return match.grade(self.ORACLE, self.SYMS, edges, "go", match.Sources("/nonexistent"), dispatch_pairs=pairs)[0]
+
+    def test_interface_edge_is_true_and_covers_a_known_implementation(self):
+        summ = self.grade([edge(1, 2, 3, "receiver_type")], {("a.go:10", "a.go:20")})
+        self.assertEqual((summ["tp"], summ["fp"]), (1, 0))
+        self.assertEqual(summ["dispatch_matched"], 1)
+
+    def test_an_implementation_lidx_does_not_link_stays_missed(self):
+        summ = self.grade([edge(1, 2, 3, "receiver_type")], set())
+        self.assertEqual((summ["tp"], summ["fp"]), (1, 0))
+        self.assertEqual(summ["dispatch_matched"], 0)
+
+    def test_interface_edge_without_an_oracle_site_is_a_wrong_edge(self):
+        summ = self.grade([edge(1, 4, 3, "receiver_type")], {("a.go:30", "a.go:20")})
+        self.assertEqual((summ["tp"], summ["fp"]), (0, 1))
+        self.assertEqual(summ["dispatch_matched"], 0)
+
+    def test_the_concrete_edge_still_matches_directly(self):
+        summ = self.grade([edge(1, 3, 3, "receiver_type")], set())
+        self.assertEqual((summ["tp"], summ["fp"]), (1, 0))
+        self.assertEqual(summ["dispatch_matched"], 1)

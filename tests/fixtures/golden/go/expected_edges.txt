@@ -40,7 +40,7 @@ caller/caller.CallReceiverTyped CALLS greeter/greeter.Greeter.Greet receiver_typ
 caller/caller.CallInherited CALLS animals/animals.Animal.Speak receiver_type
 
 # Interface call through Speaker. Cat.Say is a same-named decoy.
-caller/caller.CallInterface CALLS animals/animals.Speaker.Say  # xfail: interface methods are not extracted; bare_name guesses Cat.Say
+caller/caller.CallInterface CALLS animals/animals.Speaker.Say
 
 # Ambiguous name: Run exists in ambiguous_a and ambiguous_b; the call is
 # qualified with ambiguous_a.

@@ -100,6 +100,34 @@ def load_lidx(db_path, repo, lang):
     return syms, edges
 
 
+def go_dispatch_pairs(db_path, syms):
+    """(interface method key, implementing method key) pairs of lidx's own graph, for grading Go interface edges.
+
+    A call lidx points at an interface method stands for the concrete targets RTA lists only while lidx can reach them:
+    pairs come from lidx's IMPLEMENTS edges (the dispatch machinery's input) and same-named methods of the two types,
+    so an implementation lidx does not know of stays a missed edge."""
+    members = defaultdict(dict)  # container qualname -> {method name: key}
+    for s in syms.values():
+        if s.get("kind") == "method" and "key" in s and "." in s["qualname"]:
+            container, _, name = s["qualname"].rpartition(".")
+            members[container][name] = s["key"]
+    con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+    pairs = set()
+    for src, tgt in con.execute(
+        "select e.source_symbol_id, e.target_symbol_id from edges e join files f on f.id = e.file_id "
+        "where e.kind = 'IMPLEMENTS' and e.target_symbol_id is not null and f.deleted_version is null"
+    ):
+        c, i = syms.get(src), syms.get(tgt)
+        if not c or not i or "qualname" not in c or "qualname" not in i:
+            continue
+        for name, ikey in members.get(i["qualname"], {}).items():
+            ckey = members.get(c["qualname"], {}).get(name)
+            if ckey:
+                pairs.add((ikey, ckey))
+    con.close()
+    return pairs
+
+
 def is_test_file(lang, path):
     if lang == "go":
         return path.endswith("_test.go")
@@ -173,11 +201,16 @@ def okey_of(d):
     return "%s:%d" % (d["file"], d["line"])
 
 
-def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_callers=None):
+def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_callers=None, dispatch_pairs=None):
     """Compare lidx edges of the given kinds against the oracle. Returns (summary, fn_list, fp_list, extra).
 
     withheld_callers: caller keys the oracle declines to judge (see repowise_ts_scope); an unmatched lidx edge from one is
-    ungradable (`caller_withheld`), a matched one still counts."""
+    ungradable (`caller_withheld`), a matched one still counts.
+
+    dispatch_pairs (Go): {(interface method key, implementing method key)} of lidx's graph. An oracle dispatch edge lists
+    the interface methods its call sites invoke (`callee_alts`). A lidx edge to such an interface method, from a caller
+    with such a site, is a true edge (the call exists), and it covers the oracle edge to a concrete implementation only
+    when lidx's graph links that implementation to the interface method. Without the oracle site the edge is a wrong edge."""
     sym_keys = {s["key"] for s in syms.values() if "key" in s}
     # Declaration merging (an interface and a const of the same name, overloads) is one declaration: compare
     # declarations by (file, qualname) whenever lidx has a symbol at the position.
@@ -215,8 +248,10 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
     def okey(d):
         return "%s:%d" % (d["file"], d["line"])
 
+    dpairs = {(cn(a), cn(b)) for a, b in dispatch_pairs} if dispatch_pairs is not None else None
     oedges = []
     by_pair = defaultdict(list)
+    by_alt = defaultdict(list)  # (caller, interface method) -> oracle edges invoking it through an interface
     site_idx = defaultdict(list)  # site -> [(caller_key, callee_key)]
     for i, e in enumerate(oracle["edges"]):
         ck, tk = okey(e["caller"]), okey(e["callee"])
@@ -229,7 +264,9 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
                 if k in sym_keys:
                     cks, lifted = [k], True
                     break
-        tks = [tk] + list(e.get("callee_alts", []))
+        # Go: `callee_alts` are interface methods, graded through `dispatch_pairs` (below); elsewhere they are
+        # alternative keys of the same callee
+        tks = [tk] + ([] if dispatch_pairs is not None else list(e.get("callee_alts", [])))
         rec = {"i": i, "caller": e["caller"], "callee": e["callee"], "ck": cks[0], "tk": tk, "cks": cks, "tks": tks,
                "sites": e.get("sites", []), "matched": False, "lifted": lifted,
                "dispatch": bool(e.get("dispatch")), "closure": bool(e.get("closure"))}
@@ -237,6 +274,10 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
         for a in cks:
             for b in tks:
                 by_pair[(cn(a), cn(b))].append(rec)
+        if dispatch_pairs is not None:
+            for a in cks:
+                for b in e.get("callee_alts", []):
+                    by_alt[(cn(a), cn(b))].append(rec)
         for s in rec["sites"]:
             site_idx[s].append(rec)
     for r in oedges:
@@ -303,9 +344,14 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
         csym, tsym = p["caller"], p["callee"]
         res = pick_res(set(p["kinds"]))
         hits = by_pair.get((cn(ck), cn(tk)))
-        if hits:
-            for h in hits:
+        alt_hits = by_alt.get((cn(ck), cn(tk)))
+        if hits or alt_hits:
+            for h in hits or ():
                 h["matched"] = True
+            for h in alt_hits or ():
+                # the interface edge covers this implementation only if lidx's graph reaches it from the interface method
+                if (tk, cn(h["tk"])) in dpairs:
+                    h["matched"] = True
             tp += 1
             by_kind[res][0] += 1
             by_kind[res][1] += 1

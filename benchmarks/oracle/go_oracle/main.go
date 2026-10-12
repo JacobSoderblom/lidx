@@ -43,7 +43,12 @@ type Edge struct {
 	Dispatch bool `json:"dispatch,omitempty"`
 	// Closure marks an edge whose callee is a function literal, keyed at its enclosing declaration.
 	Closure bool `json:"closure,omitempty"`
-	static  int
+	// CalleeAlts are the interface method declarations ("file:line" of the method name) the
+	// edge's dynamic call sites invoke. The callee above is the concrete implementation RTA
+	// found; a graph that points a call at the interface method instead is describing the
+	// same call (see README, "Dispatch edges").
+	CalleeAlts []string `json:"callee_alts,omitempty"`
+	static     int
 }
 
 type Output struct {
@@ -286,6 +291,31 @@ func main() {
 				siteStr = fmt.Sprintf("%s:%d", rel, p.Line)
 			}
 		}
+		ifaceAlt := ""
+		if site != nil {
+			if c := site.Common(); c != nil && c.IsInvoke() && c.Method != nil {
+				m := c.Method
+				if o := m.Origin(); o != nil {
+					m = o
+				}
+				if pos := prog.Fset.Position(m.Pos()); pos.IsValid() {
+					if rel, ok := inRepo(pos.Filename); ok {
+						ifaceAlt = fmt.Sprintf("%s:%d", rel, pos.Line)
+					}
+				}
+			}
+		}
+		addAlt := func(e *Edge) {
+			if ifaceAlt == "" {
+				return
+			}
+			for _, a := range e.CalleeAlts {
+				if a == ifaceAlt {
+					return
+				}
+			}
+			e.CalleeAlts = append(e.CalleeAlts, ifaceAlt)
+		}
 		isStatic := true
 		if site != nil {
 			if c := site.Common(); c != nil && (c.IsInvoke() || c.StaticCallee() == nil) {
@@ -294,6 +324,7 @@ func main() {
 		}
 		if idx, ok := seen[k]; ok {
 			e := &out.Edges[idx]
+			addAlt(e)
 			if isStatic {
 				e.static++
 				e.Dispatch = false
@@ -308,6 +339,7 @@ func main() {
 		}
 		seen[k] = len(out.Edges)
 		e := Edge{Caller: cf, Callee: ct, Dispatch: !isStatic, Closure: closure}
+		addAlt(&e)
 		if isStatic {
 			e.static = 1
 		}
