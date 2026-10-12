@@ -25,6 +25,8 @@ enum GoType {
     Repo { dir: String, name: String },
     /// A named type of a package outside it (an import path).
     Foreign { path: String, name: String },
+    /// A slice, array or map of these.
+    Seq(Box<GoType>),
 }
 
 /// A symbol a Go lookup matched.
@@ -59,7 +61,7 @@ impl Resolver<'_> {
                 format!("{path}|{name}.{}", d.method),
                 format!("{path}.{name}.{}", d.method),
             )),
-            None => None,
+            Some(GoType::Seq(_)) | None => None,
         })
     }
 
@@ -69,6 +71,39 @@ impl Resolver<'_> {
         }
         match value {
             GoValue::Type { place, name } => Ok(Some(go_type_at(place, name))),
+            GoValue::Seq(inner) => Ok(self
+                .go_eval(inner, depth + 1)?
+                .map(|t| GoType::Seq(Box::new(t)))),
+            GoValue::Elem(of) => Ok(match self.go_eval(of, depth + 1)? {
+                Some(GoType::Seq(element)) => Some(*element),
+                _ => None,
+            }),
+            GoValue::Var { place, name } => {
+                let Some(dir) = repo_dir(place) else {
+                    return Ok(None);
+                };
+                let mut found = self.go_package_symbols(dir, name)?;
+                found.retain(|s| s.kind == "variable");
+                let [decl] = &found[..] else {
+                    return Ok(None);
+                };
+                let Some(signature) = decl.signature.as_deref() else {
+                    return Ok(None);
+                };
+                let imports = self.go_file_imports(decl.file_id)?;
+                match signature.strip_prefix("= ") {
+                    // `var x = NewT()`: the initializer's value, written by
+                    // the extractor with the file's own import paths.
+                    Some(json) => {
+                        let Ok(mut value) = serde_json::from_str::<GoValue>(json) else {
+                            return Ok(None);
+                        };
+                        rebind_places(&mut value, &imports);
+                        self.go_eval(&value, depth + 1)
+                    }
+                    None => Ok(canonical_type(signature, decl.dir(), &imports)),
+                }
+            }
             GoValue::Func { place, name, index } => {
                 let Some(dir) = repo_dir(place) else {
                     return Ok(None);
@@ -238,6 +273,7 @@ impl Resolver<'_> {
             .collect();
         if let Some(own) = embedded.iter().find(|t| match t {
             GoType::Repo { name: n, .. } | GoType::Foreign { name: n, .. } => n == name,
+            GoType::Seq(_) => false,
         }) {
             return Ok(Some(own.clone()));
         }
@@ -276,7 +312,7 @@ impl Resolver<'_> {
 
     /// Import alias -> package (`><dir>` or an import path) of a file, from
     /// the `IMPORTS` references its extractor wrote.
-    fn go_file_imports(&mut self, file_id: i64) -> Result<HashMap<String, String>> {
+    fn go_file_imports(&mut self, file_id: i64) -> Result<GoImports> {
         // An import binds no symbol, so it is an `unresolved_references` row
         // (or, if some symbol happens to carry its path, an edge).
         let mut stmt = self.conn.prepare_cached(
@@ -291,16 +327,48 @@ impl Resolver<'_> {
                 row.get::<_, Option<String>>(0)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut imports = HashMap::new();
+        let mut imports = GoImports::default();
         for detail in rows.into_iter().flatten() {
             let Ok(json) = serde_json::from_str::<serde_json::Value>(&detail) else {
                 continue;
             };
-            if let (Some(alias), Some(place)) = (json["alias"].as_str(), json["place"].as_str()) {
-                imports.insert(alias.to_string(), place.to_string());
+            let Some(place) = json["place"].as_str() else {
+                continue;
+            };
+            if let Some(alias) = json["alias"].as_str() {
+                imports
+                    .by_alias
+                    .insert(alias.to_string(), place.to_string());
+            }
+            if let Some(path) = json["import_path"].as_str() {
+                imports.by_path.insert(path.to_string(), place.to_string());
             }
         }
         Ok(imports)
+    }
+}
+
+/// The packages a file imports, by the name it uses and by import path.
+#[derive(Default)]
+struct GoImports {
+    by_alias: HashMap<String, String>,
+    by_path: HashMap<String, String>,
+}
+
+/// Replace the raw import paths in `value` (written without the repository's
+/// module map) by the packages the declaring file's imports stand for.
+fn rebind_places(value: &mut GoValue, imports: &GoImports) {
+    match value {
+        GoValue::Type { place, .. } | GoValue::Func { place, .. } | GoValue::Var { place, .. } => {
+            if !place.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE])
+                && let Some(bound) = imports.by_path.get(place.as_str())
+            {
+                *place = bound.clone();
+            }
+        }
+        GoValue::Method { recv, .. } => rebind_places(recv, imports),
+        GoValue::Field { owner, .. } => rebind_places(owner, imports),
+        GoValue::Seq(inner) | GoValue::Elem(inner) => rebind_places(inner, imports),
     }
 }
 
@@ -335,8 +403,33 @@ fn go_type_at(place: &str, name: &str) -> GoType {
 /// The type a declared type text names, read in a file of package `dir`
 /// with `imports`: `*Server`, `Set[T]`, `net.Conn`. `None` for a slice,
 /// map, channel, function, anonymous or predeclared type.
-fn canonical_type(text: &str, dir: &str, imports: &HashMap<String, String>) -> Option<GoType> {
+fn canonical_type(text: &str, dir: &str, imports: &GoImports) -> Option<GoType> {
     let text = text.trim().trim_start_matches('*').trim();
+    // A slice, array or map is a sequence of its element type.
+    let element = if let Some(rest) = text.strip_prefix("[]").or_else(|| text.strip_prefix("...")) {
+        Some(rest)
+    } else if let Some(rest) = text.strip_prefix('[') {
+        // `[N]T`: a length (digits or a name) then the element.
+        rest.split_once(']').map(|(_, element)| element)
+    } else if let Some(rest) = text.strip_prefix("map[") {
+        // `map[K]V`: skip the key, which may itself hold brackets.
+        let mut depth = 1;
+        rest.char_indices()
+            .find(|&(_, c)| {
+                match c {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            })
+            .map(|(i, _)| &rest[i + 1..])
+    } else {
+        None
+    };
+    if let Some(element) = element {
+        return canonical_type(element, dir, imports).map(|t| GoType::Seq(Box::new(t)));
+    }
     if text.is_empty()
         || text.starts_with(['[', '(', '<', '.', '?'])
         || ["map[", "chan ", "func(", "func ", "interface", "struct"]
@@ -352,7 +445,7 @@ fn canonical_type(text: &str, dir: &str, imports: &HashMap<String, String>) -> O
             if !is_identifier(qualifier) || !is_identifier(name) {
                 return None;
             }
-            Some(go_type_at(imports.get(qualifier)?, name))
+            Some(go_type_at(imports.by_alias.get(qualifier)?, name))
         }
         None => {
             const PREDECLARED: &[&str] = &[
@@ -492,10 +585,13 @@ mod tests {
 
     #[test]
     fn declared_types_are_read_in_the_declaring_files_terms() {
-        let imports = HashMap::from([
-            ("net".to_string(), "net".to_string()),
-            ("cfg".to_string(), ">config".to_string()),
-        ]);
+        let imports = GoImports {
+            by_alias: HashMap::from([
+                ("net".to_string(), "net".to_string()),
+                ("cfg".to_string(), ">config".to_string()),
+            ]),
+            by_path: HashMap::new(),
+        };
         assert_eq!(
             canonical_type("*Server", "srv", &imports),
             Some(GoType::Repo {
@@ -524,9 +620,24 @@ mod tests {
                 name: "Config".into()
             })
         );
-        for text in ["[]Server", "map[string]int", "error", "func(int)", "x.Y"] {
+        for text in ["[]int", "map[string]int", "error", "func(int)", "x.Y", "chan Server"] {
             assert_eq!(canonical_type(text, "srv", &imports), None, "{text}");
         }
+        let server = GoType::Repo {
+            dir: "srv".into(),
+            name: "Server".into(),
+        };
+        for text in ["[]*Server", "[4]Server", "map[string][]*Server", "...Server"] {
+            let seq = canonical_type(text, "srv", &imports);
+            assert!(
+                matches!(&seq, Some(GoType::Seq(_))),
+                "{text}: {seq:?}"
+            );
+        }
+        assert_eq!(
+            canonical_type("[]*Server", "srv", &imports),
+            Some(GoType::Seq(Box::new(server)))
+        );
     }
 
     #[test]

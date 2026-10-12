@@ -296,15 +296,30 @@ pub enum GoValue {
     },
     /// The field `name` of a struct `owner`, an embedded one included.
     Field { owner: Box<GoValue>, name: String },
+    /// The package-level variable `name` of package `place`.
+    Var { place: String, name: String },
+    /// A slice, array or map whose elements are of this type.
+    Seq(Box<GoValue>),
+    /// An element of this slice, array or map (`xs[i]`, a `range` value).
+    Elem(Box<GoValue>),
 }
 
 impl GoValue {
     /// How many calls and field reads this nests.
     pub fn depth(&self) -> usize {
         match self {
-            GoValue::Type { .. } | GoValue::Func { .. } => 1,
+            GoValue::Type { .. } | GoValue::Func { .. } | GoValue::Var { .. } => 1,
             GoValue::Method { recv, .. } => 1 + recv.depth(),
             GoValue::Field { owner, .. } => 1 + owner.depth(),
+            GoValue::Seq(inner) | GoValue::Elem(inner) => 1 + inner.depth(),
+        }
+    }
+
+    /// An element of `of`: its element type when that is declared here.
+    pub fn element(of: GoValue) -> GoValue {
+        match of {
+            GoValue::Seq(inner) => *inner,
+            other => GoValue::Elem(Box::new(other)),
         }
     }
 }

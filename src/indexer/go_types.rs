@@ -67,6 +67,27 @@ pub(super) struct LocalTypes {
 }
 
 impl LocalTypes {
+    /// The package scope: no bindings, so every unbound name is a package
+    /// variable (for the initializer of a package-level `var`).
+    pub(super) fn package_scope(dir: &str, imports: Rc<HashMap<String, String>>) -> Self {
+        LocalTypes {
+            dir: dir.to_string(),
+            imports,
+            ..Default::default()
+        }
+    }
+
+    /// The declared type text of a type expression, as stored for a
+    /// package variable (`None` for a type that cannot be named).
+    pub(super) fn type_text(&self, node: Node<'_>, source: &str) -> Option<String> {
+        self.type_from(node, source)?;
+        let text = node_text(node, source)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!text.contains(['{', '('])).then_some(text)
+    }
+
     /// The bindings of function-like `func` (a declaration or a literal).
     pub(super) fn collect(
         func: Node<'_>,
@@ -126,12 +147,14 @@ impl LocalTypes {
             }
             let mut cursor = list.walk();
             for param in list.named_children(&mut cursor) {
-                let ty = match param.kind() {
-                    "parameter_declaration" => param
-                        .child_by_field_name("type")
-                        .and_then(|t| self.type_from(t, source)),
-                    // `args ...T` is a slice.
-                    _ => None,
+                let ty = param
+                    .child_by_field_name("type")
+                    .and_then(|t| self.type_from(t, source));
+                // `args ...T` is a slice of T.
+                let ty = if param.kind() == "variadic_parameter_declaration" {
+                    ty.map(|t| GoValue::Seq(Box::new(t)))
+                } else {
+                    ty
                 };
                 let mut names = param.walk();
                 for name in param.children_by_field_name("name", &mut names) {
@@ -192,12 +215,20 @@ impl LocalTypes {
             }
             "range_clause" => {
                 if let Some(left) = node.child_by_field_name("left") {
-                    let mut names = HashSet::new();
-                    crate::indexer::tree_helpers::collect_identifier_names(
-                        left, source, &mut names,
-                    );
-                    for name in names {
-                        self.bind(&name, node, None);
+                    let mut cursor = left.walk();
+                    let names: Vec<Node<'_>> = left.named_children(&mut cursor).collect();
+                    // `for i, v := range xs`: the second variable is an
+                    // element (of a slice, array or map).
+                    let element = (names.len() == 2)
+                        .then(|| node.child_by_field_name("right"))
+                        .flatten()
+                        .and_then(|right| self.value_type(right, 0, source))
+                        .map(GoValue::element);
+                    for (i, name) in names.iter().enumerate() {
+                        if name.kind() == "identifier" {
+                            let ty = if i == 1 { element.clone() } else { None };
+                            self.bind(&node_text(*name, source), node, ty);
+                        }
                     }
                 }
             }
@@ -326,6 +357,14 @@ impl LocalTypes {
                 self.type_from(inner, source)
             }
             "unary_expression" => self.type_from(node.child_by_field_name("operand")?, source),
+            "slice_type" | "array_type" | "implicit_length_array_type" => {
+                let element = self.type_from(node.child_by_field_name("element")?, source)?;
+                Some(GoValue::Seq(Box::new(element)))
+            }
+            "map_type" => {
+                let element = self.type_from(node.child_by_field_name("value")?, source)?;
+                Some(GoValue::Seq(Box::new(element)))
+            }
             "generic_type" => self.type_from(node.child_by_field_name("type")?, source),
             "qualified_type" => {
                 let pkg = node_text(node.child_by_field_name("package")?, source);
@@ -361,9 +400,17 @@ impl LocalTypes {
                 if index != 0 {
                     return None;
                 }
-                self.lookup(&node_text(node, source), node.start_byte())?
-                    .ty
-                    .clone()
+                let name = node_text(node, source);
+                match self.lookup(&name, node.start_byte()) {
+                    Some(binding) => binding.ty.clone(),
+                    // Not bound by the function: a package-level variable
+                    // (of this package, declared in any of its files).
+                    None if self.imports.contains_key(&name) => None,
+                    None => Some(GoValue::Var {
+                        place: self.same_package(),
+                        name,
+                    }),
+                }
             }
             "parenthesized_expression" => {
                 let mut cursor = node.walk();
@@ -386,6 +433,16 @@ impl LocalTypes {
                 self.type_from(node.child_by_field_name("type")?, source)
             }
             "call_expression" => self.call_type(node, index, source),
+            "index_expression" if index == 0 => {
+                let of = self.value_type(node.child_by_field_name("operand")?, 0, source)?;
+                if of.depth() >= crate::indexer::extract::MAX_DEFERRED_DEPTH {
+                    return None;
+                }
+                Some(GoValue::element(of))
+            }
+            "slice_expression" if index == 0 => {
+                self.value_type(node.child_by_field_name("operand")?, 0, source)
+            }
             "selector_expression" if index == 0 => {
                 let operand = node.child_by_field_name("operand")?;
                 let name = node_text(node.child_by_field_name("field")?, source);
@@ -418,6 +475,13 @@ impl LocalTypes {
                         let mut cursor = arg.walk();
                         let first = arg.named_children(&mut cursor).next()?;
                         self.type_from(first, source)
+                    }
+                    // `append(xs, ..)` is the slice it grows.
+                    "append" if index == 0 => {
+                        let arg = call.child_by_field_name("arguments")?;
+                        let mut cursor = arg.walk();
+                        let first = arg.named_children(&mut cursor).next()?;
+                        self.value_type(first, 0, source)
                     }
                     n if is_builtin_name(n) => None,
                     _ => Some(GoValue::Func {

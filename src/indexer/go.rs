@@ -577,6 +577,7 @@ fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &
             None
         };
         if let Some(name) = name {
+            let signature = var_signature(child, &name, ctx, source);
             let qualname = format!("{}.{}", ctx.module, name);
             let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(child);
             output.symbols.push(SymbolInput {
@@ -589,7 +590,7 @@ fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &
                 end_col,
                 start_byte,
                 end_byte,
-                signature: None,
+                signature,
                 docstring: None,
                 identity: None,
             });
@@ -607,6 +608,30 @@ fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &
         // references in a package-level dispatch table.
         walk_children(child, ctx, source, output);
     }
+}
+
+/// What a package-level variable's type is, for a receiver typed through
+/// it (`var v *Viper` -> `*Viper`; `var v = New()` -> `= <GoValue>`).
+fn var_signature(spec: Node<'_>, name: &str, ctx: &Context, source: &str) -> Option<String> {
+    let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let scope = LocalTypes::package_scope(dir, ctx.imports.clone());
+    if let Some(ty) = spec.child_by_field_name("type") {
+        return scope.type_text(ty, source);
+    }
+    let mut cursor = spec.walk();
+    let names: Vec<Node<'_>> = spec.children_by_field_name("name", &mut cursor).collect();
+    let position = names.iter().position(|n| node_text(*n, source) == name)?;
+    let values = spec.child_by_field_name("value")?;
+    let mut cursor = values.walk();
+    let exprs: Vec<Node<'_>> = values.named_children(&mut cursor).collect();
+    let value = if exprs.len() == names.len() {
+        scope.value_type(exprs[position], 0, source)?
+    } else if exprs.len() == 1 {
+        scope.value_type(exprs[0], u8::try_from(position).ok()?, source)?
+    } else {
+        return None;
+    };
+    Some(format!("= {}", serde_json::to_string(&value).ok()?))
 }
 
 fn walk_children(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -1107,6 +1132,10 @@ fn bind_deferred_places(
             }
             GoValue::Method { recv, .. } => bind(recv, repo, repo_root, file_rel_path),
             GoValue::Field { owner, .. } => bind(owner, repo, repo_root, file_rel_path),
+            GoValue::Seq(inner) | GoValue::Elem(inner) => {
+                bind(inner, repo, repo_root, file_rel_path)
+            }
+            GoValue::Var { .. } => {}
         }
     }
     for edge in edges.iter_mut() {
@@ -1197,6 +1226,18 @@ fn bind_unknown_qualifiers(
             let raw = edge.target_qualname.clone();
             refuse_receiver(edge);
             edge.detail = raw;
+            // A package variable of this package (declared in any file of
+            // it): the resolver reads its type.
+            if let Some(method) = edge.target_qualname.clone() {
+                let dir = file_rel_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+                edge.receiver_type = ReceiverType::GoDeferred(GoDeferred {
+                    recv: GoValue::Var {
+                        place: format!("{GO_SAME_PACKAGE}{dir}"),
+                        name: qualifier.to_string(),
+                    },
+                    method,
+                });
+            }
         }
     }
 }
