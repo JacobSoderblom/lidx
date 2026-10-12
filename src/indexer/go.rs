@@ -1,7 +1,7 @@
 use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
@@ -12,7 +12,7 @@ use crate::indexer::tree_helpers::{
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
@@ -50,6 +50,14 @@ struct Context {
     grpc_clients: HashMap<String, GrpcClientInfo>,
     /// Local variable declarations with their containing-block byte ranges.
     local_var_types: Vec<ScopedVarType>,
+    /// Import alias (or default package name) -> import path, file-wide.
+    imports: Rc<HashMap<String, String>>,
+    /// Names the current function binds itself: receiver, parameters, `:=`,
+    /// `var`, `range` and type-switch variables (`collect_bound_names`).
+    bound_names: Rc<HashSet<String>>,
+    /// Receiver and parameters whose declared type is a plain local type
+    /// name, so `s.Handle` can name a method of that type.
+    param_types: Rc<HashMap<String, String>>,
 }
 
 #[derive(Clone)]
@@ -112,6 +120,9 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             grpc_servers,
             grpc_clients: HashMap::new(),
             local_var_types: Vec::new(),
+            imports: Rc::new(collect_import_aliases(root, source)),
+            bound_names: Rc::new(HashSet::new()),
+            param_types: Rc::new(HashMap::new()),
         };
         walk_node(root, &ctx, source, &mut output);
         Ok(output)
@@ -207,6 +218,11 @@ fn collect_grpc_servers_from_type_decl(
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if matches!(node.kind(), "identifier" | "selector_expression")
+        && let Some(edge) = value_reference_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     match node.kind() {
         "source_file" => {
             let mut cursor = node.walk();
@@ -234,6 +250,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         "call_expression" => {
             handle_call(node, ctx, source, output);
+            // Calls nested in a call are not recorded, but a function passed
+            // anywhere in it (`register(map[string]F{"a": h})`) still is.
+            walk_value_references(node, ctx, source, output);
         }
         _ => {
             let mut cursor = node.walk();
@@ -241,6 +260,19 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 walk_node(child, ctx, source, output);
             }
         }
+    }
+}
+
+/// Emit value references for every node under `node` (not `node` itself).
+fn walk_value_references(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if matches!(child.kind(), "identifier" | "selector_expression")
+            && let Some(edge) = value_reference_edge(child, ctx, source)
+        {
+            output.edges.push(edge);
+        }
+        walk_value_references(child, ctx, source, output);
     }
 }
 
@@ -280,6 +312,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
 
     let mut next_ctx = ctx.clone();
     next_ctx.current_scope = qualname;
+    enter_function_scope(node, source, &mut next_ctx);
     if let Some(body) = node.child_by_field_name("body") {
         // Collect gRPC clients from variable declarations in the function body
         let mut clients = ctx.grpc_clients.clone();
@@ -345,6 +378,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
 
     let mut next_ctx = ctx.clone();
     next_ctx.current_scope = qualname;
+    enter_function_scope(node, source, &mut next_ctx);
     if let Some(body) = node.child_by_field_name("body") {
         // Collect gRPC clients from variable declarations in the method body
         let mut clients = ctx.grpc_clients.clone();
@@ -464,6 +498,9 @@ fn handle_const_declaration(
 }
 
 fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    // A dispatch table (`var routes = map[string]F{"a": h}`) or a local `var`
+    // initializer holds functions as values.
+    walk_value_references(node, ctx, source, output);
     // Only extract top-level vars (current_scope == module)
     if ctx.current_scope != ctx.module {
         return;
@@ -632,6 +669,189 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
+}
+
+/// Import alias (or the path's last element) -> import path.
+fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, String> {
+    fn walk(node: Node<'_>, source: &str, out: &mut HashMap<String, String>) {
+        if node.kind() == "import_spec" {
+            if let Some(path) = node.child_by_field_name("path") {
+                let path = extract_string_literal(path, source);
+                let alias = node
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source))
+                    .or_else(|| default_package_name(&path));
+                if let Some(alias) = alias
+                    && !path.is_empty()
+                    && alias != "_"
+                    && alias != "."
+                {
+                    out.insert(alias, path);
+                }
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk(child, source, out);
+        }
+    }
+    let mut out = HashMap::new();
+    walk(root, source, &mut out);
+    out
+}
+
+/// The name an import binds without an alias: its last path element, or the
+/// one before a trailing major-version element (`example.com/m/v2` -> `m`).
+fn default_package_name(path: &str) -> Option<String> {
+    let mut parts = path.rsplit('/');
+    let last = parts.next()?;
+    let is_major =
+        last.len() > 1 && last.starts_with('v') && last[1..].chars().all(|c| c.is_ascii_digit());
+    let name = if is_major { parts.next()? } else { last };
+    (!name.is_empty()).then(|| name.replace('-', "_"))
+}
+
+/// Set the per-function binding state: names the function binds itself and
+/// the declared type of its receiver and parameters.
+fn enter_function_scope(node: Node<'_>, source: &str, ctx: &mut Context) {
+    let mut bound = HashSet::new();
+    collect_bound_names(node, source, &mut bound);
+    ctx.bound_names = Rc::new(bound);
+    let mut types = HashMap::new();
+    for field in ["receiver", "parameters"] {
+        let Some(list) = node.child_by_field_name(field) else {
+            continue;
+        };
+        let mut cursor = list.walk();
+        for param in list.named_children(&mut cursor) {
+            let Some(type_node) = param.child_by_field_name("type") else {
+                continue;
+            };
+            let ty = node_text(type_node, source);
+            let ty = ty.trim_start_matches('*').trim();
+            if ty.is_empty() || !ty.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            let mut names = param.walk();
+            for name in param.children_by_field_name("name", &mut names) {
+                types.insert(node_text(name, source), ty.to_string());
+            }
+        }
+    }
+    ctx.param_types = Rc::new(types);
+}
+
+/// Every name `node` (a function) binds: parameters (receiver included),
+/// `:=` and `var` names, `range` variables and type-switch bindings.
+fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    fn identifiers(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+        if node.kind() == "identifier" {
+            out.insert(node_text(node, source));
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            identifiers(child, source, out);
+        }
+    }
+    match node.kind() {
+        "parameter_declaration" | "variadic_parameter_declaration" | "var_spec" => {
+            let mut cursor = node.walk();
+            for name in node.children_by_field_name("name", &mut cursor) {
+                identifiers(name, source, out);
+            }
+        }
+        "short_var_declaration" | "range_clause" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                identifiers(left, source, out);
+            }
+        }
+        "type_switch_statement" => {
+            if let Some(alias) = node.child_by_field_name("alias") {
+                identifiers(alias, source, out);
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_bound_names(child, source, out);
+    }
+}
+
+/// `REFERENCES` edge for a function used as a value, not called: an
+/// identifier or selector passed as a call argument or given as the value of
+/// a composite-literal element (map value, struct field value, slice item).
+/// A bare name is a function of the package; `pkg.Name` is a function of an
+/// imported package; `recv.Name` is a method value on a receiver, parameter
+/// or local whose type is a plain local type. Locals are never references.
+fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let parent = node.parent()?;
+    let in_value_position = match parent.kind() {
+        "argument_list" => parent
+            .parent()
+            .is_some_and(|c| c.kind() == "call_expression"),
+        // A keyed element's key names a field (struct) or index, not a value.
+        "literal_element" => parent.parent().is_some_and(|p| {
+            p.kind() == "literal_value"
+                || (p.kind() == "keyed_element" && p.child_by_field_name("value") == Some(parent))
+        }),
+        _ => false,
+    };
+    if !in_value_position || ctx.current_scope.is_empty() {
+        return None;
+    }
+    let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let (target, candidate, bare) = if node.kind() == "identifier" {
+        let name = node_text(node, source);
+        if ctx.bound_names.contains(&name) || name == "_" {
+            return None;
+        }
+        (
+            format!("{}.{name}", ctx.module),
+            format!("={dir}|{name}"),
+            true,
+        )
+    } else {
+        let operand = node.child_by_field_name("operand")?;
+        let field = node_text(node.child_by_field_name("field")?, source);
+        if operand.kind() != "identifier" {
+            return None;
+        }
+        let base = node_text(operand, source);
+        if let Some(path) = ctx
+            .imports
+            .get(&base)
+            .filter(|_| !ctx.bound_names.contains(&base))
+        {
+            (format!("{base}.{field}"), format!("{path}|{field}"), false)
+        } else {
+            let ty =
+                ctx.param_types.get(&base).map(String::as_str).or_else(|| {
+                    resolve_var_type_at(&ctx.local_var_types, &base, node.start_byte())
+                })?;
+            (
+                format!("{}.{ty}.{field}", ctx.module),
+                format!("={dir}|{ty}.{field}"),
+                false,
+            )
+        }
+    };
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: "REFERENCES".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(target),
+        import_candidates: vec![candidate],
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        bare_call: bare,
+        call_shape: Some(CallShape::value_reference()),
+        ..Default::default()
+    })
 }
 
 /// Detect os.Getenv("KEY"), os.LookupEnv("KEY"), viper.GetString("key"), viper.Get("key") → CONFIG_READ
@@ -921,6 +1141,11 @@ fn extract_composite_literal_type(node: Node<'_>, source: &str) -> Option<String
         let mut cursor = node.walk();
         let first = node.named_children(&mut cursor).next()?;
         return extract_composite_literal_type(first, source);
+    }
+    // `&Config{}` is typed like `Config{}` (the pointer is unwrapped, as for
+    // a declared `*Config`).
+    if node.kind() == "unary_expression" {
+        return extract_composite_literal_type(node.child_by_field_name("operand")?, source);
     }
     if node.kind() != "composite_literal" {
         return None;

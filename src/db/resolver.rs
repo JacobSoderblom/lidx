@@ -2369,6 +2369,9 @@ impl<'c> Resolver<'c> {
         source_lang: &str,
         caller_file: &str,
     ) -> Result<Option<i64>> {
+        if source_lang == "go" {
+            return self.resolve_go_package_member(candidates);
+        }
         let rounds: &[bool] = if profile_for(source_lang).import_suffix_matching {
             &[true, false]
         } else {
@@ -2403,6 +2406,59 @@ impl<'c> Resolver<'c> {
             }
         }
         Ok(None)
+    }
+
+    /// Go package-scope lookup. A candidate is `<where>|<member>` (see the Go
+    /// extractor's value references): `=<dir>` names a repo directory --
+    /// every file of a Go package shares one -- and anything else is an
+    /// import path whose trailing directories name the package's repo
+    /// directory. `<member>` is `Name` or `Type.Method`. Go qualnames are
+    /// `<dir>/<file-stem>.<member>`, so a package spans several modules; the
+    /// candidate binds only when exactly one symbol across them matches.
+    fn resolve_go_package_member(&mut self, candidates: &[String]) -> Result<Option<i64>> {
+        let gv = self.graph_version;
+        let mut found: Option<i64> = None;
+        for candidate in candidates {
+            let Some((place, member)) = candidate.split_once('|') else {
+                continue;
+            };
+            let name = member.rsplit('.').next().unwrap_or(member);
+            let rows: Vec<(i64, String)> = self
+                .conn
+                .prepare_cached(
+                    "SELECT s.id, s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+                     WHERE s.name = ?1 AND s.graph_version = ?2 AND f.language = 'go'
+                       AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
+                )?
+                .query_map(params![name, gv], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let dot_member = format!(".{member}");
+            let mut hits = rows.iter().filter_map(|(id, qualname)| {
+                let module = qualname.strip_suffix(&dot_member)?;
+                let dir = module.rsplit_once('/').map_or("", |(dir, _)| dir);
+                let in_package = match place.strip_prefix('=') {
+                    Some(want) => dir == want,
+                    None => {
+                        !dir.is_empty() && (place == dir || place.ends_with(&format!("/{dir}")))
+                    }
+                };
+                in_package.then_some(*id)
+            });
+            let Some(id) = hits.next() else { continue };
+            if hits.next().is_some() {
+                self.saw_ambiguous = true;
+                return Ok(None);
+            }
+            match found {
+                None => found = Some(id),
+                Some(existing) if existing == id => {}
+                Some(_) => {
+                    self.saw_ambiguous = true;
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Resolve an `IMPORTS_FILE` edge's ordered candidate list (see
@@ -2773,7 +2829,10 @@ pub(crate) const EXTERNAL_FILE_PATH: &str = "<external>";
 /// them to `ext:` stubs is pure noise. They stay unresolved (and retryable)
 /// until an in-repo target appears.
 fn never_external(r: &Reference<'_>) -> bool {
-    r.edge_kind == "USES" && r.source_lang == "csharp"
+    (r.edge_kind == "USES" && r.source_lang == "csharp")
+        // A function passed as a value is mostly a local or a framework
+        // name: never worth a stub symbol.
+        || r.call_shape.is_some_and(|shape| shape.is_ref)
 }
 
 /// The `ext:` marker every external stub qualname starts with.
