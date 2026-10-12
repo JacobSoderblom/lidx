@@ -57,6 +57,13 @@ pub fn compute_symbol_diff(
     // overwrite each other (issue #212): tell them apart first.
     let collisions = disambiguate_collisions(&mut new_symbols);
 
+    // Old stable ids in database-row order, so `deleted` is reported in a
+    // fixed order rather than a hash order.
+    let old_ids: Vec<String> = old_symbols
+        .iter()
+        .filter_map(|s| s.stable_id.clone())
+        .collect();
+
     // Build map of old symbols keyed by stable_id
     let old_map: HashMap<String, Symbol> = old_symbols
         .into_iter()
@@ -66,14 +73,17 @@ pub fn compute_symbol_diff(
         })
         .collect();
 
-    // Build map of new symbols keyed by computed stable_id
-    let new_map: HashMap<String, SymbolInput> = new_symbols
+    // New symbols keyed by computed stable_id, kept in extraction order: the
+    // added/modified/unchanged lists below feed symbol insertion, and the
+    // insertion order assigns ids that "lowest id wins" tie-breaks in edge
+    // resolution read back (issue #420). Iterating a HashMap here made those
+    // ids differ between two fresh indexes of the same tree.
+    let new_list: Vec<(String, SymbolInput)> = new_symbols
         .into_iter()
-        .map(|s| {
-            let stable_id = compute_stable_symbol_id(&s);
-            (stable_id, s)
-        })
+        .map(|s| (compute_stable_symbol_id(&s), s))
         .collect();
+    let new_ids: std::collections::HashSet<&str> =
+        new_list.iter().map(|(id, _)| id.as_str()).collect();
 
     let mut diff = SymbolDiff {
         collisions,
@@ -81,7 +91,7 @@ pub fn compute_symbol_diff(
     };
 
     // Find added, modified, and unchanged symbols
-    for (stable_id, new_sym) in &new_map {
+    for (stable_id, new_sym) in &new_list {
         match old_map.get(stable_id) {
             None => {
                 // Symbol is new
@@ -99,9 +109,9 @@ pub fn compute_symbol_diff(
     }
 
     // Find deleted symbols
-    for stable_id in old_map.keys() {
-        if !new_map.contains_key(stable_id) {
-            diff.deleted.push(stable_id.clone());
+    for stable_id in old_ids {
+        if !new_ids.contains(stable_id.as_str()) {
+            diff.deleted.push(stable_id);
         }
     }
 
