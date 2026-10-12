@@ -66,7 +66,7 @@ use crate::indexer::extract::{
 use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, named_params, params};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 /// An edge's target as the extractor saw it: what the resolver binds.
@@ -476,6 +476,12 @@ pub(crate) struct LanguageProfile {
     /// `DeferredMarker` this language's extractor wrote) from the declarations it
     /// names. `None` for a language without one.
     pub deferred_receiver: Option<ResolveDeferred>,
+    /// What two symbols of one kind sharing a qualname in one file are.
+    pub same_file_twins: SameFileTwins,
+    /// The package a file belongs to (Cargo crate directory), for a language
+    /// whose qualnames restart at each package root (`crate::`): among
+    /// same-qualname candidates, those in the caller's package win.
+    pub package_dir: Option<fn(path: &str) -> &str>,
     /// Whether a receiver-less `Type.name` target may bind through the
     /// two-segment tier (`resolve_by_name`). Off for Go, where a dotted
     /// call target is a package or local receiver the extractor already
@@ -487,6 +493,36 @@ pub(crate) struct LanguageProfile {
     /// constant is no declaration (`HelpPrinter(..)` runs whatever it holds).
     /// Such a call stays unresolved. Empty for most languages.
     pub call_refused_kinds: &'static [&'static str],
+}
+
+/// See `LanguageProfile::same_file_twins`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SameFileTwins {
+    /// Overloads of one method: told apart by the call's arity, else the
+    /// lowest id stands for the set.
+    Overloads,
+    /// The language has no overloading, so a twin is a conditional-compilation
+    /// variant of one declaration -- but only when its stored signature
+    /// says so (`classify` reads what the extractor recorded there). Any
+    /// other twin (`From` impls for two types, `Debug` and `Display` `fmt`)
+    /// is a distinct symbol: never merged, and ambiguous when named. Scope
+    /// rules pick among the rest: see [`TwinTraits`].
+    CfgVariants {
+        classify: for<'a> fn(signature: &'a str) -> TwinTraits<'a>,
+    },
+}
+
+/// What a language's extractor recorded about a same-file twin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TwinTraits<'a> {
+    /// Conditionally compiled (`#[cfg(..)]`): twins that all are merge into one.
+    pub cfg_gated: bool,
+    /// Declared inside the body of the fn with this qualname, so visible only
+    /// there: it shadows its twins for a caller that is that fn and yields to
+    /// them for any other caller.
+    pub nested_in: Option<&'a str>,
+    /// A trait-impl method: an inherent twin takes precedence over it.
+    pub trait_impl: bool,
 }
 
 /// A symbol a deferred receiver's declaration query matched.
@@ -566,6 +602,8 @@ impl LanguageProfile {
         deferred_rpc: None,
         untyped_receiver_is_external: true,
         deferred_receiver: None,
+        same_file_twins: SameFileTwins::Overloads,
+        package_dir: None,
         two_segment: true,
         call_refused_kinds: &[],
     };
@@ -844,7 +882,9 @@ static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
      WHERE source_symbol_id = ?1
        AND edge_kind IN ({hierarchy})
        AND graph_version = ?2
-       AND edge_id IS NULL
+       -- unary plus: keep the planner off the unique `edge_id` index, which
+       -- would walk every pending row instead of this source's
+       AND +edge_id IS NULL
        AND reference_name IS NOT NULL"
     )
 });
@@ -852,7 +892,7 @@ static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
 /// that judgment needs to see every candidate, not just the first two.
-const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
+const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature, f.language FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
 /// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
@@ -944,9 +984,15 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 String::new(),
             ),
             DeclarationQuery::Method(qualified) => (
-                "s.kind = 'method' AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
+                // `s.name` first: it is indexed, the suffix test is a scan.
+                "s.kind = 'method' AND s.name = ?4
+                 AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
                 qualified.to_string(),
-                String::new(),
+                qualified
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(qualified)
+                    .to_string(),
                 String::new(),
             ),
             DeclarationQuery::Type(name) => (
@@ -1146,6 +1192,9 @@ pub(crate) struct Resolver<'c> {
     /// several same-qualname candidates would otherwise collapse or
     /// refuse: see `arity_admits`.
     arity: Option<Arity>,
+    /// Qualname of the symbol making the reference being resolved: which
+    /// fn-local twins it can see.
+    caller_scope: Option<String>,
     /// Simple name of the current call's known receiver type, if any --
     /// narrows same-arity extension-method overloads.
     call_receiver: Option<String>,
@@ -1182,6 +1231,7 @@ impl<'c> Resolver<'c> {
             saw_repo_ambiguous: false,
             saw_private: false,
             arity: None,
+            caller_scope: None,
             call_receiver: None,
             merged_half: MergedHalf::Value,
             call_scope: TypeScope::default(),
@@ -1198,6 +1248,7 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        self.caller_scope = r.source_qualname.map(str::to_string);
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             return self.refuse_uncallable_kind(r, resolution);
@@ -1448,8 +1499,13 @@ impl<'c> Resolver<'c> {
             }
             let gv = self.graph_version;
             let ctor_qualname = format!("{qualname}.constructor");
-            let candidates =
-                query_exact_candidates(&mut self.exact, &ctor_qualname, gv, caller_file)?;
+            let candidates = query_exact_candidates(
+                &mut self.exact,
+                &ctor_qualname,
+                gv,
+                caller_file,
+                self.caller_scope.as_deref(),
+            )?;
             let methods: Vec<ExactCandidate> = candidates
                 .into_iter()
                 .filter(|c| c.kind == "method")
@@ -1471,7 +1527,13 @@ impl<'c> Resolver<'c> {
             args: shape.arg_count as usize,
             value_receiver: false,
         });
-        let candidates = query_exact_candidates(&mut self.exact, &ctor_qualname, gv, caller_file)?;
+        let candidates = query_exact_candidates(
+            &mut self.exact,
+            &ctor_qualname,
+            gv,
+            caller_file,
+            self.caller_scope.as_deref(),
+        )?;
         let admitted = candidates
             .iter()
             .filter(|c| c.kind == "method" && arity_admits(arity, &c.kind, c.signature.as_deref()));
@@ -1771,7 +1833,13 @@ impl<'c> Resolver<'c> {
             return Ok(Some(id));
         }
         let gv = self.graph_version;
-        let mut candidates = query_exact_candidates(&mut self.exact, qualname, gv, caller_file)?;
+        let mut candidates = query_exact_candidates(
+            &mut self.exact,
+            qualname,
+            gv,
+            caller_file,
+            self.caller_scope.as_deref(),
+        )?;
         if types_only {
             candidates.retain(|c| !matches!(c.kind.as_str(), "module" | "namespace"));
         }
@@ -1988,15 +2056,21 @@ impl<'c> Resolver<'c> {
         } else {
             self.same_lang_scan.query(&named[1..])?
         };
-        let mut kind_eligible = 0usize;
-        let mut visible: Vec<i64> = Vec::new();
-        let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 2, |row| {
+        struct Row {
+            id: i64,
+            visibility: Option<String>,
+            qualname: String,
+            file_path: String,
+            kind: String,
+            signature: Option<String>,
+            language: String,
+        }
+        let mut found: Vec<Row> = Vec::new();
+        Self::check_case_sensitive_matches(&mut rows, name, 2, |row| {
             let id: i64 = row.get(0)?;
-            let visibility: Option<String> = row.get(1)?;
-            let qualname: String = row.get(2)?;
-            let file_path: String = row.get(3)?;
-            let kind: String = row.get(4)?;
             let signature: Option<String> = row.get(5)?;
+            let kind: String = row.get(4)?;
+            let file_path: String = row.get(3)?;
             // Issue #123: an overload of the wrong arity was never a candidate.
             if !arity_admits(arity, &kind, signature.as_deref()) {
                 return Ok(false);
@@ -2009,23 +2083,46 @@ impl<'c> Resolver<'c> {
             if is_fixture_path(&file_path) && !is_fixture_path(caller.file_path) {
                 return Ok(false);
             }
-            kind_eligible += 1;
-            let ok = !guard.enforce_visibility
-                || file_path == caller.file_path
-                || visibility_rule.is_visible(
-                    visibility.as_deref(),
-                    &qualname,
-                    &file_path,
-                    caller.file_path,
-                    caller.qualname,
-                );
-            if ok {
-                visible.push(id);
-                Ok(true) // count as a "real" match
-            } else {
-                Ok(false) // case-sensitive match but not visible
-            }
+            found.push(Row {
+                id,
+                visibility: row.get(1)?,
+                qualname: row.get(2)?,
+                file_path,
+                kind,
+                signature,
+                language: source_lang.to_string(),
+            });
+            Ok(false)
         })?;
+        let found = collapse_cfg_twins(
+            found,
+            |r: &Row| TwinView {
+                id: r.id,
+                path: &r.file_path,
+                qualname: &r.qualname,
+                kind: &r.kind,
+                signature: r.signature.as_deref(),
+                language: &r.language,
+            },
+            caller.qualname,
+        );
+        let kind_eligible = found.len();
+        let visible: Vec<i64> = found
+            .iter()
+            .filter(|r| {
+                !guard.enforce_visibility
+                    || r.file_path == caller.file_path
+                    || visibility_rule.is_visible(
+                        r.visibility.as_deref(),
+                        &r.qualname,
+                        &r.file_path,
+                        caller.file_path,
+                        caller.qualname,
+                    )
+            })
+            .map(|r| r.id)
+            .collect();
+        let is_ambiguous = visible.len() >= 2;
         if is_ambiguous {
             self.saw_ambiguous = true;
         }
@@ -2192,12 +2289,17 @@ impl<'c> Resolver<'c> {
         caller_file: &str,
     ) -> Result<PinnedMember> {
         let gv = self.graph_version;
-        let mut frontier: Vec<(i64, String)> =
-            query_exact_candidates(&mut self.exact, type_qualname, gv, caller_file)?
-                .into_iter()
-                .filter(|c| matches!(c.kind.as_str(), "class" | "interface" | "enum" | "type"))
-                .map(|c| (c.id, type_qualname.to_string()))
-                .collect();
+        let mut frontier: Vec<(i64, String)> = query_exact_candidates(
+            &mut self.exact,
+            type_qualname,
+            gv,
+            caller_file,
+            self.caller_scope.as_deref(),
+        )?
+        .into_iter()
+        .filter(|c| matches!(c.kind.as_str(), "class" | "interface" | "enum" | "type"))
+        .map(|c| (c.id, type_qualname.to_string()))
+        .collect();
         if frontier.is_empty() {
             return Ok(PinnedMember::NoType);
         }
@@ -2208,7 +2310,13 @@ impl<'c> Resolver<'c> {
             qualnames.dedup();
             for qualname in qualnames {
                 let member = format!("{qualname}.{method}");
-                let hits = query_exact_candidates(&mut self.exact, &member, gv, caller_file)?;
+                let hits = query_exact_candidates(
+                    &mut self.exact,
+                    &member,
+                    gv,
+                    caller_file,
+                    self.caller_scope.as_deref(),
+                )?;
                 if hits.is_empty() {
                     continue;
                 }
@@ -2289,7 +2397,13 @@ impl<'c> Resolver<'c> {
             } else {
                 format!("{ns}.{ty}.{member}")
             };
-            let hits = query_exact_candidates(&mut this.exact, &full, gv, caller_file)?;
+            let hits = query_exact_candidates(
+                &mut this.exact,
+                &full,
+                gv,
+                caller_file,
+                this.caller_scope.as_deref(),
+            )?;
             Ok(collapse_exact_candidates(&hits))
         };
         for ns in scope.enclosing.iter().map(String::as_str).chain([""]) {
@@ -2323,7 +2437,13 @@ impl<'c> Resolver<'c> {
     ) -> Result<Option<i64>> {
         let full = format!("{type_path}.{member}");
         let gv = self.graph_version;
-        let exact = query_exact_candidates(&mut self.exact, &full, gv, caller_file)?;
+        let exact = query_exact_candidates(
+            &mut self.exact,
+            &full,
+            gv,
+            caller_file,
+            self.caller_scope.as_deref(),
+        )?;
         if let Some(id) = collapse_exact_candidates(&exact) {
             return Ok(Some(id));
         }
@@ -2401,11 +2521,17 @@ impl<'c> Resolver<'c> {
         // of the exactly-named type is a root. Otherwise the bare type name.
         let gv = self.graph_version;
         let parts: Vec<i64> = if full_type.contains('.') || full_type.contains("::") {
-            query_exact_candidates(&mut self.exact, full_type, gv, caller.file_path)?
-                .into_iter()
-                .filter(|c| matches!(c.kind.as_str(), "class" | "struct" | "record" | "interface"))
-                .map(|c| c.id)
-                .collect()
+            query_exact_candidates(
+                &mut self.exact,
+                full_type,
+                gv,
+                caller.file_path,
+                self.caller_scope.as_deref(),
+            )?
+            .into_iter()
+            .filter(|c| matches!(c.kind.as_str(), "class" | "struct" | "record" | "interface"))
+            .map(|c| c.id)
+            .collect()
         } else {
             Vec::new()
         };
@@ -3310,8 +3436,23 @@ fn same_kind_min(candidates: &[(i64, &str)]) -> Option<i64> {
 /// kind (overloads) — the same symbol a base, non-ambiguous full reindex
 /// already binds to. Any other shape (different files, or different kinds,
 /// e.g. `class g` + `def g`) is genuinely ambiguous: `None`, never a guess.
-/// Used by `Resolver::exact`'s SQL fallback.
+/// A language without overloading (`SameFileTwins::CfgVariants`) has no
+/// overload set to collapse: `query_exact_candidates` already merged its cfg
+/// variants and applied its scope rules (`collapse_cfg_twins`), so anything
+/// but a single candidate is ambiguous. Used by `Resolver::exact`'s SQL
+/// fallback.
 fn collapse_exact_candidates(candidates: &[ExactCandidate]) -> Option<i64> {
+    if let Some(first) = candidates.first()
+        && matches!(
+            profile_for(&first.language).same_file_twins,
+            SameFileTwins::CfgVariants { .. }
+        )
+    {
+        return match candidates {
+            [only] => Some(only.id),
+            _ => None,
+        };
+    }
     let first_file = candidates.first()?.file_id;
     if !candidates.iter().all(|c| c.file_id == first_file) {
         return canonical_multi_file(candidates.iter());
@@ -3416,6 +3557,97 @@ struct ExactCandidate {
     path: String,
     kind: String,
     signature: Option<String>,
+    language: String,
+}
+
+impl ExactCandidate {
+    fn twin_view(&self) -> TwinView<'_> {
+        TwinView {
+            id: self.id,
+            path: &self.path,
+            qualname: "",
+            kind: &self.kind,
+            signature: self.signature.as_deref(),
+            language: &self.language,
+        }
+    }
+}
+
+/// One declaration as `collapse_cfg_twins` sees it. Exact-tier candidates
+/// all share one qualname, so theirs is left empty.
+struct TwinView<'a> {
+    id: i64,
+    path: &'a str,
+    qualname: &'a str,
+    kind: &'a str,
+    signature: Option<&'a str>,
+    language: &'a str,
+}
+
+/// Resolves the same-file twins (one file, qualname and kind) of a language
+/// without overloading (`SameFileTwins::CfgVariants`), in order:
+/// 1. a nested twin declared in the caller's own body shadows all the others
+///    (several of them stay as they are); otherwise nested twins yield to a
+///    non-nested one;
+/// 2. an inherent twin takes precedence over a trait-impl one;
+/// 3. what is left merges into the lowest id when every one is cfg-gated.
+///
+/// Anything else stays distinct, so naming it is ambiguous. Items of a
+/// language that overloads are untouched. The one rule behind both the exact
+/// tier (`query_exact_candidates`) and the guarded name tier
+/// (`Resolver::same_lang_lookup`); `caller_scope` is the calling symbol's
+/// qualname.
+fn collapse_cfg_twins<T>(
+    items: Vec<T>,
+    view: impl for<'a> Fn(&'a T) -> TwinView<'a>,
+    caller_scope: Option<&str>,
+) -> Vec<T> {
+    if items.len() < 2 {
+        return items;
+    }
+    let mut dropped = HashSet::new();
+    {
+        let views: Vec<TwinView<'_>> = items.iter().map(&view).collect();
+        let mut groups: HashMap<(&str, &str, &str), Vec<usize>> = HashMap::new();
+        for (i, v) in views.iter().enumerate() {
+            groups
+                .entry((v.path, v.qualname, v.kind))
+                .or_default()
+                .push(i);
+        }
+        for group in groups.values().filter(|g| g.len() > 1) {
+            let SameFileTwins::CfgVariants { classify } =
+                profile_for(views[group[0]].language).same_file_twins
+            else {
+                continue;
+            };
+            let traits = |i: usize| views[i].signature.map(classify).unwrap_or_default();
+            let mut kept = group.clone();
+            let mine: Vec<usize> = kept
+                .iter()
+                .copied()
+                .filter(|&i| caller_scope.is_some() && traits(i).nested_in == caller_scope)
+                .collect();
+            if !mine.is_empty() {
+                kept = mine;
+            } else if kept.iter().any(|&i| traits(i).nested_in.is_none()) {
+                kept.retain(|&i| traits(i).nested_in.is_none());
+            }
+            if kept.iter().any(|&i| !traits(i).trait_impl) {
+                kept.retain(|&i| !traits(i).trait_impl);
+            }
+            if kept.len() > 1 && kept.iter().all(|&i| traits(i).cfg_gated) {
+                let lowest = kept.iter().copied().min_by_key(|&i| views[i].id);
+                kept.retain(|&i| Some(i) == lowest);
+            }
+            dropped.extend(group.iter().copied().filter(|i| !kept.contains(i)));
+        }
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, item)| (!dropped.contains(&i)).then_some(item))
+        .collect()
 }
 
 /// A call's argument count, for choosing among same-qualname overloads.
@@ -3553,6 +3785,7 @@ fn query_exact_candidates(
     qualname: &str,
     graph_version: i64,
     caller_file: &str,
+    caller_scope: Option<&str>,
 ) -> Result<Vec<ExactCandidate>> {
     let rows = stmt.query_map(params![qualname, graph_version], |row| {
         Ok((
@@ -3562,6 +3795,7 @@ fn query_exact_candidates(
                 path: row.get(3)?,
                 kind: row.get(2)?,
                 signature: row.get(4)?,
+                language: row.get(5)?,
             },
             row.get::<_, String>(3)?,
         ))
@@ -3575,7 +3809,32 @@ fn query_exact_candidates(
         }
         candidates.push(candidate);
     }
-    Ok(candidates)
+    let candidates = collapse_cfg_twins(candidates, ExactCandidate::twin_view, caller_scope);
+    Ok(prefer_caller_package(candidates, caller_file))
+}
+
+/// Among same-qualname candidates of a language whose qualnames restart at
+/// each package root, those in the caller's package; all of them when the
+/// caller's package holds none (or all).
+fn prefer_caller_package(
+    mut candidates: Vec<ExactCandidate>,
+    caller_file: &str,
+) -> Vec<ExactCandidate> {
+    let Some(first) = candidates.first().filter(|_| candidates.len() > 1) else {
+        return candidates;
+    };
+    let Some(package_of) = profile_for(&first.language).package_dir else {
+        return candidates;
+    };
+    let home = package_of(caller_file);
+    let local = candidates
+        .iter()
+        .filter(|c| package_of(&c.path) == home)
+        .count();
+    if 0 < local && local < candidates.len() {
+        candidates.retain(|c| package_of(&c.path) == home);
+    }
+    candidates
 }
 
 impl Db {
