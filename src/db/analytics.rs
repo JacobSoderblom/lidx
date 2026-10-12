@@ -552,7 +552,7 @@ impl Db {
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.target_symbol_id = s.id
-                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES')
+                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES', 'REFERENCES')
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (

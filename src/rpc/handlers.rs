@@ -279,9 +279,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 .dispatch_peers(symbol.id, ctx.graph_version)?
                 .interface_methods
                 .is_empty()
-            || edges
-                .iter()
-                .any(|e| e.kind == "CALLS" && e.target_symbol_id == Some(symbol.id)));
+            || edges.iter().any(|e| {
+                matches!(e.kind.as_str(), "CALLS" | "REFERENCES")
+                    && e.target_symbol_id == Some(symbol.id)
+            }));
     let has_callees = wants_callees
         && (crate::resolve::is_type_container_kind(&symbol.kind)
             || !outgoing_cross.is_empty()
@@ -491,7 +492,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         continue;
                     }
                 }
-                if edge.kind == "CALLS"
+                // A value reference (`.Select(Parse)`) is a caller for now; the
+                // edge-view split (#408) moves it under `relations`.
+                if matches!(edge.kind.as_str(), "CALLS" | "REFERENCES")
                     && !edge.is_synthetic()
                     && edge.target_symbol_id == Some(*target_id)
                     && meets_min_resolution(&edge.resolution_kind)
@@ -523,7 +526,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         caller_refs.push(ExplainRef {
                             symbol: caller_sym,
                             evidence,
-                            edge_kind: "CALLS".to_string(),
+                            edge_kind: edge.kind.clone(),
                             protocol_context: None,
                             resolution_kind: edge.resolution_kind.clone(),
                             via_interface: via_interface_ids.contains(target_id),
