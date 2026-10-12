@@ -449,13 +449,25 @@ pub struct CallShape {
     /// `is_new` (an object creation has no receiver concept), so the
     /// encoding has one prefix at most; `encode` gives `is_new` precedence.
     pub implicit_this: bool,
-    /// TS/JS: not a call at all but a function or const used as a value
-    /// (`cb ?? fallback`, `register(handler)`). Persisted as `"ref"`. The
-    /// resolver binds such a reference only to something callable.
+    /// Not a call at all but a function used as a value (`cb ?? fallback`,
+    /// `register(handler)`, `.Select(Parse)`) -- the shape of a `REFERENCES`
+    /// edge. Persisted as `"ref"`. The resolver binds such a reference only
+    /// to something callable (`Resolver::filter_value_reference`).
     pub is_ref: bool,
 }
 
 impl CallShape {
+    /// The shape of a value reference (a function used as a value, not
+    /// called): see `is_ref`.
+    pub fn value_reference() -> Self {
+        Self {
+            arg_count: 0,
+            is_new: false,
+            implicit_this: false,
+            is_ref: true,
+        }
+    }
+
     /// The `call_shape` column text: `"<n>"` or `"new:<n>"`.
     pub fn encode(self) -> String {
         if self.is_ref {

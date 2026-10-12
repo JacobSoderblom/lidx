@@ -167,3 +167,49 @@ pub fn call_targets(files: &[(&str, &str)], caller: &str) -> Vec<String> {
         .map(|r| r.unwrap())
         .collect()
 }
+
+/// Indexes `files` in a fresh repo and returns the sorted targets of the
+/// `kind` edges leaving the symbol `caller` (resolved qualname, else the raw
+/// target text).
+pub fn edge_targets(files: &[(&str, &str)], caller: &str, kind: &str) -> Vec<String> {
+    let (_tmp, root, db_path) = index_repo("lidx-edge-targets-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(t.qualname, e.target_qualname, '') FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = ? AND s.qualname = ?",
+        )
+        .unwrap();
+    let mut out: Vec<String> = stmt
+        .query_map(rusqlite::params![gv, kind, caller], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    out.sort();
+    out
+}
+
+/// `REFERENCES` targets of `caller` after indexing `files`.
+pub fn ref_targets(files: &[(&str, &str)], caller: &str) -> Vec<String> {
+    edge_targets(files, caller, "REFERENCES")
+}
+
+/// Number of `unresolved_references` rows of kind `REFERENCES` after
+/// indexing `files` (always 0: an unresolved value reference is dropped).
+pub fn unresolved_reference_rows(files: &[(&str, &str)]) -> i64 {
+    let (_tmp, root, db_path) = index_repo("lidx-unresolved-refs-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM unresolved_references WHERE edge_kind = 'REFERENCES'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}

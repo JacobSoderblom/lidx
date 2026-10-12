@@ -1698,7 +1698,10 @@ impl Db {
                     None
                 };
 
+                // A value reference that did not resolve is mostly a local or
+                // parameter: it leaves no row at all.
                 if let Some(reason) = resolution.unresolved_reason()
+                    && !resolver::is_value_reference(&edge.kind, edge.call_shape)
                     && let Some((reference_name, name_tail)) =
                         resolver::store_reference_name_and_tail(
                             edge.target_qualname.as_deref(),
@@ -1734,6 +1737,7 @@ impl Db {
                 }
             }
         }
+        resolver::drop_references_shadowed_by_calls(&tx, graph_version, Some(file_id))?;
         tx.commit()?;
         Ok(count)
     }

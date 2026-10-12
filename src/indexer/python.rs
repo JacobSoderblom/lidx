@@ -2,8 +2,8 @@ use crate::db::resolver::{DeclarationIndex, DeclarationQuery, ImportMissPolicy, 
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
-    ReceiverType, SymbolInput,
+    CallShape, DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile,
+    MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -410,6 +410,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     if node.kind() == "call" {
         handle_call(node, ctx, source, output);
     }
+    if matches!(node.kind(), "identifier" | "attribute")
+        && let Some(edge) = value_reference_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     if node.kind() == "subscript"
         && let Some(edge) = config_read_subscript_edge(node, ctx, source)
     {
@@ -773,6 +778,81 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
+}
+
+/// Whether `node` (an identifier or attribute chain) is read as a value: a
+/// positional or keyword call argument, a list / tuple / set element, a
+/// dict value, a returned value or an assignment's right-hand side. A call's
+/// callee, a class's base list and a decorator match none of these.
+fn in_value_position(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    let is_field = |field: &str| {
+        parent
+            .child_by_field_name(field)
+            .is_some_and(|c| c.id() == node.id())
+    };
+    match parent.kind() {
+        // `class A(Base)` and a decorator's bare call carry argument lists too.
+        "argument_list" => parent.parent().is_some_and(|call| call.kind() == "call"),
+        "keyword_argument" => is_field("value"),
+        "list" | "tuple" | "set" | "return_statement" | "expression_list" => {
+            parent.kind() != "expression_list"
+                || parent
+                    .parent()
+                    .is_some_and(|p| matches!(p.kind(), "return_statement" | "assignment"))
+        }
+        "pair" => is_field("value"),
+        "assignment" => is_field("right"),
+        _ => false,
+    }
+}
+
+/// `REFERENCES` edge for a function (or class) used as a value rather than
+/// called -- `register(handler)`, `{"k": self.handle}`, `return fn`,
+/// `cb = mod.fn` -- resolved like the call to the same text would be (see
+/// `db::resolver::Resolver::filter_value_reference` for what is kept). A
+/// name the enclosing function binds locally (a parameter, an assignment)
+/// is a variable, not a reference.
+fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    if !in_value_position(node) {
+        return None;
+    }
+    let raw = collapse_call_target_whitespace(&node_text(node, source));
+    if raw.is_empty() || !is_simple_call_target(&raw) {
+        return None;
+    }
+    let bare = node.kind() == "identifier";
+    if bare && ctx.local_types.contains_key(&raw) {
+        return None;
+    }
+    let receiver_type = infer_receiver_type(node, source, ctx);
+    if receiver_type == ReceiverType::Unresolved {
+        return None;
+    }
+    let import_candidates = if receiver_type == ReceiverType::NotTracked {
+        import_qualified_candidates(&raw, ctx)
+    } else {
+        Vec::new()
+    };
+    let target = resolve_call_target(&raw, ctx)?;
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: "REFERENCES".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(target),
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        receiver_type,
+        import_candidates,
+        bare_call: bare,
+        call_shape: Some(CallShape::value_reference()),
+        ..Default::default()
+    })
 }
 
 /// Infer the receiver type of a method call (`function_node` is the call's

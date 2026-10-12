@@ -128,6 +128,37 @@ fn is_locally_bound_bare_call(r: &Reference<'_>) -> bool {
         && r.receiver_type == Some("")
 }
 
+/// Whether an edge is a value reference (a function used as a value, not
+/// called): kind `REFERENCES` with the `ref` call shape. The SQL
+/// extractor's foreign-key `REFERENCES` edges have no shape.
+pub(crate) fn is_value_reference(edge_kind: &str, call_shape: Option<CallShape>) -> bool {
+    edge_kind == "REFERENCES" && call_shape.is_some_and(|shape| shape.is_ref)
+}
+
+/// Drops every value-reference edge whose source and target a `CALLS` edge
+/// also joins (the call is the stronger statement; a pair gets no duplicate).
+/// `file_id` limits the pass to one file's edges. Run after any step that can
+/// add a `CALLS` edge or resolve a reference.
+pub(crate) fn drop_references_shadowed_by_calls(
+    conn: &Connection,
+    graph_version: i64,
+    file_id: Option<i64>,
+) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM edges
+         WHERE graph_version = ?1 AND kind = 'REFERENCES' AND call_shape = 'ref'
+           AND target_symbol_id IS NOT NULL
+           AND (?2 IS NULL OR file_id = ?2)
+           AND EXISTS (
+             SELECT 1 FROM edges c
+             WHERE c.kind = 'CALLS' AND c.graph_version = ?1
+               AND c.source_symbol_id = edges.source_symbol_id
+               AND c.target_symbol_id = edges.target_symbol_id
+           )",
+        params![graph_version, file_id],
+    )?)
+}
+
 /// How a resolved target was found. `as_str` is the `edges.resolution_kind`
 /// column value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1078,6 +1109,63 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        if !is_value_reference(r.edge_kind, r.call_shape) {
+            return self.resolve_tiers_and_refine(r, symbol_map);
+        }
+        // A value reference (`map(handler)`) is looked up exactly like a bare
+        // or qualified call to the same text -- same tiers, same scoping --
+        // and then judged by `filter_value_reference`.
+        let as_call = Reference {
+            edge_kind: "CALLS",
+            ..*r
+        };
+        let resolution = self.resolve_tiers_and_refine(&as_call, symbol_map)?;
+        self.filter_value_reference(r, resolution)
+    }
+
+    /// Keep a value reference's resolution only when it is trustworthy and
+    /// names something callable: an exact / import / receiver-type /
+    /// inherited match (never the heuristic name tiers or an external stub)
+    /// whose target is a function or class -- a method only when the
+    /// reference is qualified, since a bare identifier cannot name one. A JS/TS
+    /// module-level `const`/`variable` also counts (an arrow function or data
+    /// the file reads), a JS/TS class never does (`toBeInstanceOf(Foo)`).
+    fn filter_value_reference(
+        &mut self,
+        r: &Reference<'_>,
+        resolution: Resolution,
+    ) -> Result<Resolution> {
+        let Resolution::Resolved { target_id, kind } = resolution else {
+            return Ok(resolution);
+        };
+        let refuse = Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        if matches!(
+            kind,
+            ResolutionKind::TwoSegment | ResolutionKind::BareName | ResolutionKind::External { .. }
+        ) {
+            return refuse;
+        }
+        let target_kind: Option<String> = self
+            .conn
+            .prepare_cached("SELECT kind FROM symbols WHERE id = ?")?
+            .query_row([target_id], |row| row.get(0))
+            .optional()?;
+        let js = resolution_language_family(r.source_lang) == "javascript";
+        let allowed = match target_kind.as_deref() {
+            Some("function") => true,
+            Some("class") => !js,
+            Some("method") => !r.bare_call,
+            Some("const" | "variable") => js,
+            _ => false,
+        };
+        if allowed { Ok(resolution) } else { refuse }
+    }
+
+    fn resolve_tiers_and_refine(
+        &mut self,
+        r: &Reference<'_>,
+        symbol_map: &HashMap<String, i64>,
+    ) -> Result<Resolution> {
         // A deferred argument (`new(..)` passed to a call) becomes the type of
         // the callee's parameter, then resolves as `new T(..)` would.
         if let Some(marker @ DeferredMarker::Argument(_)) = r.deferred {
@@ -1181,24 +1269,6 @@ impl<'c> Resolver<'c> {
                 })
                 .optional()?;
             if kind.as_deref() == Some("interface") {
-                return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
-            }
-        }
-        // A value reference (`cb ?? fallback`) names something callable or a
-        // value; `toBeInstanceOf(Foo)` passes a class around, it uses none.
-        if let (Some(shape), Resolution::Resolved { target_id, .. }) = (r.call_shape, resolution)
-            && shape.is_ref
-        {
-            let kind: Option<String> = self
-                .conn
-                .query_row("SELECT kind FROM symbols WHERE id = ?", [target_id], |r| {
-                    r.get(0)
-                })
-                .optional()?;
-            if !matches!(
-                kind.as_deref(),
-                Some("function" | "const" | "variable" | "method")
-            ) {
                 return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
             }
         }
@@ -3369,6 +3439,16 @@ impl Db {
                         reconciled += 1;
                     }
                     Resolution::Unresolved(reason) => {
+                        // A value reference that no longer resolves is
+                        // dropped, never stored (see `Db::insert_edges`).
+                        if is_value_reference(
+                            &row.ctx.edge_kind,
+                            row.ctx.call_shape.as_deref().and_then(CallShape::decode),
+                        ) {
+                            delete_edge.execute(params![edge_id])?;
+                            reconciled += 1;
+                            continue;
+                        }
                         let import_candidates = row
                             .ctx
                             .import_candidates
@@ -3425,6 +3505,9 @@ impl Db {
             }
         }
 
+        if reconciled > 0 {
+            drop_references_shadowed_by_calls(&tx, graph_version, None)?;
+        }
         tx.commit()?;
         Ok(reconciled)
     }
@@ -3721,6 +3804,9 @@ impl Db {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![max_inheritance_edge_id.to_string()],
         )?;
+        if total_resolved > 0 {
+            drop_references_shadowed_by_calls(&tx, graph_version, None)?;
+        }
         tx.commit()?;
         Ok(total_resolved)
     }
