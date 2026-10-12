@@ -3276,6 +3276,7 @@ mod tests {
                     signature: Some(sig.to_string()),
                     visibility: None,
                     file_id: 1,
+                    path: String::new(),
                 })
                 .collect())
         }
