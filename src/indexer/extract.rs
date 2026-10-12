@@ -114,6 +114,9 @@ pub enum ReceiverType {
     /// exactly that class and its ancestors, never another class of the
     /// same bare name. See [`PinnedType`].
     Pinned(PinnedType),
+    /// A Go receiver whose type is read from declarations in other files
+    /// (`s := NewServer(); s.Handle()`, `c.conn.Close()`).
+    GoDeferred(GoDeferred),
 }
 
 /// A receiver type pinned to one declaration. The persisted form of a
@@ -270,6 +273,50 @@ pub struct RustDeferred {
     pub fallback: Option<String>,
 }
 
+/// A Go value whose type the extractor could not name in one file. `place`
+/// is a package, written like the candidates of `EdgeInput::import_candidates`:
+/// `=<dir>` the referencing file's own package, `><dir>` an imported package
+/// of this repository, anything else an import path outside it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GoValue {
+    /// A value of the named type `name` of package `place`.
+    Type { place: String, name: String },
+    /// Result number `index` of the function `name` of package `place`; for
+    /// a type, `name(x)` is a conversion and the value is of that type.
+    Func {
+        place: String,
+        name: String,
+        index: u8,
+    },
+    /// Result number `index` of calling the method `name` on `recv`.
+    Method {
+        recv: Box<GoValue>,
+        name: String,
+        index: u8,
+    },
+    /// The field `name` of a struct `owner`, an embedded one included.
+    Field { owner: Box<GoValue>, name: String },
+}
+
+impl GoValue {
+    /// How many calls and field reads this nests.
+    pub fn depth(&self) -> usize {
+        match self {
+            GoValue::Type { .. } | GoValue::Func { .. } => 1,
+            GoValue::Method { recv, .. } => 1 + recv.depth(),
+            GoValue::Field { owner, .. } => 1 + owner.depth(),
+        }
+    }
+}
+
+/// "The method `method` called on a `recv`": a Go call through a receiver
+/// whose type the resolver reads from other files' declarations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoDeferred {
+    pub recv: GoValue,
+    pub method: String,
+}
+
 /// A deferred resolution the extractor could not finish in one file: the
 /// resolver completes it once every symbol exists and re-judges it whenever
 /// its callee changes. Stored in `edges` / `unresolved_references` as
@@ -283,12 +330,15 @@ pub enum DeferredMarker {
     Rust(RustDeferred),
     /// C#: a target-typed `new(..)` passed as a call argument.
     Argument(DeferredArgument),
+    /// Go: a receiver typed through declarations in other files.
+    Go(GoDeferred),
 }
 
 /// `deferred_kind` column values, one per [`DeferredMarker`] variant.
 pub const DEFERRED_KIND_RETURN: &str = "return";
 pub const DEFERRED_KIND_RUST: &str = "rust";
 pub const DEFERRED_KIND_ARGUMENT: &str = "argument";
+pub const DEFERRED_KIND_GO: &str = "go";
 
 impl DeferredMarker {
     /// `(deferred_kind, deferred)` column values.
@@ -299,6 +349,7 @@ impl DeferredMarker {
             Self::Return(m) => (DEFERRED_KIND_RETURN, json(serde_json::to_string(m))),
             Self::Rust(m) => (DEFERRED_KIND_RUST, json(serde_json::to_string(m))),
             Self::Argument(m) => (DEFERRED_KIND_ARGUMENT, json(serde_json::to_string(m))),
+            Self::Go(m) => (DEFERRED_KIND_GO, json(serde_json::to_string(m))),
         }
     }
 
@@ -309,6 +360,7 @@ impl DeferredMarker {
             DEFERRED_KIND_RETURN => serde_json::from_str(payload).ok().map(Self::Return),
             DEFERRED_KIND_RUST => serde_json::from_str(payload).ok().map(Self::Rust),
             DEFERRED_KIND_ARGUMENT => serde_json::from_str(payload).ok().map(Self::Argument),
+            DEFERRED_KIND_GO => serde_json::from_str(payload).ok().map(Self::Go),
             _ => None,
         }
     }
@@ -348,6 +400,7 @@ impl ReceiverType {
             ReceiverType::Deferred(m) => Some(DeferredMarker::Return(m.clone())),
             ReceiverType::RustDeferred(m) => Some(DeferredMarker::Rust(m.clone())),
             ReceiverType::DeferredArgument(m) => Some(DeferredMarker::Argument(m.clone())),
+            ReceiverType::GoDeferred(m) => Some(DeferredMarker::Go(m.clone())),
             _ => None,
         }
     }

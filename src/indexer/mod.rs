@@ -56,6 +56,7 @@ pub mod differ;
 pub mod extract;
 pub mod go;
 mod go_repo;
+mod go_types;
 pub mod http;
 pub mod javascript;
 mod js_stale;

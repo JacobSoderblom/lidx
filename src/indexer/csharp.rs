@@ -6081,7 +6081,7 @@ fn resolve_deferred(
         DeferredMarker::Return(call) => Ok(Some(Some(
             receiver_type(call, index, 0)?.unwrap_or_default(),
         ))),
-        DeferredMarker::Rust(_) => Ok(None),
+        DeferredMarker::Rust(_) | DeferredMarker::Go(_) => Ok(None),
     }
 }
 

@@ -1160,6 +1160,9 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
     }
 }
 
+#[path = "resolver_go.rs"]
+mod resolver_go;
+
 /// Resolves references against one graph version. Prepared statements
 /// borrow `conn`, so build one per transaction.
 pub(crate) struct Resolver<'c> {
@@ -1349,6 +1352,27 @@ impl<'c> Resolver<'c> {
                 )?,
                 None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
             });
+        }
+        // A Go receiver typed through other files' declarations becomes the
+        // package candidate of its type's method, or binds nothing.
+        if let Some(DeferredMarker::Go(call)) = r.deferred {
+            let candidate = self.go_deferred_candidate(call)?;
+            let patched = match &candidate {
+                Some((candidate, target)) => Reference {
+                    target_qualname: Some(target),
+                    import_candidates: std::slice::from_ref(candidate),
+                    receiver_type: None,
+                    deferred: None,
+                    ..*r
+                },
+                None => Reference {
+                    import_candidates: &[],
+                    receiver_type: Some(""),
+                    deferred: None,
+                    ..*r
+                },
+            };
+            return self.resolve_tiers_and_refine(&patched, symbol_map);
         }
         // A deferred receiver (`ReceiverType::Deferred`) becomes the callee's
         // declared return type, or `""` (unresolved) -- never a guess.
@@ -2729,11 +2753,29 @@ impl<'c> Resolver<'c> {
                 let dir = module.rsplit_once('/').map_or("", |(dir, _)| dir);
                 (dir == want_dir).then_some(*id)
             });
-            let Some(id) = hits.next() else { continue };
-            if hits.next().is_some() {
+            let first = hits.next();
+            let second = first.and_then(|_| hits.next());
+            // `Type.Method`: a method promoted from an embedded type when
+            // the type declares none itself.
+            let promoted = match (first, member.split_once('.')) {
+                (None, Some((ty, method))) if !ty.is_empty() => {
+                    self.go_method_id(want_dir, ty, method)?
+                }
+                _ => None,
+            };
+            let Some(id) = first.or(promoted) else {
+                continue;
+            };
+            if second.is_some() {
                 self.saw_ambiguous = true;
                 return Ok(None);
             }
+            // A method found through its type is a receiver-typed binding.
+            let kind = if member.contains('.') {
+                ResolutionKind::ReceiverType
+            } else {
+                kind
+            };
             match found {
                 None => found = Some((id, kind)),
                 Some((existing, _)) if existing == id => {}

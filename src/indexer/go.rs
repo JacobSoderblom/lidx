@@ -2,7 +2,10 @@ use crate::db::resolver::{GO_IMPORTED_PACKAGE, GO_SAME_PACKAGE, LanguageProfile,
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    CallShape, EdgeInput, ExtractedFile, GoDeferred, GoValue, ReceiverType, SymbolInput,
+};
+use crate::indexer::go_types::LocalTypes;
 use crate::indexer::go_repo::{GoRepo, ImportTarget};
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -63,6 +66,9 @@ struct Context {
     /// Receiver and parameters whose declared type is a plain local type
     /// name, so `s.Handle` can name a method of that type.
     param_types: Rc<HashMap<String, String>>,
+    /// The declared or nameable types of the current function's bindings,
+    /// closures included (`go_types`).
+    types: Rc<LocalTypes>,
 }
 
 #[derive(Clone)]
@@ -146,6 +152,7 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             imports: Rc::new(collect_import_aliases(root, source)),
             bound_names: Rc::new(HashSet::new()),
             param_types: Rc::new(HashMap::new()),
+            types: Rc::new(LocalTypes::default()),
         };
         walk_node(root, &ctx, source, &mut output);
         Ok(output)
@@ -165,14 +172,25 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
     ) {
         let repo = self.repo(repo_root);
         bind_import_candidates(&repo, repo_root, file_rel_path, edges);
-        // For now, just add detail field with import path
+        // The import path, the name the file calls the package by (the
+        // extractor left it in `detail`) and the package it stands for
+        // (`><dir>` inside the repository, else the path): a deferred
+        // receiver's type text is read through these.
         for edge in edges.iter_mut() {
             if edge.kind == "IMPORTS"
                 && let Some(target) = edge.target_qualname.as_ref()
             {
+                let place = match repo.has_modules().then(|| {
+                    repo.resolve_import(repo_root, file_rel_path, target)
+                }) {
+                    Some(ImportTarget::InRepo(dir)) => format!("{GO_IMPORTED_PACKAGE}{dir}"),
+                    _ => target.clone(),
+                };
                 edge.detail = Some(
                     json!({
                         "import_path": target,
+                        "alias": edge.detail,
+                        "place": place,
                     })
                     .to_string(),
                 );
@@ -290,6 +308,12 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 emit_calls_edge(node, type_node, ctx, source, output);
             }
             walk_children(node, ctx, source, output);
+        }
+        // A closure in a package-level initializer binds its own parameters.
+        "func_literal" if ctx.current_scope == ctx.module => {
+            let mut next_ctx = ctx.clone();
+            enter_function_scope(node, source, &mut next_ctx);
+            walk_children(node, &next_ctx, source, output);
         }
         "call_expression" => {
             handle_call(node, ctx, source, output);
@@ -451,6 +475,9 @@ fn handle_type_spec(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         return;
     };
 
+    let signature = (type_node.kind() == "struct_type")
+        .then(|| struct_signature(type_node, source))
+        .flatten();
     let kind = match type_node.kind() {
         "struct_type" => "class",
         "interface_type" => {
@@ -473,7 +500,7 @@ fn handle_type_spec(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         end_col,
         start_byte,
         end_byte,
-        signature: None,
+        signature,
         docstring: None,
         identity: None,
     });
@@ -611,11 +638,18 @@ fn extract_imports_from_node(
                 let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
                 let snippet =
                     util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+                // The name the file uses for the package: the explicit alias
+                // or the path's default (`_` and `.` imports bind none).
+                let alias = node
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source))
+                    .or_else(|| default_package_name(&import_path))
+                    .filter(|a| !matches!(a.as_str(), "_" | "."));
                 output.edges.push(EdgeInput {
                     kind: "IMPORTS".to_string(),
                     source_qualname: Some(ctx.module.clone()),
                     target_qualname: Some(import_path),
-                    detail: None,
+                    detail: alias,
                     evidence_snippet: snippet,
                     evidence_start_line: Some(start_line),
                     evidence_end_line: Some(end_line),
@@ -717,6 +751,9 @@ fn emit_calls_edge(
     if raw.is_empty() || is_builtin_callee(function_node, &raw, ctx) {
         return;
     }
+    if emit_receiver_call(node, function_node, &raw, ctx, source, output) {
+        return;
+    }
     let mut target = resolve_call_target(&raw, ctx);
     let mut import_candidates = Vec::new();
     let mut receiver_type = ReceiverType::NotTracked;
@@ -777,6 +814,75 @@ fn emit_calls_edge(
         bare_call: matches!(function_node.kind(), "identifier" | "type_identifier"),
         ..site_edge("CALLS", node, ctx, source)
     });
+}
+
+/// A method called on a value (`s.Handle()`, `c.conn.Close()`,
+/// `NewB().C()`) rather than through an imported package: the call binds
+/// through the receiver's type or not at all, never by the method's name.
+/// Returns false for a callee that is no such call (a plain name, or
+/// `pkg.Func` through an import).
+///
+/// A receiver typed in this file (`name T`, `x := T{}`, ...) becomes the
+/// package candidate `<place>|T.Method`. One typed through a declaration in
+/// another file (`x := NewServer()`, a field) is stored as a [`GoDeferred`]
+/// the resolver finishes. One with no nameable type is untyped: the edge
+/// keeps the method name and binds nothing.
+fn emit_receiver_call(
+    node: Node<'_>,
+    function_node: Node<'_>,
+    raw: &str,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) -> bool {
+    if function_node.kind() != "selector_expression" {
+        return false;
+    }
+    let (Some(operand), Some(field)) = (
+        function_node.child_by_field_name("operand"),
+        function_node.child_by_field_name("field"),
+    ) else {
+        return false;
+    };
+    // `pkg.Func(..)`: bound by the import path (or an unknown qualifier).
+    if operand.kind() == "identifier"
+        && !ctx
+            .types
+            .is_bound(&node_text(operand, source), operand.start_byte())
+        && !ctx.bound_names.contains(&node_text(operand, source))
+    {
+        return false;
+    }
+    let method = node_text(field, source);
+    let site = site_edge("CALLS", node, ctx, source);
+    let edge = match ctx.types.value_type(operand, 0, source) {
+        Some(GoValue::Type { place, name }) => {
+            let target = if place.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE]) {
+                format!("{name}.{method}")
+            } else {
+                format!("{place}.{name}.{method}")
+            };
+            EdgeInput {
+                target_qualname: Some(target),
+                import_candidates: vec![format!("{place}|{name}.{method}")],
+                ..site
+            }
+        }
+        Some(recv) => EdgeInput {
+            target_qualname: Some(method.clone()),
+            detail: Some(collapse_call_target_whitespace(raw)),
+            receiver_type: ReceiverType::GoDeferred(GoDeferred { recv, method }),
+            ..site
+        },
+        None => EdgeInput {
+            target_qualname: Some(method),
+            detail: Some(collapse_call_target_whitespace(raw)),
+            receiver_type: ReceiverType::Unresolved,
+            ..site
+        },
+    };
+    output.edges.push(edge);
+    true
 }
 
 /// An edge of `kind` sourced from the current scope, with the evidence
@@ -905,6 +1011,7 @@ fn bind_import_candidates(
     file_rel_path: &str,
     edges: &mut Vec<EdgeInput>,
 ) {
+    bind_deferred_places(repo, repo_root, file_rel_path, edges);
     let starts_with_marker = |e: &EdgeInput, m: char| {
         e.import_candidates
             .first()
@@ -937,7 +1044,11 @@ fn bind_import_candidates(
         if !repo.has_modules() {
             // Nothing is known about what the path names: a call falls back
             // to its `<last path element>.Name` text for the name tiers.
-            if is_call {
+            if is_call && member.contains('.') {
+                // A method of an imported type: whether the type is the
+                // repository's is unknown, so nothing binds it.
+                refuse_receiver(edge);
+            } else if is_call {
                 edge.target_qualname =
                     default_package_name(&import_path).map(|pkg| format!("{pkg}.{member}"));
                 edge.import_candidates.clear();
@@ -967,6 +1078,61 @@ fn bind_import_candidates(
         edge.import_candidates = in_repo;
         true
     });
+}
+
+/// Rewrite the import paths a deferred Go receiver names (`GoValue` places)
+/// to the repository package directory they stand for (`><dir>`); a path
+/// outside the repository stays a path.
+fn bind_deferred_places(
+    repo: &GoRepo,
+    repo_root: &Path,
+    file_rel_path: &str,
+    edges: &mut [EdgeInput],
+) {
+    fn bind(
+        value: &mut GoValue,
+        repo: &GoRepo,
+        repo_root: &Path,
+        file_rel_path: &str,
+    ) {
+        match value {
+            GoValue::Type { place, .. } | GoValue::Func { place, .. } => {
+                if !place.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE])
+                    && repo.has_modules()
+                    && let ImportTarget::InRepo(dir) =
+                        repo.resolve_import(repo_root, file_rel_path, place)
+                {
+                    *place = format!("{GO_IMPORTED_PACKAGE}{dir}");
+                }
+            }
+            GoValue::Method { recv, .. } => bind(recv, repo, repo_root, file_rel_path),
+            GoValue::Field { owner, .. } => bind(owner, repo, repo_root, file_rel_path),
+        }
+    }
+    for edge in edges.iter_mut() {
+        if let ReceiverType::GoDeferred(deferred) = &mut edge.receiver_type {
+            bind(&mut deferred.recv, repo, repo_root, file_rel_path);
+        }
+    }
+}
+
+/// Leave a method call with an untyped receiver: it keeps its method name
+/// and binds nothing.
+fn refuse_receiver(edge: &mut EdgeInput) {
+    let method = edge
+        .import_candidates
+        .first()
+        .and_then(|c| c.rsplit('.').next())
+        .map(str::to_string)
+        .or_else(|| {
+            edge.target_qualname
+                .as_deref()
+                .and_then(|t| t.rsplit('.').next())
+                .map(str::to_string)
+        });
+    edge.import_candidates.clear();
+    edge.receiver_type = ReceiverType::Unresolved;
+    edge.target_qualname = method;
 }
 
 /// Resolve the `?qualifier|Name` call candidates of one file. The qualifier
@@ -1024,6 +1190,14 @@ fn bind_unknown_qualifiers(
             .flatten()
             .chain(&unnamed);
         edge.import_candidates = paths.map(|path| format!("{path}|{member}")).collect();
+        // No import of this repository has that package name: the qualifier
+        // is a package variable or a foreign import. Its type is unknown, so
+        // the member's name alone must not bind.
+        if edge.import_candidates.is_empty() {
+            let raw = edge.target_qualname.clone();
+            refuse_receiver(edge);
+            edge.detail = raw;
+        }
     }
 }
 
@@ -1102,18 +1276,18 @@ fn enter_function_scope(node: Node<'_>, source: &str, ctx: &mut Context) {
             let Some(type_node) = param.child_by_field_name("type") else {
                 continue;
             };
-            let ty = node_text(type_node, source);
-            let ty = ty.trim_start_matches('*').trim();
-            if ty.is_empty() || !ty.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            let Some(ty) = local_type_name(type_node, source) else {
                 continue;
-            }
+            };
             let mut names = param.walk();
             for name in param.children_by_field_name("name", &mut names) {
-                types.insert(node_text(name, source), ty.to_string());
+                types.insert(node_text(name, source), ty.clone());
             }
         }
     }
     ctx.param_types = Rc::new(types);
+    let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
+    ctx.types = Rc::new(LocalTypes::collect(node, source, dir, ctx.imports.clone()));
 }
 
 /// Every name `node` (a function) binds: parameters (receiver included),
@@ -1878,15 +2052,89 @@ fn extract_receiver_type(node: Node<'_>, source: &str) -> Option<String> {
         if child.kind() == "parameter_declaration"
             && let Some(type_node) = child.child_by_field_name("type")
         {
-            let type_text = node_text(type_node, source);
-            // Strip pointer prefix if present
-            let type_text = type_text.trim_start_matches('*').trim();
+            // The pointer and the type arguments are not part of the type's
+            // name: `func (s *Set[T]) Add` is a method of `Set`.
+            let type_text = match local_type_name(type_node, source) {
+                Some(name) => name,
+                None => node_text(type_node, source)
+                    .trim_start_matches('*')
+                    .trim()
+                    .to_string(),
+            };
             if !type_text.is_empty() {
-                return Some(type_text.to_string());
+                return Some(type_text);
             }
         }
     }
     None
+}
+
+/// The name of the plain type `T`, `*T` or `T[A, B]` a declaration names
+/// (`None` for a qualified, slice, map or other type).
+fn local_type_name(type_node: Node<'_>, source: &str) -> Option<String> {
+    let mut node = type_node;
+    loop {
+        match node.kind() {
+            "type_identifier" => return Some(node_text(node, source)),
+            "pointer_type" | "parenthesized_type" => {
+                let mut cursor = node.walk();
+                node = node.named_children(&mut cursor).next()?;
+            }
+            "generic_type" => node = node.child_by_field_name("type")?,
+            _ => return None,
+        }
+    }
+}
+
+/// `{name Type; Embedded; ..}` of a struct type: each field's declared type
+/// as written (an embedded one marked `~`), for the resolver to type
+/// `x.field.Method()` and to find methods promoted from embedded types.
+fn struct_signature(struct_node: Node<'_>, source: &str) -> Option<String> {
+    const MAX_LEN: usize = 4000;
+    let list = struct_node
+        .named_children(&mut struct_node.walk())
+        .find(|c| c.kind() == "field_declaration_list")?;
+    let mut fields: Vec<String> = Vec::new();
+    let mut cursor = list.walk();
+    for field in list.named_children(&mut cursor) {
+        if field.kind() != "field_declaration" {
+            continue;
+        }
+        let Some(type_node) = field.child_by_field_name("type") else {
+            continue;
+        };
+        let ty = node_text(type_node, source)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        // An anonymous struct, interface or function type names no type.
+        let ty = if ty.contains(['{', '(']) { "?".to_string() } else { ty };
+        let mut names = field.walk();
+        let names: Vec<String> = field
+            .children_by_field_name("name", &mut names)
+            .map(|n| node_text(n, source))
+            .collect();
+        if names.is_empty() {
+            fields.push(format!("~{ty}"));
+        } else {
+            fields.extend(names.into_iter().map(|n| format!("{n} {ty}")));
+        }
+    }
+    if fields.is_empty() {
+        return None;
+    }
+    let mut out = String::from("{");
+    for (i, field) in fields.iter().enumerate() {
+        if out.len() + field.len() > MAX_LEN {
+            break;
+        }
+        if i > 0 {
+            out.push_str("; ");
+        }
+        out.push_str(field);
+    }
+    out.push('}');
+    Some(out)
 }
 
 fn extract_function_signature(node: Node<'_>, source: &str) -> Option<String> {
