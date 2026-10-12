@@ -1,7 +1,9 @@
 use super::overview::module_prefix;
 use super::resolver::qualname_trailing_name;
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
-use crate::model::{DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling};
+use crate::model::{
+    DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling, UnresolvedSample,
+};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -32,9 +34,8 @@ impl Db {
         symbol_ids: &[i64],
         edge_kinds: &[String],
         graph_version: i64,
-    ) -> Result<std::collections::HashMap<i64, crate::model::UnresolvedSample>> {
-        let mut out: std::collections::HashMap<i64, crate::model::UnresolvedSample> =
-            std::collections::HashMap::new();
+    ) -> Result<HashMap<i64, UnresolvedSample>> {
+        let mut out: HashMap<i64, UnresolvedSample> = HashMap::new();
         if symbol_ids.is_empty() || edge_kinds.is_empty() {
             return Ok(out);
         }
@@ -70,12 +71,14 @@ impl Db {
     }
 
     /// Upstream analogue of [`Self::unresolved_references_by_source`] (issue
-    /// #410): unresolved references, in other symbols, whose name tail is
-    /// `symbol_name` -- callers that may exist but never bound to the symbol.
-    /// Matched by name tail and file language only (the same fuzzy signal
-    /// #81 keeps out of the exact lower-bound count), so it is a *possible*
-    /// caller, named by its source symbol's qualname. `symbol_id` itself is
-    /// excluded (recursion is not a caller gap).
+    /// #410): other symbols with an `ambiguous` unresolved reference whose
+    /// name tail is `symbol_name` in the same file language -- callers that
+    /// may exist but never bound because the name has several candidates.
+    /// Counted per DISTINCT source symbol (named by qualname), not per row,
+    /// and returned with the number of function/method definitions of that
+    /// name in the language so the caller can discard a match that is mostly
+    /// noise. Matched by name only, so these are *possible* callers.
+    /// `symbol_id` itself is excluded (recursion is not a caller gap).
     pub fn unresolved_callers_of(
         &self,
         symbol_id: i64,
@@ -83,36 +86,49 @@ impl Db {
         file_path: &str,
         edge_kinds: &[String],
         graph_version: i64,
-    ) -> Result<crate::model::UnresolvedSample> {
-        let mut sample = crate::model::UnresolvedSample::default();
+    ) -> Result<(UnresolvedSample, usize)> {
+        let mut sample = UnresolvedSample::default();
         if edge_kinds.is_empty() || symbol_name.is_empty() {
-            return Ok(sample);
+            return Ok((sample, 0));
         }
         let kind_marks = vec!["?"; edge_kinds.len()].join(",");
         let sql = format!(
-            "SELECT s.qualname, ur.reason \
+            "SELECT s.qualname, MIN(ur.reason) \
              FROM unresolved_references ur \
              JOIN files f ON f.id = ur.file_id \
              JOIN symbols s ON s.id = ur.source_symbol_id \
-             WHERE ur.name_tail = ? AND ur.graph_version = ? \
-               AND ur.source_symbol_id IS NOT NULL AND ur.source_symbol_id != ? \
+             WHERE ur.name_tail = ? AND ur.graph_version = ? AND ur.reason = 'ambiguous' \
+               AND ur.source_symbol_id != ? \
                AND ur.edge_kind IN ({kind_marks}) \
                AND f.language = (SELECT language FROM files WHERE path = ?) \
-             ORDER BY ur.id"
+             GROUP BY ur.source_symbol_id \
+             ORDER BY MIN(ur.id)"
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&symbol_name, &graph_version, &symbol_id];
         params.extend(edge_kinds.iter().map(|k| k as &dyn rusqlite::ToSql));
         params.push(&file_path);
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (name, reason) = row?;
-            sample.push(name, reason);
+        {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(&*params, |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (name, reason) = row?;
+                sample.push(name, reason);
+            }
         }
-        Ok(sample)
+        if sample.count == 0 {
+            return Ok((sample, 0));
+        }
+        let definitions: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id \
+             WHERE s.name = ? AND s.graph_version = ? AND s.kind IN ('function', 'method') \
+               AND f.language = (SELECT language FROM files WHERE path = ?)",
+            rusqlite::params![symbol_name, graph_version, file_path],
+            |r| r.get(0),
+        )?;
+        Ok((sample, definitions as usize))
     }
 
     pub fn call_edge_count(

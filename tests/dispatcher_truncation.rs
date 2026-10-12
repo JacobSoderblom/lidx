@@ -60,7 +60,7 @@ fn hop_keys(result: &Value) -> Vec<String> {
             let mut h = h.clone();
             h.as_object_mut()
                 .unwrap()
-                .retain(|k, _| !k.starts_with("stop"));
+                .retain(|k, _| !["stop", "stop_detail"].contains(&k.as_str()));
             h.to_string()
         })
         .collect()

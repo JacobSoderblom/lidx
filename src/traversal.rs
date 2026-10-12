@@ -8,7 +8,7 @@ use crate::indexer::config::{
     config_edge_allowed, prefer_same_service,
 };
 use crate::indexer::scan::language_for_path;
-use crate::model::{Edge, Symbol, TraceHop, TraceStop};
+use crate::model::{Edge, StopReason, Symbol, TraceHop, TraceStop, UnresolvedSample};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -137,7 +137,7 @@ pub struct TraceResult {
     pub traversed_heuristic_kind: bool,
     /// Leaf hops of the settled trace per stop reason (issue #410); empty
     /// for an end-target trace. Counted before offset/byte paging.
-    pub stop_summary: BTreeMap<String, usize>,
+    pub stop_summary: BTreeMap<StopReason, usize>,
     /// Stop reason of the start symbol, only when the trace has no hops.
     pub start_stop: Option<TraceStop>,
 }
@@ -416,8 +416,12 @@ pub fn trace_flow(
             for q in &queue {
                 unexpanded.insert((q.id, q.dist), q.entry.clone());
             }
+            // Without an end target the leaf stops decide `depth_limited`
+            // after the BFS; only an end-target trace (which has no leaves)
+            // needs the frontier probe.
             let ceiling_frontier = std::iter::once((current_id, entry.clone()))
-                .chain(queue.iter().map(|q| (q.id, q.entry.clone())));
+                .chain(queue.iter().map(|q| (q.id, q.entry.clone())))
+                .filter(|_| end_id.is_some());
             for (candidate, candidate_entry) in ceiling_frontier {
                 if has_further_edges(
                     db,
@@ -753,9 +757,6 @@ pub fn trace_flow(
     // what is returned (#355).
     let settled_any = !trace.is_empty();
     let leaf_count = count_leaves(&trace);
-    // Stops are attached after the byte budget is applied, so they never
-    // change which hops fit (their few bytes are not counted in
-    // `used_bytes`).
     let mut stop_summary = BTreeMap::new();
     let mut hop_stops: Vec<Option<TraceStop>> = Vec::new();
     let mut start_stop = None;
@@ -771,9 +772,19 @@ pub fn trace_flow(
             unexpanded: &unexpanded,
         };
         (stop_summary, hop_stops) = leaf_stops(&ctx, &trace)?;
+        // The leaves are the authority on depth limiting: a frontier whose
+        // only successors are already in the trace is `already_visited`, and
+        // deepening it would add nothing.
+        depth_limited = stop_summary.contains_key(&StopReason::DepthLimit);
         if trace.is_empty() {
             start_stop = start_stop_reason(&ctx, &start_sym)?;
         }
+    }
+    // Stops are part of the hop payload, so they count against the byte
+    // budget below (the in-loop level check cannot see them: the leaves are
+    // only known once the BFS is done).
+    for (hop, stop) in trace.iter_mut().zip(hop_stops) {
+        hop.stop = stop;
     }
     let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
 
@@ -795,12 +806,6 @@ pub fn trace_flow(
     if keep < trace.len() {
         trace.truncate(keep);
         byte_limited = true;
-    }
-    for (hop, stop) in trace
-        .iter_mut()
-        .zip(hop_stops.into_iter().skip(config.trace_offset))
-    {
-        hop.stop = stop;
     }
     // An offset at/past the end has nothing left to return: report that
     // plainly instead of echoing the original truncation (#354).
@@ -950,23 +955,40 @@ struct LeafRef<'a> {
     dist: usize,
 }
 
+/// Most distinct unresolved-caller candidates (and most same-name function /
+/// method definitions) for which `unresolved_callers` is still reported.
+/// Past this the name-tail match is mostly noise, and the leaf says
+/// `no_callers` with a `fuzzy_candidates` count instead.
+const MAX_FUZZY_CALLER_CANDIDATES: usize = 5;
+
 /// A stop decided without further queries, or one that still needs the
 /// `unresolved_references` lookup to choose between "unresolved" and "none".
 enum Decision {
     Done(TraceStop),
+    /// Successors were all declined by filters; the lookup only adds the
+    /// `unresolved` count to the detail.
+    Filtered(BTreeMap<String, usize>),
     NeedsUnresolved,
 }
 
-fn stop(reason: &str, detail: Option<serde_json::Value>) -> TraceStop {
+/// What the `unresolved_references` lookup found for a leaf.
+enum Gap {
+    None,
+    Found(UnresolvedSample),
+    /// Upstream only: candidates exist but are too many/ambiguous to name.
+    Fuzzy(usize),
+}
+
+fn stop(reason: StopReason, detail: Option<serde_json::Value>) -> TraceStop {
     TraceStop {
-        stop: reason.to_string(),
+        stop: reason,
         stop_detail: detail,
     }
 }
 
 fn decide(ctx: &StopContext, leaf: &LeafRef) -> Result<Decision> {
     if leaf.sym.is_external() {
-        return Ok(Decision::Done(stop("external", None)));
+        return Ok(Decision::Done(stop(StopReason::External, None)));
     }
     let key = (leaf.sym.id, leaf.dist);
     let (outcome, expanded) = match ctx.outcomes.get(&key) {
@@ -978,33 +1000,31 @@ fn decide(ctx: &StopContext, leaf: &LeafRef) -> Result<Decision> {
     };
     if !expanded && outcome.fresh > 0 {
         let reason = if leaf.dist >= ctx.config.max_hops {
-            "depth_limit"
+            StopReason::DepthLimit
         } else {
-            "truncated"
+            StopReason::Truncated
         };
         return Ok(Decision::Done(stop(reason, None)));
     }
     if outcome.seen > 0 {
-        return Ok(Decision::Done(stop("cycle", None)));
+        return Ok(Decision::Done(stop(StopReason::AlreadyVisited, None)));
     }
     if !outcome.filtered.is_empty() {
-        return Ok(Decision::Done(stop(
-            "filtered",
-            Some(serde_json::json!(outcome.filtered)),
-        )));
+        return Ok(Decision::Filtered(outcome.filtered));
     }
     Ok(Decision::NeedsUnresolved)
 }
 
-fn no_successor_stop(
-    is_upstream: bool,
-    sample: Option<&crate::model::UnresolvedSample>,
-) -> TraceStop {
-    match (sample.filter(|s| s.count > 0), is_upstream) {
-        (Some(s), false) => stop("unresolved_calls", Some(s.detail())),
-        (Some(s), true) => stop("unresolved_callers", Some(s.detail())),
-        (None, false) => stop("no_callees", None),
-        (None, true) => stop("no_callers", None),
+fn gap_stop(is_upstream: bool, compact: bool, gap: Gap) -> TraceStop {
+    match (gap, is_upstream) {
+        (Gap::Found(s), false) => stop(StopReason::UnresolvedCalls, Some(s.detail(compact))),
+        (Gap::Found(s), true) => stop(StopReason::UnresolvedCallers, Some(s.detail(compact))),
+        (Gap::Fuzzy(n), _) => stop(
+            StopReason::NoCallers,
+            Some(serde_json::json!({"fuzzy_candidates": n})),
+        ),
+        (Gap::None, false) => stop(StopReason::NoCallees, None),
+        (Gap::None, true) => stop(StopReason::NoCallers, None),
     }
 }
 
@@ -1013,12 +1033,13 @@ fn no_successor_stop(
 /// references elsewhere that name the leaf (see
 /// `Db::unresolved_callers_of`).
 fn finish_stops(ctx: &StopContext, leaves: &[(LeafRef, Decision)]) -> Result<Vec<TraceStop>> {
-    let by_source = if ctx.is_upstream {
+    let needs_lookup = |d: &Decision| !matches!(d, Decision::Done(_));
+    let mut by_source = if ctx.is_upstream {
         HashMap::new()
     } else {
         let ids: Vec<i64> = leaves
             .iter()
-            .filter(|(_, d)| matches!(d, Decision::NeedsUnresolved))
+            .filter(|(_, d)| needs_lookup(d))
             .map(|(l, _)| l.sym.id)
             .collect();
         ctx.db.unresolved_references_by_source(
@@ -1029,26 +1050,49 @@ fn finish_stops(ctx: &StopContext, leaves: &[(LeafRef, Decision)]) -> Result<Vec
     };
     let mut out = Vec::with_capacity(leaves.len());
     for (leaf, decision) in leaves {
-        out.push(match decision {
-            Decision::Done(s) => s.clone(),
-            Decision::NeedsUnresolved if ctx.is_upstream => {
-                let sample = ctx.db.unresolved_callers_of(
-                    leaf.sym.id,
-                    &leaf.sym.name,
-                    &leaf.sym.file_path,
-                    &ctx.config.allowed_kinds,
-                    ctx.graph_version,
-                )?;
-                no_successor_stop(true, Some(&sample))
+        if let Decision::Done(s) = decision {
+            out.push(s.clone());
+            continue;
+        }
+        let gap = if ctx.is_upstream {
+            let (sample, definitions) = ctx.db.unresolved_callers_of(
+                leaf.sym.id,
+                &leaf.sym.name,
+                &leaf.sym.file_path,
+                &ctx.config.allowed_kinds,
+                ctx.graph_version,
+            )?;
+            if sample.count == 0 {
+                Gap::None
+            } else if sample.count > MAX_FUZZY_CALLER_CANDIDATES
+                || definitions > MAX_FUZZY_CALLER_CANDIDATES
+            {
+                Gap::Fuzzy(sample.count)
+            } else {
+                Gap::Found(sample)
             }
-            Decision::NeedsUnresolved => no_successor_stop(false, by_source.get(&leaf.sym.id)),
+        } else {
+            match by_source.remove(&leaf.sym.id) {
+                Some(s) if s.count > 0 => Gap::Found(s),
+                _ => Gap::None,
+            }
+        };
+        out.push(match decision {
+            Decision::Filtered(declined) => {
+                let mut detail = serde_json::json!(declined);
+                if let Gap::Found(s) = &gap {
+                    detail["unresolved"] = serde_json::json!(s.count);
+                }
+                stop(StopReason::Filtered, Some(detail))
+            }
+            _ => gap_stop(ctx.is_upstream, ctx.config.compact, gap),
         });
     }
     Ok(out)
 }
 
 /// Per-reason leaf counts and the stop of each hop (aligned with the trace).
-type LeafStops = (BTreeMap<String, usize>, Vec<Option<TraceStop>>);
+type LeafStops = (BTreeMap<StopReason, usize>, Vec<Option<TraceStop>>);
 
 /// Stop reason for every leaf hop of the settled trace (`None` for non-leaf
 /// hops, aligned with `trace`) and the per-reason leaf counts (issue #410).
@@ -1073,7 +1117,7 @@ fn leaf_stops(ctx: &StopContext, trace: &[TraceHop]) -> Result<LeafStops> {
     let mut summary = BTreeMap::new();
     let mut per_hop: Vec<Option<TraceStop>> = vec![None; trace.len()];
     for (i, s) in leaf_idx.into_iter().zip(stops) {
-        *summary.entry(s.stop.clone()).or_insert(0) += 1;
+        *summary.entry(s.stop).or_insert(0) += 1;
         per_hop[i] = Some(s);
     }
     Ok((summary, per_hop))

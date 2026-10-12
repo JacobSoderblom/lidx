@@ -200,19 +200,12 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
     // cuts exactly at the last hop, behave the same in both edge orders.
     let g1 = graph(&tie_names, &tie_edges);
     let g2 = graph(&tie_names, &tie_reversed);
-    // Stop reasons (#410) are attached after budgeting and not counted in it.
     let total: usize = t1
         .hops
         .iter()
-        .map(|h| {
-            let mut v = serde_json::to_value(h).unwrap();
-            v.as_object_mut()
-                .unwrap()
-                .retain(|k, _| !k.starts_with("stop"));
-            v.to_string().len()
-        })
+        .map(|h| serde_json::to_string(h).unwrap().len())
         .sum();
-    for (budget, expect_truncated) in [(total + 1, false), (total, true)] {
+    for (budget, expect_truncated) in [(total, false), (total - 1, true)] {
         let (a, b) = (
             trace_with_budget(&g1, "S", budget),
             trace_with_budget(&g2, "S", budget),
@@ -221,7 +214,11 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
         assert_eq!(a.truncated(), expect_truncated, "budget {budget}");
         assert_eq!(b.truncated(), expect_truncated, "budget {budget}");
         assert_eq!(a.used_bytes, b.used_bytes, "budget {budget}");
-        assert_eq!(a.hops.len(), t1.hops.len(), "budget {budget}");
+        if expect_truncated {
+            assert!(a.hops.len() < t1.hops.len(), "budget {budget}");
+        } else {
+            assert_eq!(a.hops.len(), t1.hops.len(), "budget {budget}");
+        }
     }
     // Tighter budgets cut identically too.
     for budget in [1, total / 2] {
