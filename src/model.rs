@@ -9,9 +9,10 @@ const MAX_DISPLAY_SIGNATURE: usize = 240;
 /// A struct/enum signature capped at `MAX_DISPLAY_SIGNATURE` bytes on a
 /// field/variant boundary, ending `, …`; anything else is returned as is.
 pub fn display_signature(signature: &str) -> std::borrow::Cow<'_, str> {
+    let signature = strip_internal_markers(signature);
     let is_adt = signature.starts_with("struct ") || signature.starts_with("enum ");
     if !is_adt || signature.len() <= MAX_DISPLAY_SIGNATURE {
-        return signature.into();
+        return signature;
     }
     let mut end = MAX_DISPLAY_SIGNATURE;
     while !signature.is_char_boundary(end) {
@@ -20,6 +21,29 @@ pub fn display_signature(signature: &str) -> std::borrow::Cow<'_, str> {
     let head = &signature[..end];
     let cut = head.rfind(", ").unwrap_or(head.len());
     format!("{}, …", &head[..cut]).into()
+}
+
+/// Line a Rust fn declared in another fn's body starts its stored signature
+/// with, followed by that fn's qualname and `)]`. Resolver-only metadata:
+/// `#[nested(..)]` is not Rust syntax, so it is hidden on read.
+pub const NESTED_MARKER_PREFIX: &str = "#[nested(";
+
+/// Line a Rust trait-impl method starts its stored signature with (so an
+/// inherent twin wins). Resolver-only, hidden on read like the nested marker.
+pub const TRAIT_IMPL_MARKER: &str = "#[trait_impl]";
+
+/// `signature` without the resolver-only marker lines of a Rust fn (the
+/// real `#[cfg(..)]` lines stay).
+pub fn strip_internal_markers(signature: &str) -> std::borrow::Cow<'_, str> {
+    let internal = |line: &str| line.starts_with(NESTED_MARKER_PREFIX) || line == TRAIT_IMPL_MARKER;
+    if !signature.lines().any(internal) {
+        return signature.into();
+    }
+    signature
+        .split_inclusive('\n')
+        .filter(|line| !internal(line.trim_end_matches('\n')))
+        .collect::<String>()
+        .into()
 }
 
 /// Prefix a C# `partial` type declaration's stored `signature` carries
@@ -51,6 +75,10 @@ pub fn is_partial_signature(signature: Option<&str>) -> bool {
 /// marker was stored.
 pub fn public_signature(signature: Option<String>) -> Option<String> {
     let sig = signature?;
+    let sig = match strip_internal_markers(&sig) {
+        std::borrow::Cow::Borrowed(_) => sig,
+        std::borrow::Cow::Owned(stripped) => stripped,
+    };
     if !is_partial_signature(Some(&sig)) {
         return Some(sig);
     }

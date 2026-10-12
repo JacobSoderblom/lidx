@@ -352,3 +352,70 @@ pub fn go() {\n    walk();\n}\n";
     let got = resolved_to(&[("src/lib.rs", src)], "crate::go", "walk");
     assert_eq!(got, ["crate::walk"]);
 }
+
+/// Start lines of the symbols `caller`'s CALLS edges whose target text ends
+/// `suffix` bound to.
+fn target_lines(src: &str, caller: &str, suffix: &str) -> Vec<i64> {
+    let (_tmp, root, db_path) = common::index_repo("lidx-rust-twins-", &[("src/lib.rs", src)]);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut lines: Vec<i64> = conn
+        .prepare(
+            "SELECT t.start_line FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = 'CALLS' AND s.qualname = ?
+               AND t.qualname LIKE ?",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![gv, caller, format!("%{suffix}")], |r| {
+            r.get(0)
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    lines.sort();
+    lines
+}
+
+#[test]
+fn a_nested_fn_shadows_the_module_level_fn_only_inside_its_body() {
+    let src = "pub fn helper() {}\n\
+fn parent() {\n    fn helper() {}\n    helper();\n}\n\
+pub fn other() {\n    helper();\n}\n";
+    // `parent` calls the nested `helper` (line 3), `other` the module-level one.
+    assert_eq!(target_lines(src, "crate::parent", "helper"), [3]);
+    assert_eq!(target_lines(src, "crate::other", "helper"), [1]);
+}
+
+#[test]
+fn cfg_gated_nested_fns_merge() {
+    let src = "fn is_readable() -> bool {\n\
+    #[cfg(unix)]\n    fn imp() -> bool { true }\n\
+    #[cfg(windows)]\n    fn imp() -> bool { false }\n\
+    imp()\n}\n";
+    assert_eq!(target_lines(src, "crate::is_readable", "imp").len(), 1);
+}
+
+#[test]
+fn an_inherent_method_beats_a_same_named_trait_impl_method() {
+    let src = "pub struct D;\nimpl D {\n    pub fn path(&self) -> u8 { 0 }\n}\n\
+pub trait P {\n    fn path(&self) -> u8;\n}\n\
+impl P for D {\n    fn path(&self) -> u8 { 1 }\n}\n\
+pub fn go(d: D) {\n    d.path();\n}\n";
+    // The inherent `path` is on line 3.
+    assert_eq!(target_lines(src, "crate::go", "path"), [3]);
+}
+
+#[test]
+fn resolver_only_markers_are_hidden_from_signatures_but_cfg_is_shown() {
+    use lidx::model::{display_signature, public_signature};
+    let stored = "#[cfg(unix)]\n#[nested(crate::parent)]\n#[trait_impl]\n() -> u8";
+    assert_eq!(display_signature(stored), "#[cfg(unix)]\n() -> u8");
+    assert_eq!(
+        public_signature(Some(stored.to_string())).as_deref(),
+        Some("#[cfg(unix)]\n() -> u8")
+    );
+    assert_eq!(display_signature("() -> u8"), "() -> u8");
+}

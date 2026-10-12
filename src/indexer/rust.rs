@@ -1,6 +1,6 @@
 use crate::db::resolver::{
     DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, SameFileTwins,
-    VisibilityRule,
+    TwinTraits, VisibilityRule,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -16,6 +16,7 @@ use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, collect_identifier_names, module_symbol_fallback,
     module_symbol_with_span, node_text, span,
 };
+use crate::model::{NESTED_MARKER_PREFIX, TRAIT_IMPL_MARKER};
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
@@ -39,8 +40,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     // Rust has no overloading; the extractor writes `#[cfg(..)]` lines at the
     // head of a gated fn's signature (`extract_signature`).
     same_file_twins: SameFileTwins::CfgVariants {
-        cfg_marker: CFG_SIGNATURE_MARKER,
-        nested_marker: NESTED_SIGNATURE_MARKER,
+        classify: classify_twin,
     },
     package_dir: Some(cargo_package_dir),
 };
@@ -48,8 +48,18 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
 /// What a cfg-gated declaration's signature starts with.
 const CFG_SIGNATURE_MARKER: &str = "#[cfg(";
 
-/// What a signature carries when its fn is declared inside another fn.
-const NESTED_SIGNATURE_MARKER: &str = "#[nested]";
+/// `LanguageProfile::same_file_twins`: what the extractor recorded at the
+/// head of a fn's stored signature (`extract_signature`).
+fn classify_twin(signature: &str) -> TwinTraits<'_> {
+    let nested_in = signature
+        .lines()
+        .find_map(|line| line.strip_prefix(NESTED_MARKER_PREFIX)?.strip_suffix(")]"));
+    TwinTraits {
+        cfg_gated: signature.starts_with(CFG_SIGNATURE_MARKER),
+        nested_in,
+        trait_impl: signature.lines().any(|line| line == TRAIT_IMPL_MARKER),
+    }
+}
 
 /// The Cargo package directory a Rust path belongs to: everything before the
 /// first `src/`, `tests/`, `benches/` or `examples/` component (`""` for a
@@ -162,8 +172,9 @@ struct Context {
     /// `local_types` was built with), so a call's receiver expression is typed
     /// the same way as a `let` initializer. Empty outside a function body.
     fn_self_ty: Option<String>,
-    /// Inside a fn body: an `fn` item declared here is visible only there.
-    in_fn_body: bool,
+    /// Qualname of the fn whose body this is: an `fn` item declared here is
+    /// visible only there. `None` outside a fn body.
+    enclosing_fn: Option<String>,
     fn_generics: Rc<HashSet<String>>,
     /// Same-file struct / enum-variant field types (`collect_adts`), used to
     /// type struct and tuple-struct patterns.
@@ -331,7 +342,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             nested_fns: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
             fn_self_ty: None,
-            in_fn_body: false,
+            enclosing_fn: None,
             fn_generics: Rc::new(HashSet::new()),
             adts: Rc::new(collect_adts(root, source)),
             returns: Rc::new(collect_returns(root, source)),
@@ -511,6 +522,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_function_signature(node, ctx, source, output);
             return;
         }
+        "block" => {
+            walk_block(node, ctx, source, output);
+            return;
+        }
         "use_declaration" | "use_item" => {
             if ctx.container_stack.is_empty() {
                 handle_use(node, ctx, source, output);
@@ -527,6 +542,29 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
+    }
+}
+
+/// A block's statements. An `fn` item in it takes the `#[cfg(..)]` attributes
+/// written before it, like one in a declaration list, so cfg twins nested in a
+/// body stay recognisable; everything else is walked as it always was.
+fn walk_block(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut pending_attrs: Vec<Node<'_>> = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "attribute_item" => pending_attrs.push(child),
+            "line_comment" | "block_comment" => {}
+            "function_item" if !pending_attrs.is_empty() => {
+                let item_ctx = ctx.with_cfg(&pending_attrs, source);
+                handle_function_with_attributes(child, &item_ctx, source, output, &pending_attrs);
+                pending_attrs.clear();
+            }
+            _ => {
+                pending_attrs.clear();
+                walk_node(child, ctx, source, output);
+            }
+        }
     }
 }
 
@@ -708,7 +746,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     next_ctx.nested_fns = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
     next_ctx.fn_self_ty = None;
-    next_ctx.in_fn_body = false;
+    next_ctx.enclosing_fn = None;
     next_ctx.fn_generics = Rc::new(HashSet::new());
     walk_node(body, &next_ctx, source, output);
 }
@@ -897,7 +935,7 @@ fn handle_function(
         next_ctx.local_types = Rc::new(local_types);
         next_ctx.fn_self_ty = self_ty;
         next_ctx.fn_generics = generics;
-        next_ctx.in_fn_body = true;
+        next_ctx.enclosing_fn = Some(next_ctx.current_scope.clone());
 
         walk_node(body, &next_ctx, source, output);
     }
@@ -4288,9 +4326,12 @@ fn extract_signature(
         .map(|p| format!("#[cfg({p})]\n"))
         .collect();
     // A fn item declared in a fn body shares its qualname with a module-level
-    // twin but is visible only inside that body.
-    if ctx.in_fn_body {
-        prefix.push_str(NESTED_SIGNATURE_MARKER);
+    // twin but is visible only inside that body: the marker names the body.
+    if let Some(parent) = &ctx.enclosing_fn {
+        prefix.push_str(&format!("{NESTED_MARKER_PREFIX}{parent})]\n"));
+    } else if ctx.in_trait_impl.is_some() {
+        // Rust picks an inherent method over a same-named trait method.
+        prefix.push_str(TRAIT_IMPL_MARKER);
         prefix.push('\n');
     }
     prefix.extend(test_attribute_prefix(attributes, source));
