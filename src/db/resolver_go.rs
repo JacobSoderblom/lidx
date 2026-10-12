@@ -836,7 +836,7 @@ impl Resolver<'_> {
     /// `implements`. An interface with an embedded interface whose methods
     /// are not known is skipped, so no pair rests on a guess.
     fn go_structural_implements(&mut self) -> Result<Vec<(i64, i64, i64)>> {
-        let rows: Vec<(GoTypeRow, bool)> = {
+        let rows: Vec<GoTypeRow> = {
             let mut stmt = self.conn.prepare_cached(&format!(
                 "SELECT s.id, s.qualname, s.name, s.kind, s.signature, s.file_id, s.visibility
                  FROM symbols s JOIN files f ON s.file_id = f.id
@@ -855,12 +855,11 @@ impl Resolver<'_> {
                     visibility: row.get(6)?,
                 })
             })?
-            .map(|r| r.map(|t| (t, false)))
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let mut own_methods: HashMap<String, Vec<(String, Arity)>> = HashMap::new();
         let mut types: Vec<GoTypeRow> = Vec::new();
-        for (row, _) in rows {
+        for row in rows {
             if row.kind == "method" {
                 if let Some((container, _)) = row.qualname.rsplit_once('.') {
                     own_methods
