@@ -1,9 +1,10 @@
-use crate::db::resolver::{LanguageProfile, VisibilityRule};
+use crate::db::resolver::{DeclarationIndex, LanguageProfile, VisibilityRule};
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, EdgeInput, ExtractedFile, PinnedType, ReceiverType, SymbolInput,
+    CallShape, DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile,
+    MAX_DEFERRED_DEPTH, PinnedType, ReceiverType, SymbolInput,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -32,8 +33,70 @@ use tree_sitter::{Node, Parser};
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
+    deferred_receiver: Some(resolve_deferred),
     ..LanguageProfile::DEFAULT
 };
+
+/// `LanguageProfile::deferred_receiver`: the type of a property chain off a
+/// typed receiver (`c.req` with `c: Context`), read from the declared
+/// getter return types (`get req(): HonoRequest`). `""` when it cannot be
+/// told: never a guess.
+fn resolve_deferred(
+    marker: &DeferredMarker,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Option<String>>> {
+    match marker {
+        DeferredMarker::Return(call) => Ok(Some(Some(
+            deferred_property_type(call, index, 0)?.unwrap_or_default(),
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn deferred_property_type(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+) -> Result<Option<String>> {
+    let owner = match &call.base {
+        DeferredBase::Type(ty) => ty.clone(),
+        DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
+        DeferredBase::Call(inner) => match deferred_property_type(inner, index, depth + 1)? {
+            Some(ty) => ty,
+            None => return Ok(None),
+        },
+        DeferredBase::Function(_) => return Ok(None),
+    };
+    let mut agreed: Option<String> = None;
+    for decl in index.inherited_members(&owner, &call.method)? {
+        let Some(ret) = getter_return_type(decl.signature.as_deref()) else {
+            return Ok(None);
+        };
+        match &agreed {
+            Some(prev) if *prev != ret => return Ok(None),
+            _ => agreed = Some(ret),
+        }
+    }
+    match agreed {
+        Some(ty) if index.is_repo_type(&ty)? => Ok(Some(ty)),
+        _ => Ok(None),
+    }
+}
+
+/// The type name a zero-parameter `(): Type<Args>` signature (a getter, as
+/// `handle_method` records it) is declared to return.
+fn getter_return_type(signature: Option<&str>) -> Option<String> {
+    let rest = signature?.strip_prefix("()")?;
+    let ret = rest.trim_start().strip_prefix(':')?.trim();
+    let ret = strip_type_arguments(ret).unwrap_or(ret);
+    if ret.is_empty() || !is_type_name_text(ret, true) {
+        return None;
+    }
+    match classify_type_name(ret.rsplit('.').next().unwrap_or(ret)) {
+        LocalType::Known(ty) => Some(ty),
+        _ => None,
+    }
+}
 
 const JS_TS_EXTENSIONS: &[&str] = &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "d.ts"];
 const HTTP_METHOD_NAMES: &[&str] = &[
@@ -100,6 +163,10 @@ struct Context {
     /// never merged across functions. See `python::infer_receiver_type` for
     /// the mechanism this mirrors.
     local_types: Rc<HashMap<String, LocalType>>,
+    /// The subset of `local_types` names bound by an enclosing function or
+    /// arrow scope (parameters, locals), as opposed to module-level
+    /// bindings: only these shadow a module declaration.
+    scope_bindings: Rc<HashSet<String>>,
     /// Type-annotated fields and constructor parameter properties of the
     /// *directly* enclosing class, read once when entering the class body —
     /// see `collect_class_level_attr_types`. Used only to resolve a
@@ -126,9 +193,6 @@ struct Context {
     /// Source text of the `extends` target of the class whose body is being
     /// walked, the callee of its `super(..)` calls.
     superclass: Option<String>,
-    /// Names bound at module (or namespace) scope: this file's own
-    /// declarations, never a function-local shadow.
-    module_names: Rc<HashSet<String>>,
     /// Names this file declares (any function/class/enum/namespace, plus
     /// module-level variables) — see `collect_declared_names`.
     declared_names: Rc<HashSet<String>>,
@@ -1609,7 +1673,7 @@ fn extract_with_parser(
         grpc_clients,
         grpc_evidence,
         local_types: Rc::clone(&module_types),
-        module_names: Rc::new(module_types.keys().cloned().collect()),
+        scope_bindings: Rc::new(HashSet::new()),
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
         import_bindings: Rc::new(collect_import_bindings(root, source)),
@@ -2333,7 +2397,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     }
     if is_lambda_node(node.kind()) {
         let mut next_ctx = ctx.clone();
-        next_ctx.local_types = lambda_local_types(node, ctx, source);
+        set_lambda_scope(&mut next_ctx, node, ctx, source);
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             walk_node(child, &next_ctx, source, output);
@@ -2487,6 +2551,17 @@ fn handle_class_named(
     }
 }
 
+/// A heritage target rooted in this file's own declaration is qualified by
+/// module, so the exact tier (and its merged-declaration rule) binds it.
+fn heritage_target(target: &str, ctx: &Context) -> String {
+    let root = target.split('.').next().unwrap_or(target);
+    if is_same_file_declaration_root(root, ctx) {
+        resolve_call_target(target, ctx).unwrap_or_else(|| target.to_string())
+    } else {
+        target.to_string()
+    }
+}
+
 fn handle_class_heritage(
     node: Node<'_>,
     class_qualname: &str,
@@ -2508,10 +2583,10 @@ fn handle_class_heritage(
             continue;
         }
         output.edges.push(EdgeInput {
-            kind: "EXTENDS".to_string(),
+            kind: edge_views::EXTENDS.to_string(),
             source_qualname: Some(class_qualname.to_string()),
             import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
-            target_qualname: Some(target),
+            target_qualname: Some(heritage_target(&target, ctx)),
             detail: None,
             evidence_snippet: None,
             ..Default::default()
@@ -2523,10 +2598,10 @@ fn handle_class_heritage(
             continue;
         }
         output.edges.push(EdgeInput {
-            kind: "IMPLEMENTS".to_string(),
+            kind: edge_views::IMPLEMENTS.to_string(),
             source_qualname: Some(class_qualname.to_string()),
             import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
-            target_qualname: Some(target),
+            target_qualname: Some(heritage_target(&target, ctx)),
             detail: None,
             evidence_snippet: None,
             ..Default::default()
@@ -2546,9 +2621,10 @@ fn handle_interface(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
             continue;
         }
         output.edges.push(EdgeInput {
-            kind: "EXTENDS".to_string(),
+            kind: edge_views::EXTENDS.to_string(),
             source_qualname: Some(qualname.clone()),
-            target_qualname: Some(target),
+            import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
+            target_qualname: Some(heritage_target(&target, ctx)),
             detail: None,
             evidence_snippet: None,
             ..Default::default()
@@ -2724,7 +2800,7 @@ fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         next_ctx.this_rebound = false;
         next_ctx.current_scope = qualname;
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_module_level_types(value, source));
+        set_function_scope(&mut next_ctx, infer_module_level_types(value, source));
         walk_node(value, &next_ctx, source, output);
     }
 }
@@ -3342,9 +3418,17 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
-    let Some(target_node) = call_target_node(node) else {
+    let Some(mut target_node) = call_target_node(node) else {
         return register_handled;
     };
+    // `await c.req.json<T>()` parses as a call whose callee is the `await`
+    // expression: the callee is its operand.
+    while target_node.kind() == "await_expression" {
+        let Some(operand) = target_node.named_child(0) else {
+            break;
+        };
+        target_node = operand;
+    }
     let raw = node_text(target_node, source);
     if raw.is_empty() {
         return register_handled;
@@ -3431,7 +3515,7 @@ fn super_constructor_edge(node: Node<'_>, base: &str, ctx: &Context, source: &st
     let import_candidates: Vec<String> = import_placeholder(base, ctx).into_iter().collect();
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     EdgeInput {
-        kind: "CALLS".to_string(),
+        kind: edge_views::CALLS.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         detail: target.is_none().then(|| base.to_string()),
         target_qualname: target,
@@ -3862,14 +3946,10 @@ fn enter_scope(ctx: &mut Context) {
     ctx.outer_locals = Rc::new(outer);
 }
 
-/// A name bound by a parameter or declaration of the enclosing function
-/// that this file does not also declare at module scope: a call to it can
-/// only be the local.
+/// A name bound by a parameter or declaration of an enclosing function or
+/// arrow, even one a module declaration shares: a call to it is the local.
 fn is_shadowing_local(ctx: &Context, name: &str) -> bool {
-    ctx.local_types.contains_key(name)
-        && !ctx.required_names.contains(name)
-        && !ctx.declared_names.contains(name)
-        && !ctx.module_names.contains(name)
+    ctx.scope_bindings.contains(name) && !ctx.required_names.contains(name)
 }
 
 /// A bare call target bound by a parameter, destructuring or `let`/`const`
@@ -6111,15 +6191,14 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     }
     // A bare name is never a class member in JS/TS (there is no implicit
     // `this`): it names a module-level (or enclosing namespace) binding.
+    let module_container = container_qualname(&ctx.module, namespace_stack(ctx));
     if parts.len() == 1 {
-        let container = container_qualname(&ctx.module, namespace_stack(ctx));
-        return Some(format!("{container}.{raw}"));
+        return Some(format!("{module_container}.{raw}"));
     }
     // `Class.member(..)` / `obj.method(..)` rooted in this file's own
     // top-level declaration is that declaration's member.
     if is_same_file_declaration_root(parts[0], ctx) {
-        let container = container_qualname(&ctx.module, namespace_stack(ctx));
-        return Some(format!("{container}.{raw}"));
+        return Some(format!("{module_container}.{raw}"));
     }
     Some(raw.to_string())
 }
@@ -6136,7 +6215,7 @@ fn is_same_file_declaration_root(root: &str, ctx: &Context) -> bool {
     (ctx.declared_types.contains(root) || ctx.declared_names.contains(root))
         && !ctx.import_bindings.contains_key(root)
         && !ctx.required_names.contains(root)
-        && !(ctx.fn_depth > 0 && ctx.local_types.contains_key(root))
+        && !ctx.scope_bindings.contains(root)
 }
 
 /// `text` is spelled like a plain type name: identifier characters, plus
@@ -6185,7 +6264,7 @@ fn rebind_this_scope(node: Node<'_>, ctx: &Context, source: &str) -> Context {
     next_ctx.fn_depth += 1;
     next_ctx.this_rebound = true;
     enter_scope(&mut next_ctx);
-    next_ctx.local_types = Rc::new(infer_local_types(node, source));
+    set_function_scope(&mut next_ctx, infer_local_types(node, source));
     next_ctx
 }
 
@@ -6232,31 +6311,40 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
     next_ctx.fn_owner = None;
     if !is_lambda_node(kind) {
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        set_function_scope(&mut next_ctx, infer_local_types(node, source));
         next_ctx.this_rebound = true;
     } else {
         // The module-wide map folds every module-level arrow's parameters
         // together (`c: Context` here, `c: Foo` there collapse to `Other`).
         // This arrow's own parameters and locals win over that.
-        next_ctx.local_types = lambda_local_types(node, ctx, source);
+        set_lambda_scope(&mut next_ctx, node, ctx, source);
     }
     Some(next_ctx)
 }
 
-/// The enclosing scope's local types plus the arrow function `node`'s own
-/// parameters and locals, which shadow them.
-fn lambda_local_types(
-    node: Node<'_>,
-    ctx: &Context,
-    source: &str,
-) -> Rc<HashMap<String, LocalType>> {
+/// Enters a function scope of its own: `types` replace the enclosing
+/// scope's local types; they join the enclosing functions' scope bindings.
+fn set_function_scope(ctx: &mut Context, types: HashMap<String, LocalType>) {
+    let mut bound = (*ctx.scope_bindings).clone();
+    bound.extend(types.keys().cloned());
+    ctx.scope_bindings = Rc::new(bound);
+    ctx.local_types = Rc::new(types);
+}
+
+/// Enters the arrow function `node`'s scope: the enclosing scope's local
+/// types and scope bindings plus the arrow's own parameters and locals,
+/// which shadow them.
+fn set_lambda_scope(next_ctx: &mut Context, node: Node<'_>, ctx: &Context, source: &str) {
     let own = infer_local_types(node, source);
     if own.is_empty() {
-        return ctx.local_types.clone();
+        return;
     }
     let mut types = (*ctx.local_types).clone();
+    let mut bound = (*ctx.scope_bindings).clone();
+    bound.extend(own.keys().cloned());
     types.extend(own);
-    Rc::new(types)
+    next_ctx.local_types = Rc::new(types);
+    next_ctx.scope_bindings = Rc::new(bound);
 }
 
 /// The qualname `emit_object_literal_methods` gave `node` when it is a
@@ -6360,7 +6448,7 @@ fn handle_function_named(
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        set_function_scope(&mut next_ctx, infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -6428,7 +6516,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         next_ctx.this_rebound = false;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        set_function_scope(&mut next_ctx, infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -7108,34 +7196,21 @@ const JS_TS_GLOBAL_CALLABLES: &[&str] = &[
     "WeakRef",
 ];
 
-/// Runtime global objects whose members are called with a receiver
-/// (`JSON.parse(..)`, `document.createElement(..)`). Never a repo symbol
-/// unless the file imports, declares or locally binds the same name: a
-/// same-named method elsewhere in the repo must not catch the call.
-const JS_TS_GLOBAL_OBJECTS: &[&str] = &[
+/// Runtime global namespaces and singletons that are never constructed or
+/// called themselves (`JSON.parse(..)`, `document.createElement(..)`), so
+/// they are not in `JS_TS_GLOBAL_CALLABLES`. A member call whose receiver
+/// root is one of these, or a `JS_TS_GLOBAL_CALLABLES` entry (`Number.isFinite`,
+/// `Promise.all`), and that this file does not import, declare or bind, is
+/// never a repo symbol: see `is_unshadowed_global_receiver`.
+/// (`JS_TS_BUILTIN_TYPES` is the unrelated list of annotation names that
+/// carry no repo type.)
+const JS_TS_GLOBAL_NAMESPACES: &[&str] = &[
     "JSON",
     "Math",
-    "Number",
-    "Object",
-    "Array",
-    "String",
-    "Boolean",
-    "Symbol",
-    "BigInt",
-    "Promise",
     "Reflect",
-    "Date",
-    "RegExp",
     "Intl",
     "Atomics",
     "WebAssembly",
-    "Map",
-    "Set",
-    "WeakMap",
-    "WeakSet",
-    "Proxy",
-    "Error",
-    "Function",
     "console",
     "document",
     "window",
@@ -7150,16 +7225,13 @@ const JS_TS_GLOBAL_OBJECTS: &[&str] = &[
     "performance",
     "process",
     "Buffer",
-    "URL",
-    "Response",
-    "Request",
-    "Headers",
 ];
 
-/// Whether `name` is a `JS_TS_GLOBAL_OBJECTS` entry this file neither
-/// imports, requires, declares nor binds locally.
-fn is_unshadowed_global_object(name: &str, ctx: &Context) -> bool {
-    JS_TS_GLOBAL_OBJECTS.contains(&name)
+/// Whether `name` is a global receiver (`JS_TS_GLOBAL_NAMESPACES` or
+/// `JS_TS_GLOBAL_CALLABLES`) this file neither imports, requires, declares
+/// nor binds locally.
+fn is_unshadowed_global_receiver(name: &str, ctx: &Context) -> bool {
+    (JS_TS_GLOBAL_NAMESPACES.contains(&name) || JS_TS_GLOBAL_CALLABLES.contains(&name))
         && !ctx.import_bindings.contains_key(name)
         && !ctx.required_names.contains(name)
         && !ctx.declared_names.contains(name)
@@ -7241,9 +7313,11 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         return ReceiverType::Known(ty);
     }
     let object = peel_expression(object);
+    // `JSON.parse(..)`, `document.x.y(..)`: a runtime global is never a repo symbol.
     {
         let (root, _) = member_chain_root(object);
-        if root.kind() == "identifier" && is_unshadowed_global_object(&node_text(root, source), ctx)
+        if root.kind() == "identifier"
+            && is_unshadowed_global_receiver(&node_text(root, source), ctx)
         {
             return ReceiverType::Unresolved;
         }
@@ -7296,11 +7370,51 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
             None => ReceiverType::NotTracked,
         };
     }
+    if let Some(chain) = property_chain_receiver(&root_name, object, source, ctx) {
+        return chain;
+    }
     if ctx.local_types.contains_key(&root_name) {
         ReceiverType::Unresolved
     } else {
         ReceiverType::NotTracked
     }
+}
+
+/// `root.a.b.m()` with `root` typed: a deferred receiver naming the type of
+/// the property chain `a.b`, which the resolver reads off declared getter
+/// return types. `None` when `root` has no known type or the chain is not
+/// plain property names.
+fn property_chain_receiver(
+    root_name: &str,
+    object: Node<'_>,
+    source: &str,
+    ctx: &Context,
+) -> Option<ReceiverType> {
+    let root_type = match ctx.local_types.get(root_name)? {
+        LocalType::Known(ty) => ty.clone(),
+        LocalType::ReturnOf(f) => ctx.return_types.get(f)?.clone(),
+        _ => return None,
+    };
+    let mut names = Vec::new();
+    let mut current = object;
+    while current.kind() == "member_expression" {
+        let property = current.child_by_field_name("property")?;
+        if property.kind() != "property_identifier" {
+            return None;
+        }
+        names.push(node_text(property, source));
+        current = current.child_by_field_name("object")?;
+    }
+    names.reverse();
+    let (first, rest) = names.split_first()?;
+    if names.len() > MAX_DEFERRED_DEPTH {
+        return None;
+    }
+    let mut call = DeferredReturn::on_type(&root_type, first, false, false);
+    for name in rest {
+        call = DeferredReturn::on_call(call, name, false);
+    }
+    Some(ReceiverType::Deferred(call))
 }
 
 /// The element type of `container[index]` when `container` is `this.field`
@@ -8557,6 +8671,21 @@ client.sayHello({ name: "world" }, () => {});
             .collect();
         assert_eq!(hits.len(), 1, "expected one CALLS -> {target}");
         hits[0].source_qualname.clone().unwrap()
+    }
+
+    #[test]
+    fn global_receiver_lists_do_not_overlap() {
+        // `JS_TS_GLOBAL_CALLABLES` (constructible/callable globals) and
+        // `JS_TS_GLOBAL_NAMESPACES` (never called themselves) together are
+        // the global receivers; an entry in both would be redundant.
+        for name in super::JS_TS_GLOBAL_NAMESPACES {
+            assert!(
+                !super::JS_TS_GLOBAL_CALLABLES.contains(name),
+                "{name} is in both global lists"
+            );
+        }
+        assert!(super::JS_TS_GLOBAL_NAMESPACES.contains(&"JSON"));
+        assert!(super::JS_TS_GLOBAL_CALLABLES.contains(&"Promise"));
     }
 
     #[test]

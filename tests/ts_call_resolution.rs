@@ -8,7 +8,6 @@ mod common;
 
 use common::call_targets;
 use lidx::indexer::Indexer;
-use std::path::PathBuf;
 
 fn sorted(mut v: Vec<String>) -> Vec<String> {
     v.sort();
@@ -257,19 +256,6 @@ fn super_calls_construct_the_base_and_aliased_bases_resolve() {
     );
 }
 
-fn indexed(label: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Indexer) {
-    let tmp = tempfile::Builder::new()
-        .prefix(&format!("lidx-{label}-"))
-        .tempdir()
-        .unwrap();
-    let root = tmp.path().to_path_buf();
-    common::write_files(&root, files);
-    let db_path = root.join(".lidx").join(".lidx.sqlite");
-    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
-    indexer.reindex().unwrap();
-    (tmp, root, indexer)
-}
-
 /// `kind` of the symbol the first `CALLS` edge leaving `caller` is bound to.
 fn target_kind(indexer: &Indexer, caller: &str) -> Option<String> {
     let gv = indexer.db().current_graph_version().unwrap();
@@ -302,7 +288,7 @@ fn incremental_merged_declaration_follows_target_edits() {
         ("src/caller.ts", caller),
         ("src/local.ts", local),
     ];
-    let (_tmp, root, mut indexer) = indexed("ts-merge-inc", &files);
+    let (_tmp, root, mut indexer) = common::live_indexer("lidx-ts-merge-inc-", &files);
     for caller in ["src/caller.run", "src/local.localRun"] {
         assert_eq!(target_kind(&indexer, caller).as_deref(), Some("function"));
     }
@@ -351,7 +337,7 @@ fn incremental_static_member_follows_target_edits() {
         ("src/caller.ts", caller),
         ("src/own.ts", own),
     ];
-    let (_tmp, root, mut indexer) = indexed("ts-static-inc", &files);
+    let (_tmp, root, mut indexer) = common::live_indexer("lidx-ts-static-inc-", &files);
     let resolved = |snap: &std::collections::BTreeSet<common::golden::EdgeKey>, src: &str| {
         snap.iter()
             .find(|e| e.source_qualname == src && e.kind == "CALLS" && e.target_qualname.is_some())
@@ -397,4 +383,139 @@ fn incremental_static_member_follows_target_edits() {
     );
     let (_ft, fresh) = common::index_files(&files);
     common::assert_matches_fresh(&snap, &fresh);
+}
+
+/// Sorted `kind`s of the symbols the `edge_kind` edges leaving `caller` bind.
+fn target_kinds(files: &[(&str, &str)], caller: &str, edge_kind: &str) -> Vec<String> {
+    let (_tmp, root, db_path) = common::index_repo("lidx-ts-kinds-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.kind FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = ? AND s.qualname = ?",
+        )
+        .unwrap();
+    let kinds = stmt
+        .query_map(rusqlite::params![gv, edge_kind, caller], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    sorted(kinds)
+}
+
+const LOCAL_SHADOW: &str = r#"function helper() { return 1; }
+export function localConst() {
+  const helper = () => 2;
+  return helper();
+}
+export function param(helper: () => number) {
+  return helper();
+}
+export function viaModule() {
+  return helper();
+}
+"#;
+
+#[test]
+fn a_local_binding_shadows_a_module_declaration() {
+    let f = [("src/shadow2.ts", LOCAL_SHADOW)];
+    assert!(call_targets(&f, "src/shadow2.localConst").is_empty());
+    assert!(call_targets(&f, "src/shadow2.param").is_empty());
+    assert_eq!(
+        call_targets(&f, "src/shadow2.viaModule"),
+        ["src/shadow2.helper"]
+    );
+}
+
+const POSITIONS: &str = r#"type DIRTY = { status: string };
+const DIRTY = (value: number): DIRTY => ({ status: String(value) });
+interface Shape { n: number }
+class Shape { n = 0 }
+interface Counter { n: number }
+class Counter { n = 0 }
+class Sub extends Counter {}
+class Impl implements Shape { n = 1 }
+interface Wide extends Shape { m: number }
+export function typed(d: DIRTY, s: Shape) {
+  return [d, s];
+}
+export function called() {
+  DIRTY(1);
+  return new Shape();
+}
+"#;
+
+#[test]
+fn merged_declarations_bind_the_half_the_position_means() {
+    let f = [("src/pos.ts", POSITIONS)];
+    // Type annotations reach the type half ...
+    assert_eq!(
+        target_kinds(&f, "src/pos.typed", "USES"),
+        ["interface", "type"]
+    );
+    // ... calls and `new` the value half.
+    assert_eq!(
+        target_kinds(&f, "src/pos.called", "CALLS"),
+        ["class", "function"]
+    );
+    // `class extends` is a value position, `implements` and an interface's
+    // `extends` take the type half.
+    assert_eq!(target_kinds(&f, "src/pos.Sub", "EXTENDS"), ["class"]);
+    assert_eq!(
+        target_kinds(&f, "src/pos.Impl", "IMPLEMENTS"),
+        ["interface"]
+    );
+    assert_eq!(target_kinds(&f, "src/pos.Wide", "EXTENDS"), ["interface"]);
+}
+
+const CHAIN_REQ: &str = r#"export class HonoRequest {
+  header(name: string): string | undefined { return name; }
+  json<T>(): Promise<T> { return Promise.resolve({} as T); }
+}
+export class Decoy {
+  header(name: string): string { return name; }
+  json(): number { return 1; }
+}
+"#;
+const CHAIN_CTX: &str = r#"import { HonoRequest } from './req';
+export class Context {
+  get req(): HonoRequest { return new HonoRequest(); }
+  get raw(): Context { return this; }
+  header = (name: string): void => {};
+  json = (o: unknown): void => {};
+}
+"#;
+const CHAIN_USE: &str = r#"import type { Context } from './ctx';
+export async function handler(c: Context) {
+  const a = c.req.header('x');
+  const b = await c.req.json<{ name: string }>();
+  const d = (await c.raw.req.json<number>());
+  return [a, b, d];
+}
+export const arrow = (c: Context) => c.req.header('y');
+"#;
+
+#[test]
+fn typed_parameter_getter_chains_bind_through_declared_return_types() {
+    let f = [
+        ("src/req.ts", CHAIN_REQ),
+        ("src/ctx.ts", CHAIN_CTX),
+        ("src/use.ts", CHAIN_USE),
+    ];
+    let t = sorted(call_targets(&f, "src/use.handler"));
+    assert_eq!(
+        t,
+        [
+            "src/req.HonoRequest.header",
+            "src/req.HonoRequest.json",
+            "src/req.HonoRequest.json"
+        ]
+    );
+    assert_eq!(
+        call_targets(&f, "src/use.arrow"),
+        ["src/req.HonoRequest.header"]
+    );
 }

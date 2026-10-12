@@ -1136,6 +1136,9 @@ pub(crate) struct Resolver<'c> {
     /// Simple name of the current call's known receiver type, if any --
     /// narrows same-arity extension-method overloads.
     call_receiver: Option<String>,
+    /// Which half of a TypeScript merged declaration the current reference
+    /// means; see [`MergedHalf`].
+    merged_half: MergedHalf,
     /// Lookup scope of the current call's known receiver type (C#).
     call_scope: TypeScope,
     /// Lazily resolved `files.id` of the single synthetic external
@@ -1167,6 +1170,7 @@ impl<'c> Resolver<'c> {
             saw_private: false,
             arity: None,
             call_receiver: None,
+            merged_half: MergedHalf::Value,
             call_scope: TypeScope::default(),
             external_file_id: None,
             repo_entity_memo: HashMap::new(),
@@ -1305,6 +1309,7 @@ impl<'c> Resolver<'c> {
             .filter(|ty| !ty.is_empty())
             .map(|ty| simple_type_name(ty).to_string());
         self.call_scope = r.receiver_scope.cloned().unwrap_or_default();
+        self.merged_half = self.merged_half_for(r)?;
         let resolution = if name_only {
             self.resolve_name_only(r)?
         } else {
@@ -1425,6 +1430,26 @@ impl<'c> Resolver<'c> {
             .iter()
             .filter(|c| c.kind == "method" && arity_admits(arity, &c.kind, c.signature.as_deref()));
         Ok(exactly_one(admitted).map(|c| c.id))
+    }
+
+    /// The [`MergedHalf`] `r` means (only consulted for JS/TS merges).
+    fn merged_half_for(&self, r: &Reference<'_>) -> Result<MergedHalf> {
+        Ok(match r.edge_kind {
+            edge_views::EXTENDS => {
+                let source_is_class = match r.source_symbol_id {
+                    Some(id) => symbol_kind(self.conn, id)?.as_deref() == Some("class"),
+                    None => false,
+                };
+                if source_is_class {
+                    MergedHalf::Value
+                } else {
+                    MergedHalf::Type
+                }
+            }
+            kind if edge_views::contains(edge_views::TYPE_HIERARCHY, kind) => MergedHalf::Type,
+            edge_views::USES if !is_value_reference(r.edge_kind, r.call_shape) => MergedHalf::Type,
+            _ => MergedHalf::Value,
+        })
     }
 
     fn resolve_tiers(
@@ -1727,11 +1752,8 @@ impl<'c> Resolver<'c> {
             }
             return Ok(exactly_one(admitted.into_iter()).map(|c| c.id));
         }
-        let resolved = collapse_exact_candidates(&candidates).or_else(|| {
-            (!types_only)
-                .then(|| merged_declaration_value(&candidates))
-                .flatten()
-        });
+        let resolved = collapse_exact_candidates(&candidates)
+            .or_else(|| merged_declaration(&candidates, self.merged_half));
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
             self.saw_repo_ambiguous = true;
@@ -3200,17 +3222,27 @@ fn collapse_exact_candidates(candidates: &[ExactCandidate]) -> Option<i64> {
     same_kind_min(&by_kind)
 }
 
-/// TypeScript declaration merging: one file declares a name as a type
-/// (`interface`/`type`) and as exactly one value (`const`, `let`/`var`,
-/// `function`, `class`), the `type DIRTY` + `const DIRTY` and
-/// `interface ZodType` + `const ZodType` shapes. A call or `new` reaches the
-/// value; the type half is no competitor. `None` for any other mix,
-/// including a type-only pair, two values, or declarations in several files.
-fn merged_declaration_value(candidates: &[ExactCandidate]) -> Option<i64> {
+/// Which half of a TypeScript merged declaration (`type X` + `const X`,
+/// `interface X` + `class X`) a reference means.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MergedHalf {
+    /// A call, `new`, value reference, or a class's `extends`: the value.
+    Value,
+    /// A type annotation use, `implements`, or an interface's `extends`:
+    /// the `interface`/`type`.
+    Type,
+}
+
+/// One file declares a name as a type (`interface`/`type`) and as exactly
+/// one value (`const`, `let`/`var`, `function`, `class`). The reference's
+/// [`MergedHalf`] picks the half; the other is no competitor. `None` for
+/// any other mix: a type-only or value-only set, two values, or
+/// declarations in several files.
+fn merged_declaration(candidates: &[ExactCandidate], half: MergedHalf) -> Option<i64> {
     const TYPE_KINDS: [&str; 2] = ["interface", "type"];
     const VALUE_KINDS: [&str; 4] = ["const", "variable", "function", "class"];
     let first = candidates.first()?;
-    if !is_js_family_path(&first.path)
+    if !crate::indexer::javascript::is_js_ts_path(&first.path)
         || candidates.iter().any(|c| c.file_id != first.file_id)
         || candidates.iter().any(|c| {
             !TYPE_KINDS.contains(&c.kind.as_str()) && !VALUE_KINDS.contains(&c.kind.as_str())
@@ -3218,25 +3250,22 @@ fn merged_declaration_value(candidates: &[ExactCandidate]) -> Option<i64> {
     {
         return None;
     }
-    let mut values = candidates
+    let values: Vec<&ExactCandidate> = candidates
         .iter()
-        .filter(|c| VALUE_KINDS.contains(&c.kind.as_str()));
-    let value = values.next()?;
-    if values.next().is_some()
-        || !candidates
-            .iter()
-            .any(|c| TYPE_KINDS.contains(&c.kind.as_str()))
-    {
+        .filter(|c| VALUE_KINDS.contains(&c.kind.as_str()))
+        .collect();
+    let types: Vec<(i64, &str)> = candidates
+        .iter()
+        .filter(|c| TYPE_KINDS.contains(&c.kind.as_str()))
+        .map(|c| (c.id, c.kind.as_str()))
+        .collect();
+    if values.len() != 1 || types.is_empty() {
         return None;
     }
-    Some(value.id)
-}
-
-fn is_js_family_path(path: &str) -> bool {
-    matches!(
-        path.rsplit('.').next(),
-        Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs")
-    )
+    match half {
+        MergedHalf::Value => Some(values[0].id),
+        MergedHalf::Type => same_kind_min(&types),
+    }
 }
 
 /// The kinds a C# `partial` declaration can have (each can be split across
