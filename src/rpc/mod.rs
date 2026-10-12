@@ -262,9 +262,10 @@ struct ExplainSymbolParams {
     query: Option<String>,
     max_bytes: Option<usize>,
     /// Sections to include in the response. Accepts any of: "source",
-    /// "callers", "callees", "tests", "implements". Aliases: "dependencies"
+    /// "callers", "callees", "tests", "implements", "other_edges" (opt-in; adds
+    /// `USES` edges and both directions). Aliases: "dependencies"
     /// -> "callees", "dependents" -> "callers", "summary"/"body" -> "source".
-    /// Default: all five sections.
+    /// Default: all five sections except "other_edges".
     sections: Option<Vec<String>>,
     /// Max references returned per section (callers, callees, tests,
     /// implements). Each capped section also reports its true `<section>_total`

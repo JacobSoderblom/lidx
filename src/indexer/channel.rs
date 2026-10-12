@@ -1,3 +1,4 @@
+use crate::edge_views;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use serde_json::json;
 
@@ -307,29 +308,16 @@ pub fn bridge_crossing_allowed(edge_kind: &str, walk: WalkDirection) -> bool {
 ///   itself regardless of whether `target_symbol_id` bound, so the edge (and
 ///   that text) must survive even an Unresolved/Ambiguous outcome.
 pub fn is_bridge_edge_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "RPC_IMPL"
-            | "RPC_CALL"
-            | "RPC_ROUTE"
-            | "HTTP_ROUTE"
-            | "HTTP_CALL"
-            | "CHANNEL_PUBLISH"
-            | "CHANNEL_SUBSCRIBE"
-            | "CONFIG_SOURCE"
-            | "CONFIG_READ"
-            | "CONFIG_BIND"
-            | "XREF"
-    )
+    edge_views::contains(edge_views::BRIDGE, kind)
 }
 
 /// Determine the boundary type string for a bridged edge kind.
 pub fn boundary_type_for_kind(kind: &str) -> &'static str {
     match kind {
-        "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE" => "message_bus",
-        "RPC_CALL" | "RPC_IMPL" | "RPC_ROUTE" => "grpc",
-        "HTTP_CALL" | "HTTP_ROUTE" => "http",
-        "CONFIG_SOURCE" | "CONFIG_READ" => "config",
+        k if edge_views::contains(edge_views::CHANNEL_FAMILY, k) => "message_bus",
+        k if edge_views::contains(edge_views::RPC_FAMILY, k) => "grpc",
+        k if edge_views::contains(edge_views::HTTP_FAMILY, k) => "http",
+        k if edge_views::contains(edge_views::CONFIG_BRIDGE, k) => "config",
         _ => "other",
     }
 }
@@ -429,7 +417,7 @@ mod tests {
         );
         assert_eq!(
             bridge_complement("RPC_ROUTE"),
-            Some(vec!["RPC_IMPL", "RPC_CALL"])
+            Some(edge_views::RPC_BOUND.to_vec())
         );
         assert_eq!(bridge_complement("HTTP_CALL"), Some(vec!["HTTP_ROUTE"]));
         assert_eq!(bridge_complement("HTTP_ROUTE"), Some(vec!["HTTP_CALL"]));
