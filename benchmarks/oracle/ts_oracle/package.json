@@ -1,0 +1,10 @@
+{
+  "name": "lidx-oracle-ts",
+  "private": true,
+  "version": "0.0.0",
+  "description": "tsc-based call-graph oracle for the lidx oracle benchmark",
+  "type": "module",
+  "dependencies": {
+    "typescript": "5.9.3"
+  }
+}
