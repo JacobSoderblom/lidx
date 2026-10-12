@@ -71,6 +71,8 @@ impl Resolver<'_> {
         }
         match value {
             GoValue::Type { place, name } => Ok(Some(go_type_at(place, name))),
+            // Anonymous structs are read in the extractor, never stored.
+            GoValue::Struct(_) => Ok(None),
             GoValue::Seq(inner) => Ok(self
                 .go_eval(inner, depth + 1)?
                 .map(|t| GoType::Seq(Box::new(t)))),
@@ -369,6 +371,11 @@ fn rebind_places(value: &mut GoValue, imports: &GoImports) {
         GoValue::Method { recv, .. } => rebind_places(recv, imports),
         GoValue::Field { owner, .. } => rebind_places(owner, imports),
         GoValue::Seq(inner) | GoValue::Elem(inner) => rebind_places(inner, imports),
+        GoValue::Struct(fields) => {
+            for (_, field) in fields {
+                rebind_places(field, imports);
+            }
+        }
     }
 }
 
@@ -490,16 +497,15 @@ fn signature_results(signature: Option<&str>) -> Vec<String> {
         return Vec::new();
     };
     let results = results.trim();
-    let Some(inner) = results
-        .strip_prefix('(')
-        .and_then(|r| r.strip_suffix(')'))
-    else {
+    let Some(inner) = results.strip_prefix('(').and_then(|r| r.strip_suffix(')')) else {
         return vec![results.to_string()];
     };
     let parts = split_top_level(inner, ',');
     // Named results (`(s *Server, err error)`, `(a, b int)`): every part
     // names something, and a bare name takes the next type.
-    let named = parts.iter().any(|p| split_top_level(p.trim(), ' ').len() > 1);
+    let named = parts
+        .iter()
+        .any(|p| split_top_level(p.trim(), ' ').len() > 1);
     if !named {
         return parts.into_iter().map(|p| p.trim().to_string()).collect();
     }
@@ -534,10 +540,7 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
         }
     }
     parts.push(current);
-    parts
-        .into_iter()
-        .filter(|p| !p.trim().is_empty())
-        .collect()
+    parts.into_iter().filter(|p| !p.trim().is_empty()).collect()
 }
 
 /// `(field name, type text)` of each field in a stored struct signature
@@ -620,19 +623,28 @@ mod tests {
                 name: "Config".into()
             })
         );
-        for text in ["[]int", "map[string]int", "error", "func(int)", "x.Y", "chan Server"] {
+        for text in [
+            "[]int",
+            "map[string]int",
+            "error",
+            "func(int)",
+            "x.Y",
+            "chan Server",
+        ] {
             assert_eq!(canonical_type(text, "srv", &imports), None, "{text}");
         }
         let server = GoType::Repo {
             dir: "srv".into(),
             name: "Server".into(),
         };
-        for text in ["[]*Server", "[4]Server", "map[string][]*Server", "...Server"] {
+        for text in [
+            "[]*Server",
+            "[4]Server",
+            "map[string][]*Server",
+            "...Server",
+        ] {
             let seq = canonical_type(text, "srv", &imports);
-            assert!(
-                matches!(&seq, Some(GoType::Seq(_))),
-                "{text}: {seq:?}"
-            );
+            assert!(matches!(&seq, Some(GoType::Seq(_))), "{text}: {seq:?}");
         }
         assert_eq!(
             canonical_type("[]*Server", "srv", &imports),

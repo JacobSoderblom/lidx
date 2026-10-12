@@ -5,8 +5,8 @@ use crate::indexer::config;
 use crate::indexer::extract::{
     CallShape, EdgeInput, ExtractedFile, GoDeferred, GoValue, ReceiverType, SymbolInput,
 };
-use crate::indexer::go_types::LocalTypes;
 use crate::indexer::go_repo::{GoRepo, ImportTarget};
+use crate::indexer::go_types::LocalTypes;
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
@@ -180,9 +180,10 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             if edge.kind == "IMPORTS"
                 && let Some(target) = edge.target_qualname.as_ref()
             {
-                let place = match repo.has_modules().then(|| {
-                    repo.resolve_import(repo_root, file_rel_path, target)
-                }) {
+                let place = match repo
+                    .has_modules()
+                    .then(|| repo.resolve_import(repo_root, file_rel_path, target))
+                {
                     Some(ImportTarget::InRepo(dir)) => format!("{GO_IMPORTED_PACKAGE}{dir}"),
                     _ => target.clone(),
                 };
@@ -786,7 +787,7 @@ fn emit_calls_edge(
     match callee_parts(function_node, source) {
         // `pkg.Func(..)` through an import (not rebound locally): the call is
         // bound by the import path, never by the name `Func` alone.
-        Some((Some(base), name)) if !ctx.bound_names.contains(&base) => {
+        Some((Some(base), name)) if !ctx.types.is_bound(&base, function_node.start_byte()) => {
             if let Some(path) = ctx.imports.get(&base) {
                 target = Some(format!("{path}.{name}"));
                 import_candidates.push(format!("{path}|{name}"));
@@ -874,7 +875,6 @@ fn emit_receiver_call(
         && !ctx
             .types
             .is_bound(&node_text(operand, source), operand.start_byte())
-        && !ctx.bound_names.contains(&node_text(operand, source))
     {
         return false;
     }
@@ -1114,12 +1114,7 @@ fn bind_deferred_places(
     file_rel_path: &str,
     edges: &mut [EdgeInput],
 ) {
-    fn bind(
-        value: &mut GoValue,
-        repo: &GoRepo,
-        repo_root: &Path,
-        file_rel_path: &str,
-    ) {
+    fn bind(value: &mut GoValue, repo: &GoRepo, repo_root: &Path, file_rel_path: &str) {
         match value {
             GoValue::Type { place, .. } | GoValue::Func { place, .. } => {
                 if !place.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE])
@@ -1136,6 +1131,11 @@ fn bind_deferred_places(
                 bind(inner, repo, repo_root, file_rel_path)
             }
             GoValue::Var { .. } => {}
+            GoValue::Struct(fields) => {
+                for (_, field) in fields {
+                    bind(field, repo, repo_root, file_rel_path);
+                }
+            }
         }
     }
     for edge in edges.iter_mut() {
@@ -2149,7 +2149,11 @@ fn struct_signature(struct_node: Node<'_>, source: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" ");
         // An anonymous struct, interface or function type names no type.
-        let ty = if ty.contains(['{', '(']) { "?".to_string() } else { ty };
+        let ty = if ty.contains(['{', '(']) {
+            "?".to_string()
+        } else {
+            ty
+        };
         let mut names = field.walk();
         let names: Vec<String> = field
             .children_by_field_name("name", &mut names)
@@ -2343,6 +2347,8 @@ var (
             targets("pkg/file.F"),
             [
                 "C",
+                // `t` is a parameter of the local type `T`.
+                "T.Run",
                 "a.B",
                 "pkg/file.InDefer",
                 "pkg/file.InGo",
@@ -2350,7 +2356,6 @@ var (
                 "pkg/file.Inner",
                 "pkg/file.Map",
                 "pkg/file.Outer",
-                "t.Run",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -2383,6 +2388,129 @@ var (
             .filter(|e| e.kind == "CALLS")
             .map(|e| (e.target_qualname, e.import_candidates))
             .collect()
+    }
+
+    /// `(method name or target, package candidates, receiver column)` of the
+    /// method calls in `source`, in source order.
+    fn receiver_calls(source: &str) -> Vec<(String, Vec<String>, String)> {
+        let mut extractor = GoExtractor::new().unwrap();
+        let out = extractor.extract(source, "pkg/file").unwrap();
+        out.edges
+            .into_iter()
+            .filter(|e| e.kind == "CALLS")
+            .filter(|e| e.detail.is_some() || !e.import_candidates.is_empty())
+            .map(|e| {
+                let columns = e.receiver_type.to_columns();
+                let receiver = match (&columns.receiver_type, &columns.deferred) {
+                    (Some(t), _) if t.is_empty() => "untyped".to_string(),
+                    (_, Some(_)) => "deferred".to_string(),
+                    _ => "typed".to_string(),
+                };
+                (
+                    e.target_qualname.unwrap_or_default(),
+                    e.import_candidates,
+                    receiver,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn receivers_are_typed_from_their_declarations() {
+        let source = r#"
+package pkg
+
+import "net"
+
+type S struct{ c net.Conn }
+
+func (s *S) M(p *Other, q net.Conn, n int) {
+    s.A()
+    p.B()
+    q.C()
+    n.D()
+    s.c.E()
+    a := &S{}
+    a.F()
+    var b S
+    b.G()
+    c := x.(*S)
+    c.H()
+    switch v := y.(type) {
+    case *S:
+        v.I()
+    case *Other, *S:
+        v.J()
+    }
+}
+"#;
+        let calls = receiver_calls(source);
+        let call = |name: &str| calls.iter().find(|(t, ..)| t.ends_with(name)).unwrap();
+        assert_eq!(call("S.A").1, ["=pkg|S.A"]);
+        assert_eq!(call("Other.B").1, ["=pkg|Other.B"]);
+        assert_eq!(call("net.Conn.C").1, ["net|Conn.C"]);
+        // A predeclared type has no methods of the repo's.
+        assert_eq!((call("D").1.len(), call("D").2.as_str()), (0, "untyped"));
+        // A field is typed through the struct declaration: deferred.
+        assert_eq!(call("E").2, "deferred");
+        assert_eq!(call("S.F").1, ["=pkg|S.F"]);
+        assert_eq!(call("S.G").1, ["=pkg|S.G"]);
+        assert_eq!(call("S.H").1, ["=pkg|S.H"]);
+        assert_eq!(call("S.I").1, ["=pkg|S.I"]);
+        // Two types in one case: the variable has the switch value's type.
+        assert_eq!(call("J").2, "untyped");
+    }
+
+    #[test]
+    fn a_shadowing_binding_hides_the_outer_type() {
+        let source = r#"
+package pkg
+
+func F(s *S) {
+    s.A()
+    {
+        s := load()
+        s.B()
+    }
+    for s := range items {
+        s.C()
+    }
+    s.D()
+}
+"#;
+        let calls = receiver_calls(source);
+        let by = |name: &str| {
+            calls
+                .iter()
+                .find(|(t, ..)| t == name || t.ends_with(&format!(".{name}")))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(by("S.A").1, ["=pkg|S.A"]);
+        assert_eq!(by("B").2, "deferred");
+        assert_eq!(by("C").2, "untyped");
+        assert_eq!(by("S.D").1, ["=pkg|S.D"]);
+    }
+
+    #[test]
+    fn generic_receivers_are_methods_of_the_type_without_its_arguments() {
+        let mut extractor = GoExtractor::new().unwrap();
+        let out = extractor
+            .extract(
+                "package pkg\n\ntype Set[T comparable] struct{ m map[T]bool }\n\nfunc (s *Set[T]) Add(v T) { s.Has(v) }\n",
+                "pkg/file",
+            )
+            .unwrap();
+        let names: Vec<&str> = out.symbols.iter().map(|s| s.qualname.as_str()).collect();
+        assert!(names.contains(&"pkg/file.Set.Add"), "{names:?}");
+        let call = out.edges.iter().find(|e| e.kind == "CALLS").unwrap();
+        assert_eq!(call.import_candidates, ["=pkg|Set.Has"]);
+        let set = out
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "pkg/file.Set")
+            .unwrap();
+        assert_eq!(set.signature.as_deref(), Some("{m map[T]bool}"));
     }
 
     const IMPORTING: &str = r#"
@@ -2427,8 +2555,9 @@ func F(lib2 int) {
                 c("example.com/m.Root", &[">|Root"]),
                 // A bare name is a function of the calling file's package.
                 c("pkg/file.Sibling", &["=pkg|Sibling"]),
-                // A local receiver is no import; a called local is no function.
-                c("lib2.X", &[]),
+                // A local receiver is no import and an `int` has no methods:
+                // only the method's name is kept, and it binds nothing.
+                c("X", &[]),
                 (None, vec![]),
             ]
         );

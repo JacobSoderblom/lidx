@@ -302,6 +302,10 @@ pub enum GoValue {
     Seq(Box<GoValue>),
     /// An element of this slice, array or map (`xs[i]`, a `range` value).
     Elem(Box<GoValue>),
+    /// An anonymous struct type and its typed fields (a table-driven test's
+    /// `[]struct{ name string; cmd *Command }`). Read where it is written:
+    /// the resolver never sees one.
+    Struct(Vec<(String, GoValue)>),
 }
 
 impl GoValue {
@@ -312,6 +316,7 @@ impl GoValue {
             GoValue::Method { recv, .. } => 1 + recv.depth(),
             GoValue::Field { owner, .. } => 1 + owner.depth(),
             GoValue::Seq(inner) | GoValue::Elem(inner) => 1 + inner.depth(),
+            GoValue::Struct(fields) => 1 + fields.iter().map(|(_, v)| v.depth()).max().unwrap_or(0),
         }
     }
 

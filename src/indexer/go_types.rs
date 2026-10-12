@@ -199,7 +199,8 @@ impl LocalTypes {
             }
             "var_spec" => {
                 let mut cursor = node.walk();
-                let names: Vec<Node<'_>> = node.children_by_field_name("name", &mut cursor).collect();
+                let names: Vec<Node<'_>> =
+                    node.children_by_field_name("name", &mut cursor).collect();
                 let declared = node
                     .child_by_field_name("type")
                     .map(|t| self.type_from(t, source));
@@ -253,13 +254,7 @@ impl LocalTypes {
     }
 
     /// `a, b := x, y` / `a, b := f()` / `a := x`.
-    fn bind_pairs(
-        &mut self,
-        decl: Node<'_>,
-        left: Node<'_>,
-        right: Node<'_>,
-        source: &str,
-    ) {
+    fn bind_pairs(&mut self, decl: Node<'_>, left: Node<'_>, right: Node<'_>, source: &str) {
         let mut cursor = left.walk();
         let names: Vec<Node<'_>> = left.named_children(&mut cursor).collect();
         for (i, name) in names.iter().enumerate() {
@@ -325,10 +320,7 @@ impl LocalTypes {
         self.bindings
             .iter()
             .filter(|b| {
-                b.name == name
-                    && b.visible_from <= pos
-                    && b.scope_start <= pos
-                    && pos < b.scope_end
+                b.name == name && b.visible_from <= pos && b.scope_start <= pos && pos < b.scope_end
             })
             .max_by_key(|b| (b.scope_start, b.visible_from))
     }
@@ -360,6 +352,26 @@ impl LocalTypes {
             "slice_type" | "array_type" | "implicit_length_array_type" => {
                 let element = self.type_from(node.child_by_field_name("element")?, source)?;
                 Some(GoValue::Seq(Box::new(element)))
+            }
+            "struct_type" => {
+                let list = node
+                    .named_children(&mut node.walk())
+                    .find(|c| c.kind() == "field_declaration_list")?;
+                let mut fields = Vec::new();
+                let mut cursor = list.walk();
+                for field in list.named_children(&mut cursor) {
+                    let Some(ty) = field
+                        .child_by_field_name("type")
+                        .and_then(|t| self.type_from(t, source))
+                    else {
+                        continue;
+                    };
+                    let mut names = field.walk();
+                    for name in field.children_by_field_name("name", &mut names) {
+                        fields.push((node_text(name, source), ty.clone()));
+                    }
+                }
+                Some(GoValue::Struct(fields))
             }
             "map_type" => {
                 let element = self.type_from(node.child_by_field_name("value")?, source)?;
@@ -447,6 +459,12 @@ impl LocalTypes {
                 let operand = node.child_by_field_name("operand")?;
                 let name = node_text(node.child_by_field_name("field")?, source);
                 let owner = self.value_type(operand, 0, source)?;
+                if let GoValue::Struct(fields) = &owner {
+                    return fields
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, v)| v.clone());
+                }
                 if owner.depth() >= crate::indexer::extract::MAX_DEFERRED_DEPTH {
                     return None;
                 }
