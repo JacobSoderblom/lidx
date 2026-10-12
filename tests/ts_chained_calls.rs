@@ -106,7 +106,12 @@ fn chained_calls_resolve_through_declared_return_types() {
     ] {
         let call = find(&calls, target);
         assert!(call.bound, "{name} not bound: {calls:?}");
-        assert_eq!(call.receiver_type.as_deref(), Some("Builder"), "{call:?}");
+        // `Builder` is declared in this file, so the type is pinned to it.
+        assert_eq!(
+            call.receiver_type.as_deref(),
+            Some("\u{2}b.Builder"),
+            "{call:?}"
+        );
         // Bound by the resolver's receiver-type tier, not by name.
         assert_eq!(
             call.resolution_kind.as_deref(),

@@ -1,0 +1,1011 @@
+{
+  "name": "hono",
+  "repo": {
+    "url": "https://github.com/honojs/hono",
+    "commit": "5f36607f67aa9357887337328ac84a1c1d48dc04"
+  },
+  "questions": [
+    {
+      "id": "ts-callers-splitpath",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/url.ts",
+        "line": 8
+      },
+      "expect": [
+        {
+          "file": "src/router/trie-router/node.ts",
+          "line": 93
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 16
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 19
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 19
+        }
+      ],
+      "tags": [
+        "named-import",
+        "tests"
+      ],
+      "note": "git grep -nw splitPath: 8 hits = 1 def, 2 imports (node.ts:4, url.test.ts:10), 1 'it(' title string (url.test.ts:15), 4 calls. url.ts:19 is inside splitRoutingPath."
+    },
+    {
+      "id": "ts-callers-splitroutingpath",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/url.ts",
+        "line": 16
+      },
+      "expect": [
+        {
+          "file": "src/helper/route/index.ts",
+          "line": 120
+        },
+        {
+          "file": "src/router/trie-router/node.ts",
+          "line": 31
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 24
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 27
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 30
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 33
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 36
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 39
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 42
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 45
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 48
+        }
+      ],
+      "tags": [
+        "named-import",
+        "tests",
+        "sibling-name-trap"
+      ],
+      "note": "git grep -nw splitRoutingPath; excluded imports and 'it(' string at url.test.ts:23. Do not confuse with splitPath (url.ts:8)."
+    },
+    {
+      "id": "ts-callers-getpattern",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/url.ts",
+        "line": 51
+      },
+      "expect": [
+        {
+          "file": "src/helper/route/index.ts",
+          "line": 125
+        },
+        {
+          "file": "src/router/trie-router/node.ts",
+          "line": 39
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 54
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 59
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 64
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 69
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 74
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 79
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 84
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 89
+        }
+      ],
+      "tags": [
+        "named-import",
+        "tests"
+      ],
+      "note": "git grep -nw getPattern; excluded imports (route/index.ts:4, node.ts:4, url.test.ts:5) and describe title at url.test.ts:52."
+    },
+    {
+      "id": "ts-callers-checkoptionalparameter",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/url.ts",
+        "line": 184
+      },
+      "expect": [
+        {
+          "file": "src/router/linear-router/router.ts",
+          "line": 17
+        },
+        {
+          "file": "src/router/reg-exp-router/router.ts",
+          "line": 114
+        },
+        {
+          "file": "src/router/trie-router/router.ts",
+          "line": 10
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 240
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 244
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 245
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 246
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 247
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 248
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 249
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 250
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 255
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 259
+        }
+      ],
+      "tags": [
+        "named-import",
+        "tests",
+        "cross-router"
+      ],
+      "note": "git grep -nw checkOptionalParameter: 3 router call sites (one per router impl) + 10 test calls; imports and describe/it titles excluded."
+    },
+    {
+      "id": "ts-callers-trydecodeuricomponent",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/url.ts",
+        "line": 221
+      },
+      "expect": [
+        {
+          "file": "src/request.ts",
+          "line": 106
+        },
+        {
+          "file": "src/request.ts",
+          "line": 116
+        },
+        {
+          "file": "src/utils/cookie.ts",
+          "line": 136
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 229
+        }
+      ],
+      "tags": [
+        "named-import",
+        "cross-module",
+        "private-method-caller"
+      ],
+      "note": "git grep -nw tryDecodeURIComponent: 2 in request.ts (one in HonoRequest.param, one in private #getAllDecodedParams), 1 in cookie.ts via './url', 1 in url.ts _decodeURI; imports excluded; no tests."
+    },
+    {
+      "id": "ts-callers-getpathnostrict",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/url.ts",
+        "line": 154
+      },
+      "expect": [
+        {
+          "file": "src/hono-base.ts",
+          "line": 175
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 195
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 197
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 202
+        }
+      ],
+      "tags": [
+        "function-reference",
+        "tests"
+      ],
+      "note": "hono-base.ts:175 passes getPathNoStrict as a value (this.getPath = ... : getPathNoStrict) - counted as a method-group-style reference; 3 test calls in url.test.ts. Import lines excluded. Note: this.getPath(...) calls at hono-base.ts:372,422 are property calls, not attributed."
+    },
+    {
+      "id": "ts-callers-findtargethandler",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/handler.ts",
+        "line": 9
+      },
+      "expect": [
+        {
+          "file": "src/helper/dev/index.ts",
+          "line": 29
+        },
+        {
+          "file": "src/helper/ssg/utils.ts",
+          "line": 70
+        },
+        {
+          "file": "src/utils/handler.ts",
+          "line": 13
+        }
+      ],
+      "tags": [
+        "recursion",
+        "named-import"
+      ],
+      "note": "git grep -nw findTargetHandler: 2 external callers + self-recursion at handler.ts:13; no tests."
+    },
+    {
+      "id": "ts-callers-bufferToFormData",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/buffer.ts",
+        "line": 106
+      },
+      "expect": [
+        {
+          "file": "src/utils/body.ts",
+          "line": 138
+        },
+        {
+          "file": "src/utils/buffer.test.ts",
+          "line": 112
+        },
+        {
+          "file": "src/utils/buffer.test.ts",
+          "line": 126
+        },
+        {
+          "file": "src/utils/buffer.test.ts",
+          "line": 142
+        },
+        {
+          "file": "src/validator/validator.ts",
+          "line": 120
+        }
+      ],
+      "tags": [
+        "named-import",
+        "tests"
+      ],
+      "note": "git grep -nw bufferToFormData; imports and describe title excluded."
+    },
+    {
+      "id": "ts-callers-mergepath-url",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/url.ts",
+        "line": 171
+      },
+      "expect": [
+        {
+          "file": "src/hono-base.ts",
+          "line": 254
+        },
+        {
+          "file": "src/hono-base.ts",
+          "line": 368
+        },
+        {
+          "file": "src/hono-base.ts",
+          "line": 386
+        },
+        {
+          "file": "src/hono-base.ts",
+          "line": 391
+        },
+        {
+          "file": "src/hono-base.ts",
+          "line": 394
+        },
+        {
+          "file": "src/hono-base.ts",
+          "line": 515
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 209
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 210
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 211
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 212
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 213
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 214
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 215
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 216
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 217
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 218
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 219
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 221
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 222
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 223
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 224
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 225
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 228
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 231
+        },
+        {
+          "file": "src/utils/url.test.ts",
+          "line": 234
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 177
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-module",
+        "tests",
+        "recursion"
+      ],
+      "note": "Same-named mergePath exists in src/client/utils.ts:11 (different signature) and is used only by src/client/client.ts:188 and src/client/utils.test.ts - NOT callers of this one. git grep -nw mergePath, split by import source. url.ts:177 is recursion; url.ts:166-169 are docstring examples."
+    },
+    {
+      "id": "ts-callers-mergepath-client",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/client/utils.ts",
+        "line": 11
+      },
+      "expect": [
+        {
+          "file": "src/client/client.ts",
+          "line": 188
+        },
+        {
+          "file": "src/client/utils.test.ts",
+          "line": 18
+        },
+        {
+          "file": "src/client/utils.test.ts",
+          "line": 19
+        },
+        {
+          "file": "src/client/utils.test.ts",
+          "line": 20
+        },
+        {
+          "file": "src/client/utils.test.ts",
+          "line": 21
+        },
+        {
+          "file": "src/client/utils.test.ts",
+          "line": 22
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-module",
+        "tests"
+      ],
+      "note": "Counterpart of ts-callers-mergepath-url: client.ts imports mergePath from './utils' (client/utils.ts), utils.test.ts imports from './utils'. hono-base.ts and utils/url.test.ts use src/utils/url.ts's version."
+    },
+    {
+      "id": "ts-callers-regexp-node-insert",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/router/reg-exp-router/node.ts",
+        "line": 53
+      },
+      "expect": [
+        {
+          "file": "src/router/reg-exp-router/trie.ts",
+          "line": 17
+        },
+        {
+          "file": "src/router/reg-exp-router/trie.ts",
+          "line": 55
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-class",
+        "field-typed-instance"
+      ],
+      "note": "git grep -nw insert: reg-exp-router Node.insert called via this.#root.insert in Trie.insert (trie.ts:17,55). trie-router Node.insert (trie-router/node.ts:28), Trie.insert (trie.ts:14) and the jsx useCallback local 'insert' are different symbols. No recursion in node.ts."
+    },
+    {
+      "id": "ts-callers-regexp-trie-insert",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/router/reg-exp-router/trie.ts",
+        "line": 14
+      },
+      "expect": [
+        {
+          "file": "src/router/reg-exp-router/router.ts",
+          "line": 62
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-class",
+        "indexed-access-instance"
+      ],
+      "note": "Only caller: this.#tries![method].insert(...) where #tries is Record<string, Trie> (router.ts:52 area). The this.#root.insert calls in trie.ts call Node.insert, not Trie.insert."
+    },
+    {
+      "id": "ts-callers-verifywithjwks",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/jwt/jwt.ts",
+        "line": 198
+      },
+      "expect": [
+        {
+          "file": "src/middleware/jwk/index.test.ts",
+          "line": 40
+        },
+        {
+          "file": "src/middleware/jwk/jwk.ts",
+          "line": 144
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1087
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1123
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1155
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1187
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1237
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1282
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1332
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1382
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1430
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1470
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1511
+        },
+        {
+          "file": "src/utils/jwt/jwt.test.ts",
+          "line": 1519
+        }
+      ],
+      "tags": [
+        "re-export-chain",
+        "object-property-call",
+        "tests"
+      ],
+      "note": "Chain: utils/jwt/jwt.ts -> utils/jwt/index.ts 'Jwt = {sign,verify,decode,verifyWithJwks}' -> middleware/jwk/jwk.ts calls Jwt.verifyWithJwks. middleware/jwt/jwt.ts:187 (export const verifyWithJwks = Jwt.verifyWithJwks) is an alias definition, not a call, and is excluded; middleware/jwt/index.ts re-export excluded. git grep -nw verifyWithJwks; strings/describe titles excluded. Ambiguous value references not listed: utils/jwt/index.ts:7 (object shorthand in Jwt) and middleware/jwt/jwt.ts:187 (alias assignment)."
+    },
+    {
+      "id": "ts-callers-httpexception-getresponse",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/http-exception.ts",
+        "line": 66
+      },
+      "expect": [
+        {
+          "file": "src/adapter/cloudflare-pages/handler.ts",
+          "line": 102
+        },
+        {
+          "file": "src/http-exception.test.ts",
+          "line": 10
+        },
+        {
+          "file": "src/http-exception.test.ts",
+          "line": 26
+        },
+        {
+          "file": "src/http-exception.test.ts",
+          "line": 41
+        }
+      ],
+      "tags": [
+        "class-method",
+        "instanceof-narrowing",
+        "interface-trap"
+      ],
+      "note": "cloudflare-pages/handler.ts:102 is inside 'context.error instanceof HTTPException' so it is HTTPException.getResponse. hono-base.ts:37 (err.getResponse() after \"'getResponse' in err\") goes through the HTTPResponseError interface member (types.ts:114) and per the interface rule is NOT a caller of the class method. hono.test.ts:1534 defines a custom getResponse (declaration, not call)."
+    },
+    {
+      "id": "ts-callers-stringbuffertostring",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/utils/html.ts",
+        "line": 53
+      },
+      "expect": [
+        {
+          "file": "src/helper/html/index.ts",
+          "line": 56
+        },
+        {
+          "file": "src/jsx/base.ts",
+          "line": 134
+        },
+        {
+          "file": "src/jsx/base.ts",
+          "line": 182
+        },
+        {
+          "file": "src/jsx/base.ts",
+          "line": 235
+        },
+        {
+          "file": "src/jsx/jsx-runtime.ts",
+          "line": 48
+        }
+      ],
+      "tags": [
+        "named-import",
+        "cross-module"
+      ],
+      "note": "git grep -nw stringBufferToString: 5 calls + 3 imports + 1 def; no tests."
+    },
+    {
+      "id": "ts-callers-new-httpexception",
+      "lang": "typescript",
+      "kind": "callers",
+      "target": {
+        "file": "src/http-exception.ts",
+        "line": 46
+      },
+      "expect": [
+        {
+          "file": "src/adapter/cloudflare-pages/handler.test.ts",
+          "line": 167
+        },
+        {
+          "file": "src/adapter/cloudflare-pages/handler.test.ts",
+          "line": 186
+        },
+        {
+          "file": "src/helper/proxy/index.ts",
+          "line": 70
+        },
+        {
+          "file": "src/hono.test.ts",
+          "line": 1499
+        },
+        {
+          "file": "src/hono.test.ts",
+          "line": 1513
+        },
+        {
+          "file": "src/hono.test.ts",
+          "line": 1556
+        },
+        {
+          "file": "src/http-exception.test.ts",
+          "line": 7
+        },
+        {
+          "file": "src/http-exception.test.ts",
+          "line": 22
+        },
+        {
+          "file": "src/http-exception.test.ts",
+          "line": 36
+        },
+        {
+          "file": "src/middleware/basic-auth/index.ts",
+          "line": 151
+        },
+        {
+          "file": "src/middleware/bearer-auth/index.ts",
+          "line": 153
+        },
+        {
+          "file": "src/middleware/body-limit/index.ts",
+          "line": 57
+        },
+        {
+          "file": "src/middleware/csrf/index.ts",
+          "line": 146
+        },
+        {
+          "file": "src/middleware/ip-restriction/index.ts",
+          "line": 232
+        },
+        {
+          "file": "src/middleware/jwk/jwk.ts",
+          "line": 87
+        },
+        {
+          "file": "src/middleware/jwk/jwk.ts",
+          "line": 127
+        },
+        {
+          "file": "src/middleware/jwk/jwk.ts",
+          "line": 157
+        },
+        {
+          "file": "src/middleware/jwt/jwt.ts",
+          "line": 87
+        },
+        {
+          "file": "src/middleware/jwt/jwt.ts",
+          "line": 124
+        },
+        {
+          "file": "src/middleware/jwt/jwt.ts",
+          "line": 146
+        },
+        {
+          "file": "src/middleware/timeout/index.test.ts",
+          "line": 15
+        },
+        {
+          "file": "src/middleware/timeout/index.test.ts",
+          "line": 19
+        },
+        {
+          "file": "src/middleware/timeout/index.ts",
+          "line": 12
+        },
+        {
+          "file": "src/request.ts",
+          "line": 488
+        },
+        {
+          "file": "src/validator/validator.ts",
+          "line": 102
+        },
+        {
+          "file": "src/validator/validator.ts",
+          "line": 125
+        }
+      ],
+      "tags": [
+        "constructor",
+        "tests",
+        "multiline"
+      ],
+      "note": "Constructor calls via 'new HTTPException(' enumerated with git grep -n 'new HTTPException' over the whole repo; the doc-comment hit at http-exception.ts:40 excluded -> 26 sites (incl. tests). No subclass (extends HTTPException) exists. Target loc is the class declaration; 'new X()' counts as a call of the class/constructor."
+    },
+    {
+      "id": "ts-dead-helpers",
+      "lang": "typescript",
+      "kind": "dead",
+      "scope": {
+        "path": "src/helper",
+        "lang": "typescript"
+      },
+      "live": [
+        {
+          "file": "src/helper/dev/index.ts",
+          "line": 76,
+          "note": "referenced by tests (dev/index.test.ts, preset/quick.test.ts, tiny.test.ts) and docs"
+        },
+        {
+          "file": "src/helper/dev/index.ts",
+          "line": 39,
+          "note": "referenced by tests"
+        },
+        {
+          "file": "src/helper/cookie/index.ts",
+          "line": 130
+        },
+        {
+          "file": "src/helper/cookie/index.ts",
+          "line": 141
+        },
+        {
+          "file": "src/helper/factory/index.ts",
+          "line": 363
+        }
+      ],
+      "dead": [
+        {
+          "file": "src/helper/css/common.ts",
+          "line": 21
+        },
+        {
+          "file": "src/helper/ssg/middleware.ts",
+          "line": 13
+        }
+      ],
+      "note": "Method: for every top-level export/class/const/method in src/**, counted word occurrences (excluding comment lines) across ALL .ts/.tsx/.js/.mjs files; IS_CSS_ESCAPED and SSG_DISABLED_RESPONSE appear only on their declaration line anywhere in the repo (git grep -nw). The 'live' symbols are exported public API with zero non-test references in src/ but referenced from tests/docs, so they are NOT dead (definition: dead = no reference anywhere in repo)."
+    },
+    {
+      "id": "ts-dead-utils",
+      "lang": "typescript",
+      "kind": "dead",
+      "scope": {
+        "path": "src/utils",
+        "lang": "typescript"
+      },
+      "live": [
+        {
+          "file": "src/utils/buffer.ts",
+          "line": 98,
+          "note": "test-only reference (buffer.test.ts)"
+        },
+        {
+          "file": "src/utils/filepath.ts",
+          "line": 12,
+          "note": "test-only reference (filepath.test.ts)"
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 140,
+          "note": "test-only reference (url.test.ts)"
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 81
+        },
+        {
+          "file": "src/utils/html.ts",
+          "line": 129
+        },
+        {
+          "file": "src/utils/concurrent.ts",
+          "line": 12
+        },
+        {
+          "file": "src/utils/handler.ts",
+          "line": 9
+        }
+      ],
+      "dead": [
+        {
+          "file": "src/utils/types.ts",
+          "line": 10
+        },
+        {
+          "file": "src/utils/http-status.ts",
+          "line": 58
+        }
+      ],
+      "note": "Dead are type aliases NotEqual (types.ts:10) and UnOfficalStatusCode (http-status.ts:58, deprecated typo alias): git grep -nw shows only the declaration. Live: tryDecode used url.ts:104,222; resolveCallbackSync used html/index.ts:54, jsx/base.ts:233; createPool used ssg.ts:223; findTargetHandler used dev/index.ts:29, ssg/utils.ts:70; others are test-only references. InterfaceToType (types.ts:102) deliberately omitted: only self-recursive reference. type-alias dead entries."
+    },
+    {
+      "id": "ts-trace-hono-request",
+      "lang": "typescript",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "src/hono-base.ts",
+        "line": 503
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "src/hono-base.ts",
+          "line": 483
+        },
+        {
+          "file": "src/hono-base.ts",
+          "line": 410
+        },
+        {
+          "file": "src/hono-base.ts",
+          "line": 403
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 171
+        },
+        {
+          "file": "src/compose.ts",
+          "line": 15
+        },
+        {
+          "file": "src/context.ts",
+          "line": 352
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "src/client/utils.ts",
+          "line": 11
+        }
+      ],
+      "note": "Hono.request (class property arrow, 503). Hop1: this.fetch (483), mergePath from ./utils/url (171). Hop2: this.#dispatch (410). Hop3: compose (compose.ts:15), #handleError (403), new Context -> constructor (context.ts:352). this.getPath/this.router.match are property/interface dispatch and deliberately not required. Trap: client/utils.ts mergePath has the same name."
+    },
+    {
+      "id": "ts-trace-servestatic",
+      "lang": "typescript",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "src/middleware/serve-static/index.ts",
+        "line": 37
+      },
+      "max_hops": 2,
+      "must_reach": [
+        {
+          "file": "src/utils/url.ts",
+          "line": 104
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 81
+        },
+        {
+          "file": "src/utils/mime.ts",
+          "line": 6
+        },
+        {
+          "file": "src/middleware/serve-static/path.ts",
+          "line": 5
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "src/utils/mime.ts",
+          "line": 18
+        },
+        {
+          "file": "src/utils/filepath.ts",
+          "line": 12
+        },
+        {
+          "file": "src/utils/url.ts",
+          "line": 221
+        }
+      ],
+      "note": "The returned closure's calls are attributed to serveStatic. Hop1: tryDecodeURI (url.ts:104), getMimeType (mime.ts:6), defaultJoin (path.ts:5, referenced as 'options.join ?? defaultJoin'). Hop2: tryDecode (url.ts:81) from tryDecodeURI. Wrong-but-plausible: getExtension (sibling in mime.ts), getFilePath (filepath.ts, not used by this middleware), tryDecodeURIComponent."
+    }
+  ]
+}

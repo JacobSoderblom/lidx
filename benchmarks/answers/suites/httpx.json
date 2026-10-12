@@ -1,0 +1,860 @@
+{
+  "name": "httpx",
+  "repo": {
+    "url": "https://github.com/encode/httpx",
+    "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+  },
+  "questions": [
+    {
+      "id": "py-callers-primitive-value-to-str",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_utils.py",
+        "line": 15
+      },
+      "expect": [
+        {
+          "file": "httpx/_content.py",
+          "line": 142
+        },
+        {
+          "file": "httpx/_content.py",
+          "line": 144
+        },
+        {
+          "file": "httpx/_multipart.py",
+          "line": 87
+        },
+        {
+          "file": "httpx/_urls.py",
+          "line": 459
+        },
+        {
+          "file": "httpx/_urls.py",
+          "line": 549
+        },
+        {
+          "file": "httpx/_urls.py",
+          "line": 564
+        }
+      ],
+      "tags": [
+        "module-function",
+        "relative-import"
+      ],
+      "note": "grep -rn 'primitive_value_to_str' httpx tests: 5 call lines + 3 import lines (not calls); no test usage."
+    },
+    {
+      "id": "py-callers-to-bytes",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_utils.py",
+        "line": 79
+      },
+      "expect": [
+        {
+          "file": "httpx/_auth.py",
+          "line": 140
+        },
+        {
+          "file": "httpx/_auth.py",
+          "line": 170
+        },
+        {
+          "file": "httpx/_auth.py",
+          "line": 188
+        },
+        {
+          "file": "httpx/_auth.py",
+          "line": 189
+        },
+        {
+          "file": "httpx/_multipart.py",
+          "line": 101
+        },
+        {
+          "file": "httpx/_multipart.py",
+          "line": 175
+        },
+        {
+          "file": "httpx/_multipart.py",
+          "line": 205
+        },
+        {
+          "file": "httpx/_multipart.py",
+          "line": 216
+        }
+      ],
+      "tags": [
+        "module-function",
+        "relative-import",
+        "same-line-twice"
+      ],
+      "note": "grep -rn '\\bto_bytes\\b' -> 8 call lines (A:140 has two calls on one line); tests do not call it; to_bytes_or_str is a different function."
+    },
+    {
+      "id": "py-callers-utils-unquote",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_utils.py",
+        "line": 91
+      },
+      "expect": [
+        {
+          "file": "httpx/_auth.py",
+          "line": 240
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-stdlib"
+      ],
+      "note": "grep '\\bunquote\\b': httpx/_urls.py 157,166,255,305 call urllib.parse.unquote (imported at _urls.py:4) NOT _utils.unquote; only _auth.py:240 uses the one imported from ._utils (_auth.py:13)."
+    },
+    {
+      "id": "py-callers-urlparse",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_urlparse.py",
+        "line": 213
+      },
+      "expect": [
+        {
+          "file": "httpx/_urlparse.py",
+          "line": 198
+        },
+        {
+          "file": "httpx/_urls.py",
+          "line": 117
+        },
+        {
+          "file": "tests/models/test_whatwg.py",
+          "line": 30
+        }
+      ],
+      "tags": [
+        "module-function",
+        "tests"
+      ],
+      "note": "grep '\\burlparse\\b': _urls.py:117, _urlparse.py:198 (inside ParseResult.copy_with), tests/models/test_whatwg.py:30; other hits are imports/docstrings. No urllib urlparse usage."
+    },
+    {
+      "id": "py-callers-create-ssl-context",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_config.py",
+        "line": 23
+      },
+      "expect": [
+        {
+          "file": "httpx/_transports/default.py",
+          "line": 153
+        },
+        {
+          "file": "httpx/_transports/default.py",
+          "line": 297
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 12
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 19
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 25
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 30
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 37
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 44
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 54
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 64
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 72
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 77
+        },
+        {
+          "file": "tests/test_config.py",
+          "line": 83
+        }
+      ],
+      "tags": [
+        "re-export",
+        "star-import",
+        "tests"
+      ],
+      "note": "grep '\\bcreate_ssl_context\\b': 2 direct calls in transports/default.py (imported from .._config), 11 tests call it as httpx.create_ssl_context via package __init__ star re-export; __all__ strings/imports excluded."
+    },
+    {
+      "id": "py-callers-client-send-single-request",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_client.py",
+        "line": 1001
+      },
+      "expect": [
+        {
+          "file": "httpx/_client.py",
+          "line": 979
+        }
+      ],
+      "tags": [
+        "self-call",
+        "trap",
+        "sync-vs-async"
+      ],
+      "note": "Same method name on AsyncClient (line 1717). Line 979 is self._send_single_request in Client._send_handling_redirects; line 1694 (await self._send_single_request) belongs to AsyncClient and must NOT be listed. No tests call it."
+    },
+    {
+      "id": "py-callers-asyncclient-send-single-request",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_client.py",
+        "line": 1717
+      },
+      "expect": [
+        {
+          "file": "httpx/_client.py",
+          "line": 1694
+        }
+      ],
+      "tags": [
+        "self-call",
+        "trap",
+        "sync-vs-async"
+      ],
+      "note": "Counterpart of py-callers-client-send-single-request; only call is the awaited self call at 1694 in AsyncClient._send_handling_redirects."
+    },
+    {
+      "id": "py-callers-baseclient-redirect-headers",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_client.py",
+        "line": 546
+      },
+      "expect": [
+        {
+          "file": "httpx/_client.py",
+          "line": 482
+        },
+        {
+          "file": "tests/client/test_headers.py",
+          "line": 245
+        },
+        {
+          "file": "tests/client/test_headers.py",
+          "line": 255
+        },
+        {
+          "file": "tests/client/test_headers.py",
+          "line": 267
+        },
+        {
+          "file": "tests/client/test_headers.py",
+          "line": 279
+        },
+        {
+          "file": "tests/client/test_headers.py",
+          "line": 291
+        }
+      ],
+      "tags": [
+        "inherited-method",
+        "tests",
+        "private"
+      ],
+      "note": "grep '\\b_redirect_headers\\b': call at _client.py:482 (BaseClient._build_redirect_request) and 5 tests on httpx.Client() instances."
+    },
+    {
+      "id": "py-callers-baseclient-build-request",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_client.py",
+        "line": 340
+      },
+      "expect": [
+        {
+          "file": "httpx/_client.py",
+          "line": 812
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 855
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 1527
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 1570
+        },
+        {
+          "file": "tests/client/test_async_client.py",
+          "line": 44
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 52
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 67
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 194
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 200
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 206
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 212
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 218
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 224
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 228
+        },
+        {
+          "file": "tests/client/test_redirects.py",
+          "line": 142
+        },
+        {
+          "file": "tests/client/test_redirects.py",
+          "line": 157
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 123
+        }
+      ],
+      "tags": [
+        "inherited-method",
+        "tests",
+        "docstring-trap"
+      ],
+      "note": "grep '\\bbuild_request\\b' httpx tests: 17 real calls. Self calls in Client.request/stream and AsyncClient.request/stream (inherited from BaseClient); other hits in _client.py (407,794,798,892,1508,1512,1607) are docstring text. Tests call it on Client/AsyncClient instances."
+    },
+    {
+      "id": "py-callers-cookies-extract-cookies",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_models.py",
+        "line": 1101
+      },
+      "expect": [
+        {
+          "file": "httpx/_client.py",
+          "line": 1022
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 1737
+        },
+        {
+          "file": "httpx/_models.py",
+          "line": 838
+        },
+        {
+          "file": "tests/models/test_cookies.py",
+          "line": 75
+        }
+      ],
+      "tags": [
+        "attribute-typed-in-init",
+        "property",
+        "trap"
+      ],
+      "note": "grep '\\bextract_cookies\\b': _client.py 1022/1737 via self.cookies property (returns Cookies), _models.py:838 via self._cookies (Cookies); _models.py:1108 is self.jar.extract_cookies (stdlib CookieJar) and must not be listed; test_cookies.py:75 on httpx.Cookies."
+    },
+    {
+      "id": "py-callers-headers-multi-items",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_models.py",
+        "line": 231
+      },
+      "expect": [
+        {
+          "file": "httpx/_models.py",
+          "line": 373
+        },
+        {
+          "file": "httpx/_models.py",
+          "line": 1272
+        },
+        {
+          "file": "tests/client/test_headers.py",
+          "line": 14
+        },
+        {
+          "file": "tests/models/test_headers.py",
+          "line": 21
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-class",
+        "attribute-typed-in-init"
+      ],
+      "note": "Same name on QueryParams (_urls.py:498). grep '\\bmulti_items\\b': Headers callers: _models.py:373 (self), :1272 (self.response.headers), tests/client/test_headers.py:14 (request.headers set in Request.__init__ as Headers), tests/models/test_headers.py:21. _urls.py:505 docstring, 621/624 are QueryParams."
+    },
+    {
+      "id": "py-callers-headers-get-list",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_models.py",
+        "line": 252
+      },
+      "expect": [
+        {
+          "file": "httpx/_auth.py",
+          "line": 206
+        },
+        {
+          "file": "httpx/_models.py",
+          "line": 706
+        },
+        {
+          "file": "tests/models/test_headers.py",
+          "line": 16
+        },
+        {
+          "file": "tests/models/test_headers.py",
+          "line": 163
+        },
+        {
+          "file": "tests/models/test_headers.py",
+          "line": 166
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-class",
+        "attribute-typed-in-init"
+      ],
+      "note": "Same name on QueryParams (_urls.py:526). Headers callers: _models.py:706 (self.headers), _auth.py:206 (response.headers), 3 test lines on Headers objects."
+    },
+    {
+      "id": "py-callers-queryparams-get-list",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_urls.py",
+        "line": 526
+      },
+      "expect": [
+        {
+          "file": "httpx/_urls.py",
+          "line": 564
+        },
+        {
+          "file": "tests/models/test_queryparams.py",
+          "line": 24
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-class"
+      ],
+      "note": "Counterpart of py-callers-headers-get-list; _urls.py:564 (q is QueryParams) and tests/models/test_queryparams.py:24; _urls.py:533 is docstring."
+    },
+    {
+      "id": "py-callers-response-raise-for-status",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_models.py",
+        "line": 794
+      },
+      "expect": [
+        {
+          "file": "tests/client/test_async_client.py",
+          "line": 124
+        },
+        {
+          "file": "tests/client/test_async_client.py",
+          "line": 127
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 142
+        },
+        {
+          "file": "tests/client/test_client.py",
+          "line": 146
+        },
+        {
+          "file": "tests/client/test_event_hooks.py",
+          "line": 53
+        },
+        {
+          "file": "tests/client/test_event_hooks.py",
+          "line": 105
+        },
+        {
+          "file": "tests/models/test_responses.py",
+          "line": 96
+        },
+        {
+          "file": "tests/models/test_responses.py",
+          "line": 102
+        },
+        {
+          "file": "tests/models/test_responses.py",
+          "line": 113
+        },
+        {
+          "file": "tests/models/test_responses.py",
+          "line": 125
+        },
+        {
+          "file": "tests/models/test_responses.py",
+          "line": 136
+        },
+        {
+          "file": "tests/models/test_responses.py",
+          "line": 146
+        }
+      ],
+      "tags": [
+        "tests-only",
+        "method"
+      ],
+      "note": "grep '\\braise_for_status\\b': no library caller; 12 test calls on Response objects. Excluded: docstrings in _exceptions.py (79,86,262), message string _models.py:801, comment test_responses.py:142."
+    },
+    {
+      "id": "py-callers-auth-sync-auth-flow",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_auth.py",
+        "line": 62
+      },
+      "expect": [
+        {
+          "file": "httpx/_client.py",
+          "line": 937
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 19
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 34
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 49
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 74
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 90
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 126
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 154
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 203
+        },
+        {
+          "file": "tests/test_auth.py",
+          "line": 263
+        }
+      ],
+      "tags": [
+        "inheritance",
+        "tests",
+        "annotated-param"
+      ],
+      "note": "grep '\\bsync_auth_flow\\b': _client.py:937 (auth: Auth param) and 9 calls in tests/test_auth.py on BasicAuth/DigestAuth instances (inherit Auth.sync_auth_flow). Docstring mention _auth.py:30 excluded."
+    },
+    {
+      "id": "py-callers-auth-auth-flow-base",
+      "lang": "python",
+      "kind": "callers",
+      "target": {
+        "file": "httpx/_auth.py",
+        "line": 38
+      },
+      "expect": [
+        {
+          "file": "httpx/_auth.py",
+          "line": 74
+        },
+        {
+          "file": "httpx/_auth.py",
+          "line": 99
+        }
+      ],
+      "tags": [
+        "inheritance",
+        "super",
+        "interface-rule"
+      ],
+      "note": "Base Auth.auth_flow; per interface rule overrides (122,135,157,193) are not targets. Callers: self.auth_flow in sync_auth_flow (74) and async_auth_flow (99). No other .auth_flow( calls in httpx/ or tests/."
+    },
+    {
+      "id": "py-dead-httpx-lib",
+      "lang": "python",
+      "kind": "dead",
+      "scope": {
+        "path": "httpx",
+        "lang": "python"
+      },
+      "live": [
+        {
+          "file": "httpx/_decoders.py",
+          "line": 56
+        },
+        {
+          "file": "httpx/_decoders.py",
+          "line": 85
+        },
+        {
+          "file": "httpx/_decoders.py",
+          "line": 108
+        },
+        {
+          "file": "httpx/_decoders.py",
+          "line": 161
+        },
+        {
+          "file": "httpx/_models.py",
+          "line": 1028,
+          "note": "aiter_lines only called from tests/models/test_responses.py:679 (still referenced)"
+        },
+        {
+          "file": "httpx/_urls.py",
+          "line": 342,
+          "note": "copy_set_param referenced from tests/models/test_url.py"
+        },
+        {
+          "file": "httpx/_utils.py",
+          "line": 237
+        },
+        {
+          "file": "httpx/_multipart.py",
+          "line": 265
+        },
+        {
+          "file": "httpx/_content.py",
+          "line": 42
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 62
+        }
+      ],
+      "dead": [
+        {
+          "file": "httpx/_types.py",
+          "line": 33
+        }
+      ],
+      "note": "Decoder classes are live only via SUPPORTED_DECODERS dict at _decoders.py:382-386 (no call syntax). is_ipv6_hostname used _utils.py:69; get_content_length used _multipart.py:288; IteratorByteStream used _content.py:127; _is_https_redirect used _client.py:553. httpx is tightly maintained: enumerated every def/class/assignment in httpx/ and counted word occurrences across repo; the ONLY unreferenced symbol is the URLTypes alias (_types.py:33, never imported or used; _types __all__ doesn't export it). type-alias dead entries."
+    },
+    {
+      "id": "py-dead-tests-conftest",
+      "lang": "python",
+      "kind": "dead",
+      "scope": {
+        "path": "tests",
+        "lang": "python"
+      },
+      "live": [
+        {
+          "file": "tests/conftest.py",
+          "line": 90
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 101
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 144
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 163
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 178
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 256
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 271
+        }
+      ],
+      "dead": [
+        {
+          "file": "tests/conftest.py",
+          "line": 245
+        }
+      ],
+      "note": "Live: ASGI handlers dispatched from app() (conftest.py:62-76); watch_restarts called at :241; serve_in_thread yielded from server fixture at :288. Dead: TestServer.restart (245) - grep '\\brestart\\b' finds no call anywhere (restart_requested/watch_restarts are different names; uvicorn's Server has no restart hook). install_signal_handlers (230) is a uvicorn override, skipped as framework-invoked; pytest fixtures/tests skipped."
+    },
+    {
+      "id": "py-trace-client-send",
+      "lang": "python",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "httpx/_client.py",
+        "line": 879
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "httpx/_client.py",
+          "line": 930
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 964
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 1001
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 475
+        },
+        {
+          "file": "httpx/_auth.py",
+          "line": 62
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "httpx/_client.py",
+          "line": 1645
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 1679
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 1717
+        },
+        {
+          "file": "httpx/_models.py",
+          "line": 974
+        }
+      ],
+      "note": "Hop1: _send_handling_auth (self call), _set_timeout, _build_request_auth, Response.read. Hop2: Auth.sync_auth_flow (auth: Auth), _send_handling_redirects. Hop3: _send_single_request (Client's, 1001), _build_redirect_request (475). Async twins (AsyncClient._send_handling_auth/_redirects/_single_request, Response.aread) are plausible-but-wrong."
+    },
+    {
+      "id": "py-trace-httpx-get",
+      "lang": "python",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "httpx/_api.py",
+        "line": 174
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "httpx/_api.py",
+          "line": 39
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 639
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 771
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 340
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 879
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "httpx/_client.py",
+          "line": 1036
+        },
+        {
+          "file": "httpx/_client.py",
+          "line": 1485
+        },
+        {
+          "file": "httpx/_api.py",
+          "line": 124
+        }
+      ],
+      "note": "httpx.get -> _api.request (hop1) -> Client(...) constructor __init__ 639 and client.request 771 (client bound via 'with Client(...) as client', hop2) -> self.build_request 340 / self.send 879 (hop3). Trap: Client.get (1036) shares the name 'get' but is never called from _api.get; AsyncClient.request and _api.stream are unrelated."
+    }
+  ]
+}
