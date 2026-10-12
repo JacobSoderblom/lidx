@@ -88,6 +88,17 @@ class Grade(unittest.TestCase):
         summ, *_ = match.grade(oracle, syms, [edge(1, 3, 3)], "go", match.Sources("/nonexistent"))
         self.assertEqual((summ["graded"], summ["fp"]), (1, 1))
 
+    def test_edges_with_null_evidence_lines_grade_without_crashing(self):
+        # edges.evidence_start_line / evidence_end_line are NULL for edges the extractor records without a location
+        syms = {1: sym(1, "a.go", 1, "f"), 2: sym(2, "a.go", 5, "g"), 3: sym(3, "a.go", 9, "h")}
+        summ, fn, fp, gap, *_ = self.run_grade(syms, [edge(1, 2, None), edge(1, 3, None, "bare_name")])
+        self.assertEqual((summ["tp"], summ["fp"]), (1, 1))
+        self.assertEqual(summ["recall"], 1.0)
+        self.assertEqual(fp[0]["evidence_lines"], [])
+        summ, fn, *_ = self.run_grade(syms, [edge(1, 3, None)])
+        self.assertEqual((summ["tp"], summ["fp"], summ["recall"]), (0, 1, 0.0))
+        self.assertEqual(fn[0]["evidence_lines"] if "evidence_lines" in fn[0] else [], [])
+
     def test_comparable_recall_charges_capture_gaps_and_dispatch_misses(self):
         oracle = dict(ORACLE, edges=[ORACLE["edges"][0], dict(ORACLE["edges"][0], callee={"file": "a.go", "line": 99, "name": "z"})])
         syms = {1: sym(1, "a.go", 1, "f"), 2: sym(2, "a.go", 5, "g")}

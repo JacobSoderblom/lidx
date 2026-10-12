@@ -24,6 +24,38 @@
       "sha": "b15c5dbfe2bb21c9d73002c1056a829c8c411c75"
     },
     {
+      "name": "chi",
+      "lang": "go",
+      "url": "https://github.com/go-chi/chi",
+      "ref": "v5.4.0 (held-out)",
+      "sha": "7f9b7448f51d28804fac98c0a17bc2a7cec1079f",
+      "held_out": true
+    },
+    {
+      "name": "urfavecli",
+      "lang": "go",
+      "url": "https://github.com/urfave/cli",
+      "ref": "v2.27.7 (held-out)",
+      "sha": "19b951ab78929023a9a670722b26ffb1d67c733a",
+      "held_out": true
+    },
+    {
+      "name": "viper",
+      "lang": "go",
+      "url": "https://github.com/spf13/viper",
+      "ref": "v1.21.0 (held-out)",
+      "sha": "394040caccbdf5821fa6839386a35f0fb1b1ee9e",
+      "held_out": true
+    },
+    {
+      "name": "bubbletea",
+      "lang": "go",
+      "url": "https://github.com/charmbracelet/bubbletea",
+      "ref": "v1.3.10 (held-out)",
+      "sha": "9edf69c677c7353eca5fae6d3ea3986af39717b7",
+      "held_out": true
+    },
+    {
       "name": "zod",
       "lang": "ts",
       "url": "https://github.com/colinhacks/zod",
@@ -44,6 +76,54 @@
       "subdirs": [
         "src"
       ]
+    },
+    {
+      "name": "trpc",
+      "lang": "ts",
+      "url": "https://github.com/trpc/trpc",
+      "ref": "main 10e2ef98 (held-out)",
+      "sha": "10e2ef98f7842b94eb3026e4f9bcfe62cc39b088",
+      "tsconfig": "packages/server/tsconfig.json",
+      "subdirs": [
+        "packages/server/src"
+      ],
+      "held_out": true
+    },
+    {
+      "name": "ky",
+      "lang": "ts",
+      "url": "https://github.com/sindresorhus/ky",
+      "ref": "main 35418888 (held-out)",
+      "sha": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "tsconfig": "tsconfig.json",
+      "subdirs": [
+        "source"
+      ],
+      "held_out": true
+    },
+    {
+      "name": "immer",
+      "lang": "ts",
+      "url": "https://github.com/immerjs/immer",
+      "ref": "main 8848a5b1 (held-out)",
+      "sha": "8848a5b16938e5681a890d73de7bda24b5080498",
+      "tsconfig": "tsconfig.json",
+      "subdirs": [
+        "src"
+      ],
+      "held_out": true
+    },
+    {
+      "name": "h3",
+      "lang": "ts",
+      "url": "https://github.com/unjs/h3",
+      "ref": "main 66cfb8a3 (held-out)",
+      "sha": "66cfb8a357b6285451bad498c2c40002601fae98",
+      "tsconfig": "tsconfig.json",
+      "subdirs": [
+        "src"
+      ],
+      "held_out": true
     },
     {
       "name": "ripgrep",

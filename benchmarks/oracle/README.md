@@ -15,7 +15,7 @@ edges the denominator holds) were read for method only. repowise's *published nu
 
 ```bash
 cargo build --release                       # the lidx binary under test
-python3 benchmarks/oracle/run.py            # all 7 repositories, 12 cells, writes benchmarks/oracle/results/
+python3 benchmarks/oracle/run.py            # all 19 repositories, 30 cells, writes benchmarks/oracle/results/
 python3 benchmarks/oracle/run.py --only '^ts/'        # a subset (regex over cell ids)
 python3 benchmarks/oracle/run.py --binary /path/to/lidx --cache /big/disk/lidx-oracle
 python3 benchmarks/oracle/run.py --report-only        # rebuild report.md from results/
@@ -25,7 +25,7 @@ python3 -m unittest discover -s benchmarks/oracle -p 'test_*.py'
 Needs `go` (1.24+; the right toolchain for each corpus module is fetched by Go itself), `node` + `npm`,
 `rust-analyzer` with the `scip` subcommand (1.94 used), `git` and Python 3 (stdlib only). The first run
 clones the corpus into the cache dir (default `~/.cache/lidx-oracle`, outside the repository) and runs
-`npm ci --ignore-scripts` once inside `ts_oracle/`. Every run indexes each repo into a fresh database. A full run
+`npm ci --ignore-scripts` once inside `ts_oracle/` (the oracle's own pinned dependencies; the corpus is never installed). Every run indexes each repo into a fresh database. A full run
 takes about 10 minutes, dominated by Go's SSA build of syft, which needs roughly 9 GB of memory with tests included.
 `cells.json` records the toolchain versions (rust-analyzer, node, typescript, Go) and the lidx build.
 
@@ -44,11 +44,33 @@ never an annotated-tag object, and `run.py` compares commit shas, so a cached cl
 | TypeScript | zod (`packages/zod/src`), hono (`src`) | `typescript` 5.9.3 checker API | production code in the scoped directory |
 | Rust | ripgrep 15.2.0, fd v10.5.0 | rust-analyzer 1.94 `scip` | `path_tests_excluded` (the repowise-comparable cell), `no_tests` (stricter, diagnostic) and `tests` |
 | Rust, held-out | bat v0.25.0, tokei v12.1.2, xsv 0.13.0, lidx @ ccc405a | rust-analyzer 1.94 `scip` | `path_tests_excluded` only (`"held_out"` in the lock): not used while developing the Rust extractor, they check that a change tuned on ripgrep and fd generalises; no repowise figure |
+| TypeScript, held-out | trpc (`packages/server/src` @ 10e2ef98), ky (`source` @ 35418888), immer (`src` @ 8848a5b1), h3 (`src` @ 66cfb8a3) | `typescript` 5.9.3 checker API | same cell as zod and hono (repowise's `tsc` scope in the comparable grading); `"held_out"` in the lock, no repowise figure |
+| Go, held-out | chi v5.4.0, urfave/cli v2.27.7, viper v1.21.0, bubbletea v1.3.10 | RTA | with and without test files; `"held_out"` in the lock, no repowise figure |
 
-Corpus repositories are untrusted: nothing from them is built, tested or installed. Go is only type-checked (`go list`
-may download modules); TypeScript uses the compiler API without installing the repository's dependencies (calls into
-packages that are not in the repository are out of scope); rust-analyzer runs with build scripts and proc-macro servers
-disabled.
+### Nothing from the corpus runs
+
+Corpus repositories are untrusted. The oracles read sources; none of them builds, tests, generates or installs the
+corpus, and `safety.py` fails the run if one did:
+
+- **Rust.** `rust-analyzer scip` ignores `cargo.buildScripts.enable=false` and `procMacro.enable=false` (those are LSP-only):
+  it always runs `cargo check --workspace` for build-script output (which also compiles and runs build scripts and loads
+  proc-macro crates into rustc) and starts the sysroot proc-macro server. Verified on a crate whose `build.rs` and proc macro
+  write marker files: with those two settings both markers appear. What it does honour, and what `run.py` writes to
+  `<cache>/scip/ra-config.json`: `cargo.buildScripts.overrideCommand = ["true"]` (that command replaces `cargo check`, prints no
+  build-script output, so no build script runs and no proc-macro dylib is known) and `cargo.sysroot` pointing at a stub sysroot
+  that holds only `lib` (no `libexec/rust-analyzer-proc-macro-srv` to start). `cargo metadata` still runs; it reads manifests only.
+- **Go.** `packages.Load` runs `go list`, which never runs `go generate`. It gets `CGO_ENABLED=0` (no cgo tool, no C compiler),
+  `GOFLAGS=-mod=readonly` (replaces any inherited flags such as `-toolexec`; go.mod and go.sum are never rewritten),
+  `GOWORK=off` and `GOPACKAGESDRIVER=off`. Go may download module sources and the toolchain the module asks for; downloading is not executing.
+- **TypeScript.** Only the compiler API parses the sources. The corpus is not installed (calls into packages that are not in the
+  repository are out of scope); the oracle's own dependencies are installed with `npm ci --ignore-scripts`.
+
+Checks after every oracle run (`safety.py`, unit-tested in `test_safety.py`, which also runs a real `rust-analyzer scip` on a crate
+with a marker-writing build script and proc macro): the Rust target dir is emptied before the run and the run fails if any
+`build/*/out` directory, `build-script-*` executable or dynamic library in `deps/` exists afterwards, or if sampling the
+rust-analyzer process tree saw a proc-macro server, a build-script executable or a compiling `cargo` subcommand; every oracle
+fails the run if the corpus checkout is not byte-for-byte the pinned commit afterwards (`git status --porcelain --ignored`
+is empty), and a cached checkout that is not is re-cloned.
 
 ## Method
 
@@ -65,7 +87,7 @@ line of the declaration's *name identifier*, so decorators, attributes and doc c
 - *TypeScript* (`ts_oracle/`): every call, `new`, JSX component element and tagged template, resolved with
   `getResolvedSignature`; `--subdir` restricts the analysed files to the cell's directory (callees outside it are out of
   scope on both sides). A call whose symbol is a const or field *with an initialiser* targets that variable, whatever its
-  type annotation says; `new X()` targets the class X, not an inherited constructor. Module-level code is a `<module>`
+  type annotation says; `new X()` and `super(..)` target the class X, not an inherited constructor. Module-level code is a `<module>`
   caller (line 0). tsc sees every call in an analysed file, so every caller in those files is judgeable.
 - *Rust* (`rust_oracle/`): rust-analyzer SCIP decoded with a small protobuf reader. A reference to a function symbol is a
   call when followed by `(`; tuple-struct constructors count; enum-variant constructors are sites that call something
@@ -136,7 +158,7 @@ problems in the first version, is in the report. The Rust sample is drawn from t
 
 ## Results next to repowise
 
-Ours: lidx 0.7.0 on main (`results/report.md` has the diagnostic columns, resolution-kind tables, categories and the
+Ours: lidx 0.7.0 on main (origin/main 60c50f0, release build) (`results/report.md` has the diagnostic columns, resolution-kind tables, categories and the
 spot-check). repowise: the numbers they publish in `docs/BENCHMARKS.md` on repowise main (2026-10-03) ("Call graph against a
 compiler, five tools" for Go and TypeScript, "Accuracy by language" for Rust). The repowise intervals are Wilson intervals we
 computed from their published point estimate and the edge counts of the same cells in repowise-bench (an earlier run of the
@@ -148,14 +170,14 @@ gradings of the same repositories (TypeScript with every edge, Rust without `#[c
 
 | Cell | lidx P [95% CI] | repowise P [95% CI] | P | lidx R [95% CI] | repowise R [95% CI] | R | oracle edges (lidx / repowise) |
 |---|---|---|---|---|---|---|---|
-| go/cobra/tests | 0.933 [0.918, 0.946] | 0.995 [0.990, 0.998] | **behind** | 0.589 [0.567, 0.611] | 0.705 [0.685, 0.724] | **behind** | 1923 / 2059 |
-| go/gitleaks/no_tests | 0.984 [0.973, 0.991] | 0.991 [0.985, 0.995] | **tied** | 0.477 [0.452, 0.501] | 0.971 [0.961, 0.978] | **behind** | 1584 / 1584 |
-| go/gitleaks/tests | 0.985 [0.974, 0.992] | 0.989 [0.983, 0.993] | **tied** | 0.456 [0.433, 0.480] | 0.939 [0.927, 0.949] | **behind** | 1747 / 1747 |
-| go/syft/no_tests | 0.877 [0.866, 0.888] | 0.979 [0.974, 0.983] | **behind** | 0.367 [0.356, 0.377] | 0.539 [0.528, 0.550] | **behind** | 7977 / 7898 |
-| go/syft/tests | 0.880 [0.871, 0.889] | 0.982 [0.979, 0.985] | **behind** | 0.162 [0.158, 0.167] | 0.341 [0.335, 0.347] | **behind** | 25902 / 22590 |
-| ts/zod | 0.971 [0.961, 0.979] | 0.995 [0.989, 0.998] | **behind** | 0.791 [0.770, 0.810] | 0.796 [0.773, 0.817] | **tied** | 1626 / 1269 |
-| ts/hono | 0.666 [0.636, 0.695] | 0.976 [0.958, 0.986] | **behind** | 0.793 [0.765, 0.820] | 0.806 [0.775, 0.833] | **tied** | 833 / 706 |
-| rust/ripgrep/path_tests_excluded | 0.878 [0.867, 0.889] | 0.852 [0.838, 0.865] | **ahead** | 0.645 [0.632, 0.659] | 0.532 [0.517, 0.546] | **ahead** | 4796 / 4555 |
-| rust/fd/path_tests_excluded | 0.890 [0.847, 0.922] | 0.899 [0.838, 0.939] | **tied** | 0.914 [0.874, 0.943] | 0.619 [0.555, 0.679] | **ahead** | 257 / 231 |
+| go/cobra/tests | 0.946 [0.933, 0.956] | 0.995 [0.990, 0.998] | **behind** | 0.796 [0.777, 0.813] | 0.705 [0.685, 0.724] | **ahead** | 1923 / 2059 |
+| go/gitleaks/no_tests | 0.980 [0.971, 0.986] | 0.991 [0.985, 0.995] | **tied** | 0.922 [0.907, 0.934] | 0.971 [0.961, 0.978] | **behind** | 1584 / 1584 |
+| go/gitleaks/tests | 0.978 [0.969, 0.984] | 0.989 [0.983, 0.993] | **tied** | 0.895 [0.879, 0.908] | 0.939 [0.927, 0.949] | **behind** | 1747 / 1747 |
+| go/syft/no_tests | 0.968 [0.963, 0.973] | 0.979 [0.974, 0.983] | **behind** | 0.514 [0.503, 0.525] | 0.539 [0.528, 0.550] | **behind** | 7977 / 7898 |
+| go/syft/tests | 0.973 [0.969, 0.977] | 0.982 [0.979, 0.985] | **behind** | 0.282 [0.277, 0.288] | 0.341 [0.335, 0.347] | **behind** | 25902 / 22590 |
+| ts/zod | 0.999 [0.996, 1.000] | 0.995 [0.989, 0.998] | **tied** | 0.916 [0.901, 0.928] | 0.796 [0.773, 0.817] | **ahead** | 1626 / 1269 |
+| ts/hono | 0.996 [0.987, 0.999] | 0.976 [0.958, 0.986] | **ahead** | 0.845 [0.819, 0.868] | 0.806 [0.775, 0.833] | **tied** | 833 / 706 |
+| rust/ripgrep/path_tests_excluded | 0.974 [0.969, 0.979] | 0.852 [0.838, 0.865] | **ahead** | 0.835 [0.824, 0.845] | 0.532 [0.517, 0.546] | **ahead** | 4796 / 4555 |
+| rust/fd/path_tests_excluded | 0.977 [0.950, 0.989] | 0.899 [0.838, 0.939] | **ahead** | 0.973 [0.945, 0.987] | 0.619 [0.555, 0.679] | **ahead** | 256 / 231 |
 
-Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests.
+Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests, and the held-out cells (`results/report.md`).

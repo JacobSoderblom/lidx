@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import match  # noqa: E402
 import report  # noqa: E402
+import safety  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 RESULTS = os.path.join(HERE, "results")
@@ -47,7 +48,7 @@ def cells_for(repo):
         return [{"id": "go/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": ["-tests"]},
                 {"id": "go/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
     if lang == "rust" and repo.get("held_out"):
-        # held-out repositories (not used while developing the Rust extractor) get only the repowise-comparable scope
+        # held-out repositories (not used while developing the extractors) get only the repowise-comparable scope
         return [{"id": "rust/%s/path_tests_excluded" % n, "repo": n, "lang": lang, "variant": "path_tests_excluded",
                  "args": ["--path-tests-excluded"]}]
     if lang == "rust":
@@ -64,7 +65,8 @@ def fetch(repo, cache):
     d = os.path.join(cache, "%s@%s" % (repo["name"], repo["sha"][:12]))
     if os.path.isdir(os.path.join(d, ".git")):
         head = sh(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True).stdout.strip()
-        if head == repo["sha"]:
+        dirty = sh(["git", "-C", d, "status", "--porcelain", "--ignored"], capture_output=True).stdout.strip()
+        if head == repo["sha"] and not dirty:
             return d
         shutil.rmtree(d)
     os.makedirs(d, exist_ok=True)
@@ -123,7 +125,9 @@ def run_go_oracle(repo_dir, cell, cache):
         os.makedirs(os.path.dirname(exe), exist_ok=True)
         sh(["go", "build", "-o", exe, "."], cwd=src, env=env)
         open(stf, "w").write(st)
+    # packages.Load runs with CGO_ENABLED=0 and -mod=readonly (see go_oracle/main.go): no go generate, no cgo, no go.mod rewrite
     r = sh([exe, "-repo", repo_dir] + cell["args"], env=env, capture_output=True)
+    safety.assert_tree_untouched(repo_dir)
     return json.loads(r.stdout), {"toolchain": tc}
 
 
@@ -134,28 +138,34 @@ def run_ts_oracle(repo_dir, cell, cache, repo):
     cmd = ["node", os.path.join(src, "oracle.mjs"), "--repo", repo_dir, "--tsconfig", repo.get("tsconfig", "tsconfig.json")]
     if repo.get("subdirs"):
         cmd += ["--subdir", ",".join(repo["subdirs"])]
+    # the oracle's own dependencies are installed with --ignore-scripts above; the corpus is never installed, only parsed
     r = sh(cmd, capture_output=True)
+    safety.assert_tree_untouched(repo_dir)
     return json.loads(r.stdout), {}
 
 
 def run_rust_oracle(repo_dir, cell, cache, repo):
     scip = os.path.join(cache, "scip", "%s.scip" % repo["name"])
     os.makedirs(os.path.dirname(scip), exist_ok=True)
-    cfg = os.path.join(cache, "scip", "ra-config.json")
-    # no build scripts, no proc-macro servers: nothing from the corpus is executed
-    json.dump({"cargo": {"buildScripts": {"enable": False}, "autoreload": False}, "procMacro": {"enable": False},
-               "checkOnSave": False}, open(cfg, "w"))
-    env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(cache, "target-%s" % repo["name"]))
-    sh(["rust-analyzer", "scip", repo_dir, "--output", scip, "--config-path", cfg, "--exclude-vendored-libraries"],
-       env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # nothing from the corpus is executed: no build scripts, no proc macros (see safety.rust_config). The target dir is
+    # emptied first so the check afterwards sees only what this run produced.
+    cfg = safety.rust_config(cache, repo["name"])
+    target = os.path.join(cache, "target-%s" % repo["name"])
+    safety.clean_dir(target, cache)
+    env = dict(os.environ, CARGO_TARGET_DIR=target)
+    rc, bad = safety.run_watched(["rust-analyzer", "scip", repo_dir, "--output", scip, "--config-path", cfg, "--exclude-vendored-libraries"],
+                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    safety.assert_clean_run(bad, repo_dir, target)
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, "rust-analyzer scip")
     r = sh([sys.executable, "-I", os.path.join(HERE, "rust_oracle", "scip_calls.py"), "--repo", repo_dir, "--scip", scip] + cell["args"],
            capture_output=True)
-    return json.loads(r.stdout), {}
+    return json.loads(r.stdout), {"build_scripts_run": False, "proc_macros_run": False}
 
 
 def get_oracle(cell, repo, repo_dir, cache, force):
     key_src = {"go": ["go_oracle/main.go"], "ts": ["ts_oracle/oracle.mjs", "ts_oracle/package-lock.json"],
-               "rust": ["rust_oracle/scip_calls.py"]}[cell["lang"]]
+               "rust": ["rust_oracle/scip_calls.py", "safety.py"]}[cell["lang"]]
     st = stamp([os.path.join(HERE, p) for p in key_src], repo["sha"] + " ".join(cell["args"]) + ",".join(repo.get("subdirs", [])))
     path = os.path.join(cache, "oracle", "%s.json" % cell["id"].replace("/", "__"))
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -231,7 +241,8 @@ def main():
     meta_path = os.path.join(a.results, "cells.json")
     prev = json.load(open(meta_path)) if os.path.exists(meta_path) else {"cells": {}}
     out = {"toolchains": toolchain_versions(), "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"), "lidx_version": version,
-           **git_info(), "corpus": {r["name"]: {k: r[k] for k in ("lang", "url", "ref", "sha")} for r in lock["repos"]},
+           **git_info(), "corpus": {r["name"]: {**{k: r[k] for k in ("lang", "url", "ref", "sha")}, **({"held_out": True} if r.get("held_out") else {})}
+                      for r in lock["repos"]},
            "cells": prev.get("cells", {}) if rx else {}}
     for repo in lock["repos"]:
         cells = [c for c in cells_for(repo) if not rx or rx.search(c["id"])]
