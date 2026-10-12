@@ -50,6 +50,31 @@ def rust_config(cache, repo_name):
     return cfg
 
 
+def hardened_env(target_dir, base=None):
+    """Environment for rust-analyzer/cargo that a corpus `.cargo/config.toml` cannot turn into code execution.
+
+    A repository can set `build.rustc-wrapper`, `build.rustc-workspace-wrapper` or `build.rustc` in its own `.cargo/config.toml`;
+    cargo then runs that program for every rustc invocation, `cargo metadata`'s `rustc -vV` probe included. Environment variables
+    beat config files, so the wrappers are set empty and RUSTC is pinned to the real compiler; RUSTUP_TOOLCHAIN is pinned too, so
+    a corpus `rust-toolchain.toml` cannot select (or install) another toolchain. `target.*.runner` only matters when cargo runs a
+    binary, which `cargo metadata` never does.
+    """
+    env = dict(os.environ if base is None else base)
+    env["CARGO_TARGET_DIR"] = target_dir
+    for k in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"):
+        env[k] = ""
+    for k in ("CARGO_BUILD_RUSTC", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
+        env.pop(k, None)
+    rustc = subprocess.run(["rustc", "--print", "sysroot"], capture_output=True, text=True, check=True).stdout.strip()
+    env["RUSTC"] = os.path.join(rustc, "bin", "rustc")
+    try:
+        tc = subprocess.run(["rustup", "show", "active-toolchain"], capture_output=True, text=True, check=True, cwd="/").stdout.split()[0]
+        env["RUSTUP_TOOLCHAIN"] = tc
+    except (OSError, subprocess.CalledProcessError, IndexError):
+        pass
+    return env
+
+
 def process_tree(root_pid):
     """Command lines of root_pid and all its descendants right now."""
     out = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout

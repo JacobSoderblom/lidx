@@ -152,7 +152,7 @@ def run_rust_oracle(repo_dir, cell, cache, repo):
     cfg = safety.rust_config(cache, repo["name"])
     target = os.path.join(cache, "target-%s" % repo["name"])
     safety.clean_dir(target, cache)
-    env = dict(os.environ, CARGO_TARGET_DIR=target)
+    env = safety.hardened_env(target)
     rc, bad = safety.run_watched(["rust-analyzer", "scip", repo_dir, "--output", scip, "--config-path", cfg, "--exclude-vendored-libraries"],
                                  env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     safety.assert_clean_run(bad, repo_dir, target)
@@ -204,6 +204,25 @@ def toolchain_versions():
     return {"rust-analyzer": v(["rust-analyzer", "--version"]), "node": v(["node", "--version"]), "go": v(["go", "version"]),
             "typescript": json.load(open(ts_dir))["version"] if os.path.exists(ts_dir) else "not installed yet",
             "python": sys.version.split()[0]}
+
+
+def super_edge_stats(oracle, repo_dir, missed):
+    """Oracle edges made by a `super(..)` call (callee: the base class, like `new X()`), and how many of them lidx has.
+    `missed` is the FN plus capture-gap lists of the cell."""
+    gone = {(x["caller"]["file"], x["caller"]["line"], x["callee"]["file"], x["callee"]["line"]) for x in missed}
+    cache, total, lost = {}, 0, 0
+    for e in oracle["edges"]:
+        is_super = False
+        for s in e["sites"]:
+            f, _, ln = s.rpartition(":")
+            if f not in cache:
+                cache[f] = open(os.path.join(repo_dir, f), encoding="utf-8", errors="replace").read().split("\n")
+            if 0 < int(ln) <= len(cache[f]) and "super(" in cache[f][int(ln) - 1]:
+                is_super = True
+        if is_super:
+            total += 1
+            lost += (e["caller"]["file"], e["caller"]["line"], e["callee"]["file"], e["callee"]["line"]) in gone
+    return {"oracle": total, "matched": total - lost}
 
 
 def dump_list(path, data):
@@ -276,6 +295,10 @@ def main():
             res["calls_plus_references"] = {k: summ_r[k] for k in ("graded", "tp", "fp", "precision", "precision_ci", "recall", "recall_ci",
                                                                    "matched_oracle_edges")}
             res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES", "USES")}
+            if cell["lang"] == "ts":
+                res["super_edges"] = super_edge_stats(oracle, repo_dir, fn + gap)
+                if cell["id"] == "ts/ky":  # ky's error subclasses call super(..): the oracle must map those to the base class
+                    assert res["super_edges"]["oracle"] > 0, "ky has super(..) calls the oracle must report as in-repo class edges"
             fid = cell["id"].replace("/", "__")
             dispatch_fn = [x for x in fn if x["category"] == "dispatch"]
             fn = [x for x in fn if x["category"] != "dispatch"]

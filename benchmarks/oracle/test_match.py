@@ -97,7 +97,8 @@ class Grade(unittest.TestCase):
         self.assertEqual(fp[0]["evidence_lines"], [])
         summ, fn, *_ = self.run_grade(syms, [edge(1, 3, None)])
         self.assertEqual((summ["tp"], summ["fp"], summ["recall"]), (0, 1, 0.0))
-        self.assertEqual(fn[0]["evidence_lines"] if "evidence_lines" in fn[0] else [], [])
+        self.assertEqual(len(fn), 1)  # the oracle edge f -> g is missed, and the miss is reported rather than dropped
+        self.assertEqual((fn[0]["caller"]["name"], fn[0]["callee"]["name"]), ("f", "g"))
 
     def test_comparable_recall_charges_capture_gaps_and_dispatch_misses(self):
         oracle = dict(ORACLE, edges=[ORACLE["edges"][0], dict(ORACLE["edges"][0], callee={"file": "a.go", "line": 99, "name": "z"})])

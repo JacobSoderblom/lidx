@@ -27,6 +27,13 @@ class Detection(unittest.TestCase):
         for c in ok:
             self.assertFalse(safety.FORBIDDEN_PROCESS.search(c), c)
 
+    def test_allowed_processes_are_not_flagged(self):
+        # the probes the oracle needs must never trip the guard, or every run would fail
+        for c in ["cargo metadata --format-version 1 --all-features --filter-platform aarch64-apple-darwin",
+                  "cargo locate-project", "/r/bin/rustc -vV", "rustc - --crate-name ___ --print=file-names --print=cfg",
+                  "rustc --print sysroot", "rust-analyzer scip /repo --output x.scip", "true"]:
+            self.assertFalse(safety.FORBIDDEN_PROCESS.search(c), c)
+
     def test_build_script_output_dir_fails_the_run(self):
         with tempfile.TemporaryDirectory() as d:
             safety.assert_no_build_artifacts(os.path.join(d, "missing"))  # no target dir at all is the clean case
@@ -87,7 +94,13 @@ class RustAnalyzerRunsNothing(unittest.TestCase):
                   '[package]\nname = "toymacros"\nversion = "0.1.0"\nedition = "2021"\n[lib]\nproc-macro = true\n')
             touch(os.path.join(crate, "macros", "src", "lib.rs"), MACRO_LIB % os.path.join(marks, "macro"))
             touch(os.path.join(crate, "src", "main.rs"), "toymacros::mk!();\nfn helper() {}\nfn main() { helper(); made(); }\n")
-            subprocess.run(["cargo", "generate-lockfile", "-q"], cwd=crate, check=True)
+            wrapper = os.path.join(d, "wrapper.sh")
+            touch(wrapper, '#!/bin/sh\ntouch "%s/wrapper-$$"\nexec "$@"\n' % marks)
+            os.chmod(wrapper, 0o755)
+            touch(os.path.join(crate, ".cargo", "config.toml"),
+                  '[build]\nrustc-wrapper = "%s"\nrustc-workspace-wrapper = "%s"\n' % (wrapper, wrapper))
+            subprocess.run(["cargo", "generate-lockfile", "-q"], cwd=crate, check=True,
+                           env=dict(os.environ, CARGO_BUILD_RUSTC_WRAPPER="", CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""))  # setup, not under test
             subprocess.run(["git", "init", "-q", crate], check=True)
             subprocess.run(["git", "-C", crate, "add", "."], check=True)
             subprocess.run(["git", "-C", crate, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"], check=True)
@@ -95,7 +108,7 @@ class RustAnalyzerRunsNothing(unittest.TestCase):
             cfg = safety.rust_config(cache, "toy")
             target = os.path.join(cache, "target-toy")
             rc, bad = safety.run_watched(["rust-analyzer", "scip", crate, "--output", os.path.join(cache, "toy.scip"), "--config-path", cfg],
-                                         env=dict(os.environ, CARGO_TARGET_DIR=target), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                         env=safety.hardened_env(target), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.assertEqual(rc, 0)
             self.assertEqual(os.listdir(marks), [])
             safety.assert_clean_run(bad, crate, target)
