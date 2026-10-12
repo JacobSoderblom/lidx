@@ -66,7 +66,7 @@ use crate::indexer::extract::{
 use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, named_params, params};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 /// An edge's target as the extractor saw it: what the resolver binds.
@@ -476,6 +476,27 @@ pub(crate) struct LanguageProfile {
     /// `DeferredMarker` this language's extractor wrote) from the declarations it
     /// names. `None` for a language without one.
     pub deferred_receiver: Option<ResolveDeferred>,
+    /// What two symbols of one kind sharing a qualname in one file are.
+    pub same_file_twins: SameFileTwins,
+    /// The package a file belongs to (Cargo crate directory), for a language
+    /// whose qualnames restart at each package root (`crate::`): among
+    /// same-qualname candidates, those in the caller's package win.
+    pub package_dir: Option<fn(path: &str) -> &str>,
+}
+
+/// See `LanguageProfile::same_file_twins`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SameFileTwins {
+    /// Overloads of one method: told apart by the call's arity, else the
+    /// lowest id stands for the set.
+    Overloads,
+    /// The language has no overloading, so a twin is a conditional-compilation
+    /// variant of one declaration -- but only when its stored signature
+    /// starts with `marker` (the extractor records its `#[cfg(..)]` there).
+    /// Any other twin (nested fns of one name, `From` impls for two types,
+    /// `Debug` and `Display` `fmt`) is a distinct symbol: never merged, and
+    /// ambiguous when named.
+    CfgVariants { marker: &'static str },
 }
 
 /// A symbol a deferred receiver's declaration query matched.
@@ -555,6 +576,8 @@ impl LanguageProfile {
         deferred_rpc: None,
         untyped_receiver_is_external: true,
         deferred_receiver: None,
+        same_file_twins: SameFileTwins::Overloads,
+        package_dir: None,
     };
 }
 
@@ -841,7 +864,7 @@ static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
 /// that judgment needs to see every candidate, not just the first two.
-const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
+const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature, f.language FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
 /// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
@@ -1918,24 +1941,21 @@ impl<'c> Resolver<'c> {
         } else {
             self.same_lang_scan.query(&named[1..])?
         };
-        let mut kind_eligible = 0usize;
-        let mut visible: Vec<i64> = Vec::new();
-        // Rust has no overloading: a qualname declared twice in one file is
-        // a `#[cfg]` pair of one declaration, counted once.
-        let rust_twins = source_lang == "rust";
-        let mut seen_twins: std::collections::HashSet<(String, String, String)> =
-            std::collections::HashSet::new();
-        let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 2, |row| {
+        struct Row {
+            id: i64,
+            visibility: Option<String>,
+            qualname: String,
+            file_path: String,
+            kind: String,
+            signature: Option<String>,
+            language: String,
+        }
+        let mut found: Vec<Row> = Vec::new();
+        Self::check_case_sensitive_matches(&mut rows, name, 2, |row| {
             let id: i64 = row.get(0)?;
-            let visibility: Option<String> = row.get(1)?;
-            let qualname: String = row.get(2)?;
-            let file_path: String = row.get(3)?;
-            let kind: String = row.get(4)?;
             let signature: Option<String> = row.get(5)?;
-            if rust_twins && !seen_twins.insert((qualname.clone(), file_path.clone(), kind.clone()))
-            {
-                return Ok(false);
-            }
+            let kind: String = row.get(4)?;
+            let file_path: String = row.get(3)?;
             // Issue #123: an overload of the wrong arity was never a candidate.
             if !arity_admits(arity, &kind, signature.as_deref()) {
                 return Ok(false);
@@ -1948,23 +1968,42 @@ impl<'c> Resolver<'c> {
             if is_fixture_path(&file_path) && !is_fixture_path(caller.file_path) {
                 return Ok(false);
             }
-            kind_eligible += 1;
-            let ok = !guard.enforce_visibility
-                || file_path == caller.file_path
-                || visibility_rule.is_visible(
-                    visibility.as_deref(),
-                    &qualname,
-                    &file_path,
-                    caller.file_path,
-                    caller.qualname,
-                );
-            if ok {
-                visible.push(id);
-                Ok(true) // count as a "real" match
-            } else {
-                Ok(false) // case-sensitive match but not visible
-            }
+            found.push(Row {
+                id,
+                visibility: row.get(1)?,
+                qualname: row.get(2)?,
+                file_path,
+                kind,
+                signature,
+                language: source_lang.to_string(),
+            });
+            Ok(false)
         })?;
+        let found = collapse_cfg_twins(found, |r: &Row| TwinView {
+            id: r.id,
+            path: &r.file_path,
+            qualname: &r.qualname,
+            kind: &r.kind,
+            signature: r.signature.as_deref(),
+            language: &r.language,
+        });
+        let kind_eligible = found.len();
+        let visible: Vec<i64> = found
+            .iter()
+            .filter(|r| {
+                !guard.enforce_visibility
+                    || r.file_path == caller.file_path
+                    || visibility_rule.is_visible(
+                        r.visibility.as_deref(),
+                        &r.qualname,
+                        &r.file_path,
+                        caller.file_path,
+                        caller.qualname,
+                    )
+            })
+            .map(|r| r.id)
+            .collect();
+        let is_ambiguous = visible.len() >= 2;
         if is_ambiguous {
             self.saw_ambiguous = true;
         }
@@ -3203,8 +3242,23 @@ fn same_kind_min(candidates: &[(i64, &str)]) -> Option<i64> {
 /// kind (overloads) — the same symbol a base, non-ambiguous full reindex
 /// already binds to. Any other shape (different files, or different kinds,
 /// e.g. `class g` + `def g`) is genuinely ambiguous: `None`, never a guess.
-/// Used by `Resolver::exact`'s SQL fallback.
+/// A language without overloading (`SameFileTwins::CfgVariants`) merges only
+/// its cfg variants (`collapse_cfg_twins`); two other same-file twins are
+/// two symbols, so the name is ambiguous. Used by `Resolver::exact`'s SQL
+/// fallback.
 fn collapse_exact_candidates(candidates: &[ExactCandidate]) -> Option<i64> {
+    let distinct = collapse_cfg_twins(candidates.iter().collect(), |c| c.twin_view());
+    if let Some(first) = distinct.first()
+        && matches!(
+            profile_for(&first.language).same_file_twins,
+            SameFileTwins::CfgVariants { .. }
+        )
+    {
+        return match distinct.as_slice() {
+            [only] => Some(only.id),
+            _ => None,
+        };
+    }
     let first_file = candidates.first()?.file_id;
     if !candidates.iter().all(|c| c.file_id == first_file) {
         return canonical_multi_file(candidates.iter());
@@ -3263,6 +3317,73 @@ struct ExactCandidate {
     path: String,
     kind: String,
     signature: Option<String>,
+    language: String,
+}
+
+impl ExactCandidate {
+    fn twin_view(&self) -> TwinView<'_> {
+        TwinView {
+            id: self.id,
+            path: &self.path,
+            qualname: "",
+            kind: &self.kind,
+            signature: self.signature.as_deref(),
+            language: &self.language,
+        }
+    }
+}
+
+/// One declaration as `collapse_cfg_twins` sees it. Exact-tier candidates
+/// all share one qualname, so theirs is left empty.
+struct TwinView<'a> {
+    id: i64,
+    path: &'a str,
+    qualname: &'a str,
+    kind: &'a str,
+    signature: Option<&'a str>,
+    language: &'a str,
+}
+
+/// Merges the `#[cfg]` variants of one declaration (`SameFileTwins::
+/// CfgVariants`): items of one file, qualname and kind, all recorded as
+/// cfg-gated, stand for the lowest id among them. Any other group of
+/// same-file twins, and every item of a language that overloads, is kept as
+/// it is. The one rule behind both the exact tier (`collapse_exact_candidates`)
+/// and the guarded name tier (`Resolver::same_lang_lookup`).
+fn collapse_cfg_twins<T>(items: Vec<T>, view: impl for<'a> Fn(&'a T) -> TwinView<'a>) -> Vec<T> {
+    if items.len() < 2 {
+        return items;
+    }
+    let mut merged = HashSet::new();
+    {
+        let views: Vec<TwinView<'_>> = items.iter().map(&view).collect();
+        let mut groups: HashMap<(&str, &str, &str), Vec<usize>> = HashMap::new();
+        for (i, v) in views.iter().enumerate() {
+            groups
+                .entry((v.path, v.qualname, v.kind))
+                .or_default()
+                .push(i);
+        }
+        for group in groups.values().filter(|g| g.len() > 1) {
+            let SameFileTwins::CfgVariants { marker } =
+                profile_for(views[group[0]].language).same_file_twins
+            else {
+                continue;
+            };
+            if group
+                .iter()
+                .all(|&i| views[i].signature.is_some_and(|s| s.starts_with(marker)))
+            {
+                let keep = group.iter().copied().min_by_key(|&i| views[i].id);
+                merged.extend(group.iter().copied().filter(|&i| Some(i) != keep));
+            }
+        }
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, item)| (!merged.contains(&i)).then_some(item))
+        .collect()
 }
 
 /// A call's argument count, for choosing among same-qualname overloads.
@@ -3409,6 +3530,7 @@ fn query_exact_candidates(
                 path: row.get(3)?,
                 kind: row.get(2)?,
                 signature: row.get(4)?,
+                language: row.get(5)?,
             },
             row.get::<_, String>(3)?,
         ))
@@ -3422,59 +3544,32 @@ fn query_exact_candidates(
         }
         candidates.push(candidate);
     }
-    Ok(narrow_rust_candidates(candidates, caller_file))
+    let candidates = collapse_cfg_twins(candidates, ExactCandidate::twin_view);
+    Ok(prefer_caller_package(candidates, caller_file))
 }
 
-/// The Cargo package directory a Rust path belongs to: everything before the
-/// first `src/`, `tests/`, `benches/` or `examples/` component (`""` for a
-/// root package).
-fn rust_crate_dir(path: &str) -> &str {
-    let mut offset = 0;
-    for component in path.split('/') {
-        if matches!(component, "src" | "tests" | "benches" | "examples") {
-            return path[..offset].trim_end_matches('/');
-        }
-        offset += component.len() + 1;
-    }
-    ""
-}
-
-/// Rust has no overloading, so same-qualname candidates in one file are
-/// `#[cfg]` twins of one declaration: they count as one (the lowest id, as
-/// the full reindex binds). Workspace crates each have their own `crate::`
-/// root, so what is left, when it spans crates and the caller's crate holds
-/// some, is narrowed to the caller's crate. Other languages are untouched.
-fn narrow_rust_candidates(
-    candidates: Vec<ExactCandidate>,
+/// Among same-qualname candidates of a language whose qualnames restart at
+/// each package root, those in the caller's package; all of them when the
+/// caller's package holds none (or all).
+fn prefer_caller_package(
+    mut candidates: Vec<ExactCandidate>,
     caller_file: &str,
 ) -> Vec<ExactCandidate> {
-    if candidates.len() < 2 || !candidates.iter().all(|c| c.path.ends_with(".rs")) {
+    let Some(first) = candidates.first().filter(|_| candidates.len() > 1) else {
         return candidates;
+    };
+    let Some(package_of) = profile_for(&first.language).package_dir else {
+        return candidates;
+    };
+    let home = package_of(caller_file);
+    let local = candidates
+        .iter()
+        .filter(|c| package_of(&c.path) == home)
+        .count();
+    if 0 < local && local < candidates.len() {
+        candidates.retain(|c| package_of(&c.path) == home);
     }
-    let mut twins: HashMap<(i64, &str), i64> = HashMap::new();
-    for c in &candidates {
-        let id = twins.entry((c.file_id, c.kind.as_str())).or_insert(c.id);
-        *id = (*id).min(c.id);
-    }
-    let keep: std::collections::HashSet<i64> = twins.values().copied().collect();
-    let mut narrowed: Vec<ExactCandidate> = candidates
-        .into_iter()
-        .filter(|c| keep.contains(&c.id))
-        .collect();
-    if narrowed.len() > 1 && caller_file.ends_with(".rs") {
-        let home = rust_crate_dir(caller_file);
-        let local: Vec<usize> = (0..narrowed.len())
-            .filter(|&i| rust_crate_dir(&narrowed[i].path) == home)
-            .collect();
-        if !local.is_empty() && local.len() < narrowed.len() {
-            let mut i = 0;
-            narrowed.retain(|_| {
-                i += 1;
-                local.contains(&(i - 1))
-            });
-        }
-    }
-    narrowed
+    candidates
 }
 
 impl Db {

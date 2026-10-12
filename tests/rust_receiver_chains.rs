@@ -277,3 +277,70 @@ fn chained_same_file_receivers_are_typed() {
     assert_eq!(receivers(&src, "b"), ["B"]);
     assert_eq!(receivers(&src, "build"), ["B"]);
 }
+
+fn resolved_to(files: &[(&str, &str)], caller: &str, suffix: &str) -> Vec<String> {
+    common::call_targets(files, caller)
+        .into_iter()
+        .filter(|t| t.ends_with(suffix))
+        .collect()
+}
+
+#[test]
+fn cfg_gated_impl_blocks_merge_their_twin_methods() {
+    let util = "pub struct H;\n\
+#[cfg(unix)]\nimpl H {\n    pub fn open() -> H { H }\n}\n\
+#[cfg(windows)]\nimpl H {\n    pub fn open() -> H { H }\n}\n";
+    let user = "use crate::util::H;\npub fn go() {\n    H::open();\n}\n";
+    let got = resolved_to(
+        &[("src/util.rs", util), ("src/user.rs", user)],
+        "crate::user::go",
+        "::open",
+    );
+    assert_eq!(got, ["crate::util::H::open"]);
+}
+
+#[test]
+fn nested_fn_twins_are_not_cfg_variants() {
+    let src = "fn first() {\n    fn walk() {}\n    walk();\n}\n\
+fn second() {\n    fn walk() {}\n    walk();\n}\n\
+pub fn go() {\n    walk();\n}\n";
+    let got = resolved_to(&[("src/lib.rs", src)], "crate::go", "walk");
+    assert!(got.is_empty(), "ambiguous nested fn must not bind: {got:?}");
+}
+
+#[test]
+fn from_impls_for_two_types_stay_distinct() {
+    let src = "pub struct E;\npub struct A;\npub struct B;\n\
+impl From<A> for E {\n    fn from(a: A) -> E { E }\n}\n\
+impl From<B> for E {\n    fn from(b: B) -> E { E }\n}\n\
+pub fn go(a: A) {\n    E::from(a);\n}\n";
+    let got = resolved_to(&[("src/lib.rs", src)], "crate::go", "::from");
+    assert!(got.is_empty(), "two From impls must not collapse: {got:?}");
+}
+
+#[test]
+fn debug_and_display_fmt_stay_distinct() {
+    let src = "use std::fmt;\npub struct T;\n\
+impl fmt::Debug for T {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { Ok(()) }\n}\n\
+impl fmt::Display for T {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { Ok(()) }\n}\n\
+pub fn go(t: T, f: &mut fmt::Formatter) {\n    T::fmt(&t, f);\n}\n";
+    let got = resolved_to(&[("src/lib.rs", src)], "crate::go", "::fmt");
+    assert!(
+        got.is_empty(),
+        "Debug and Display fmt must not collapse: {got:?}"
+    );
+}
+
+#[test]
+fn associated_type_paths_are_not_read_by_their_last_segment() {
+    let src = "pub struct Item;\nimpl Item {\n    pub fn weight(&self) {}\n}\n\
+pub struct Other;\nimpl Other {\n    pub fn weight(&self) {}\n}\n\
+pub struct L;\nimpl Iterator for L {\n    type Item = u8;\n    fn next(&mut self) -> Option<Self::Item> { None }\n}\n\
+pub fn go(mut lx: L) {\n    lx.next().unwrap().weight();\n}\n";
+    let got = resolved_to(&[("src/lib.rs", src)], "crate::go", "::weight");
+    assert!(
+        got.is_empty(),
+        "`Self::Item` is not the type `Item`: {got:?}"
+    );
+    assert_eq!(receivers(src, "weight"), ["-"]);
+}

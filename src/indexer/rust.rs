@@ -1,5 +1,6 @@
 use crate::db::resolver::{
-    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, VisibilityRule,
+    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, SameFileTwins,
+    VisibilityRule,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -35,7 +36,30 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     deferred_rpc: None,
     untyped_receiver_is_external: true,
     deferred_receiver: Some(resolve_deferred),
+    // Rust has no overloading; the extractor writes `#[cfg(..)]` lines at the
+    // head of a gated fn's signature (`extract_signature`).
+    same_file_twins: SameFileTwins::CfgVariants {
+        marker: CFG_SIGNATURE_MARKER,
+    },
+    package_dir: Some(cargo_package_dir),
 };
+
+/// What a cfg-gated declaration's signature starts with.
+const CFG_SIGNATURE_MARKER: &str = "#[cfg(";
+
+/// The Cargo package directory a Rust path belongs to: everything before the
+/// first `src/`, `tests/`, `benches/` or `examples/` component (`""` for a
+/// root package). Workspace crates each have their own `crate::` root.
+fn cargo_package_dir(path: &str) -> &str {
+    let mut offset = 0;
+    for component in path.split('/') {
+        if matches!(component, "src" | "tests" | "benches" | "examples") {
+            return path[..offset].trim_end_matches('/');
+        }
+        offset += component.len() + 1;
+    }
+    ""
+}
 
 /// `LanguageProfile::normalize_import_target` for Rust: rewrite
 /// `self::`/`super::` (including repeated `super::super::...`) relative to
@@ -775,7 +799,7 @@ fn handle_function(
         ),
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
-    let signature = extract_signature(node, source, attributes);
+    let signature = extract_signature(node, source, attributes, &ctx.cfg_chain);
     // A trait default method or trait-impl method has no `pub` to check —
     // it's exactly as visible as the trait itself (see
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
@@ -841,18 +865,18 @@ fn handle_function(
             .filter(|_| !(ctx.in_trait_scope && ctx.in_trait_impl.is_none()))
             .map(|c| c.rsplit("::").next().unwrap_or(c).to_string());
         let mut local_types = HashMap::new();
-        let generics = collect_generic_names(node, source);
+        let generics = Rc::new(collect_generic_names(node, source));
         let env = TypeEnv {
             source,
             self_ty: self_ty.as_deref(),
-            generics: generics.clone(),
+            generics: Rc::clone(&generics),
             adts: &ctx.adts,
             ctx: Some(&next_ctx),
         };
         collect_local_types(node, &env, &mut local_types);
         next_ctx.local_types = Rc::new(local_types);
         next_ctx.fn_self_ty = self_ty;
-        next_ctx.fn_generics = Rc::new(generics);
+        next_ctx.fn_generics = generics;
 
         walk_node(body, &next_ctx, source, output);
     }
@@ -892,7 +916,7 @@ fn handle_function_signature(
     };
     let qualname = format!("{container}::{name}");
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
-    let signature = extract_signature(node, source, &[]);
+    let signature = extract_signature(node, source, &[], &ctx.cfg_chain);
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -1315,7 +1339,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     let env = TypeEnv {
         source,
         self_ty: ctx.fn_self_ty.as_deref(),
-        generics: (*ctx.fn_generics).clone(),
+        generics: Rc::clone(&ctx.fn_generics),
         adts: &ctx.adts,
         ctx: Some(ctx),
     };
@@ -1352,6 +1376,10 @@ enum Ty {
     /// finishes it.
     Pending(RustDeferred),
 }
+
+/// Std methods that give a `Named` receiver back as it is (`method_ty`), so the
+/// resolver never looks them up as a user method.
+const STD_PASSTHROUGH_METHODS: &[&str] = &["unwrap", "expect", "clone"];
 
 /// Longest projection chain stored on a `Pending` type.
 const MAX_PENDING_STEPS: usize = 12;
@@ -1440,7 +1468,7 @@ struct TypeEnv<'a> {
     self_ty: Option<&'a str>,
     /// Generic parameter names of the enclosing fn and impl/trait: a
     /// receiver of type `T` says nothing about which type declares the method.
-    generics: HashSet<String>,
+    generics: Rc<HashSet<String>>,
     adts: &'a Adts,
     /// Imports, shadowed names and same-file return types; absent when only
     /// declaration types are read (`collect_adts`, `project_deferred`).
@@ -1471,7 +1499,19 @@ impl TypeEnv<'_> {
                 "reference_type" | "generic_type" => {
                     current = current.child_by_field_name("type")?
                 }
-                "scoped_type_identifier" => current = current.child_by_field_name("name")?,
+                "scoped_type_identifier" => {
+                    // `Self::Item` / `T::Output` / `Foo::Assoc` name an
+                    // associated type, not a type called `Item`: only a
+                    // module path (`crate::a::Resolver`) is read by its tail.
+                    let path = node_text(current.child_by_field_name("path")?, self.source);
+                    if path
+                        .split("::")
+                        .any(|seg| seg.starts_with(char::is_uppercase))
+                    {
+                        return None;
+                    }
+                    current = current.child_by_field_name("name")?
+                }
                 "type_identifier" => break,
                 _ => return None,
             }
@@ -1964,6 +2004,7 @@ impl TypeEnv<'_> {
 /// follows from the receiver type; everything else is `Unknown`.
 fn method_ty(recv: Ty, method: &str) -> Ty {
     match (recv, method) {
+        (Ty::Named(n), "clone") => Ty::Named(n),
         (Ty::Option(t) | Ty::Result(t, _), "unwrap" | "expect") => *t,
         (Ty::Named(n), "unwrap" | "expect") => Ty::Named(n),
         (Ty::Result(t, _), "ok") => Ty::Option(t),
@@ -1988,7 +2029,7 @@ fn collect_returns(root: Node<'_>, source: &str) -> Returns {
                 let env = TypeEnv {
                     source,
                     self_ty: None,
-                    generics: collect_generic_names(impl_node, source),
+                    generics: Rc::new(collect_generic_names(impl_node, source)),
                     adts: &Adts::new(),
                     ctx: None,
                 };
@@ -2009,7 +2050,7 @@ fn collect_returns(root: Node<'_>, source: &str) -> Returns {
                 let env = TypeEnv {
                     source,
                     self_ty: owner.as_deref(),
-                    generics: collect_generic_names(node, source),
+                    generics: Rc::new(collect_generic_names(node, source)),
                     adts: &empty,
                     ctx: None,
                 };
@@ -2125,15 +2166,28 @@ fn declared_receiver_type(
     signature: &str,
     index: &dyn DeclarationIndex,
 ) -> anyhow::Result<Option<String>> {
-    let Some(mut ty) = declared_source_ty(&deferred.source, qualname, signature) else {
+    let Some(ty) = declared_source_ty(&deferred.source, qualname, signature) else {
         return Ok(None);
     };
-    for step in &deferred.steps {
+    receiver_through_steps(ty, &deferred.steps, |owner, method| {
+        user_method_ty(owner, method, index)
+    })
+}
+
+/// `ty` after `steps`, as a repo type name. `user_method` gives the return
+/// type of a method declared by the repo type `owner`; every std projection
+/// goes through `project`.
+fn receiver_through_steps(
+    mut ty: Ty,
+    steps: &[Step],
+    mut user_method: impl FnMut(&str, &str) -> anyhow::Result<Ty>,
+) -> anyhow::Result<Option<String>> {
+    for step in steps {
         ty = match (&ty, step) {
-            // A user method on a repo type: its declared return type. Std
-            // projections (`unwrap`, `clone`, ..) are not looked up.
-            (Ty::Named(owner), Step::Method(m)) if !matches!(m.as_str(), "unwrap" | "expect") => {
-                user_method_ty(owner, m, index)?
+            (Ty::Named(owner), Step::Method(m))
+                if !STD_PASSTHROUGH_METHODS.contains(&m.as_str()) =>
+            {
+                user_method(owner, m)?
             }
             _ => project(ty, step.clone()),
         };
@@ -2152,11 +2206,7 @@ fn user_method_ty(owner: &str, method: &str, index: &dyn DeclarationIndex) -> an
     let declarations =
         index.declarations(DeclarationQuery::Method(&format!("{owner}::{method}")))?;
     if declarations.is_empty() {
-        return Ok(if method == "clone" {
-            Ty::Named(owner.to_string())
-        } else {
-            Ty::Unknown
-        });
+        return Ok(Ty::Unknown);
     }
     let mut found: Option<Ty> = None;
     for declaration in &declarations {
@@ -2192,7 +2242,7 @@ fn callable_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
         source: &src,
         self_ty: owner,
         // The signature keeps the fn's and its impl's `<..>`.
-        generics: collect_generic_names(func, &src),
+        generics: Rc::new(collect_generic_names(func, &src)),
         adts: &Adts::new(),
         ctx: None,
     };
@@ -2351,7 +2401,7 @@ fn collect_adts(root: Node<'_>, source: &str) -> Adts {
             let env = TypeEnv {
                 source,
                 self_ty: Some(&name),
-                generics: collect_generic_names(node, source),
+                generics: Rc::new(collect_generic_names(node, source)),
                 adts: empty,
                 ctx: None,
             };
@@ -3896,7 +3946,12 @@ fn collect_uses(
     }
 }
 
-fn extract_signature(node: Node<'_>, source: &str, attributes: &[Node<'_>]) -> Option<String> {
+fn extract_signature(
+    node: Node<'_>,
+    source: &str,
+    attributes: &[Node<'_>],
+    cfg: &[String],
+) -> Option<String> {
     let params = node
         .child_by_field_name("parameters")
         .map(|n| node_text(n, source));
@@ -3917,10 +3972,14 @@ fn extract_signature(node: Node<'_>, source: &str, attributes: &[Node<'_>]) -> O
         .children(&mut cursor)
         .any(|c| c.kind() == "function_modifiers" && node_text(c, source).contains("async"));
     let base = base.map(|b| if is_async { format!("async {b}") } else { b });
-    match (test_attribute_prefix(attributes, source), base) {
-        (Some(prefix), Some(base)) => Some(format!("{prefix}{base}")),
-        (Some(prefix), None) => Some(prefix),
-        (None, base) => base,
+    // A `#[cfg(..)]` on the fn or an enclosing impl/mod leads the signature:
+    // the resolver merges same-qualname twins only when both carry one.
+    let mut prefix: String = cfg.iter().map(|p| format!("#[cfg({p})]\n")).collect();
+    prefix.extend(test_attribute_prefix(attributes, source));
+    match (prefix.is_empty(), base) {
+        (true, base) => base,
+        (false, Some(base)) => Some(format!("{prefix}{base}")),
+        (false, None) => Some(prefix),
     }
 }
 
@@ -4152,20 +4211,14 @@ fn tc() {}
             .collect()
     }
 
-    /// `declared_receiver_type` without a declaration index: std steps only.
+    /// `declared_receiver_type` with no user methods declared anywhere.
     fn declared_receiver_type(
         deferred: &RustDeferred,
         qualname: &str,
         signature: &str,
     ) -> Option<String> {
-        let mut ty = super::declared_source_ty(&deferred.source, qualname, signature)?;
-        for step in &deferred.steps {
-            ty = super::project(ty, step.clone());
-        }
-        match ty {
-            super::Ty::Named(n) => Some(n),
-            _ => None,
-        }
+        let ty = super::declared_source_ty(&deferred.source, qualname, signature)?;
+        super::receiver_through_steps(ty, &deferred.steps, |_, _| Ok(super::Ty::Unknown)).unwrap()
     }
 
     fn call(steps: Vec<Step>) -> RustDeferred {
