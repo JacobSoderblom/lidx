@@ -22,9 +22,12 @@ REPOWISE = {
     "rust/fd/path_tests_excluded":      (0.899, 0.619, 231, 139),
 }
 
+# Rust repositories held out while the extractor was developed (corpus.lock.json "held_out"): path_tests_excluded only, no repowise figure
+HELD_OUT = ["rust/%s/path_tests_excluded" % n for n in ("bat", "tokei", "xsv", "lidx")]
+
 ORDER = ["go/cobra/tests", "go/cobra/no_tests", "go/gitleaks/no_tests", "go/gitleaks/tests", "go/syft/no_tests", "go/syft/tests",
          "ts/zod", "ts/hono", "rust/ripgrep/path_tests_excluded", "rust/ripgrep/no_tests", "rust/ripgrep/tests",
-         "rust/fd/path_tests_excluded", "rust/fd/no_tests", "rust/fd/tests"]
+         "rust/fd/path_tests_excluded", "rust/fd/no_tests", "rust/fd/tests"] + HELD_OUT
 
 
 def comparable(c):
@@ -135,6 +138,20 @@ def build(results_dir):
         w("| %s | %s | %s %s | %s %s | %d | %s |" % (cid, why, pct(s["precision"]), ci(s["precision_ci"]), pct(s["recall_comparable"]),
                                                   ci(s["recall_comparable_ci"]), s["oracle_edges"], ref))
     w("")
+    held = [cid for cid in HELD_OUT if cid in cells]
+    if held:
+        w("### Held-out Rust cells (no repowise figure)")
+        w("")
+        w("Repositories that were not used while developing the Rust extractor, graded in the repowise-comparable `path_tests_excluded` scope. "
+          "They check that a change tuned on ripgrep and fd generalises.")
+        w("")
+        w("| Cell | lidx P [95% CI] | lidx R [95% CI] | oracle edges |")
+        w("|---|---|---|---:|")
+        for cid in held:
+            s = comparable(cells[cid])
+            w("| %s (held-out) | %s %s | %s %s | %d |" % (cid, pct(s["precision"]), ci(s["precision_ci"]), pct(s["recall_comparable"]),
+                                                       ci(s["recall_comparable_ci"]), s["oracle_edges"]))
+        w("")
     tsc = [(cid, comparable(cells[cid])) for cid in ("ts/zod", "ts/hono") if cid in cells]
     if tsc:
         w("TypeScript scope effect: " + "; ".join(

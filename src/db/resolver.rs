@@ -1311,7 +1311,16 @@ impl<'c> Resolver<'c> {
             }) {
             Some(resolved) => match resolved? {
                 Some(ty) => {
-                    hooked = ty;
+                    hooked = ty.or_else(|| {
+                        // A Rust receiver whose declaration could not be
+                        // finished is as unknown as an untracked one: a std
+                        // method name on it must not fall to the name tiers.
+                        (r.source_lang == "rust"
+                            && r.target_qualname.is_some_and(|qn| {
+                                crate::indexer::rust::is_std_method_name(qualname_trailing_name(qn))
+                            }))
+                        .then(String::new)
+                    });
                     patched_hook = Reference {
                         receiver_type: hooked.as_deref(),
                         receiver_scope: None,

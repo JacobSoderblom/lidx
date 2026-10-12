@@ -46,6 +46,10 @@ def cells_for(repo):
     if lang == "go":
         return [{"id": "go/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": ["-tests"]},
                 {"id": "go/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
+    if lang == "rust" and repo.get("held_out"):
+        # held-out repositories (not used while developing the Rust extractor) get only the repowise-comparable scope
+        return [{"id": "rust/%s/path_tests_excluded" % n, "repo": n, "lang": lang, "variant": "path_tests_excluded",
+                 "args": ["--path-tests-excluded"]}]
     if lang == "rust":
         # path_tests_excluded is repowise's cell (test files by path only, #[cfg(test)] code kept); no_tests is our stricter
         # variant (also drops #[cfg(test)] items and modules gated in their parent) and is a diagnostic row only

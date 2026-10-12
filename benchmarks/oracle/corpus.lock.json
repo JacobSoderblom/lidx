@@ -58,6 +58,38 @@
       "url": "https://github.com/sharkdp/fd",
       "ref": "v10.5.0 (repowise g9 pin)",
       "sha": "4f81778774463bf414a184cbe6d5219ad2229646"
+    },
+    {
+      "name": "bat",
+      "lang": "rust",
+      "url": "https://github.com/sharkdp/bat",
+      "ref": "v0.25.0 (held-out)",
+      "sha": "dab96bf0bcff07104db976325997bd2479e0c13a",
+      "held_out": true
+    },
+    {
+      "name": "tokei",
+      "lang": "rust",
+      "url": "https://github.com/XAMPPRocky/tokei",
+      "ref": "v12.1.2 (held-out)",
+      "sha": "5ae68d43023f746633cb705dd866be5cef4dbdc3",
+      "held_out": true
+    },
+    {
+      "name": "xsv",
+      "lang": "rust",
+      "url": "https://github.com/BurntSushi/xsv",
+      "ref": "0.13.0 (held-out)",
+      "sha": "0803f06a00e9e0cb66e2b8c26a921af404439748",
+      "held_out": true
+    },
+    {
+      "name": "lidx",
+      "lang": "rust",
+      "url": "https://github.com/JacobSoderblom/lidx",
+      "ref": "main ccc405a (held-out)",
+      "sha": "ccc405a5876837e27609bf13a09db7c9f42dc445",
+      "held_out": true
     }
   ],
   "toolchains": {
