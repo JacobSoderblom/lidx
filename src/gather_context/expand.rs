@@ -33,17 +33,10 @@ pub(super) fn expand_via_subgraph(
     // Use existing subgraph logic — include cross-file edge kinds
     let filter = EdgeFilter {
         include: Some(
-            [
-                "CALLS",
-                "CONTAINS",
-                "IMPLEMENTS",
-                "EXTENDS",
-                "IMPORTS",
-                "RPC_IMPL",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            crate::edge_views::CONTEXT_EXPANSION
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         ),
         exclude: Default::default(),
         exclude_all: false,

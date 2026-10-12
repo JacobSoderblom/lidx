@@ -382,18 +382,19 @@ impl Db {
         // file paths. Issue #80: excludes an edge into an external stub
         // symbol (`tgt_f.language = 'external'`) -- it would otherwise show
         // up as a "module" dependency on the synthetic `<external>` file.
-        let mut sql = String::from(
+        let mut sql = format!(
             "SELECT e.kind, src_f.path as src_path, tgt_f.path as tgt_path
              FROM edges e
              JOIN symbols src_s ON e.source_symbol_id = src_s.id
              JOIN files src_f ON src_s.file_id = src_f.id
              LEFT JOIN symbols tgt_s ON e.target_symbol_id = tgt_s.id
              LEFT JOIN files tgt_f ON tgt_s.file_id = tgt_f.id
-             WHERE e.kind IN ('CALLS', 'IMPORTS', 'XREF')
+             WHERE e.kind IN ({module_kinds})
                AND e.graph_version = ?
                AND (src_f.deleted_version IS NULL OR src_f.deleted_version > ?)
                AND (tgt_f.deleted_version IS NULL OR tgt_f.deleted_version > ? OR tgt_f.id IS NULL)
                AND (tgt_f.language IS NULL OR tgt_f.language != 'external')",
+            module_kinds = crate::edge_views::sql_list(crate::edge_views::MODULE_COUPLING)
         );
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&graph_version, &graph_version, &graph_version];

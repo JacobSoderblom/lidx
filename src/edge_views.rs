@@ -129,6 +129,9 @@ pub const CONFIG: &[&str] = &[CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND];
 /// `analyze_impact` and `trace_flow` retry suggestions.
 pub const CONFIG_CONSUMER_RETRY: &[&str] = &[CONFIG_BIND, CONFIG_SOURCE, CONFIG_READ, CALLS];
 
+/// The two config edge kinds that cross a bridge (source and reader of a URI).
+pub const CONFIG_BRIDGE: &[&str] = &[CONFIG_SOURCE, CONFIG_READ];
+
 /// Config edges that identify a symbol as a *consumer* of a config URI.
 pub const CONFIG_CONSUMER: &[&str] = &[CONFIG_READ, CONFIG_BIND];
 
@@ -151,6 +154,38 @@ pub const CHANNEL_FAMILY: &[&str] = &[CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE];
 
 /// RPC edges that bind to a route: implementation and call sides.
 pub const RPC_BOUND: &[&str] = &[RPC_IMPL, RPC_CALL];
+
+/// Every edge kind the indexer can write to the `edges` table, so `kinds`
+/// can never reject a kind that exists in the graph. Kinds with a `*_KIND`
+/// const in the indexer reference it; the rest are literals. Matching is
+/// case-insensitive; see `normalize_kinds` in `rpc::validate`. `tests/direction_kinds_validation.rs`
+/// asserts every kind found in indexed fixtures is accepted.
+pub const ALL: &[&str] = &[
+    "CALLS",
+    "IMPORTS",
+    "CONTAINS",
+    "EXTENDS",
+    "IMPLEMENTS",
+    "INHERITS",
+    "USES",
+    "MODULE_FILE",
+    "IMPORTS_FILE",
+    crate::indexer::proto::RPC_IMPL_KIND,
+    crate::indexer::proto::RPC_CALL_KIND,
+    crate::indexer::proto::RPC_ROUTE_KIND,
+    crate::indexer::http::HTTP_ROUTE_KIND,
+    crate::indexer::http::HTTP_CALL_KIND,
+    crate::indexer::http::PAGE_ROUTE_KIND,
+    crate::indexer::channel::CHANNEL_PUBLISH_KIND,
+    crate::indexer::channel::CHANNEL_SUBSCRIBE_KIND,
+    crate::indexer::config::CONFIG_SOURCE_KIND,
+    crate::indexer::config::CONFIG_READ_KIND,
+    crate::indexer::config::CONFIG_BIND_KIND,
+    crate::indexer::xref::XREF_KIND,
+    crate::indexer::xref::ROUTE_KIND,
+    crate::indexer::python::MODULE_EXPORT_KIND,
+    crate::indexer::sql_extractor::REFERENCES_KIND,
+];
 
 /// Whether `kind` belongs to `set`.
 pub fn contains(set: &[&str], kind: &str) -> bool {

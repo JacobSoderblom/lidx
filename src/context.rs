@@ -96,7 +96,7 @@ pub fn build_file_context(
         // to resolve the target symbol's file instead.
 
         match edge.kind.as_str() {
-            "CALLS" | "RPC_CALL" | "HTTP_CALL" | "CHANNEL_PUBLISH" => {
+            kind if crate::edge_views::contains(crate::edge_views::CALL_SITE, kind) => {
                 // If source is in our file → outgoing call (callee)
                 if let Some(src_id) = edge.source_symbol_id
                     && symbol_id_set.contains(&src_id)
