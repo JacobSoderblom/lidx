@@ -1,0 +1,13 @@
+[
+{"callee":{"file":"source/core/Ky.ts","line":1042,"name":"hook"},"caller":{"file":"source/core/Ky.ts","line":1041,"name":"#runBeforeRequestHooks"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:1044"]},
+{"callee":{"file":"source/core/Ky.ts","line":1069,"name":"hook"},"caller":{"file":"source/core/Ky.ts","line":1065,"name":"#runAfterResponseHooks"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:1076"]},
+{"callee":{"file":"source/core/Ky.ts","line":1163,"name":"hook"},"caller":{"file":"source/core/Ky.ts","line":1125,"name":"#retryFromError"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:1167"]},
+{"callee":{"file":"source/core/Ky.ts","line":353,"name":"hook"},"caller":{"file":"source/core/Ky.ts","line":349,"name":"create"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:354"]},
+{"callee":{"file":"source/core/Ky.ts","line":776,"name":"nativeClone"},"caller":{"file":"source/core/Ky.ts","line":777,"name":"clone"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:777"]},
+{"callee":{"file":"source/core/Ky.ts","line":795,"name":"hook"},"caller":{"file":"source/core/Ky.ts","line":783,"name":"#throwProcessedError"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:798"]},
+{"callee":{"file":"source/core/Ky.ts","line":819,"name":"throwIfTotalTimeoutReached"},"caller":{"file":"source/core/Ky.ts","line":814,"name":"#getResponseData"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:832","source/core/Ky.ts:848"]},
+{"callee":{"file":"source/types/standard-schema.ts","line":31,"name":"validate"},"caller":{"file":"source/core/Ky.ts","line":329,"name":"validateJsonWithSchema"},"reason":"callee_not_indexed","sites":["source/core/Ky.ts:339"]},
+{"callee":{"file":"source/utils/body.ts","line":113,"name":"nativeClone"},"caller":{"file":"source/utils/body.ts","line":149,"name":"value"},"reason":"callee_not_indexed","sites":["source/utils/body.ts:150"]},
+{"callee":{"file":"source/utils/body.ts","line":124,"name":"nativeMethod"},"caller":{"file":"source/utils/body.ts","line":126,"name":"value"},"reason":"callee_not_indexed","sites":["source/utils/body.ts:128"]},
+{"callee":{"file":"source/utils/body.ts","line":184,"name":"getOriginalSizeError"},"caller":{"file":"source/utils/body.ts","line":176,"name":"limitResponseSize"},"reason":"callee_not_indexed","sites":["source/utils/body.ts:197"]}
+]

@@ -128,6 +128,14 @@ function calleeDecls(call) {
   let decl = sig && sig.declaration;
   const alts = [];
   if (sym && sym.declarations) for (const d of sym.declarations) alts.push(d);
+  if (ts.isCallExpression(call) && call.expression.kind === ts.SyntaxKind.SuperKeyword) {
+    // `super(..)` constructs the base class, the same way `new Base()` does: the callee is the class, the constructor
+    // signature that type-checks the site stays an acceptable alternative
+    let base;
+    try { base = checker.getTypeAtLocation(call.expression).getSymbol(); } catch { /* ignore */ }
+    const cls = base && base.declarations && base.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+    if (cls) { if (decl) alts.push(decl); return { decl: cls, alts, kind: "class", sym: base }; }
+  }
   if (ts.isNewExpression(call) && sym && sym.declarations) {
     // `new X()` constructs the class X, not whichever (possibly inherited) constructor signature type-checks the site;
     // the constructor stays an acceptable alternative for a graph that points at it
