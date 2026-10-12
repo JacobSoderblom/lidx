@@ -291,6 +291,22 @@ impl Db {
     /// stub symbol on it invisible to any query that also checks its own
     /// file's `deleted_version` (`Resolver::same_lang_lookup`'s candidate
     /// query, `dead_symbols`, ...) starting in that very version.
+    /// `(path, hash, size, modified)` of every live file, for the freshness
+    /// check's stat comparison.
+    pub fn list_file_stats(&self, graph_version: i64) -> Result<Vec<(String, String, i64, i64)>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT path, hash, size, modified
+             FROM files
+             WHERE (deleted_version IS NULL OR deleted_version > ?)
+               AND language != 'external'",
+        )?;
+        let rows = stmt.query_map(params![graph_version], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn list_files(&self, graph_version: i64) -> Result<Vec<FileRecord>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(

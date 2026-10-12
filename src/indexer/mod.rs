@@ -94,6 +94,8 @@ pub struct Indexer {
     /// directory; built lazily, dropped whenever `cs_globals::prepare` runs.
     cs_globals: Option<HashMap<String, Vec<String>>>,
     cs_projects: HashMap<PathBuf, String>,
+    /// Last freshness check, reused for [`crate::freshness::CACHE_TTL`].
+    freshness_cache: Option<(Instant, crate::freshness::Freshness)>,
 }
 
 /// `Indexer::index_scanned_file_symbols`'s result: one file's extracted
@@ -167,6 +169,7 @@ impl Indexer {
             extractors,
             cs_globals: None,
             cs_projects: HashMap::new(),
+            freshness_cache: None,
         })
     }
 
@@ -186,6 +189,27 @@ impl Indexer {
     /// (including a never-indexed DB), i.e. a full `reindex` must re-extract.
     pub fn extractor_version_stale(&self) -> Result<bool> {
         Ok(self.db.get_meta_i64(EXTRACTOR_VERSION_KEY)? != Some(EXTRACTOR_VERSION))
+    }
+
+    /// Index freshness, cached for one second so a burst of requests pays for
+    /// one check. A failed check yields `None` rather than failing a request.
+    pub fn freshness(&mut self) -> Option<crate::freshness::Freshness> {
+        if let Some((at, cached)) = &self.freshness_cache
+            && at.elapsed() < crate::freshness::CACHE_TTL
+        {
+            return Some(cached.clone());
+        }
+        let fresh =
+            crate::freshness::compute(&self.db, &self.repo_root, self.graph_version).ok()?;
+        self.freshness_cache = Some((Instant::now(), fresh.clone()));
+        Some(fresh)
+    }
+
+    /// Record the checkout state a completed reindex/sync indexed.
+    fn record_indexed_head(&mut self, head: Option<String>) -> Result<()> {
+        self.freshness_cache = None;
+        self.db
+            .set_meta_str(crate::freshness::INDEXED_HEAD_KEY, &head.unwrap_or_default())
     }
 
     pub fn graph_version(&self) -> i64 {
@@ -440,6 +464,7 @@ impl Indexer {
                 .as_secs() as i64;
             self.db.set_meta_i64("last_indexed", now)?;
         }
+        self.record_indexed_head(crate::util::git_head_sha(&self.repo_root))?;
         Ok(stats)
     }
 
@@ -882,6 +907,7 @@ impl Indexer {
 
         // The version is fully populated: only now does it become current.
         self.db.promote_graph_version(self.graph_version)?;
+        self.record_indexed_head(self.commit_sha.clone())?;
 
         // Reclaim rows from graph versions this reindex just aged out. Safe to
         // run now: this reindex's own carry-forward already read everything it

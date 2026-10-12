@@ -41,6 +41,9 @@ struct RpcResponse {
     result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<RpcError>,
+    /// Present only when the index is stale (see [`crate::freshness`]).
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    meta: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -497,6 +500,7 @@ pub fn call(
             id,
             result: Some(value),
             error: None,
+            meta: app.indexer.freshness().and_then(|f| f.stale_meta()),
         },
         // Unknown params fail the process (nonzero exit) instead of hiding in
         // a successful-looking response envelope.
@@ -527,6 +531,7 @@ impl App {
                 id,
                 result: Some(value),
                 error: None,
+                meta: self.indexer.freshness().and_then(|f| f.stale_meta()),
             },
             Err(err) => format::error_response(id, &err.to_string()),
         }
