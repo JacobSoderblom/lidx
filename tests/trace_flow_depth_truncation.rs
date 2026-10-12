@@ -104,14 +104,20 @@ fn depth_limited_trace_reports_truncated_and_offers_continuation() {
     assert!(
         methods_and_descriptions
             .iter()
-            .any(|(m, d)| *m == "trace_flow" && d.starts_with("Continue trace")),
-        "truncated depth-limited trace must offer a 'Continue trace' next_hop, got: {methods_and_descriptions:?}"
+            .any(|(m, d)| *m == "trace_flow" && d.starts_with("Re-trace deeper")),
+        "truncated depth-limited trace must offer a deeper re-trace next_hop, got: {methods_and_descriptions:?}"
     );
     assert!(
-        methods_and_descriptions
+        !methods_and_descriptions
             .iter()
-            .any(|(m, d)| *m == "trace_flow" && d.contains("CONFIG edges")),
-        "truncated depth-limited trace must offer the narrow-by-kind next_hop, got: {methods_and_descriptions:?}"
+            .any(|(_, d)| d.starts_with("Continue trace")),
+        "a depth-limited trace must not offer an offset continuation (#354), got: {methods_and_descriptions:?}"
+    );
+    assert!(
+        !methods_and_descriptions
+            .iter()
+            .any(|(_, d)| d.contains("CONFIG edges")),
+        "a depth-only truncation must not offer the narrow-by-kind hop (it would not avoid it), got: {methods_and_descriptions:?}"
     );
 }
 
