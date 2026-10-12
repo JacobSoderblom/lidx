@@ -328,6 +328,30 @@
         }
       }
     ],
+    "relations": {
+      "EXTENDS": {
+        "items": [
+          {
+            "direction": "outgoing",
+            "resolution_kind": "bare_name",
+            "symbol": {
+              "end_byte": 96,
+              "end_col": 9,
+              "end_line": 7,
+              "file_path": "pkg/core.py",
+              "kind": "class",
+              "name": "Base",
+              "qualname": "pkg.core.Base",
+              "stable_id": "sym_4d2b5721c4578e3d",
+              "start_byte": 76,
+              "start_col": 1,
+              "start_line": 6
+            }
+          }
+        ],
+        "total": 1
+      }
+    },
     "source": "class Greeter(Base):\n    \"\"\"Greeter doc.\"\"\"\n    def greet(self, name: str) -> str:\n        \"Greets someone.\"\n        return f\"Hi {name}\"",
     "symbol": {
       "docstring": "Greeter doc.",
