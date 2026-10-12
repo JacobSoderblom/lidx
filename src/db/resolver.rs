@@ -831,7 +831,9 @@ static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
      WHERE source_symbol_id = ?1
        AND edge_kind IN ({hierarchy})
        AND graph_version = ?2
-       AND edge_id IS NULL
+       -- unary plus: keep the planner off the unique `edge_id` index, which
+       -- would walk every pending row instead of this source's
+       AND +edge_id IS NULL
        AND reference_name IS NOT NULL"
     )
 });
@@ -931,9 +933,15 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 String::new(),
             ),
             DeclarationQuery::Method(qualified) => (
-                "s.kind = 'method' AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
+                // `s.name` first: it is indexed, the suffix test is a scan.
+                "s.kind = 'method' AND s.name = ?4
+                 AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
                 qualified.to_string(),
-                String::new(),
+                qualified
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(qualified)
+                    .to_string(),
                 String::new(),
             ),
             DeclarationQuery::Type(name) => (
