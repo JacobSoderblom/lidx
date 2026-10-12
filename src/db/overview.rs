@@ -1,4 +1,5 @@
 use super::{Db, DbDigest, ModuleSummaryEntry, SymbolRefRecord, TableDigest, append_path_filters};
+use crate::edge_views;
 use crate::model::{RepoOverview, ScopeCounts};
 use crate::search::{SearchScope, scope_allows};
 use anyhow::Result;
@@ -394,7 +395,7 @@ impl Db {
                AND (src_f.deleted_version IS NULL OR src_f.deleted_version > ?)
                AND (tgt_f.deleted_version IS NULL OR tgt_f.deleted_version > ? OR tgt_f.id IS NULL)
                AND (tgt_f.language IS NULL OR tgt_f.language != 'external')",
-            module_kinds = crate::edge_views::sql_list(crate::edge_views::MODULE_COUPLING)
+            module_kinds = edge_views::sql_list(edge_views::MODULE_COUPLING)
         );
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&graph_version, &graph_version, &graph_version];

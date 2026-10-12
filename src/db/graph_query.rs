@@ -1,4 +1,5 @@
 use super::{Db, RPC_NAME_ONLY_FILTER, edge_from_row, symbol_from_row};
+use crate::edge_views;
 use crate::model::{Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -133,7 +134,7 @@ pub(super) fn external_base_member_sql(m: &str, gv: i64) -> String {
              AND xc.graph_version = {gv}
              AND xr.edge_kind IN ({subtyping})
              AND xr.graph_version = {gv})",
-        subtyping = crate::edge_views::sql_list(crate::edge_views::SUBTYPING)
+        subtyping = edge_views::sql_list(edge_views::SUBTYPING)
     )
 }
 
@@ -164,7 +165,7 @@ pub(super) fn live_nested_member_sql(t: &str, gv: i64) -> String {
                      AND me.graph_version = {gv})
               OR {is_override}
               OR (m.kind = 'field' AND {is_static}))",
-        structural = crate::edge_views::sql_list(crate::edge_views::STRUCTURAL)
+        structural = edge_views::sql_list(edge_views::STRUCTURAL)
     )
 }
 
@@ -263,7 +264,7 @@ impl DispatchSeed {
                                                 AND e.graph_version = {gv}
                           WHERE rel.d <= {MAX_IFACE_CHAIN_DEPTH}),",
                     seeds = Self::containers(list, gv),
-                    subtyping = crate::edge_views::sql_list(crate::edge_views::SUBTYPING)
+                    subtyping = edge_views::sql_list(edge_views::SUBTYPING)
                 ),
                 "AND source_symbol_id IN (SELECT id FROM rel)".to_string(),
             ),
@@ -291,7 +292,7 @@ fn id_list(ids: &[i64]) -> String {
 pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> String {
     let gv = graph_version;
     let (rel_cte, anc_filter) = seed.ctes(gv);
-    let subtyping = crate::edge_views::sql_list(crate::edge_views::SUBTYPING);
+    let subtyping = edge_views::sql_list(edge_views::SUBTYPING);
     // Every type a class reaches: its direct IMPLEMENTS/EXTENDS targets,
     // then interface -> interface and class -> base hops (issues #173,
     // #185), depth-bounded (cycle-safe: `UNION` dedups and `d` caps the
@@ -909,7 +910,7 @@ impl Db {
     ) -> Result<Vec<Edge>> {
         let is_rpc = kinds
             .iter()
-            .any(|k| crate::edge_views::contains(crate::edge_views::RPC_FAMILY, k));
+            .any(|k| edge_views::contains(edge_views::RPC_FAMILY, k));
         if !is_rpc || !target_qualname.starts_with('/') {
             return self.edges_by_exact_target(
                 target_qualname,
@@ -940,7 +941,7 @@ impl Db {
                    AND (target_qualname = '/' || ?3
                         OR substr(target_qualname, -length(?3) - 1) = '.' || ?3)",
             )?;
-            for &kind in crate::edge_views::RPC_BOUND {
+            for &kind in edge_views::RPC_BOUND {
                 if !kinds.contains(&kind) {
                     continue;
                 }
@@ -1065,7 +1066,7 @@ impl Db {
                  WHERE e.graph_version = ?1 AND e.kind IN ({rpc_bound})
                    AND e.target_qualname LIKE '/%' AND e.detail IS NOT NULL
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?1)",
-                rpc_bound = crate::edge_views::sql_list(crate::edge_views::RPC_BOUND)
+                rpc_bound = edge_views::sql_list(edge_views::RPC_BOUND)
             ))?;
             stmt.query_map([graph_version], |r| {
                 Ok(Row {
@@ -1227,7 +1228,7 @@ impl Db {
                                  AND r.kind = 'RPC_ROUTE' AND r.graph_version = ?)
                     OR NOT EXISTS (SELECT 1 FROM edges r
                                    WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = ?))",
-            rpc_bound = crate::edge_views::sql_list(crate::edge_views::RPC_BOUND)
+            rpc_bound = edge_views::sql_list(edge_views::RPC_BOUND)
         );
         // ponytail: RPC_CALL and RPC_IMPL both fan out one edge per
         // *guessed* proto package (bare `using`s), so two wrong guesses can
@@ -1279,7 +1280,7 @@ impl Db {
         kinds: &[&str],
         graph_version: i64,
     ) -> Result<Vec<i64>> {
-        let default_kinds: &[&str] = crate::edge_views::CONFIG;
+        let default_kinds: &[&str] = edge_views::CONFIG;
         let search_kinds = if kinds.is_empty() {
             default_kinds
         } else {

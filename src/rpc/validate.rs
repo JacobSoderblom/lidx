@@ -8,6 +8,7 @@
 //! through `validate_repo_path`.
 
 use crate::config::Config;
+use crate::edge_views;
 use crate::model::ValidationResult;
 
 use super::{ContextSeed, GatherContextParams};
@@ -34,8 +35,6 @@ pub(super) const DIR_DOWNSTREAM: &str = "downstream";
 pub(super) const DIR_BOTH: &str = "both";
 const TRACE_DIRECTIONS: &[&str] = &[DIR_DOWNSTREAM, DIR_UPSTREAM];
 const IMPACT_DIRECTIONS: &[&str] = &[DIR_DOWNSTREAM, DIR_UPSTREAM, DIR_BOTH];
-
-pub(super) use crate::edge_views::ALL as EDGE_KINDS;
 
 /// Canonicalizes a `direction` value (case-insensitive; `up`/`callers` and
 /// `down`/`callees` are aliases) or errors naming the value and the valid
@@ -69,10 +68,10 @@ pub(super) fn normalize_kinds(kinds: Option<&[String]>) -> anyhow::Result<Option
         .iter()
         .map(|k| {
             let upper = k.to_uppercase();
-            if EDGE_KINDS.contains(&upper.as_str()) {
+            if edge_views::ALL.contains(&upper.as_str()) {
                 Ok(upper)
             } else {
-                anyhow::bail!("{}", unknown_value_message("edge kind", k, EDGE_KINDS))
+                anyhow::bail!("{}", unknown_value_message("edge kind", k, edge_views::ALL))
             }
         })
         .collect::<anyhow::Result<Vec<_>>>()

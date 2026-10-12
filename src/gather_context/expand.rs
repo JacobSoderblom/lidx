@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::edge_views;
 use crate::model::Symbol;
 use anyhow::Result;
 
@@ -33,7 +34,7 @@ pub(super) fn expand_via_subgraph(
     // Use existing subgraph logic — include cross-file edge kinds
     let filter = EdgeFilter {
         include: Some(
-            crate::edge_views::CONTEXT_EXPANSION
+            edge_views::CONTEXT_EXPANSION
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),

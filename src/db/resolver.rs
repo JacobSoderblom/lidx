@@ -58,6 +58,7 @@
 //! are still open (#75).
 
 use super::Db;
+use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
     CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
@@ -717,7 +718,7 @@ const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname, s.kind, s.signature, f.lang
 /// two tables' own orders via `UNION ALL` (rather than a single merged
 /// order) doesn't change its result, only harmless to iterate.
 static HIERARCHY_SQL: LazyLock<String> = LazyLock::new(|| {
-    let hierarchy = crate::edge_views::sql_list(crate::edge_views::TYPE_HIERARCHY);
+    let hierarchy = edge_views::sql_list(edge_views::TYPE_HIERARCHY);
     format!(
         "SELECT target_symbol_id, target_qualname
      FROM edges
@@ -1320,8 +1321,7 @@ impl<'c> Resolver<'c> {
             });
         }
 
-        let types_only =
-            crate::edge_views::contains(crate::edge_views::TYPE_HIERARCHY, r.edge_kind);
+        let types_only = edge_views::contains(edge_views::TYPE_HIERARCHY, r.edge_kind);
         // A base-list type name carries its scope-ordered guesses (C# enclosing
         // scopes, the global namespace, then usings): the first that names a
         // type wins, like the language's own lookup -- never an ambiguity.
@@ -3514,7 +3514,7 @@ impl Db {
             &format!(
                 "SELECT COALESCE(MAX(id), 0) FROM edges
              WHERE graph_version = ? AND kind IN ({})",
-                crate::edge_views::sql_list(crate::edge_views::TYPE_HIERARCHY)
+                edge_views::sql_list(edge_views::TYPE_HIERARCHY)
             ),
             params![graph_version],
             |row| row.get(0),

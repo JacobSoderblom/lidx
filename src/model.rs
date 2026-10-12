@@ -936,14 +936,14 @@ pub struct ExplainSymbolResult {
     pub callees: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callees_total: Option<usize>,
-    /// Symbol-use edges that are not execution edges (`USES`, `CONFIG_BIND`,
-    /// `REFERENCES`, type relations), grouped by edge kind and capped per
-    /// kind with a per-kind `total`. They are kept out of `callers`/`callees`
-    /// so those counts only hold things that can run the symbol. Present when
-    /// `callers` or `callees` is requested and at least one such edge exists;
-    /// incoming relations come with `callers`, outgoing with `callees`.
+    /// Symbol-use edges that are not `callers`/`callees`/`tests` material
+    /// (`REFERENCES`, incoming `EXTENDS`/`IMPLEMENTS`/`INHERITS`, and `USES`
+    /// when the `other_edges` section is requested), grouped by edge kind,
+    /// capped per kind with a per-kind `total`. Test-code items are marked
+    /// `is_test` and sorted last. Incoming ones come with `callers`, outgoing
+    /// with `callees`. Present when at least one such edge exists.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub relations: Option<std::collections::BTreeMap<String, ExplainRelationGroup>>,
+    pub other_edges: Option<std::collections::BTreeMap<String, ExplainOtherEdgeGroup>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tests: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -969,29 +969,32 @@ pub struct ExplainSymbolResult {
     pub warnings: Vec<String>,
 }
 
-/// One non-execution symbol-use edge (see `edge_views::is_relation`) touching
-/// an explained symbol.
+/// One symbol-use edge that is not a consumer edge (see
+/// `edge_views::is_other_edge`) touching an explained symbol.
 #[derive(Debug, Clone, Serialize)]
-pub struct ExplainRelation {
+pub struct ExplainOtherEdge {
     pub symbol: Symbol,
     /// `incoming`: `symbol` uses the explained symbol; `outgoing`: the
     /// explained symbol uses `symbol`.
     pub direction: &'static str,
+    /// `symbol` is test code, so a test consumer is not mistaken for production use.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_test: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
 }
 
-/// Cap on items per edge kind in `ExplainSymbolResult::relations`.
-pub const RELATIONS_PER_KIND: usize = 5;
+/// Cap on items per edge kind in `ExplainSymbolResult::other_edges`.
+pub const OTHER_EDGES_PER_KIND: usize = 5;
 
-/// The relations of one edge kind: at most `RELATIONS_PER_KIND` items out of
+/// The other edges of one edge kind: at most `OTHER_EDGES_PER_KIND` items out of
 /// `total` distinct related symbols.
 #[derive(Debug, Clone, Serialize)]
-pub struct ExplainRelationGroup {
+pub struct ExplainOtherEdgeGroup {
     pub total: usize,
-    pub items: Vec<ExplainRelation>,
+    pub items: Vec<ExplainOtherEdge>,
 }
 
 #[derive(Debug, Clone, Serialize)]
