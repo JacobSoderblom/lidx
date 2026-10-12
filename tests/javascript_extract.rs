@@ -1222,3 +1222,473 @@ function run() {
     let calls = rpc_calls_for(source);
     assert!(calls.is_empty(), "no RPC_CALL expected, got {calls:?}");
 }
+
+fn ts_calls(source: &str) -> Vec<lidx::indexer::extract::EdgeInput> {
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    extracted
+        .edges
+        .into_iter()
+        .filter(|e| e.kind == "CALLS")
+        .collect()
+}
+
+#[test]
+fn calls_inside_returned_function_expression_attribute_to_enclosing_symbol() {
+    let source = r#"
+export const basicAuth = (options: Options): Handler => {
+  if (!options.realm) { throw new Error('x') }
+  return async function basicAuth(ctx, next) {
+    const requestUser = auth(ctx.req.raw)
+    throw new HTTPException(status, { res })
+  }
+}
+createProxy(function proxyCallback(opts) {
+  const url = mergePath(baseUrl, opts.path)
+})
+"#;
+    let calls = ts_calls(source);
+    let from = |name: &str, scope: &str| {
+        calls.iter().any(|e| {
+            e.source_qualname.as_deref() == Some(scope)
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains(name))
+        })
+    };
+    assert!(from("auth(ctx", "src/app.basicAuth"), "{calls:#?}");
+    assert!(from("HTTPException", "src/app.basicAuth"), "{calls:#?}");
+    assert!(from("mergePath(", "src/app"), "{calls:#?}");
+}
+
+#[test]
+fn this_call_inside_function_expression_does_not_bind_to_class() {
+    let source = r#"
+class Foo {
+  m() {}
+  run() {
+    items.forEach(function (x) {
+      this.m();
+      this.a.b();
+      const f = () => this.m();
+    });
+    this.m();
+    function inner() { this.m(); }
+  }
+}
+"#;
+    let calls = ts_calls(source);
+    let bound = calls
+        .iter()
+        .filter(|e| e.target_qualname.as_deref() == Some("src/app.Foo.m"))
+        .count();
+    assert_eq!(bound, 1, "only the direct this.m() binds: {calls:#?}");
+    let inner: Vec<_> = calls
+        .iter()
+        .filter(|e| e.detail.as_deref().is_some_and(|d| d.starts_with("this.")))
+        .collect();
+    assert_eq!(inner.len(), 4, "{calls:#?}");
+    for e in inner {
+        assert!(e.target_qualname.is_none(), "{e:#?}");
+        assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{e:#?}");
+        assert_eq!(e.source_qualname.as_deref(), Some("src/app.Foo.run"));
+    }
+}
+
+#[test]
+fn class_field_initializer_calls_attribute_to_the_field() {
+    let source = r#"
+class Hono {
+  #dispatch(request: Request) { return compose([])() }
+  #root = new Node()
+  fetch: (request: Request) => Response = (request, ...rest) => {
+    return this.#dispatch(request, rest[1])
+  }
+  request = (input: string): Response => {
+    return this.fetch(new Request(`http://x${mergePath('/', input)}`))
+  }
+  legacy = function (x) {
+    this.fetch(x)
+    return other(x)
+  }
+}
+"#;
+    let calls = ts_calls(source);
+    let find = |snip: &str| {
+        calls
+            .iter()
+            .find(|e| {
+                e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains(snip))
+            })
+            .unwrap_or_else(|| panic!("no call {snip}: {calls:#?}"))
+    };
+    let e = find("this.#dispatch(");
+    assert_eq!(e.source_qualname.as_deref(), Some("src/app.Hono.fetch"));
+    assert_eq!(e.target_qualname.as_deref(), Some("src/app.Hono.#dispatch"));
+    let e = find("this.fetch(new");
+    assert_eq!(e.source_qualname.as_deref(), Some("src/app.Hono.request"));
+    assert_eq!(e.target_qualname.as_deref(), Some("src/app.Hono.fetch"));
+    assert_eq!(
+        find("mergePath(").source_qualname.as_deref(),
+        Some("src/app.Hono.request")
+    );
+    assert_eq!(
+        find("new Node()").source_qualname.as_deref(),
+        Some("src/app.Hono.#root")
+    );
+    let e = find("this.fetch(x)");
+    assert_eq!(e.source_qualname.as_deref(), Some("src/app.Hono.legacy"));
+    assert!(e.target_qualname.is_none());
+    assert_eq!(e.receiver_type, ReceiverType::Unresolved);
+    assert_eq!(
+        find("other(x)").source_qualname.as_deref(),
+        Some("src/app.Hono.legacy")
+    );
+}
+
+#[test]
+fn call_sources_are_emitted_symbols_or_the_module() {
+    let source = r#"
+import { HTTPException } from './http-exception'
+describe('x', () => {
+  it('y', async () => {
+    const handler = handleMiddleware(() => { throw new HTTPException(401) })
+    const exception500: Fn = (c) => new HTTPException(500)
+  })
+})
+export const mw: Fn = (c) => new HTTPException(400)
+const typed: Fn = wrap((c) => new HTTPException(401))
+class A {
+  f = (x) => helper(x)
+  run() { const g = () => helper(2); g() }
+}
+export default function () { inner() }
+const o = { m() { objCall() } }
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let symbols: std::collections::HashSet<&str> = extracted
+        .symbols
+        .iter()
+        .map(|s| s.qualname.as_str())
+        .collect();
+    for e in extracted.edges.iter().filter(|e| e.kind == "CALLS") {
+        let src = e.source_qualname.as_deref().unwrap();
+        assert!(
+            src == "src/app" || symbols.contains(src),
+            "CALLS source {src} has no symbol: {e:#?}"
+        );
+    }
+    // Calls in the test callbacks attribute to the module, not a phantom const.
+    let ex = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.evidence_snippet
+                .as_deref()
+                .is_some_and(|s| s.contains("new HTTPException(401)"))
+                && e.source_qualname.as_deref() == Some("src/app")
+        })
+        .expect("callback call attributed to the module");
+    assert_eq!(ex.kind, "CALLS");
+}
+
+#[test]
+fn same_name_locals_in_sibling_callbacks_keep_an_agreed_type() {
+    let source = r#"
+describe('HTTPException', () => {
+  it('a', async () => { const exception = new HTTPException(401, { message: 'x' }); const res = exception.getResponse() })
+  it('b', async () => { const exception = new HTTPException(500, { message: 'y' }); const res = exception.getResponse() })
+})
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/e.test").unwrap();
+    let calls: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == "CALLS" && e.target_qualname.as_deref() == Some("exception.getResponse")
+        })
+        .collect();
+    assert_eq!(calls.len(), 2);
+    for c in calls {
+        assert_eq!(c.receiver_type, ReceiverType::Known("HTTPException".into()));
+    }
+}
+
+#[test]
+fn same_name_locals_that_disagree_or_include_a_param_stay_unresolved() {
+    let disagree = r#"
+it('a', () => { const x = new A(); x.go() })
+it('b', () => { const x = new B(); x.go() })
+"#;
+    let param = r#"
+it('a', () => { const x = new A(); x.go() })
+it('b', (x) => { x.go() })
+"#;
+    let untyped = r#"
+it('a', () => { const x = new A(); x.go() })
+it('b', () => { const x = make(); x.go() })
+"#;
+    for src in [disagree, param, untyped] {
+        let mut extractor = TypescriptExtractor::new().unwrap();
+        let extracted = extractor.extract(src, "src/e.test").unwrap();
+        for e in extracted
+            .edges
+            .iter()
+            .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("x.go"))
+        {
+            assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{src}");
+        }
+    }
+}
+
+fn call_edge<'a>(
+    extracted: &'a lidx::indexer::extract::ExtractedFile,
+    needle: &str,
+) -> &'a lidx::indexer::extract::EdgeInput {
+    extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains(needle))
+        })
+        .unwrap_or_else(|| panic!("no CALLS edge for {needle}"))
+}
+
+fn extract_ts(source: &str) -> lidx::indexer::extract::ExtractedFile {
+    TypescriptExtractor::new()
+        .unwrap()
+        .extract(source, "src/app")
+        .unwrap()
+}
+
+#[test]
+fn instanceof_narrows_the_receiver_inside_the_if_consequence() {
+    let extracted = extract_ts(
+        r#"
+export const handle = (context: Ctx, err: unknown, other: Thing) => {
+  if (context.error instanceof HTTPException) {
+    return context.error.getResponse()
+  }
+  if (err instanceof Problem && other.ok) {
+    err.report(1)
+  }
+  if (err instanceof Outer) {
+    if (err instanceof Inner) { err.nested(2) }
+  }
+}
+"#,
+    );
+    assert_eq!(
+        call_edge(&extracted, "context.error.getResponse()").receiver_type,
+        ReceiverType::Known("HTTPException".into())
+    );
+    assert_eq!(
+        call_edge(&extracted, "err.report(1)").receiver_type,
+        ReceiverType::Known("Problem".into())
+    );
+    assert_eq!(
+        call_edge(&extracted, "err.nested(2)").receiver_type,
+        ReceiverType::Known("Inner".into())
+    );
+}
+
+#[test]
+fn instanceof_does_not_narrow_outside_or_across_boundaries() {
+    let extracted = extract_ts(
+        r#"
+export const handle = (err: unknown) => {
+  if (err instanceof Problem) { ok() } else { err.inElse(1) }
+  if (!(err instanceof Problem)) { err.negated(2) }
+  if (err instanceof Problem || err.x) { err.disjunct(3) }
+  if (err instanceof Problem) { items.forEach(() => err.inClosure(4)) }
+  err.after(5)
+}
+"#,
+    );
+    for needle in [
+        "inElse(1)",
+        "negated(2)",
+        "disjunct(3)",
+        "inClosure(4)",
+        "after(5)",
+    ] {
+        assert_ne!(
+            call_edge(&extracted, needle).receiver_type,
+            ReceiverType::Known("Problem".into()),
+            "{needle}"
+        );
+    }
+}
+
+#[test]
+fn non_null_subscript_on_typed_container_field_resolves_the_element_type() {
+    let extracted = extract_ts(
+        r#"
+class Router {
+  #tries?: Record<string, Trie>
+  #list: Leaf[]
+  #arr: Array<Node2>
+  #idx: { [k: string]: Entry }
+  #loose: Record<string, string>
+  insertPath(method: string, path: string) {
+    this.#tries![method].insert(path, true)
+    this.#list[0].leaf(1)
+    this.#arr![0].node(2)
+    this.#idx[method].entry(3)
+    this.#loose[method].toUpperCase()
+    this.#untyped![method].insert(path, false)
+  }
+}
+"#,
+    );
+    for (needle, ty) in [
+        ("insert(path, true)", "Trie"),
+        ("leaf(1)", "Leaf"),
+        ("node(2)", "Node2"),
+        ("entry(3)", "Entry"),
+    ] {
+        let e = call_edge(&extracted, needle);
+        assert_eq!(e.receiver_type, ReceiverType::Known(ty.into()), "{needle}");
+        assert!(
+            e.target_qualname
+                .as_deref()
+                .is_some_and(|t| t.starts_with(&format!("{ty}.")))
+        );
+    }
+    for needle in ["toUpperCase()", "insert(path, false)"] {
+        let e = call_edge(&extracted, needle);
+        assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{needle}");
+        assert!(
+            e.target_qualname.is_some(),
+            "{needle} keeps an unresolved reference name"
+        );
+    }
+}
+
+#[test]
+fn nested_generic_container_annotations_never_yield_a_wrong_element_type() {
+    let extracted = extract_ts(
+        r#"
+class Router {
+  #nested: Record<string, Map<string, Trie>>
+  #keyed: Record<Foo<A, B>, Leaf>
+  #valued: Record<string, Box<Trie>>
+  #arrs: Array<Array<Trie>>
+  #grid: Trie[][]
+  #maybe: Trie[] | undefined
+  #mapped: { [K in Keys]: Trie }
+  #two: { [k: string]: Trie; other: string }
+  go(m: string) {
+    this.#nested[m].one(1)
+    this.#keyed[m].two(2)
+    this.#valued[m].three(3)
+    this.#arrs[0].four(4)
+    this.#grid[0].five(5)
+    this.#maybe![0].six(6)
+    this.#mapped[m].seven(7)
+    this.#two[m].eight(8)
+  }
+}
+"#,
+    );
+    for (needle, expected) in [
+        ("one(1)", ReceiverType::Unresolved),
+        ("two(2)", ReceiverType::Known("Leaf".into())),
+        ("three(3)", ReceiverType::Unresolved),
+        ("four(4)", ReceiverType::Unresolved),
+        ("five(5)", ReceiverType::Unresolved),
+        ("six(6)", ReceiverType::Known("Trie".into())),
+        ("seven(7)", ReceiverType::Unresolved),
+        ("eight(8)", ReceiverType::Unresolved),
+    ] {
+        assert_eq!(
+            call_edge(&extracted, needle).receiver_type,
+            expected,
+            "{needle}"
+        );
+    }
+}
+
+#[test]
+fn non_null_subscript_on_typed_local_resolves_the_element_type() {
+    let extracted = extract_ts(
+        r#"
+function f(m: Record<string, Trie>, key: string) {
+  const local: Trie[] = make()
+  m[key].insert(1)
+  local[0]!.insert(2)
+}
+"#,
+    );
+    for needle in ["insert(1)", "insert(2)"] {
+        assert_eq!(
+            call_edge(&extracted, needle).receiver_type,
+            ReceiverType::Known("Trie".into()),
+            "{needle}"
+        );
+    }
+}
+
+// tree-sitter-typescript #335: anonymous generic call signatures separated
+// only by a line break end the interface early and push the rest of the
+// file into ERROR recovery.
+
+fn sym_lines<'a>(
+    e: &'a lidx::indexer::extract::ExtractedFile,
+    q: &str,
+) -> &'a lidx::indexer::extract::SymbolInput {
+    e.symbols
+        .iter()
+        .find(|s| s.qualname == q)
+        .unwrap_or_else(|| panic!("missing symbol {q}"))
+}
+
+#[test]
+fn generic_call_signatures_split_by_newline_keep_the_interface_whole() {
+    let extracted = extract_ts(
+        "export interface I {\n  <A>(h: A): [A]\n  <A, B>(h: A, i: B): [A, B]\n}\nexport const after = () => 1\n",
+    );
+    let i = sym_lines(&extracted, "src/app.I");
+    assert_eq!((i.start_line, i.end_line), (1, 4));
+    assert_eq!(sym_lines(&extracted, "src/app.after").start_line, 5);
+}
+
+#[test]
+fn hono_style_signatures_with_blank_and_comment_lines_keep_later_symbols() {
+    let src = "export interface Handlers {\n  // handler x1\n  <\n    E extends Env = any,\n    P extends string = any\n  >(\n    handler1: H<E, P>\n  ): [H<E, P>]\n\n  // handler x2\n  <\n    E extends Env = any,\n    P extends string = any\n  >(\n    handler1: H<E, P>,\n    handler2: H<E, P>\n  ): [H<E, P>, H<E, P>]\n}\n\nexport class Factory {\n  make() {\n    return 1\n  }\n}\n\nexport const createFactory = () => new Factory()\n";
+    let e = extract_ts(src);
+    let i = sym_lines(&e, "src/app.Handlers");
+    assert_eq!((i.start_line, i.end_line), (1, 18));
+    assert_eq!(sym_lines(&e, "src/app.Factory").start_line, 20);
+    assert_eq!(sym_lines(&e, "src/app.Factory.make").start_line, 21);
+    assert_eq!(sym_lines(&e, "src/app.createFactory").start_line, 26);
+}
+
+#[test]
+fn files_without_the_parser_bug_are_unchanged() {
+    let src = "export interface I {\n  <A>(h: A): [A];\n  <A, B>(h: A, i: B): [A, B];\n}\nexport const after = () => 1\n";
+    let e = extract_ts(src);
+    assert_eq!(sym_lines(&e, "src/app.I").end_line, 4);
+    assert_eq!(sym_lines(&e, "src/app.after").start_line, 5);
+}
+
+#[test]
+fn stored_signatures_never_contain_the_injected_separator() {
+    let src = "export interface I {\n  <A>(h: A): [A]\n  <A, B>(h: A, i: B): [A, B]\n}\nexport const after = () => 1\n";
+    let e = extract_ts(src);
+    for s in &e.symbols {
+        for text in [s.signature.as_deref(), s.docstring.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            assert!(!text.contains(";<"), "{} leaked: {text}", s.qualname);
+        }
+    }
+}

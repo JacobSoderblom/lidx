@@ -264,9 +264,9 @@ pub fn scan_repo(repo_root: &Path) -> Result<Vec<ScannedFile>> {
     scan_repo_with_options(repo_root, ScanOptions::default())
 }
 
-pub fn scan_repo_with_options(repo_root: &Path, options: ScanOptions) -> Result<Vec<ScannedFile>> {
-    let mut files = Vec::new();
-    let mut builder = WalkBuilder::new(repo_root);
+fn walker_from(dir: &Path, options: ScanOptions, max_depth: Option<usize>) -> ignore::Walk {
+    let mut builder = WalkBuilder::new(dir);
+    builder.max_depth(max_depth);
     if options.no_ignore {
         builder
             .ignore(false)
@@ -283,11 +283,42 @@ pub fn scan_repo_with_options(repo_root: &Path, options: ScanOptions) -> Result<
             .parents(true)
             .require_git(false);
     }
-    let walker = builder
+    builder
         .hidden(false)
         .filter_entry(|entry| !is_ignored_entry(entry))
-        .build();
+        .build()
+}
 
+/// Indexable files (`rel_path`) and subdirectories (`rel_path`) found under
+/// `dir`, honouring the indexer's ignore rules, without reading contents.
+/// `shallow` lists only `dir`'s direct children. The freshness check uses this
+/// to look inside just the directories whose mtime moved.
+pub fn list_dir(
+    repo_root: &Path,
+    dir: &Path,
+    options: ScanOptions,
+    shallow: bool,
+) -> (Vec<String>, Vec<String>) {
+    let (mut files, mut dirs) = (Vec::new(), Vec::new());
+    for entry in walker_from(dir, options, shallow.then_some(1)).flatten() {
+        if entry.depth() == 0 {
+            continue;
+        }
+        let Ok(rel) = crate::util::normalize_rel_path(repo_root, entry.path()) else {
+            continue;
+        };
+        match entry.file_type() {
+            Some(ft) if ft.is_dir() => dirs.push(rel),
+            Some(ft) if ft.is_file() && detect_language(entry.path()).is_some() => files.push(rel),
+            _ => {}
+        }
+    }
+    (files, dirs)
+}
+
+pub fn scan_repo_with_options(repo_root: &Path, options: ScanOptions) -> Result<Vec<ScannedFile>> {
+    let mut files = Vec::new();
+    let walker = walker_from(repo_root, options, None);
     for entry in walker {
         let entry = match entry {
             Ok(value) => value,

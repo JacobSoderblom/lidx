@@ -264,6 +264,7 @@
       {
         "edge_kind": "CALLS",
         "evidence": "Greeter()",
+        "evidence_line": 16,
         "resolution_kind": "exact",
         "symbol": {
           "end_byte": 276,

@@ -1,0 +1,2421 @@
+{
+  "profiles": [
+    "baseline",
+    "lidx"
+  ],
+  "rows": [
+    {
+      "task": "astropy:38",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 60.333333333333336,
+            "sd": 8.020806277010642,
+            "min": 52,
+            "max": 68,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 47289.666666666664,
+            "sd": 12047.103815163764,
+            "min": 34054,
+            "max": 57615,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 5.333333333333333,
+            "sd": 0.5773502691896257,
+            "min": 5,
+            "max": 6,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 24.99,
+            "sd": 1.6691015547293697,
+            "min": 23.09,
+            "max": 26.22,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 67.0,
+            "sd": 4.358898943540674,
+            "min": 64,
+            "max": 72,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 100109.66666666667,
+            "sd": 6253.74466486547,
+            "min": 94738,
+            "max": 106975,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 5.666666666666667,
+            "sd": 0.5773502691896257,
+            "min": 5,
+            "max": 6,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 25.593333333333334,
+            "sd": 2.8001845177297393,
+            "min": 22.7,
+            "max": 28.29,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 24.066666666666666,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 6.666666666666664,
+        "input_tokens": 111.69459148933171,
+        "tool_calls": 6.250000000000011,
+        "wall_seconds": 2.414299052954523
+      }
+    },
+    {
+      "task": "conan:1",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 89.0,
+            "sd": 1.7320508075688772,
+            "min": 87,
+            "max": 90,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 30535.333333333332,
+            "sd": 933.0543035286496,
+            "min": 29565,
+            "max": 31426,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.0,
+            "sd": 0.0,
+            "min": 6,
+            "max": 6,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 28.073333333333334,
+            "sd": 2.0613183483715787,
+            "min": 25.71,
+            "max": 29.5,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 89.66666666666667,
+            "sd": 2.309401076758503,
+            "min": 87,
+            "max": 91,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 89725.66666666667,
+            "sd": 17769.154575649718,
+            "min": 73010,
+            "max": 108388,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.0,
+            "sd": 1.0,
+            "min": 6,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 30.133333333333336,
+            "sd": 4.309296152892411,
+            "min": 25.67,
+            "max": 34.27,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 11.49,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.6666666666666714,
+        "input_tokens": 193.84210641224377,
+        "tool_calls": 16.666666666666664,
+        "wall_seconds": 7.337924483495614
+      }
+    },
+    {
+      "task": "conan:19",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 82.33333333333333,
+            "sd": 2.0816659994661326,
+            "min": 80,
+            "max": 84,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 177194.66666666666,
+            "sd": 34006.67896654028,
+            "min": 154809,
+            "max": 216327,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 13.0,
+            "sd": 2.0,
+            "min": 11,
+            "max": 15,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 57.78666666666667,
+            "sd": 6.591618415331196,
+            "min": 50.88,
+            "max": 64.01,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 80.33333333333333,
+            "sd": 2.309401076758503,
+            "min": 79,
+            "max": 83,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 316309.6666666667,
+            "sd": 49334.98012904569,
+            "min": 281652,
+            "max": 372793,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 15.0,
+            "sd": 1.0,
+            "min": 14,
+            "max": 16,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 64.31666666666666,
+            "sd": 2.904898162299895,
+            "min": 61.56,
+            "max": 67.35,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 11.363333333333335,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": -2.0,
+        "input_tokens": 78.50969931374911,
+        "tool_calls": 15.384615384615385,
+        "wall_seconds": 11.300184586986607
+      }
+    },
+    {
+      "task": "conan:27",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 78.0,
+            "sd": 2.6457513110645907,
+            "min": 75,
+            "max": 80,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 62359.333333333336,
+            "sd": 15205.362223022947,
+            "min": 44803,
+            "max": 71323,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.333333333333333,
+            "sd": 1.5275252316519468,
+            "min": 5,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 38.61666666666667,
+            "sd": 4.186470271402071,
+            "min": 35.33,
+            "max": 43.33,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 80.0,
+            "sd": 1.0,
+            "min": 79,
+            "max": 81,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 99840.66666666667,
+            "sd": 19826.554474576093,
+            "min": 80041,
+            "max": 119694,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.333333333333333,
+            "sd": 1.1547005383792515,
+            "min": 5,
+            "max": 7,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 38.38666666666666,
+            "sd": 5.458134601980181,
+            "min": 32.69,
+            "max": 43.57,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 10.950000000000001,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 2.0,
+        "input_tokens": 60.10541057740622,
+        "tool_calls": 0.0,
+        "wall_seconds": -0.595597755718612
+      }
+    },
+    {
+      "task": "conan:39",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 89.0,
+            "sd": 1.7320508075688772,
+            "min": 87,
+            "max": 90,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 138155.33333333334,
+            "sd": 24548.694676771174,
+            "min": 111015,
+            "max": 158810,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 14.333333333333334,
+            "sd": 3.2145502536643185,
+            "min": 12,
+            "max": 18,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 54.876666666666665,
+            "sd": 4.83793688810978,
+            "min": 49.79,
+            "max": 59.42,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 89.0,
+            "sd": 1.0,
+            "min": 88,
+            "max": 90,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 206014.0,
+            "sd": 16885.714938965422,
+            "min": 189917,
+            "max": 223591,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 10.666666666666666,
+            "sd": 1.1547005383792515,
+            "min": 10,
+            "max": 12,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 49.703333333333326,
+            "sd": 4.0554202412738105,
+            "min": 46.23,
+            "max": 54.16,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 7.916666666666667,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.0,
+        "input_tokens": 49.11765983216957,
+        "tool_calls": -25.581395348837216,
+        "wall_seconds": -9.427200388750542
+      }
+    },
+    {
+      "task": "derived:cs-callers-entity-adddomainevent",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 90.66666666666667,
+            "sd": 1.5275252316519468,
+            "min": 89,
+            "max": 92,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 22739.333333333332,
+            "sd": 988.5354486983931,
+            "min": 21669,
+            "max": 23618,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 4.0,
+            "sd": 0.0,
+            "min": 4,
+            "max": 4,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 18.543333333333333,
+            "sd": 1.3536740129489577,
+            "min": 17.11,
+            "max": 19.8,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 91.33333333333333,
+            "sd": 2.309401076758503,
+            "min": 90,
+            "max": 94,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 50418.0,
+            "sd": 1290.5487205061265,
+            "min": 48928,
+            "max": 51184,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 4.0,
+            "sd": 1.0,
+            "min": 3,
+            "max": 5,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 18.04,
+            "sd": 1.5387982323878588,
+            "min": 17.02,
+            "max": 19.81,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 3.313333333333333,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.6666666666666572,
+        "input_tokens": 121.7215397695623,
+        "tool_calls": 0.0,
+        "wall_seconds": -2.714362753909764
+      }
+    },
+    {
+      "task": "derived:cs-callers-iorderingintegrationeventservice-addandsaveeventasync",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 90.33333333333333,
+            "sd": 0.5773502691896257,
+            "min": 90,
+            "max": 91,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 27467.0,
+            "sd": 9697.429401650728,
+            "min": 21380,
+            "max": 38650,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.3333333333333335,
+            "sd": 0.5773502691896257,
+            "min": 3,
+            "max": 4,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 20.636666666666667,
+            "sd": 2.619949108920503,
+            "min": 17.63,
+            "max": 22.43,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 92.0,
+            "sd": 1.7320508075688772,
+            "min": 91,
+            "max": 94,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 54113.666666666664,
+            "sd": 10047.340759292149,
+            "min": 48161,
+            "max": 65714,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.0,
+            "sd": 0.0,
+            "min": 3,
+            "max": 3,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 18.076666666666668,
+            "sd": 1.8178100377468849,
+            "min": 16.32,
+            "max": 19.95,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 5.503333333333333,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 1.6666666666666714,
+        "input_tokens": 97.01338575988154,
+        "tool_calls": -10.000000000000004,
+        "wall_seconds": -12.40510418349216
+      }
+    },
+    {
+      "task": "derived:cs-impact-buyer-verifyoraddpaymentmethod",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 93.66666666666667,
+            "sd": 0.5773502691896257,
+            "min": 93,
+            "max": 94,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 21487.333333333332,
+            "sd": 168.30428792319384,
+            "min": 21293,
+            "max": 21586,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.0,
+            "sd": 0.0,
+            "min": 3,
+            "max": 3,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 14.32,
+            "sd": 0.821462111116514,
+            "min": 13.66,
+            "max": 15.24,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 94.66666666666667,
+            "sd": 0.5773502691896257,
+            "min": 94,
+            "max": 95,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 46284.333333333336,
+            "sd": 18.475208614068023,
+            "min": 46263,
+            "max": 46295,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.0,
+            "sd": 0.0,
+            "min": 3,
+            "max": 3,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 14.0,
+            "sd": 2.379999999999999,
+            "min": 12.3,
+            "max": 16.72,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 2.6933333333333334,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 1.0,
+        "input_tokens": 115.40287301045579,
+        "tool_calls": 0.0,
+        "wall_seconds": -2.2346368715083815
+      }
+    },
+    {
+      "task": "derived:cs-trace-payment-publish-to-ordering-handler",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 71.0,
+            "sd": 1.0,
+            "min": 70,
+            "max": 72,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 77532.33333333333,
+            "sd": 6562.787238158291,
+            "min": 70358,
+            "max": 83233,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 10.666666666666666,
+            "sd": 1.5275252316519468,
+            "min": 9,
+            "max": 12,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 40.35333333333333,
+            "sd": 3.0628309345005222,
+            "min": 38.36,
+            "max": 43.88,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 80.0,
+            "sd": 4.358898943540674,
+            "min": 75,
+            "max": 83,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 107629.0,
+            "sd": 67127.98074573673,
+            "min": 52612,
+            "max": 182424,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.0,
+            "sd": 2.6457513110645907,
+            "min": 5,
+            "max": 10,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 30.866666666666664,
+            "sd": 10.397049260888078,
+            "min": 23.29,
+            "max": 42.72,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 2.6833333333333336,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 9.0,
+        "input_tokens": 38.81821347652808,
+        "tool_calls": -34.37499999999999,
+        "wall_seconds": -23.509003799768717
+      }
+    },
+    {
+      "task": "derived:py-callers-baseclient-build-request",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 88.33333333333333,
+            "sd": 4.041451884327381,
+            "min": 84,
+            "max": 92,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 38727.0,
+            "sd": 3951.5436224341493,
+            "min": 35063,
+            "max": 42914,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 5.0,
+            "sd": 0.0,
+            "min": 5,
+            "max": 5,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 21.683333333333334,
+            "sd": 3.755693455719374,
+            "min": 17.65,
+            "max": 25.08,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 75.0,
+            "sd": 1.0,
+            "min": 74,
+            "max": 76,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 97253.33333333333,
+            "sd": 23167.922097877774,
+            "min": 74921,
+            "max": 121175,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 5.666666666666667,
+            "sd": 0.5773502691896257,
+            "min": 5,
+            "max": 6,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 23.49,
+            "sd": 2.621430906966651,
+            "min": 20.51,
+            "max": 25.44,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 1.4533333333333334,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": -13.333333333333329,
+        "input_tokens": 151.12539916165292,
+        "tool_calls": 13.33333333333334,
+        "wall_seconds": 8.33205226748654
+      }
+    },
+    {
+      "task": "derived:py-callers-response-raise-for-status",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 76.66666666666667,
+            "sd": 7.023769168568492,
+            "min": 70,
+            "max": 84,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 25415.333333333332,
+            "sd": 6592.361210775191,
+            "min": 20966,
+            "max": 32989,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 4.333333333333333,
+            "sd": 1.5275252316519468,
+            "min": 3,
+            "max": 6,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 19.276666666666667,
+            "sd": 1.4099763591398728,
+            "min": 17.94,
+            "max": 20.75,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 79.66666666666667,
+            "sd": 1.5275252316519468,
+            "min": 78,
+            "max": 81,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 56441.0,
+            "sd": 9768.3331229028,
+            "min": 48963,
+            "max": 67493,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.3333333333333335,
+            "sd": 1.1547005383792515,
+            "min": 2,
+            "max": 4,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 18.496666666666666,
+            "sd": 2.110505468681219,
+            "min": 16.18,
+            "max": 20.31,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 1.1566666666666665,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 3.0,
+        "input_tokens": 122.07460063478742,
+        "tool_calls": -23.076923076923066,
+        "wall_seconds": -4.046342728687538
+      }
+    },
+    {
+      "task": "derived:py-trace-client-send",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 89.66666666666667,
+            "sd": 1.1547005383792515,
+            "min": 89,
+            "max": 91,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 21227.333333333332,
+            "sd": 92.08872533233009,
+            "min": 21127,
+            "max": 21308,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.0,
+            "sd": 0.0,
+            "min": 3,
+            "max": 3,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 17.046666666666667,
+            "sd": 0.8548879068821448,
+            "min": 16.48,
+            "max": 18.03,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 91.0,
+            "sd": 1.0,
+            "min": 90,
+            "max": 92,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 45529.666666666664,
+            "sd": 9456.717207008642,
+            "min": 35181,
+            "max": 53722,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 2.0,
+            "sd": 1.0,
+            "min": 1,
+            "max": 3,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 14.783333333333333,
+            "sd": 2.3188862269057817,
+            "min": 12.68,
+            "max": 17.27,
+            "n": 3
+          }
+        }
+      },
+      "flags": {
+        "lidx": [
+          "tool calls 1-3"
+        ]
+      },
+      "index_seconds": 0.7133333333333333,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 1.3333333333333286,
+        "input_tokens": 114.48604001130617,
+        "tool_calls": -33.33333333333333,
+        "wall_seconds": -13.27727806022683
+      }
+    },
+    {
+      "task": "derived:ts-callers-checkoptionalparameter",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 82.0,
+            "sd": 5.196152422706632,
+            "min": 79,
+            "max": 88,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 29962.333333333332,
+            "sd": 1033.903444879324,
+            "min": 29320,
+            "max": 31155,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 5.333333333333333,
+            "sd": 1.1547005383792515,
+            "min": 4,
+            "max": 6,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 21.823333333333334,
+            "sd": 0.4950084174368496,
+            "min": 21.33,
+            "max": 22.32,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 82.33333333333333,
+            "sd": 6.6583281184793925,
+            "min": 78,
+            "max": 90,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 53183.666666666664,
+            "sd": 9911.877235586271,
+            "min": 47173,
+            "max": 64624,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 2.6666666666666665,
+            "sd": 0.5773502691896257,
+            "min": 2,
+            "max": 3,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 17.596666666666668,
+            "sd": 1.681705483529543,
+            "min": 15.67,
+            "max": 18.77,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 4.656666666666666,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.3333333333333286,
+        "input_tokens": 77.50175219998442,
+        "tool_calls": -50.0,
+        "wall_seconds": -19.3676493050252
+      }
+    },
+    {
+      "task": "derived:ts-callers-verifywithjwks",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 81.33333333333333,
+            "sd": 3.2145502536643185,
+            "min": 79,
+            "max": 85,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 22221.666666666668,
+            "sd": 511.63691553027456,
+            "min": 21668,
+            "max": 22677,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.0,
+            "sd": 0.0,
+            "min": 3,
+            "max": 3,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 19.96666666666667,
+            "sd": 2.5526718029024664,
+            "min": 17.28,
+            "max": 22.36,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 78.0,
+            "sd": 0.0,
+            "min": 78,
+            "max": 78,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 64098.666666666664,
+            "sd": 10716.986392327524,
+            "min": 51820,
+            "max": 71572,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 3.6666666666666665,
+            "sd": 1.1547005383792515,
+            "min": 3,
+            "max": 5,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 25.836666666666662,
+            "sd": 2.9514459733041587,
+            "min": 22.61,
+            "max": 28.4,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 17.583333333333332,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": -3.3333333333333286,
+        "input_tokens": 188.451211280282,
+        "tool_calls": 22.222222222222218,
+        "wall_seconds": 29.398998330550885
+      }
+    },
+    {
+      "task": "derived:ts-trace-servestatic",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 90.33333333333333,
+            "sd": 3.0550504633038935,
+            "min": 87,
+            "max": 93,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 41551.0,
+            "sd": 6677.0727119000285,
+            "min": 37681,
+            "max": 49261,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 5.666666666666667,
+            "sd": 1.1547005383792515,
+            "min": 5,
+            "max": 7,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 22.513333333333332,
+            "sd": 4.360393713110472,
+            "min": 19.75,
+            "max": 27.54,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 92.33333333333333,
+            "sd": 1.5275252316519468,
+            "min": 91,
+            "max": 94,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 61055.666666666664,
+            "sd": 12041.658786617953,
+            "min": 51538,
+            "max": 74593,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 4.333333333333333,
+            "sd": 1.1547005383792515,
+            "min": 3,
+            "max": 5,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 17.16,
+            "sd": 3.232537702796365,
+            "min": 14.48,
+            "max": 20.75,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 7.949999999999999,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 2.0,
+        "input_tokens": 46.94150963073491,
+        "tool_calls": -23.52941176470589,
+        "wall_seconds": -23.77850162866449
+      }
+    },
+    {
+      "task": "django:21",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 83.66666666666667,
+            "sd": 3.0550504633038935,
+            "min": 81,
+            "max": 87,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 89597.0,
+            "sd": 9241.904727922702,
+            "min": 79999,
+            "max": 98436,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 8.666666666666666,
+            "sd": 0.5773502691896257,
+            "min": 8,
+            "max": 9,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 43.29,
+            "sd": 2.094659876925129,
+            "min": 40.89,
+            "max": 44.75,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 85.33333333333333,
+            "sd": 0.5773502691896257,
+            "min": 85,
+            "max": 86,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 152067.66666666666,
+            "sd": 14173.692896818857,
+            "min": 135774,
+            "max": 161549,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 10.0,
+            "sd": 0.0,
+            "min": 10,
+            "max": 10,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 46.623333333333335,
+            "sd": 1.4367440041055783,
+            "min": 45.57,
+            "max": 48.26,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 57.946666666666665,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 1.6666666666666572,
+        "input_tokens": 69.72406070143717,
+        "tool_calls": 15.384615384615394,
+        "wall_seconds": 7.7000077000077045
+      }
+    },
+    {
+      "task": "django:32",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 83.33333333333333,
+            "sd": 3.0550504633038935,
+            "min": 80,
+            "max": 86,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 107214.0,
+            "sd": 35988.22375444501,
+            "min": 78249,
+            "max": 147502,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 16.666666666666668,
+            "sd": 1.5275252316519468,
+            "min": 15,
+            "max": 18,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 62.43666666666667,
+            "sd": 3.940016920437442,
+            "min": 58.49,
+            "max": 66.37,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 83.33333333333333,
+            "sd": 0.5773502691896257,
+            "min": 83,
+            "max": 84,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 196944.0,
+            "sd": 43145.034210207785,
+            "min": 153025,
+            "max": 239271,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 16.666666666666668,
+            "sd": 2.0816659994661326,
+            "min": 15,
+            "max": 19,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 68.87,
+            "sd": 9.00531509720787,
+            "min": 58.75,
+            "max": 76.0,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 52.02,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.0,
+        "input_tokens": 83.69242822765683,
+        "tool_calls": 0.0,
+        "wall_seconds": 10.30377449148471
+      }
+    },
+    {
+      "task": "matplotlib:37",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 84.33333333333333,
+            "sd": 0.5773502691896257,
+            "min": 84,
+            "max": 85,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 160262.0,
+            "sd": 17793.893784104705,
+            "min": 149422,
+            "max": 180798,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 17.0,
+            "sd": 0.0,
+            "min": 17,
+            "max": 17,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 61.276666666666664,
+            "sd": 3.956290349978543,
+            "min": 58.36,
+            "max": 65.78,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 85.0,
+            "sd": 1.7320508075688772,
+            "min": 84,
+            "max": 87,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 236200.33333333334,
+            "sd": 33007.9008774162,
+            "min": 198425,
+            "max": 259480,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 13.333333333333334,
+            "sd": 2.8867513459481287,
+            "min": 10,
+            "max": 15,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 57.14666666666667,
+            "sd": 10.852973478882795,
+            "min": 47.15,
+            "max": 68.69,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 16.106666666666666,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.6666666666666714,
+        "input_tokens": 47.383867250710296,
+        "tool_calls": -21.568627450980387,
+        "wall_seconds": -6.739922754719027
+      }
+    },
+    {
+      "task": "pylint:10",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 67.0,
+            "sd": 1.7320508075688772,
+            "min": 66,
+            "max": 69,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 66036.33333333333,
+            "sd": 10919.514839649852,
+            "min": 56508,
+            "max": 77952,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.0,
+            "sd": 2.6457513110645907,
+            "min": 5,
+            "max": 10,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 33.4,
+            "sd": 5.627281759428791,
+            "min": 28.43,
+            "max": 39.51,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 66.33333333333333,
+            "sd": 6.3508529610858835,
+            "min": 59,
+            "max": 70,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 109031.66666666667,
+            "sd": 7538.279136071663,
+            "min": 101928,
+            "max": 116940,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.333333333333333,
+            "sd": 1.5275252316519468,
+            "min": 5,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 33.13,
+            "sd": 5.967520423090315,
+            "min": 29.6,
+            "max": 40.02,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 17.713333333333335,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": -0.6666666666666714,
+        "input_tokens": 65.10860183030556,
+        "tool_calls": -9.523809523809527,
+        "wall_seconds": -0.8083832335329222
+      }
+    },
+    {
+      "task": "pylint:14",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 88.66666666666667,
+            "sd": 0.5773502691896257,
+            "min": 88,
+            "max": 89,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 41969.666666666664,
+            "sd": 8512.252600418607,
+            "min": 32428,
+            "max": 48784,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.0,
+            "sd": 1.0,
+            "min": 5,
+            "max": 7,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 33.06666666666667,
+            "sd": 7.092597079584693,
+            "min": 27.46,
+            "max": 41.04,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 89.0,
+            "sd": 1.0,
+            "min": 88,
+            "max": 90,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 84025.0,
+            "sd": 12922.671976027248,
+            "min": 69155,
+            "max": 92536,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.333333333333333,
+            "sd": 0.5773502691896257,
+            "min": 6,
+            "max": 7,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 25.599999999999998,
+            "sd": 0.6972087205421348,
+            "min": 24.84,
+            "max": 26.21,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 7.78,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.3333333333333286,
+        "input_tokens": 100.20411567084165,
+        "tool_calls": 5.55555555555555,
+        "wall_seconds": -22.580645161290334
+      }
+    },
+    {
+      "task": "pylint:9",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 80.33333333333333,
+            "sd": 3.2145502536643185,
+            "min": 78,
+            "max": 84,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 118547.66666666667,
+            "sd": 32728.55820737194,
+            "min": 92389,
+            "max": 155248,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 11.333333333333334,
+            "sd": 0.5773502691896257,
+            "min": 11,
+            "max": 12,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 62.88,
+            "sd": 22.36954179235686,
+            "min": 48.9,
+            "max": 88.68,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 75.66666666666667,
+            "sd": 1.1547005383792515,
+            "min": 75,
+            "max": 77,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 173554.66666666666,
+            "sd": 20257.84789491059,
+            "min": 154570,
+            "max": 194882,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 9.666666666666666,
+            "sd": 1.5275252316519468,
+            "min": 8,
+            "max": 11,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 48.00666666666667,
+            "sd": 4.212556626721278,
+            "min": 43.15,
+            "max": 50.67,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 7.043333333333333,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": -4.666666666666657,
+        "input_tokens": 46.40074456688307,
+        "tool_calls": -14.705882352941185,
+        "wall_seconds": -23.65351993214589
+      }
+    },
+    {
+      "task": "reflex:6",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 79.33333333333333,
+            "sd": 1.1547005383792515,
+            "min": 78,
+            "max": 80,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 86083.0,
+            "sd": 18849.413041259402,
+            "min": 69797,
+            "max": 106731,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.666666666666667,
+            "sd": 0.5773502691896257,
+            "min": 7,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 30.290000000000003,
+            "sd": 2.1057777660522468,
+            "min": 28.1,
+            "max": 32.3,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 79.66666666666667,
+            "sd": 0.5773502691896257,
+            "min": 79,
+            "max": 80,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 116675.33333333333,
+            "sd": 16207.965490256121,
+            "min": 106888,
+            "max": 135384,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.666666666666667,
+            "sd": 0.5773502691896257,
+            "min": 7,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 31.21666666666667,
+            "sd": 1.8346207600845834,
+            "min": 29.1,
+            "max": 32.35,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 5.116666666666667,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.3333333333333428,
+        "input_tokens": 35.5381821420412,
+        "tool_calls": 0.0,
+        "wall_seconds": 3.059315505667434
+      }
+    },
+    {
+      "task": "requests:16",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 84.33333333333333,
+            "sd": 1.1547005383792515,
+            "min": 83,
+            "max": 85,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 68903.33333333333,
+            "sd": 18247.81787867616,
+            "min": 57932,
+            "max": 89968,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 9.666666666666666,
+            "sd": 1.1547005383792515,
+            "min": 9,
+            "max": 11,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 46.29333333333333,
+            "sd": 3.8293776691955195,
+            "min": 43.34,
+            "max": 50.62,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 85.66666666666667,
+            "sd": 3.0550504633038935,
+            "min": 83,
+            "max": 89,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 105690.33333333333,
+            "sd": 25103.332235648184,
+            "min": 81277,
+            "max": 131431,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.0,
+            "sd": 3.605551275463989,
+            "min": 3,
+            "max": 10,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 38.11666666666667,
+            "sd": 3.8971314236670693,
+            "min": 33.63,
+            "max": 40.66,
+            "n": 3
+          }
+        }
+      },
+      "flags": {
+        "lidx": [
+          "tool calls 3-10"
+        ]
+      },
+      "index_seconds": 0.5666666666666667,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 1.3333333333333428,
+        "input_tokens": 53.38928934255721,
+        "tool_calls": -37.93103448275862,
+        "wall_seconds": -17.662730414746537
+      }
+    },
+    {
+      "task": "sqlfluff:2",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 83.66666666666667,
+            "sd": 0.5773502691896257,
+            "min": 83,
+            "max": 84,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 51811.333333333336,
+            "sd": 2551.697931443558,
+            "min": 48881,
+            "max": 53543,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.666666666666667,
+            "sd": 0.5773502691896257,
+            "min": 6,
+            "max": 7,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 34.199999999999996,
+            "sd": 5.040624961252326,
+            "min": 29.67,
+            "max": 39.63,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 84.0,
+            "sd": 1.0,
+            "min": 83,
+            "max": 85,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 120693.66666666667,
+            "sd": 2872.029653978756,
+            "min": 118738,
+            "max": 123991,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 8.333333333333334,
+            "sd": 1.1547005383792515,
+            "min": 7,
+            "max": 9,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 39.45333333333333,
+            "sd": 1.193705714710845,
+            "min": 38.42,
+            "max": 40.76,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 11.396666666666667,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.3333333333333286,
+        "input_tokens": 132.94838967021374,
+        "tool_calls": 25.000000000000007,
+        "wall_seconds": 15.360623781676427
+      }
+    },
+    {
+      "task": "streamlink:14",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 60.0,
+            "sd": 19.924858845171276,
+            "min": 48,
+            "max": 83,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 99700.0,
+            "sd": 15273.672479138735,
+            "min": 86299,
+            "max": 116330,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 10.0,
+            "sd": 1.0,
+            "min": 9,
+            "max": 11,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 46.20666666666667,
+            "sd": 3.9938494379900367,
+            "min": 42.89,
+            "max": 50.64,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 74.33333333333333,
+            "sd": 18.717193521821944,
+            "min": 53,
+            "max": 88,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 257564.33333333334,
+            "sd": 68966.00709286665,
+            "min": 206520,
+            "max": 336022,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 13.0,
+            "sd": 5.196152422706632,
+            "min": 10,
+            "max": 19,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 56.14000000000001,
+            "sd": 8.011298271815871,
+            "min": 49.27,
+            "max": 64.94,
+            "n": 3
+          }
+        }
+      },
+      "flags": {
+        "baseline": [
+          "judge range 35"
+        ],
+        "lidx": [
+          "judge range 35"
+        ]
+      },
+      "index_seconds": 7.95,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 14.333333333333329,
+        "input_tokens": 158.33935138749584,
+        "tool_calls": 30.0,
+        "wall_seconds": 21.497619391141257
+      }
+    },
+    {
+      "task": "streamlink:43",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 75.33333333333333,
+            "sd": 5.131601439446884,
+            "min": 71,
+            "max": 81,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 103685.66666666667,
+            "sd": 1390.316630603739,
+            "min": 102216,
+            "max": 104980,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.666666666666667,
+            "sd": 1.1547005383792515,
+            "min": 7,
+            "max": 9,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 53.129999999999995,
+            "sd": 12.425280680934334,
+            "min": 44.63,
+            "max": 67.39,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 77.0,
+            "sd": 3.605551275463989,
+            "min": 74,
+            "max": 81,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 171816.0,
+            "sd": 38149.32366372961,
+            "min": 135592,
+            "max": 211636,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.0,
+            "sd": 1.0,
+            "min": 6,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 47.553333333333335,
+            "sd": 6.780164698097927,
+            "min": 40.33,
+            "max": 53.78,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 8.376666666666667,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 1.6666666666666714,
+        "input_tokens": 65.70853573460812,
+        "tool_calls": -8.695652173913047,
+        "wall_seconds": -10.496267018006138
+      }
+    },
+    {
+      "task": "sympy:26",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 83.33333333333333,
+            "sd": 1.1547005383792515,
+            "min": 82,
+            "max": 84,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 64659.0,
+            "sd": 28150.00021314387,
+            "min": 42251,
+            "max": 96255,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.0,
+            "sd": 1.0,
+            "min": 6,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 34.28333333333333,
+            "sd": 5.232975571635447,
+            "min": 28.28,
+            "max": 37.88,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 83.66666666666667,
+            "sd": 2.0816659994661326,
+            "min": 82,
+            "max": 86,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 84801.33333333333,
+            "sd": 15177.846037344474,
+            "min": 75799,
+            "max": 102325,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 6.666666666666667,
+            "sd": 0.5773502691896257,
+            "min": 6,
+            "max": 7,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 36.46,
+            "sd": 3.7657801316593082,
+            "min": 33.75,
+            "max": 40.76,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 86.25666666666666,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 0.3333333333333428,
+        "input_tokens": 31.15163137897791,
+        "tool_calls": -4.761904761904757,
+        "wall_seconds": 6.349052017501224
+      }
+    },
+    {
+      "task": "sympy:38",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 74.66666666666667,
+            "sd": 5.686240703077327,
+            "min": 70,
+            "max": 81,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 74631.0,
+            "sd": 7357.95617002439,
+            "min": 70258,
+            "max": 83126,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 9.666666666666666,
+            "sd": 1.5275252316519468,
+            "min": 8,
+            "max": 11,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 41.026666666666664,
+            "sd": 4.5252661063558834,
+            "min": 38.29,
+            "max": 46.25,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 65.0,
+            "sd": 25.15949125081825,
+            "min": 36,
+            "max": 81,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 106252.0,
+            "sd": 14058.473352394989,
+            "min": 90044,
+            "max": 115141,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 7.0,
+            "sd": 1.0,
+            "min": 6,
+            "max": 8,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 32.48,
+            "sd": 2.385979882563973,
+            "min": 30.96,
+            "max": 35.23,
+            "n": 3
+          }
+        }
+      },
+      "flags": {
+        "lidx": [
+          "judge range 45"
+        ]
+      },
+      "index_seconds": 86.41333333333334,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": -9.666666666666671,
+        "input_tokens": 42.369792713483676,
+        "tool_calls": -27.58620689655172,
+        "wall_seconds": -20.83197920051999
+      }
+    },
+    {
+      "task": "xarray:32",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 71.66666666666667,
+            "sd": 2.0816659994661326,
+            "min": 70,
+            "max": 74,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 404528.6666666667,
+            "sd": 119807.69302650532,
+            "min": 284597,
+            "max": 524212,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 20.333333333333332,
+            "sd": 2.516611478423583,
+            "min": 18,
+            "max": 23,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 93.82666666666667,
+            "sd": 21.068958999754436,
+            "min": 70.85,
+            "max": 112.24,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 71.0,
+            "sd": 3.605551275463989,
+            "min": 67,
+            "max": 74,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 587387.0,
+            "sd": 95770.9164047207,
+            "min": 477210,
+            "max": 650712,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 22.0,
+            "sd": 2.0,
+            "min": 20,
+            "max": 24,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 104.39,
+            "sd": 18.141190699620577,
+            "min": 84.41,
+            "max": 119.83,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 10.409999999999998,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": -0.6666666666666714,
+        "input_tokens": 45.20281216164326,
+        "tool_calls": 8.196721311475416,
+        "wall_seconds": 11.2583487281512
+      }
+    },
+    {
+      "task": "xarray:46",
+      "profiles": {
+        "baseline": {
+          "judge": {
+            "mean": 82.33333333333333,
+            "sd": 1.1547005383792515,
+            "min": 81,
+            "max": 83,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 171588.66666666666,
+            "sd": 52086.69102883512,
+            "min": 137730,
+            "max": 231567,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 19.666666666666668,
+            "sd": 3.511884584284246,
+            "min": 16,
+            "max": 23,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 64.35000000000001,
+            "sd": 11.051257846960228,
+            "min": 54.61,
+            "max": 76.36,
+            "n": 3
+          }
+        },
+        "lidx": {
+          "judge": {
+            "mean": 83.66666666666667,
+            "sd": 1.1547005383792515,
+            "min": 83,
+            "max": 85,
+            "n": 3
+          },
+          "input_tokens": {
+            "mean": 277556.3333333333,
+            "sd": 27487.040115904318,
+            "min": 250422,
+            "max": 305383,
+            "n": 3
+          },
+          "tool_calls": {
+            "mean": 18.333333333333332,
+            "sd": 2.0816659994661326,
+            "min": 16,
+            "max": 20,
+            "n": 3
+          },
+          "wall_seconds": {
+            "mean": 70.20333333333333,
+            "sd": 5.475192538471438,
+            "min": 65.45,
+            "max": 76.19,
+            "n": 3
+          }
+        }
+      },
+      "flags": {},
+      "index_seconds": 13.626666666666667,
+      "errors": {
+        "baseline": 0,
+        "lidx": 0
+      },
+      "error_asymmetry": false,
+      "change": {
+        "judge": 1.3333333333333428,
+        "input_tokens": 61.756798234537634,
+        "tool_calls": -6.779661016949164,
+        "wall_seconds": 9.09608909608908
+      }
+    }
+  ],
+  "overall": {
+    "profiles": {
+      "baseline": {
+        "judge": 81.15555555555555,
+        "input_tokens": 2493082.3333333335,
+        "tool_calls": 257.3333333333333,
+        "wall_seconds": 1160.4633333333334
+      },
+      "lidx": {
+        "judge": 81.7,
+        "input_tokens": 4228266.333333333,
+        "tool_calls": 241.66666666666666,
+        "wall_seconds": 1141.87
+      }
+    },
+    "sd": {
+      "baseline": {
+        "judge": 1.26021750033403,
+        "input_tokens": 206812.12340269933,
+        "tool_calls": 10.598742063723098,
+        "wall_seconds": 52.21112557045034
+      },
+      "lidx": {
+        "judge": 0.4725815626252555,
+        "input_tokens": 180723.1574047259,
+        "tool_calls": 10.016652800877813,
+        "wall_seconds": 28.47964711860032
+      }
+    },
+    "change": {
+      "judge": 0.5444444444444514,
+      "input_tokens": 69.59994769526931,
+      "tool_calls": -6.088082901554401,
+      "wall_seconds": -1.6022335906060632
+    },
+    "paired_tasks": {
+      "judge": 30,
+      "input_tokens": 30,
+      "tool_calls": 30,
+      "wall_seconds": 30
+    },
+    "errors": {
+      "baseline": 0,
+      "lidx": 0
+    }
+  },
+  "cost": {
+    "agent_usd": 39.1906112,
+    "judge_usd": 8.9650512,
+    "total_usd": 48.1556624
+  },
+  "unjudged": 0,
+  "denials": [],
+  "errors": []
+}

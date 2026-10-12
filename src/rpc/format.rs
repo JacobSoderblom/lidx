@@ -234,6 +234,7 @@ pub(super) fn error_response(id: Value, message: &str) -> RpcResponse {
         error: Some(RpcError {
             message: message.to_string(),
         }),
+        meta: None,
     }
 }
 

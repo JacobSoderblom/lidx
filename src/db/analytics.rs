@@ -1,6 +1,7 @@
 use super::overview::module_prefix;
 use super::resolver::qualname_trailing_name;
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
+use crate::edge_views;
 use crate::model::{
     DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling, UnresolvedSample,
 };
@@ -620,6 +621,8 @@ impl Db {
         let is_private = super::graph_query::has_modifier_sql("s", "private");
         let external_base = super::graph_query::external_base_member_sql("s", gv);
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
+        let reachability = edge_views::sql_list(edge_views::REACHABILITY);
+        let entrypoint = edge_views::sql_list(edge_views::ENTRYPOINT);
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id
@@ -627,7 +630,27 @@ impl Db {
                    JOIN files f ON s.file_id = f.id
                    WHERE s.graph_version = ?
                      AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     AND s.kind IN ('function', 'method', 'class', 'struct')
+                     AND s.kind IN ('function', 'method', 'class', 'struct', 'const', 'type')
+                     -- Module-level JS/TS constants and type aliases only: a
+                     -- Rust `const`/`type` or a nested one is judged elsewhere.
+                     AND NOT (s.kind IN ('const', 'type') AND NOT (
+                       f.language IN ('javascript', 'typescript', 'tsx')
+                       AND EXISTS (
+                         SELECT 1 FROM edges c
+                         JOIN symbols p ON p.id = c.source_symbol_id
+                         WHERE c.target_symbol_id = s.id AND c.kind = 'CONTAINS'
+                           AND p.kind = 'module' AND c.graph_version = {gv}
+                       )
+                     ))
+                     -- Next.js route-segment exports are read by the framework.
+                     AND NOT (f.language IN ('javascript', 'typescript', 'tsx')
+                              AND s.name IN ('metadata', 'generateMetadata', 'viewport',
+                                             'generateViewport', 'revalidate', 'dynamic',
+                                             'dynamicParams', 'fetchCache', 'runtime', 'config',
+                                             'preferredRegion', 'maxDuration',
+                                             'generateStaticParams')
+                              AND (f.path LIKE 'app/%' OR f.path LIKE '%/app/%'
+                                   OR f.path LIKE 'pages/%' OR f.path LIKE '%/pages/%'))
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
                      -- Operators and finalizers are invoked implicitly (#247).
                      AND NOT (f.language = 'csharp' AND (s.name LIKE 'operator %'
@@ -641,7 +664,7 @@ impl Db {
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.target_symbol_id = s.id
-                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES')
+                         AND e.kind IN ({reachability})
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (
@@ -654,7 +677,7 @@ impl Db {
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.source_symbol_id = s.id
-                         AND e.kind IN ('HTTP_ROUTE', 'RPC_IMPL', 'CHANNEL_SUBSCRIBE')
+                         AND e.kind IN ({entrypoint})
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (
@@ -948,8 +971,9 @@ impl Db {
         let edges_sql = format!(
             "SELECT file_id, target_qualname, target_symbol_id FROM edges
              WHERE graph_version = ?
-               AND kind NOT IN ('IMPORTS', 'IMPORTS_FILE', 'CONTAINS')
-               AND file_id IN ({placeholders})"
+               AND kind NOT IN ({non_usage})
+               AND file_id IN ({placeholders})",
+            non_usage = edge_views::sql_list(edge_views::NON_USAGE)
         );
         let mut edges_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
         for id in file_ids {
@@ -976,9 +1000,10 @@ impl Db {
         let ur_sql = format!(
             "SELECT file_id, reference_name FROM unresolved_references
              WHERE graph_version = ?
-               AND edge_kind NOT IN ('IMPORTS', 'IMPORTS_FILE')
+               AND edge_kind NOT IN ({import_machinery})
                AND reference_name IS NOT NULL
-               AND file_id IN ({placeholders})"
+               AND file_id IN ({placeholders})",
+            import_machinery = edge_views::sql_list(edge_views::IMPORT_MACHINERY)
         );
         let mut ur_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
         for id in file_ids {

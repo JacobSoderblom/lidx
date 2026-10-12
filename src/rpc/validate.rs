@@ -8,7 +8,7 @@
 //! through `validate_repo_path`.
 
 use crate::config::Config;
-use crate::indexer::{channel, config, http, proto, python, sql_extractor, xref};
+use crate::edge_views;
 use crate::model::ValidationResult;
 
 use super::{ContextSeed, GatherContextParams};
@@ -35,38 +35,6 @@ pub(super) const DIR_DOWNSTREAM: &str = "downstream";
 pub(super) const DIR_BOTH: &str = "both";
 const TRACE_DIRECTIONS: &[&str] = &[DIR_DOWNSTREAM, DIR_UPSTREAM];
 const IMPACT_DIRECTIONS: &[&str] = &[DIR_DOWNSTREAM, DIR_UPSTREAM, DIR_BOTH];
-
-/// Every edge kind the indexer can write to the `edges` table, so `kinds`
-/// can never reject a kind that exists in the graph. Kinds with a `*_KIND`
-/// const in the indexer reference it; the rest are literals. Matching is
-/// case-insensitive; see `normalize_kinds`. `tests/direction_kinds_validation.rs`
-/// asserts every kind found in indexed fixtures is accepted.
-pub(super) const EDGE_KINDS: &[&str] = &[
-    "CALLS",
-    "IMPORTS",
-    "CONTAINS",
-    "EXTENDS",
-    "IMPLEMENTS",
-    "INHERITS",
-    "USES",
-    "MODULE_FILE",
-    "IMPORTS_FILE",
-    proto::RPC_IMPL_KIND,
-    proto::RPC_CALL_KIND,
-    proto::RPC_ROUTE_KIND,
-    http::HTTP_ROUTE_KIND,
-    http::HTTP_CALL_KIND,
-    http::PAGE_ROUTE_KIND,
-    channel::CHANNEL_PUBLISH_KIND,
-    channel::CHANNEL_SUBSCRIBE_KIND,
-    config::CONFIG_SOURCE_KIND,
-    config::CONFIG_READ_KIND,
-    config::CONFIG_BIND_KIND,
-    xref::XREF_KIND,
-    xref::ROUTE_KIND,
-    python::MODULE_EXPORT_KIND,
-    sql_extractor::REFERENCES_KIND,
-];
 
 /// Canonicalizes a `direction` value (case-insensitive; `up`/`callers` and
 /// `down`/`callees` are aliases) or errors naming the value and the valid
@@ -100,10 +68,10 @@ pub(super) fn normalize_kinds(kinds: Option<&[String]>) -> anyhow::Result<Option
         .iter()
         .map(|k| {
             let upper = k.to_uppercase();
-            if EDGE_KINDS.contains(&upper.as_str()) {
+            if edge_views::ALL.contains(&upper.as_str()) {
                 Ok(upper)
             } else {
-                anyhow::bail!("{}", unknown_value_message("edge kind", k, EDGE_KINDS))
+                anyhow::bail!("{}", unknown_value_message("edge kind", k, edge_views::ALL))
             }
         })
         .collect::<anyhow::Result<Vec<_>>>()

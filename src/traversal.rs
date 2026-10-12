@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::edge_views;
 use crate::indexer::channel::{
     WalkDirection, boundary_type_for_kind, bridge_complement, bridge_complements_for,
     bridge_crossing_allowed, bridge_pair_is_upstream,
@@ -53,20 +54,7 @@ impl Default for TraceConfig {
             // see `xref_is_traversable`. RPC_ROUTE must be listed or a trace
             // from a .proto rpc is filtered out before bridge_complement is
             // consulted, silently yielding paths_found: 0.
-            allowed_kinds: vec![
-                "CALLS".into(),
-                "RPC_IMPL".into(),
-                "RPC_CALL".into(),
-                "RPC_ROUTE".into(),
-                "XREF".into(),
-                "CHANNEL_PUBLISH".into(),
-                "CHANNEL_SUBSCRIBE".into(),
-                "HTTP_CALL".into(),
-                "HTTP_ROUTE".into(),
-                "CONFIG_SOURCE".into(),
-                "CONFIG_READ".into(),
-                "CONFIG_BIND".into(),
-            ],
+            allowed_kinds: edge_views::to_strings(edge_views::TRACE_DEFAULT),
             trace_offset: 0,
             compact: false,
             exclude_resolution_kinds: Vec::new(),
@@ -153,7 +141,7 @@ impl TraceResult {
 /// Every config URI `id`'s own config edges carry: the only URIs a config
 /// bridge can enter it on.
 fn is_config_edge_kind(kind: &str) -> bool {
-    matches!(kind, "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND")
+    edge_views::contains(edge_views::CONFIG, kind)
 }
 
 /// Content-based tie-break for two arrivals at the same (node, entry) pair
@@ -1248,10 +1236,10 @@ fn detect_language(file_path: &str) -> String {
 
 fn detect_boundary_type(edge_kind: &str, source_lang: &str, target_lang: &str) -> String {
     match edge_kind {
-        "RPC_IMPL" | "RPC_CALL" | "RPC_ROUTE" => "grpc".to_string(),
-        "HTTP_CALL" | "HTTP_ROUTE" => "http".to_string(),
-        "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE" => "message_bus".to_string(),
-        "CONFIG_SOURCE" | "CONFIG_READ" => "config".to_string(),
+        k if edge_views::contains(edge_views::RPC_FAMILY, k) => "grpc".to_string(),
+        k if edge_views::contains(edge_views::HTTP_FAMILY, k) => "http".to_string(),
+        k if edge_views::contains(edge_views::CHANNEL_FAMILY, k) => "message_bus".to_string(),
+        k if edge_views::contains(edge_views::CONFIG_BRIDGE, k) => "config".to_string(),
         "XREF" if source_lang == "csharp" && target_lang == "sql" => "stored_procedure".to_string(),
         "XREF" if source_lang == "sql" && target_lang == "csharp" => "stored_procedure".to_string(),
         "XREF" => "xref".to_string(),
@@ -1300,7 +1288,7 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
     let detail: serde_json::Value = serde_json::from_str(detail_str).ok()?;
 
     match edge.kind.as_str() {
-        "RPC_IMPL" | "RPC_CALL" | "RPC_ROUTE" => {
+        k if edge_views::contains(edge_views::RPC_FAMILY, k) => {
             let service = detail.get("service")?.as_str()?;
             let rpc = detail.get("rpc")?.as_str()?;
             let package = detail.get("package").and_then(|p| p.as_str());
@@ -1315,7 +1303,7 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
                 "package": package,
             }))
         }
-        "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE" => {
+        k if edge_views::contains(edge_views::CHANNEL_FAMILY, k) => {
             let channel_name = detail.get("channel").and_then(|c| c.as_str());
             let framework = detail
                 .get("framework")
@@ -1331,7 +1319,7 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
                 "role": role,
             }))
         }
-        "CONFIG_SOURCE" | "CONFIG_READ" => {
+        k if edge_views::contains(edge_views::CONFIG_BRIDGE, k) => {
             let config_uri = detail.get("config_uri").and_then(|c| c.as_str());
             let source_type = detail
                 .get("source_type")
@@ -1347,7 +1335,7 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
                 "role": role,
             }))
         }
-        "HTTP_CALL" | "HTTP_ROUTE" => {
+        k if edge_views::contains(edge_views::HTTP_FAMILY, k) => {
             let method = detail.get("method").and_then(|m| m.as_str());
             let path = detail.get("path").and_then(|p| p.as_str());
             let framework = detail
