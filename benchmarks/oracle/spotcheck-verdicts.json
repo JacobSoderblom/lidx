@@ -3,8 +3,24 @@
   "note": "type conversion ID(...) recorded as a call to the type; the compiler graph has no call here",
   "verdict": "lidx_error"
  },
+ "03d4a294": {
+  "note": "core.globalRegistry.add(...) recorded as a USES edge on globalRegistry, no CALLS edge to add",
+  "verdict": "lidx_error"
+ },
+ "03fad3b6": {
+  "note": ".line_number(false) in a builder chain, missed",
+  "verdict": "lidx_error"
+ },
  "051bc0c8": {
   "note": "JSX attribute value (constant) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "073344e0": {
+  "note": "Option/Result::map resolved to Match::map",
+  "verdict": "lidx_error"
+ },
+ "094e7a7e": {
+  "note": "double.parse(...) on a local resolved to an unrelated symbol",
   "verdict": "lidx_error"
  },
  "0e658300": {
@@ -13,6 +29,10 @@
  },
  "0f556af2": {
   "note": "read of a constant (INVALID) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "103557bb": {
+  "note": "path.as_ref() resolved to Glob::as_ref instead of AsRef",
   "verdict": "lidx_error"
  },
  "104ae609": {
@@ -31,8 +51,28 @@
   "note": "path.Join resolved to unknown.Join",
   "verdict": "lidx_error"
  },
+ "22937394": {
+  "note": "Option::map resolved to Match::map",
+  "verdict": "lidx_error"
+ },
+ "268c403a": {
+  "note": ".build() at the end of a multi-line builder chain missed",
+  "verdict": "lidx_error"
+ },
+ "2904f943": {
+  "note": ".build() in OverrideBuilder::new(ROOT).add(...).unwrap().build() chain, missed",
+  "verdict": "lidx_error"
+ },
  "292bcc2c": {
   "note": "log.Tracef on a package-level helper, no edge extracted at all",
+  "verdict": "lidx_error"
+ },
+ "29ebdb00": {
+  "note": "free function stats(&low) resolved to the HiArgs::stats method",
+  "verdict": "lidx_error"
+ },
+ "2a1bc373": {
+  "note": "printer.sink_with_path(...) as a call argument, missed",
   "verdict": "lidx_error"
  },
  "2dbf8f88": {
@@ -45,6 +85,14 @@
  },
  "311897eb": {
   "note": "Array.prototype.find resolved to util.find",
+  "verdict": "lidx_error"
+ },
+ "31670fc3": {
+  "note": "AsRef::as_ref resolved to Glob::as_ref",
+  "verdict": "lidx_error"
+ },
+ "3251d673": {
+  "note": "Option::map resolved to Match::map",
   "verdict": "lidx_error"
  },
  "32b2bcb0": {
@@ -63,8 +111,40 @@
   "note": "read of a module-level variable recorded as a call",
   "verdict": "lidx_error"
  },
+ "3f7e0c57": {
+  "note": "builder chain StandardBuilder::new().per_match(...): chained method not extracted",
+  "verdict": "lidx_error"
+ },
+ "45183095": {
+  "note": "Option/Result::map resolved to Match::map",
+  "verdict": "lidx_error"
+ },
+ "45781f44": {
+  "note": "AsRef::as_ref resolved to Glob::as_ref",
+  "verdict": "lidx_error"
+ },
+ "47323972": {
+  "note": "ZodAny.create().superRefine(...) recorded as a USES edge on ZodAny, chain calls missing",
+  "verdict": "lidx_error"
+ },
+ "4893dfc5": {
+  "note": ".line_number(true) in a builder chain, missed",
+  "verdict": "lidx_error"
+ },
+ "49078411": {
+  "note": "router.match(...) inside a callback: only an external edge for the outer group() call exists",
+  "verdict": "lidx_error"
+ },
+ "4a55b2d1": {
+  "note": "clone() resolved to Error::clone",
+  "verdict": "lidx_error"
+ },
  "4ab0d432": {
   "note": "call nested as an argument of a func-value call",
+  "verdict": "lidx_error"
+ },
+ "4b3206b0": {
+  "note": "free function interpolate(...) resolved to the enclosing Captures::interpolate method (false self-recursion)",
   "verdict": "lidx_error"
  },
  "4c301268": {
@@ -79,12 +159,28 @@
   "note": "bufio.Scanner.Scan resolved to commands.Scan",
   "verdict": "lidx_error"
  },
+ "4e8db198": {
+  "note": "regex_syntax Parser::new chain resolved to the in-repo parse()",
+  "verdict": "lidx_error"
+ },
+ "4f193a52": {
+  "note": "Option::as_ref resolved to Glob::as_ref",
+  "verdict": "lidx_error"
+ },
+ "52a02819": {
+  "note": "methodRouter.match(...) missed; the argument constant METHOD_NAME_ALL was recorded as the callee instead",
+  "verdict": "lidx_error"
+ },
  "548713a0": {
   "note": "multi-line method chain: WithExpression missed",
   "verdict": "lidx_error"
  },
  "5590f2bf": {
   "note": "call in a return statement, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "598a364f": {
+  "note": "z.xid() recorded as a USES edge on the namespace import z",
   "verdict": "lidx_error"
  },
  "5a37fa61": {
@@ -95,12 +191,24 @@
   "note": "path.Base resolved to ChrootContext.Base",
   "verdict": "lidx_error"
  },
+ "5d9424d1": {
+  "note": "printer.sink_with_path(...) as a call argument, missed",
+  "verdict": "lidx_error"
+ },
  "5f56fe86": {
   "note": "return set.ToSlice(): method call on local in a return, missed",
   "verdict": "lidx_error"
  },
+ "5fb2eac5": {
+  "note": "RegexMatcher::new(...).unwrap(): associated function at the head of a chain missed",
+  "verdict": "lidx_error"
+ },
  "6239a4c5": {
   "note": "cfg = cfg.WithPlatform(...) on a local pointer, no edge",
+  "verdict": "lidx_error"
+ },
+ "62e43a41": {
+  "note": "printer.sink(&matcher) as a call argument, missed",
   "verdict": "lidx_error"
  },
  "6b169334": {
@@ -111,12 +219,28 @@
   "note": "call nested as an argument of vendors.union(...)",
   "verdict": "lidx_error"
  },
+ "7b2cfccb": {
+  "note": ".kind(...) in a builder chain, missed",
+  "verdict": "lidx_error"
+ },
  "7be526dc": {
   "note": "json.NewEncoder resolved to cyclonedxutil.NewEncoder",
   "verdict": "lidx_error"
  },
  "7e918523": {
   "note": "lipgloss Style.Render resolved to dockerPullStatusFormatter.Render",
+  "verdict": "lidx_error"
+ },
+ "7eb287e9": {
+  "note": "alias.description() resolved by bare name to an unrelated symbol; the real callee missed",
+  "verdict": "lidx_error"
+ },
+ "8122d933": {
+  "note": "Range end()/start() resolved to Match::end",
+  "verdict": "lidx_error"
+ },
+ "81fb6728": {
+  "note": "memchr find_byte / Option::map chain resolved to Match::map",
   "verdict": "lidx_error"
  },
  "84e21cd4": {
@@ -129,6 +253,18 @@
  },
  "901bb223": {
   "note": "call in a return statement, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "912629ec": {
+  "note": "external writer separator() resolved to PathPrinterBuilder::separator",
+  "verdict": "lidx_error"
+ },
+ "9212acfa": {
+  "note": "str::parse() resolved to the in-repo parse() function",
+  "verdict": "lidx_error"
+ },
+ "934bb3e7": {
+  "note": "new ZodNull({...}) in a static arrow property, no edge extracted",
   "verdict": "lidx_error"
  },
  "94eb2c00": {
@@ -159,16 +295,69 @@
   "note": "strings.Join resolved to unknown.Join",
   "verdict": "lidx_error"
  },
+ "_notes": "**How the matching rule was iterated.** The first hand-read samples found artefacts well above 10%, so the oracle and matcher were changed and the samples redrawn:\n\n- Go FN, first sample: 9 of 20 (45%) were dynamic-dispatch edges. RTA lists every possible target of an interface call or function-value call, so lidx missing one of them is not evidence of an error. Dispatch edges now leave the headline recall and get their own column.\n- TypeScript FN, first sample: 5 of 20 (25%) had a callee that is a function nested inside another function. lidx indexes no such symbol, so the edge cannot exist in its graph. Callees lidx does not index now join the caller capture gap.\n- Oracle bugs found while reading failures (not sampled): Go range-over-func loop bodies and generic instances were missing from the graph, and RTA reported unreachable functions as judgeable callers; TypeScript callees typed through an interface or function type, JSX components, tagged templates and parameters; Rust tuple-struct and enum-variant constructors, trait-method dispatch; interface and const of the same name treated as two declarations. All are fixed in the oracles or the matcher.\n\nThe final samples (this section) were drawn after those changes: 120 items, none an artefact. For 40 items per language a rate of 0 has a 95% Wilson upper bound of 8.8%, under the 10% bar. Two caveats on reading the table: (1) the sample is stratified only by random draw, so rare categories (e.g. the handful of Go closure-callee FPs) are unlikely to appear; (2) verdicts are one reader's judgement from the source at the call site, recorded with a note per item.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
+ "a2351dbd": {
+  "note": "z.object(shape) recorded as a USES edge on the namespace import z",
+  "verdict": "lidx_error"
+ },
+ "a5ed1f06": {
+  "note": ".max_columns(...) in a builder chain, missed",
+  "verdict": "lidx_error"
+ },
+ "a6acc311": {
+  "note": "new $ZodCyclicError() inside an object-literal method attributed to the enclosing const memo",
+  "verdict": "lidx_error"
+ },
+ "a859c27e": {
+  "note": "z.minLength(...) resolved by bare name to the v3 ZodString.minLength method",
+  "verdict": "lidx_error"
+ },
+ "a9a38ea3": {
+  "note": "as_ref() on an Option resolved to Glob::as_ref",
+  "verdict": "lidx_error"
+ },
+ "a9f24443": {
+  "note": "return option._parseAsync({...}): method call on a local in a return, no edge",
+  "verdict": "lidx_error"
+ },
  "aa858ddf": {
   "note": "iterated imported constant array recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "aaf09699": {
+  "note": "str::parse::<T>() resolved to FormatTemplate::parse",
   "verdict": "lidx_error"
  },
  "ab0e87c2": {
   "note": "call nested inside append(...) arguments, no edge extracted",
   "verdict": "lidx_error"
  },
+ "ac8eaee6": {
+  "note": "filesystem::is_socket(...) inside an || chain, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "ad269817": {
+  "note": ".before_context(1) in a builder chain, missed",
+  "verdict": "lidx_error"
+ },
+ "ae3ce781": {
+  "note": "AsRef::as_ref resolved to Glob::as_ref",
+  "verdict": "lidx_error"
+ },
  "af2d4746": {
   "note": "call inside a closure assigned to a struct field (RunE), attributed to nothing",
+  "verdict": "lidx_error"
+ },
+ "b1d56a9a": {
+  "note": "self.dent.ino(): method call through a field, no edge",
+  "verdict": "lidx_error"
+ },
+ "b1f5031c": {
+  "note": "isBackEdge(...) in an object-literal method attributed to the enclosing const memo",
+  "verdict": "lidx_error"
+ },
+ "b2ff016e": {
+  "note": "ov.matched(...) as the receiver of is_whitelist() inside assert!, missed",
   "verdict": "lidx_error"
  },
  "b643bc7e": {
@@ -179,8 +368,40 @@
   "note": "m, err := v.Merge(license): method call on a local, no edge",
   "verdict": "lidx_error"
  },
+ "b88623df": {
+  "note": "printer.sink_with_path(...) as an argument of a multi-line call; a sibling call on the line was found, this one was not",
+  "verdict": "lidx_error"
+ },
+ "b9d960d5": {
+  "note": "std Path::metadata resolved to DirEntry::metadata",
+  "verdict": "lidx_error"
+ },
+ "ba1ca868": {
+  "note": "call inside an object-literal method attributed to the enclosing const, although lidx indexes the method",
+  "verdict": "lidx_error"
+ },
  "bc0f652d": {
   "note": "set.Add on a strset variable resolved to internal/task set.Add (two-segment guess)",
+  "verdict": "lidx_error"
+ },
+ "bc1f9036": {
+  "note": "core.globalRegistry.add(...) recorded as a USES edge on globalRegistry",
+  "verdict": "lidx_error"
+ },
+ "bd801354": {
+  "note": "std::env::var_os(...).map resolved to Match::map",
+  "verdict": "lidx_error"
+ },
+ "bdf4faa5": {
+  "note": "regex_automata builder method resolved to RegexMatcherBuilder::dot_matches_new_line",
+  "verdict": "lidx_error"
+ },
+ "bf06fb9d": {
+  "note": "clone() on an external stats value resolved to Error::clone",
+  "verdict": "lidx_error"
+ },
+ "c18a4f0d": {
+  "note": "Option::as_ref resolved to Glob::as_ref",
   "verdict": "lidx_error"
  },
  "ce145d71": {
@@ -199,8 +420,16 @@
   "note": "call nested in string concatenation inside another call",
   "verdict": "lidx_error"
  },
+ "d48d9a3a": {
+  "note": "AsRef::as_ref on a path resolved to Glob::as_ref (bare name)",
+  "verdict": "lidx_error"
+ },
  "d8be5b3e": {
   "note": "log.WithFields(...).Trace chain: package-qualified call at the head of a chain missed",
+  "verdict": "lidx_error"
+ },
+ "da5b4e07": {
+  "note": "dent.file_type() resolved to another file_type in the same file",
   "verdict": "lidx_error"
  },
  "ddb24dd8": {
@@ -215,8 +444,28 @@
   "note": "filepath.Base resolved to ChrootContext.Base",
   "verdict": "lidx_error"
  },
+ "e3233c68": {
+  "note": "c.req.param() with a type assertion, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "e4553494": {
+  "note": ".line_number(false) in a builder chain, missed",
+  "verdict": "lidx_error"
+ },
+ "e4952959": {
+  "note": "numberType().optional(): the chained .optional() call is missing",
+  "verdict": "lidx_error"
+ },
  "e8ced598": {
   "note": "call nested as an argument of assertNoErr(...)",
+  "verdict": "lidx_error"
+ },
+ "e98c2283": {
+  "note": "ZodTuple.create(items).rest(...): the .rest call after a chain is missing; only a USES edge on ZodTuple",
+  "verdict": "lidx_error"
+ },
+ "eaf6d142": {
+  "note": "std Metadata::is_dir resolved to DirEntry::is_dir",
   "verdict": "lidx_error"
  },
  "eb7dfe06": {
@@ -235,8 +484,28 @@
   "note": "constant passed as an argument recorded as a call",
   "verdict": "lidx_error"
  },
+ "f3e733d3": {
+  "note": "path-qualified grep::regex::RegexMatcherBuilder::new() not extracted",
+  "verdict": "lidx_error"
+ },
+ "f4898a48": {
+  "note": "await option._parseAsync({...}): method call on a local, no edge",
+  "verdict": "lidx_error"
+ },
+ "f7454f0b": {
+  "note": "new ZodObject({...}) in an arrow function, no edge or USES edge extracted",
+  "verdict": "lidx_error"
+ },
+ "f796bb9a": {
+  "note": "floatSafeRemainder(...) inside an if comparison, no edge extracted",
+  "verdict": "lidx_error"
+ },
  "fb45b564": {
   "note": "read of a string constant (_emoji) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "fbfc5e05": {
+  "note": "external diff::lines(...) chain resolved to Batch::into_iter",
   "verdict": "lidx_error"
  }
 }
