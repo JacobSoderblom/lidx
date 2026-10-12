@@ -8,9 +8,9 @@ use crate::indexer::config::{
     config_edge_allowed, prefer_same_service,
 };
 use crate::indexer::scan::language_for_path;
-use crate::model::{Edge, Symbol, TraceHop};
+use crate::model::{Edge, Symbol, TraceHop, TraceStop};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 /// Direction of a BFS trace through the symbol graph.
 #[derive(Debug, Clone)]
@@ -135,6 +135,11 @@ pub struct TraceResult {
     /// "retry excluding heuristics" next_hops suggestion in
     /// `handle_trace_flow`.
     pub traversed_heuristic_kind: bool,
+    /// Leaf hops of the settled trace per stop reason (issue #410); empty
+    /// for an end-target trace. Counted before offset/byte paging.
+    pub stop_summary: BTreeMap<String, usize>,
+    /// Stop reason of the start symbol, only when the trace has no hops.
+    pub start_stop: Option<TraceStop>,
 }
 
 impl TraceResult {
@@ -200,6 +205,123 @@ fn retie(
     true
 }
 
+/// Edge kinds a default trace follows. A kind outside this set (CONTAINS,
+/// IMPORTS, REFERENCES, ...) is never a flow successor, so a trace that does
+/// not list it has not "declined" anything by leaving it out (issue #410).
+const FLOW_KINDS: [&str; 12] = [
+    "CALLS",
+    "RPC_IMPL",
+    "RPC_CALL",
+    "RPC_ROUTE",
+    "XREF",
+    "CHANNEL_PUBLISH",
+    "CHANNEL_SUBSCRIBE",
+    "HTTP_CALL",
+    "HTTP_ROUTE",
+    "CONFIG_SOURCE",
+    "CONFIG_READ",
+    "CONFIG_BIND",
+];
+
+/// What the BFS (or a dry run) learned about a node's successors; the input
+/// to its stop reason when it turns out to be a leaf (issue #410).
+#[derive(Debug, Default, Clone)]
+struct Outcome {
+    /// Successor edges declined by `kinds` / `exclude_resolution_kinds` /
+    /// xref / config-scope / type-argument filters, keyed by resolution kind
+    /// (or edge kind when it has none).
+    filtered: BTreeMap<String, usize>,
+    /// Successors already in the trace when the node was looked at.
+    seen: usize,
+    /// Successors not yet in the trace (dry runs of unexpanded nodes only).
+    fresh: usize,
+}
+
+impl Outcome {
+    fn decline(&mut self, edge: &Edge) {
+        let key = edge
+            .resolution_kind
+            .clone()
+            .unwrap_or_else(|| edge.kind.clone());
+        *self.filtered.entry(key).or_default() += 1;
+    }
+}
+
+/// `Some(next)` when `edge` is one the BFS considers following out of `id`
+/// in this direction (`next` is the symbol it leads to, `None` while the
+/// endpoint is unattributed). Mirrors the direction handling of the main loop.
+fn successor_of(edge: &Edge, id: i64, is_upstream: bool) -> Option<Option<i64>> {
+    if is_upstream {
+        if edge.target_symbol_id == Some(id) || edge.target_symbol_id.is_none() {
+            Some(edge.source_symbol_id.filter(|s| *s != id))
+        } else {
+            None
+        }
+    } else if edge.source_symbol_id == Some(id) {
+        Some(edge.target_symbol_id)
+    } else {
+        None
+    }
+}
+
+/// Whether an unattributed-endpoint edge still leads somewhere by bridging.
+fn bridge_candidate(edge: &Edge, walk: WalkDirection) -> bool {
+    edge.target_qualname.is_some()
+        && bridge_complement(&edge.kind).is_some()
+        && bridge_crossing_allowed(&edge.kind, walk)
+}
+
+/// Whether `edge` is a successor the BFS would count (an attributed
+/// endpoint, or a bridge candidate); `successor_of` alone also admits
+/// unresolved edges that lead nowhere.
+fn counts_as_successor(edge: &Edge, id: i64, is_upstream: bool, walk: WalkDirection) -> bool {
+    successor_of(edge, id, is_upstream)
+        .is_some_and(|next| next.is_some() || bridge_candidate(edge, walk))
+}
+
+/// Stateless look at `id`'s successors for a node the BFS never expanded
+/// (hop ceiling, byte break, config cap). Edges whose endpoint is already in
+/// `visited` count as `seen`, others as `fresh`.
+fn dry_outcome(
+    db: &Db,
+    id: i64,
+    is_upstream: bool,
+    config: &TraceConfig,
+    entry: &Entry,
+    languages: Option<&[String]>,
+    graph_version: i64,
+    visited: &HashSet<i64>,
+) -> Result<Outcome> {
+    let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
+    let walk = walk_direction(is_upstream);
+    let allowed = ConfigScope::allowed(entry, &edges);
+    let mut out = Outcome::default();
+    for edge in &edges {
+        if !counts_as_successor(edge, id, is_upstream, walk) {
+            continue;
+        }
+        let kind_ok = config.allowed_kinds.contains(&edge.kind);
+        let passes = kind_ok
+            && crate::model::xref_is_traversable(edge)
+            && config_edge_allowed(edge, allowed.as_ref())
+            && !crate::model::is_resolution_excluded(
+                edge.resolution_kind.as_deref(),
+                &config.exclude_resolution_kinds,
+            );
+        if !passes {
+            if kind_ok || FLOW_KINDS.contains(&edge.kind.as_str()) {
+                out.decline(edge);
+            }
+            continue;
+        }
+        match successor_of(edge, id, is_upstream).flatten() {
+            Some(next) if visited.contains(&next) => out.seen += 1,
+            _ => out.fresh += 1,
+        }
+    }
+    Ok(out)
+}
+
 /// One BFS frontier entry: a node to expand under `entry`.
 struct QueueItem {
     id: i64,
@@ -260,6 +382,11 @@ pub fn trace_flow(
     // Receiver type arguments each node was entered with (issue #185): a
     // dispatch edge to a closed explicit impl only follows a matching call.
     let mut entry_args = crate::db::EntryArgs::default();
+    // Issue #410: what each expanded node's successors looked like, keyed by
+    // (node, distance), and the nodes that were reached but never expanded
+    // (with the entry they would have been expanded under).
+    let mut outcomes: HashMap<(i64, usize), Outcome> = HashMap::new();
+    let mut unexpanded: HashMap<(i64, usize), Entry> = HashMap::new();
 
     while let Some(QueueItem {
         id: current_id,
@@ -288,6 +415,10 @@ pub fn trace_flow(
         // deeper re-trace next_hop in `handle_trace_flow`, one of lidx's
         // most valuable affordances.
         if dist >= config.max_hops {
+            unexpanded.insert((current_id, dist), entry.clone());
+            for q in &queue {
+                unexpanded.insert((q.id, q.dist), q.entry.clone());
+            }
             let ceiling_frontier = std::iter::once((current_id, entry.clone()))
                 .chain(queue.iter().map(|q| (q.id, q.entry.clone())));
             for (candidate, candidate_entry) in ceiling_frontier {
@@ -310,6 +441,10 @@ pub fn trace_flow(
             last_level = dist;
             if budget_exhausted(&trace, config) {
                 byte_limited = true;
+                unexpanded.insert((current_id, dist), entry.clone());
+                for q in &queue {
+                    unexpanded.insert((q.id, q.dist), q.entry.clone());
+                }
                 break;
             }
         }
@@ -322,22 +457,27 @@ pub fn trace_flow(
 
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
         let allowed = ConfigScope::allowed(&entry, &edges);
+        let mut outcome = Outcome::default();
 
         for edge in &edges {
-            if !config.allowed_kinds.contains(&edge.kind)
-                || !crate::model::xref_is_traversable(edge)
-                || !config_edge_allowed(edge, allowed.as_ref())
-                || !entry_args.allows(current_id, edge)
-            {
-                continue;
-            }
+            let kind_ok = config.allowed_kinds.contains(&edge.kind);
             // An edge with no resolution kind (a Bridge Edge kind) is always
             // traversable here -- bridging is governed separately below via
             // `bridge_targets`/`bridge_complement`.
-            if crate::model::is_resolution_excluded(
-                edge.resolution_kind.as_deref(),
-                &config.exclude_resolution_kinds,
-            ) {
+            let passes = kind_ok
+                && crate::model::xref_is_traversable(edge)
+                && config_edge_allowed(edge, allowed.as_ref())
+                && entry_args.allows(current_id, edge)
+                && !crate::model::is_resolution_excluded(
+                    edge.resolution_kind.as_deref(),
+                    &config.exclude_resolution_kinds,
+                );
+            if !passes {
+                if (kind_ok || FLOW_KINDS.contains(&edge.kind.as_str()))
+                    && counts_as_successor(edge, current_id, is_upstream, walk)
+                {
+                    outcome.decline(edge);
+                }
                 continue;
             }
 
@@ -381,6 +521,7 @@ pub fn trace_flow(
 
             let widened = !is_upstream && entry_args.record(next_id, edge, db)?;
             let Some(admission) = scope.admit_plain(next_id) else {
+                outcome.seen += 1;
                 // Reached again through a call with other type arguments:
                 // expand it again so those closed impls are reached too.
                 if widened && let Ok(Some(sym)) = db.get_symbol_by_id(next_id) {
@@ -452,6 +593,8 @@ pub fn trace_flow(
                         prev_file: next_sym.file_path.clone(),
                         entry: admission.entry,
                     });
+                } else if !admission.expand {
+                    unexpanded.insert((next_id, dist + 1), admission.entry);
                 }
             }
         }
@@ -523,6 +666,7 @@ pub fn trace_flow(
                             BridgeOutcome::Skipped => continue,
                             BridgeOutcome::Admitted(a) => a,
                             BridgeOutcome::Refused => {
+                                outcome.seen += 1;
                                 let pair = (
                                     bridged_id,
                                     if is_config_edge_kind(edge_kind) {
@@ -566,6 +710,8 @@ pub fn trace_flow(
                                     prev_file: bridged_sym.file_path.clone(),
                                     entry: admission.entry,
                                 });
+                            } else {
+                                unexpanded.insert((bridged_id, dist + 1), admission.entry);
                             }
                         }
                     }
@@ -575,6 +721,8 @@ pub fn trace_flow(
                 }
             }
         }
+
+        outcomes.entry((current_id, dist)).or_insert(outcome);
 
         if reached_target {
             break;
@@ -605,6 +753,24 @@ pub fn trace_flow(
     // what is returned (#355).
     let settled_any = !trace.is_empty();
     let leaf_count = count_leaves(&trace);
+    let mut stop_summary = BTreeMap::new();
+    let mut start_stop = None;
+    if end_id.is_none() {
+        let ctx = StopContext {
+            db,
+            is_upstream,
+            config,
+            languages,
+            graph_version,
+            visited: &visited,
+            outcomes: &outcomes,
+            unexpanded: &unexpanded,
+        };
+        stop_summary = annotate_stops(&ctx, &mut trace)?;
+        if trace.is_empty() {
+            start_stop = start_stop_reason(&ctx, &start_sym)?;
+        }
+    }
     let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
 
     // Apply the byte budget to the settled hops: keep hops while they fit,
@@ -680,6 +846,8 @@ pub fn trace_flow(
         used_bytes,
         unresolved_reference_count,
         traversed_heuristic_kind,
+        stop_summary,
+        start_stop,
     })
 }
 
@@ -752,6 +920,178 @@ fn has_further_edges(
         }
     }
     Ok(false)
+}
+
+/// Everything stop-reason classification reads from the finished BFS.
+struct StopContext<'a> {
+    db: &'a Db,
+    is_upstream: bool,
+    config: &'a TraceConfig,
+    languages: Option<&'a [String]>,
+    graph_version: i64,
+    visited: &'a HashSet<i64>,
+    outcomes: &'a HashMap<(i64, usize), Outcome>,
+    unexpanded: &'a HashMap<(i64, usize), Entry>,
+}
+
+/// A leaf symbol being classified.
+struct LeafRef<'a> {
+    sym: &'a Symbol,
+    dist: usize,
+}
+
+/// A stop decided without further queries, or one that still needs the
+/// `unresolved_references` lookup to choose between "unresolved" and "none".
+enum Decision {
+    Done(TraceStop),
+    NeedsUnresolved,
+}
+
+fn stop(reason: &str, detail: Option<serde_json::Value>) -> TraceStop {
+    TraceStop {
+        stop: reason.to_string(),
+        stop_detail: detail,
+    }
+}
+
+fn decide(ctx: &StopContext, leaf: &LeafRef) -> Result<Decision> {
+    if leaf.sym.is_external() {
+        return Ok(Decision::Done(stop("external", None)));
+    }
+    let key = (leaf.sym.id, leaf.dist);
+    let (outcome, expanded) = match ctx.outcomes.get(&key) {
+        Some(o) => (o.clone(), true),
+        None => {
+            let entry = ctx.unexpanded.get(&key).cloned().unwrap_or(Entry::Unscoped);
+            let o = dry_outcome(
+                ctx.db,
+                leaf.sym.id,
+                ctx.is_upstream,
+                ctx.config,
+                &entry,
+                ctx.languages,
+                ctx.graph_version,
+                ctx.visited,
+            )?;
+            (o, false)
+        }
+    };
+    if !expanded && outcome.fresh > 0 {
+        let reason = if leaf.dist >= ctx.config.max_hops {
+            "depth_limit"
+        } else {
+            "truncated"
+        };
+        return Ok(Decision::Done(stop(reason, None)));
+    }
+    if outcome.seen > 0 {
+        return Ok(Decision::Done(stop("cycle", None)));
+    }
+    if !outcome.filtered.is_empty() {
+        return Ok(Decision::Done(stop(
+            "filtered",
+            Some(serde_json::json!(outcome.filtered)),
+        )));
+    }
+    Ok(Decision::NeedsUnresolved)
+}
+
+fn no_successor_stop(
+    is_upstream: bool,
+    sample: Option<&crate::model::UnresolvedSample>,
+) -> TraceStop {
+    match (sample.filter(|s| s.count > 0), is_upstream) {
+        (Some(s), false) => stop("unresolved_calls", Some(s.detail())),
+        (Some(s), true) => stop("unresolved_callers", Some(s.detail())),
+        (None, false) => stop("no_callees", None),
+        (None, true) => stop("no_callers", None),
+    }
+}
+
+/// Resolve the stop for each `(leaf, decision)`: downstream looks up the
+/// leaf's own pending references in one batch; upstream looks for pending
+/// references elsewhere that name the leaf (see
+/// `Db::unresolved_callers_of`).
+fn finish_stops(ctx: &StopContext, leaves: &[(LeafRef, Decision)]) -> Result<Vec<TraceStop>> {
+    let by_source = if ctx.is_upstream {
+        HashMap::new()
+    } else {
+        let ids: Vec<i64> = leaves
+            .iter()
+            .filter(|(_, d)| matches!(d, Decision::NeedsUnresolved))
+            .map(|(l, _)| l.sym.id)
+            .collect();
+        ctx.db.unresolved_references_by_source(
+            &ids,
+            &ctx.config.allowed_kinds,
+            ctx.graph_version,
+        )?
+    };
+    let mut out = Vec::with_capacity(leaves.len());
+    for (leaf, decision) in leaves {
+        out.push(match decision {
+            Decision::Done(s) => s.clone(),
+            Decision::NeedsUnresolved if ctx.is_upstream => {
+                let sample = ctx.db.unresolved_callers_of(
+                    leaf.sym.id,
+                    &leaf.sym.name,
+                    &leaf.sym.file_path,
+                    &ctx.config.allowed_kinds,
+                    ctx.graph_version,
+                )?;
+                no_successor_stop(true, Some(&sample))
+            }
+            Decision::NeedsUnresolved => no_successor_stop(false, by_source.get(&leaf.sym.id)),
+        });
+    }
+    Ok(out)
+}
+
+/// Attach a stop reason to every leaf hop of the settled trace and return
+/// the per-reason leaf counts (issue #410).
+fn annotate_stops(ctx: &StopContext, trace: &mut [TraceHop]) -> Result<BTreeMap<String, usize>> {
+    let parents: HashSet<(i64, usize)> = trace
+        .iter()
+        .filter_map(|h| Some((h.predecessor_id, h.distance.checked_sub(1)?)))
+        .collect();
+    let leaf_idx: Vec<usize> = (0..trace.len())
+        .filter(|&i| !parents.contains(&(trace[i].symbol.id, trace[i].distance)))
+        .collect();
+    let mut leaves: Vec<(LeafRef, Decision)> = Vec::with_capacity(leaf_idx.len());
+    for &i in &leaf_idx {
+        let leaf = LeafRef {
+            sym: &trace[i].symbol,
+            dist: trace[i].distance,
+        };
+        let decision = decide(ctx, &leaf)?;
+        leaves.push((leaf, decision));
+    }
+    let stops = finish_stops(ctx, &leaves)?;
+    drop(leaves);
+    let mut summary = BTreeMap::new();
+    for (i, s) in leaf_idx.into_iter().zip(stops) {
+        *summary.entry(s.stop.clone()).or_insert(0) += 1;
+        trace[i].stop = Some(s);
+    }
+    Ok(summary)
+}
+
+/// Stop reason of the start symbol itself, for a trace with no hops.
+fn start_stop_reason(ctx: &StopContext, start: &Symbol) -> Result<Option<TraceStop>> {
+    let leaves = vec![(
+        LeafRef {
+            sym: start,
+            dist: 0,
+        },
+        decide(
+            ctx,
+            &LeafRef {
+                sym: start,
+                dist: 0,
+            },
+        )?,
+    )];
+    Ok(finish_stops(ctx, &leaves)?.into_iter().next())
 }
 
 /// Hops that no other hop names as its predecessor. A trace is
@@ -841,6 +1181,7 @@ fn build_hop(
         protocol_context,
         resolution_kind: edge.resolution_kind.clone(),
         bridge_direction: None,
+        stop: None,
     }
 }
 

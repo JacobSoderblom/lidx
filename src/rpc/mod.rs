@@ -298,7 +298,22 @@ struct ExplainSymbolParams {
 /// `max_hops` ceiling cut the trace (re-trace with a larger `max_hops`;
 /// `trace_offset` would return nothing); `budget.truncated` reflects byte
 /// truncation only, and a `trace_offset` past the end returns an empty trace
-/// with `no_more_results: true`.
+/// with `no_more_results: true`. Every leaf hop of a trace without an end
+/// target carries `stop` (plus `stop_detail` where noted), so a resolution gap
+/// is not read as "execution ends here". Downstream: `depth_limit` (cut at
+/// `max_hops`, successors exist), `cycle` (every successor already in the
+/// trace), `filtered` (successors removed by `kinds` /
+/// `exclude_resolution_kinds` / scope; `stop_detail` = `{resolution_kind or
+/// edge kind: declined count}`), `truncated` (byte budget cut it before its
+/// successors were seen), `unresolved_calls` (no resolved successors but
+/// pending unresolved references; `stop_detail` = `{count, top: [[name,
+/// reason], ..3]}`), `no_callees` (genuine leaf) and `external` (the hop is an
+/// external stub; downstream only). Upstream the last two become
+/// `no_callers` and `unresolved_callers`: other symbols' unresolved
+/// references whose name tail and language match the hop (a possible caller,
+/// matched by name only, listed by its source qualname). `stop_summary` counts
+/// leaves per reason over the whole trace, and `start_stop` explains an empty
+/// trace.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TraceFlowParams {
     start_id: Option<i64>,

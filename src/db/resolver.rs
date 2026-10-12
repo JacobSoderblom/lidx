@@ -3847,6 +3847,99 @@ impl Db {
             .map_err(Into::into)
     }
 
+    /// Pending `unresolved_references` per source symbol (issue #410): the
+    /// outgoing references of each of `symbol_ids` (limited to `edge_kinds`)
+    /// the write path could not attribute a target to. This is what lets a
+    /// `trace_flow` leaf be told apart from a function that genuinely calls
+    /// nothing. Symbols with no pending row are absent from the map.
+    pub fn unresolved_references_by_source(
+        &self,
+        symbol_ids: &[i64],
+        edge_kinds: &[String],
+        graph_version: i64,
+    ) -> Result<std::collections::HashMap<i64, crate::model::UnresolvedSample>> {
+        let mut out: std::collections::HashMap<i64, crate::model::UnresolvedSample> =
+            std::collections::HashMap::new();
+        if symbol_ids.is_empty() || edge_kinds.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.read_conn()?;
+        let kind_marks = vec!["?"; edge_kinds.len()].join(",");
+        for chunk in symbol_ids.chunks(400) {
+            let id_marks = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT source_symbol_id, COALESCE(reference_name, name_tail), reason \
+                 FROM unresolved_references \
+                 WHERE source_symbol_id IN ({id_marks}) AND graph_version = ? \
+                   AND edge_kind IN ({kind_marks}) \
+                 ORDER BY source_symbol_id, id"
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            params.push(&graph_version);
+            params.extend(edge_kinds.iter().map(|k| k as &dyn rusqlite::ToSql));
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(&*params, |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, name, reason) = row?;
+                out.entry(id).or_default().push(name, reason);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Upstream analogue of [`Self::unresolved_references_by_source`] (issue
+    /// #410): unresolved references, in other symbols, whose name tail is
+    /// `symbol_name` -- callers that may exist but never bound to the symbol.
+    /// Matched by name tail and file language only (the same fuzzy signal
+    /// #81 keeps out of the exact lower-bound count), so it is a *possible*
+    /// caller, named by its source symbol's qualname. `symbol_id` itself is
+    /// excluded (recursion is not a caller gap).
+    pub fn unresolved_callers_of(
+        &self,
+        symbol_id: i64,
+        symbol_name: &str,
+        file_path: &str,
+        edge_kinds: &[String],
+        graph_version: i64,
+    ) -> Result<crate::model::UnresolvedSample> {
+        let mut sample = crate::model::UnresolvedSample::default();
+        if edge_kinds.is_empty() || symbol_name.is_empty() {
+            return Ok(sample);
+        }
+        let kind_marks = vec!["?"; edge_kinds.len()].join(",");
+        let sql = format!(
+            "SELECT s.qualname, ur.reason \
+             FROM unresolved_references ur \
+             JOIN files f ON f.id = ur.file_id \
+             JOIN symbols s ON s.id = ur.source_symbol_id \
+             WHERE ur.name_tail = ? AND ur.graph_version = ? \
+               AND ur.source_symbol_id IS NOT NULL AND ur.source_symbol_id != ? \
+               AND ur.edge_kind IN ({kind_marks}) \
+               AND f.language = (SELECT language FROM files WHERE path = ?) \
+             ORDER BY ur.id"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&symbol_name, &graph_version, &symbol_id];
+        params.extend(edge_kinds.iter().map(|k| k as &dyn rusqlite::ToSql));
+        params.push(&file_path);
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(&*params, |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (name, reason) = row?;
+            sample.push(name, reason);
+        }
+        Ok(sample)
+    }
+
     /// The repair pass shared by `Indexer::sync_abs_paths`'s post-batch hook
     /// and `Indexer::reindex`'s `needs_repair` branch (issue #78/#79): both
     /// used to duplicate the same reconcile-then-retry-then-`eprintln!`

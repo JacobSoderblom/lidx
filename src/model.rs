@@ -1154,6 +1154,15 @@ pub struct TraceFlowResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<Symbol>,
     pub trace: Vec<TraceHop>,
+    /// Leaf hops of the settled trace per stop reason (issue #410), counted
+    /// before `trace_offset` / byte paging like `paths_found`. Omitted when
+    /// empty (an end-target trace, or a trace with no hops).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub stop_summary: std::collections::BTreeMap<String, usize>,
+    /// Why the trace ends at the start symbol itself, reported only when the
+    /// trace has no hops at all (an empty trace otherwise says nothing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_stop: Option<TraceStop>,
     /// See `traversal::TraceResult::paths_found` for the exact definition
     /// (leaf hops without an end target, 0 or 1 with one).
     pub paths_found: usize,
@@ -1209,6 +1218,49 @@ pub struct TraceHop {
     /// hop reached over a direct edge.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_direction: Option<crate::indexer::channel::WalkDirection>,
+    /// Why the trace ends at this hop. Set only on leaf hops (hops no other
+    /// hop was reached through) of a trace with no end target; see
+    /// [`TraceStop`].
+    #[serde(flatten)]
+    pub stop: Option<TraceStop>,
+}
+
+/// Why a `trace_flow` branch ends at a leaf (issue #410). Downstream the
+/// reasons are `depth_limit`, `cycle`, `filtered`, `truncated`,
+/// `unresolved_calls`, `no_callees` and `external`; upstream `no_callees` /
+/// `unresolved_calls` become `no_callers` / `unresolved_callers`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TraceStop {
+    pub stop: String,
+    /// `filtered`: `{resolution_kind_or_edge_kind: declined_count}`.
+    /// `unresolved_calls` / `unresolved_callers`: `{count, top: [[name,
+    /// reason], ..]}` (at most 3 distinct names). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_detail: Option<serde_json::Value>,
+}
+
+/// Count plus the first few distinct names (with the reason each failed to
+/// resolve) of a symbol's pending `unresolved_references`.
+#[derive(Debug, Default, Clone)]
+pub struct UnresolvedSample {
+    pub count: usize,
+    pub top: Vec<(String, String)>,
+}
+
+impl UnresolvedSample {
+    /// Number of distinct names kept in `top`.
+    pub const TOP: usize = 3;
+
+    pub fn push(&mut self, name: String, reason: String) {
+        self.count += 1;
+        if self.top.len() < Self::TOP && !self.top.iter().any(|(n, _)| *n == name) {
+            self.top.push((name, reason));
+        }
+    }
+
+    pub fn detail(&self) -> serde_json::Value {
+        serde_json::json!({"count": self.count, "top": self.top})
+    }
 }
 
 #[cfg(test)]
