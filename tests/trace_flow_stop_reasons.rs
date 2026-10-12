@@ -429,21 +429,34 @@ fn filtered_detail_also_reports_unresolved_references() {
 
 #[test]
 fn stop_fields_count_against_the_byte_budget() {
+    // (The exact per-hop accounting is pinned by the white-box budget test in
+    // config_reentry_graph.rs, which sums the serialized hops stop fields
+    // included.) Here: the reported budget is the real boundary.
     let src = "def start():\n    x()\n    y()\n\ndef x():\n    pass\n\ndef y():\n    nowhere()\n";
     let (_t, repo, db) = common::index_repo("lidx-stop-bytes-", &[("a.py", src)]);
     let full = trace(&repo, &db, &json!({"start_qualname": "a.start"}));
-    let hops = full["trace"].as_array().unwrap();
-    assert!(hops.iter().any(|h| h.get("stop").is_some()), "{full}");
-    let total: usize = hops.iter().map(|h| h.to_string().len()).sum();
-    assert_eq!(full["budget"]["used_bytes"], json!(total), "{full}");
-    // One byte short of the stop-bearing payload must cut a hop.
+    assert!(
+        full["trace"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h.get("stop").is_some()),
+        "{full}"
+    );
+    let used = full["budget"]["used_bytes"].as_u64().unwrap();
+    let fits = trace(
+        &repo,
+        &db,
+        &json!({"start_qualname": "a.start", "max_bytes": used}),
+    );
+    assert_eq!(fits["budget"]["truncated"], json!(false), "{fits}");
     let cut = trace(
         &repo,
         &db,
-        &json!({"start_qualname": "a.start", "max_bytes": total - 1}),
+        &json!({"start_qualname": "a.start", "max_bytes": used - 1}),
     );
     assert_eq!(cut["budget"]["truncated"], json!(true), "{cut}");
-    assert!(cut["budget"]["used_bytes"].as_u64().unwrap() < total as u64);
+    assert!(cut["budget"]["used_bytes"].as_u64().unwrap() < used);
 }
 
 #[test]

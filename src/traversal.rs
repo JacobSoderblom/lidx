@@ -278,8 +278,12 @@ fn bridge_candidate(edge: &Edge, walk: WalkDirection) -> bool {
 /// endpoint, or a bridge candidate); `successor_of` alone also admits
 /// unresolved edges that lead nowhere.
 fn counts_as_successor(edge: &Edge, id: i64, is_upstream: bool, walk: WalkDirection) -> bool {
-    successor_of(edge, id, is_upstream)
-        .is_some_and(|next| next.is_some() || bridge_candidate(edge, walk))
+    successor_of(edge, id, is_upstream).is_some_and(|next| {
+        // An upstream edge that starts at `id` itself is outgoing, not a
+        // caller; it leads nowhere even if it is a bridge kind.
+        next.is_some()
+            || (bridge_candidate(edge, walk) && !(is_upstream && edge.source_symbol_id == Some(id)))
+    })
 }
 
 /// Stateless look at `id`'s successors for a node the BFS never expanded
