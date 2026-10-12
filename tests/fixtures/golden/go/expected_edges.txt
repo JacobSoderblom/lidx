@@ -30,14 +30,14 @@ caller/caller.CallImportedHelper CALLS helper/helper.FormatGreeting import
 helper/helper.FormatGreeting CALLS helper/helper.decorate exact
 
 # Method call on the receiver. LoudGreeter.format is a same-named decoy.
-greeter/greeter.Greeter.Greet CALLS greeter/greeter.Greeter.format  # xfail: receiver-variable method calls are not bound to the receiver type
+greeter/greeter.Greeter.Greet CALLS greeter/greeter.Greeter.format receiver_type
 
 # Receiver-typed call. LoudGreeter.Greet is a same-named decoy.
-caller/caller.CallReceiverTyped CALLS greeter/greeter.Greeter.Greet  # xfail: parameter types are not used as receiver types
+caller/caller.CallReceiverTyped CALLS greeter/greeter.Greeter.Greet receiver_type
 
 # Promoted method through embedding: Dog embeds Animal. Cat.Speak is a
 # same-named decoy.
-caller/caller.CallInherited CALLS animals/animals.Animal.Speak  # xfail: struct embedding is not treated as inheritance
+caller/caller.CallInherited CALLS animals/animals.Animal.Speak receiver_type
 
 # Interface call through Speaker. Cat.Say is a same-named decoy.
 caller/caller.CallInterface CALLS animals/animals.Speaker.Say  # xfail: interface methods are not extracted; bare_name guesses Cat.Say
@@ -79,19 +79,20 @@ bare_call_pkg/bare_call.BareCaller CALLS UNRESOLVED
 nested/nested.NestedArgs CALLS nested/nested.Outer exact
 nested/nested.NestedArgs CALLS nested/nested.Inner exact
 
-# The head of a chain is a call too; the method calls on its result have no
-# receiver type yet.
+# The head of a chain is a call too; B and C are typed through the declared
+# result of the call before them.
 nested/nested.Chain CALLS nested/nested.A exact
-# B and C are methods of a call result: stored unresolved with their names.
-nested/nested.Chain CALLS UNRESOLVED
+nested/nested.Chain CALLS nested/nested.Builder.B receiver_type
+nested/nested.Chain CALLS nested/nested.Builder.C receiver_type
 
 # Calls in closures belong to the enclosing declaration; a package-level
 # variable's initializer is sourced from the module, like its value references.
 nested/nested.GoClosure CALLS nested/nested.Helper exact
 nested/nested.DeferClosure CALLS nested/nested.Helper exact
 nested/nested.TestRun CALLS nested/nested.Helper exact
-# t.Run is a method of a foreign type: nothing in the repo to bind.
-nested/nested.TestRun CALLS UNRESOLVED
+# t.Run is a method of testing.T, a foreign type: an external stub, never a
+# repo symbol.
+nested/nested.TestRun CALLS ext:testing.T.Run external
 nested/nested CALLS nested/nested.Helper exact
 nested/nested.Builder.C CALLS nested/nested.Helper exact
 
@@ -126,3 +127,44 @@ nestedmod/use.UseHelper CALLS helper/helper.FormatGreeting import
 
 # A package vendored into the repository (vendor/<import path>).
 vendor_user/use.UseVendored CALLS vendor/example.com/thirdparty/lib/lib.Vendored import
+
+# --- Issue #423: typed receivers ---
+
+# A constructor's declared result types the local.
+typed/client.viaConstructor CALLS typed/server.NewServer exact
+typed/client.viaConstructor CALLS typed/server.Server.Handle receiver_type
+# A chain is typed link by link.
+typed/client.viaChain CALLS typed/server.NewServer exact
+typed/client.viaChain CALLS typed/server.Server.Handle receiver_type
+# `&Server{}`, `Server{}`, `var c Server`, `var d *Server`.
+typed/client.viaLiterals CALLS typed/server.Server.Handle receiver_type
+# A struct field's declared type.
+typed/client.Client.viaField CALLS typed/server.Server.Handle receiver_type
+# A method promoted from an embedded type, through a field.
+typed/client.Client.viaEmbedded CALLS typed/server.Base.Ping receiver_type
+# A range value over a slice-typed field.
+typed/client.Client.eachServer CALLS typed/server.Server.Handle receiver_type
+# `conn net.Conn` is the standard library's, never Report.Close.
+typed/client.Client.run CALLS ext:net.Conn.Close external
+# `var b bytes.Buffer; b.String()` is no edge to Report.String.
+typed/client.viaBuffer CALLS ext:bytes.Buffer.String external
+# `x.(*Server)` names the type; an interface{} local names none.
+typed/client.viaAssertion CALLS typed/server.Server.Handle receiver_type
+typed/client.viaAssertion CALLS UNRESOLVED
+# A type switch binds the case type in its clause.
+typed/client.viaSwitch CALLS typed/server.Server.Handle receiver_type
+typed/client.viaSwitch CALLS typed/server.Report.String receiver_type
+# A package-level variable is typed from its initializer (the initializer's own
+# call is sourced from the module).
+typed/client CALLS typed/server.NewServer exact
+typed/client.viaGlobal CALLS typed/server.Server.Handle receiver_type
+# A parameter used inside a closure.
+typed/client.viaClosure CALLS typed/server.Server.Handle receiver_type
+# Generic receivers: the method is Set.Add, not Set[T].Add.
+typed/set.Set.AddAll CALLS typed/set.Set.Add receiver_type
+typed/set.useSet CALLS typed/set.Set.Add receiver_type
+# Another package's constructor, parameter and declared type.
+typed_user/user.UseImported CALLS typed/server.NewServer import
+typed_user/user.UseImported CALLS typed/server.Server.Handle receiver_type
+typed_user/user.UseParam CALLS typed/server.Server.Handle receiver_type
+typed_user/user.UseVar CALLS typed/server.Server.Handle receiver_type

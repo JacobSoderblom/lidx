@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 22;
+pub const EXTRACTOR_VERSION: i64 = 24;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -56,6 +56,7 @@ pub mod differ;
 pub mod extract;
 pub mod go;
 mod go_repo;
+mod go_types;
 pub mod http;
 pub mod javascript;
 mod js_stale;

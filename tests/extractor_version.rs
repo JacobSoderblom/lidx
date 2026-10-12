@@ -8,7 +8,7 @@ use lidx::indexer::{EXTRACTOR_VERSION, Indexer};
 use std::path::Path;
 
 /// Recorded alongside `EXTRACTOR_VERSION`; update both together.
-const RECORDED_HASH: &str = "c3a0c2eaeb3f213d3cdf8fc008868946e137822b2cfc80b7781d6f42520d04cb";
+const RECORDED_HASH: &str = "e0b01ee9964f8f14f42971742edbf7ceee458e4a59d6b175ce1bddac5309b8db";
 
 fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
@@ -28,6 +28,7 @@ fn extractor_sources_match_recorded_hash() {
     let mut files = Vec::new();
     collect(&manifest.join("indexer"), &mut files);
     files.push(manifest.join("db/resolver.rs"));
+    files.push(manifest.join("db/resolver_go.rs"));
     files.sort();
     let mut hasher = blake3::Hasher::new();
     for f in &files {
@@ -39,7 +40,7 @@ fn extractor_sources_match_recorded_hash() {
     let actual = hasher.finalize().to_hex().to_string();
     assert_eq!(
         actual, RECORDED_HASH,
-        "src/indexer/** or src/db/resolver.rs changed. Bump EXTRACTOR_VERSION (currently {EXTRACTOR_VERSION}) in \
+        "src/indexer/**, src/db/resolver.rs or src/db/resolver_go.rs changed. Bump EXTRACTOR_VERSION (currently {EXTRACTOR_VERSION}) in \
          src/indexer/mod.rs if extractor output changed, then set RECORDED_HASH in \
          tests/extractor_version.rs to {actual}"
     );

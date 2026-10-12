@@ -57,6 +57,10 @@
 //! order used to hardcode; a same scope/module tier and stricter guards
 //! are still open (#75).
 
+#[path = "resolver_go.rs"]
+mod resolver_go;
+pub(crate) use resolver_go::go_deferred_candidate;
+
 use super::Db;
 use super::graph_query::{LOCAL_MODIFIER, has_modifier, has_modifier_sql};
 use crate::edge_views;
@@ -477,6 +481,12 @@ pub(crate) struct LanguageProfile {
     /// `DeferredMarker` this language's extractor wrote) from the declarations it
     /// names. `None` for a language without one.
     pub deferred_receiver: Option<ResolveDeferred>,
+    /// Finishes a language's deferred receiver into the package candidate
+    /// and call target text its call binds through, for a language whose
+    /// types are read with the resolver itself (Go). `Ok(None)`: not this
+    /// language's marker; `Ok(Some(None))`: the receiver's type cannot be
+    /// told, so the call binds nothing.
+    pub deferred_candidate: Option<DeferredCandidateFn>,
     /// What two symbols of one kind sharing a qualname in one file are.
     pub same_file_twins: SameFileTwins,
     /// The package a file belongs to (Cargo crate directory), for a language
@@ -584,6 +594,13 @@ pub trait DeclarationIndex {
 pub type ResolveDeferred =
     fn(marker: &DeferredMarker, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>>;
 
+/// See `LanguageProfile::deferred_candidate`: `(import candidate, target
+/// text)` of the call.
+pub type DeferredCandidateFn = fn(
+    resolver: &mut Resolver<'_>,
+    marker: &DeferredMarker,
+) -> Result<Option<Option<(String, String)>>>;
+
 /// One `RPC_CALL` edge `LanguageProfile::deferred_rpc` yields.
 pub struct RpcCallEdge {
     pub target_qualname: String,
@@ -612,6 +629,7 @@ impl LanguageProfile {
         deferred_rpc: None,
         untyped_receiver_is_external: true,
         deferred_receiver: None,
+        deferred_candidate: None,
         same_file_twins: SameFileTwins::Overloads,
         package_dir: None,
         two_segment: true,
@@ -1408,6 +1426,29 @@ impl<'c> Resolver<'c> {
                 None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
             });
         }
+        // A receiver typed through other files' declarations becomes the
+        // package candidate of its type's method, or binds nothing.
+        if let Some(marker) = r.deferred
+            && let Some(hook) = profile_for(r.source_lang).deferred_candidate
+            && let Some(candidate) = hook(self, marker)?
+        {
+            let patched = match &candidate {
+                Some((candidate, target)) => Reference {
+                    target_qualname: Some(target),
+                    import_candidates: std::slice::from_ref(candidate),
+                    receiver_type: None,
+                    deferred: None,
+                    ..*r
+                },
+                None => Reference {
+                    import_candidates: &[],
+                    receiver_type: Some(""),
+                    deferred: None,
+                    ..*r
+                },
+            };
+            return self.resolve_tiers_and_refine(&patched, symbol_map);
+        }
         // A deferred receiver (`ReceiverType::Deferred`) becomes the callee's
         // declared return type, or `""` (unresolved) -- never a guess.
         let patched_hook;
@@ -1670,7 +1711,12 @@ impl<'c> Resolver<'c> {
                 }
             }
         } else if !is_locally_bound_bare_call(r) {
+            // A Go call through a foreign import path (`context.Context.Value`
+            // with `context` the standard library) must not match a repo
+            // symbol that happens to share the path's text (a root-level
+            // `context.go` declaring `Context.Value`).
             if let Some(qn) = r.target_qualname
+                && !go_foreign_import_call(r)
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
             {
                 return Ok(resolved(id, ResolutionKind::Exact));
@@ -2806,11 +2852,29 @@ impl<'c> Resolver<'c> {
                 let dir = module.rsplit_once('/').map_or("", |(dir, _)| dir);
                 (dir == want_dir).then_some(*id)
             });
-            let Some(id) = hits.next() else { continue };
-            if hits.next().is_some() {
+            let first = hits.next();
+            let second = first.and_then(|_| hits.next());
+            // `Type.Method`: a method promoted from an embedded type when
+            // the type declares none itself.
+            let promoted = match (first, member.split_once('.')) {
+                (None, Some((ty, method))) if !ty.is_empty() => {
+                    self.go_method_id(want_dir, ty, method)?
+                }
+                _ => None,
+            };
+            let Some(id) = first.or(promoted) else {
+                continue;
+            };
+            if second.is_some() {
                 self.saw_ambiguous = true;
                 return Ok(None);
             }
+            // A method found through its type is a receiver-typed binding.
+            let kind = if member.contains('.') {
+                ResolutionKind::ReceiverType
+            } else {
+                kind
+            };
             match found {
                 None => found = Some((id, kind)),
                 Some((existing, _)) if existing == id => {}
@@ -2843,6 +2907,22 @@ impl<'c> Resolver<'c> {
         }
         if never_external(r) {
             return Ok(None);
+        }
+        // The extractor's hook left this import path foreign (outside every
+        // module of the repository): its member is an external symbol even
+        // where the path's text happens to match a repo qualname.
+        if go_foreign_import_call(r) {
+            return Ok(
+                match external_stub_qualname(r.target_qualname, r.import_candidates, false) {
+                    Some(qualname) => Some(resolved(
+                        self.resolve_external_stub(&qualname)?,
+                        ResolutionKind::External {
+                            via_language_fallback: false,
+                        },
+                    )),
+                    None => Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)),
+                },
+            );
         }
         self.stub_resolution(
             r.source_lang,
@@ -2950,13 +3030,11 @@ impl<'c> Resolver<'c> {
             // xfail: pkg.Func calls are not bound through the import path`
             // lines) stays a plain miss instead of a wrong external label.
             //
-            // ponytail: Go tracks no receiver-type signal at all, so a
-            // local-variable method call (`x.Method()`) is syntactically
-            // identical to a package call here. One that fails to bind for
-            // any reason (not just a genuine external call) and whose
-            // one-letter-ish receiver name never collides with a real
-            // directory can still be mislabeled external. Upgrade path:
-            // track Go imports and locals the way Python/C#/JS-TS do.
+            // A Go method call whose receiver the extractor typed or refused
+            // carries package candidates and never reaches this fallback;
+            // what does is a target of plain `pkg.Name` text with no
+            // candidate, which this treats as foreign unless `pkg` names a
+            // directory of the repository.
             "go" => match target_qualname.split_once('.') {
                 Some((package, _)) => Ok(!self.is_repo_go_package(package)?),
                 None => Ok(false),
@@ -3216,6 +3294,19 @@ impl<'c> Resolver<'c> {
 /// see `Resolver::external_file_id`.
 pub(crate) const EXTERNAL_FILE_PATH: &str = "<external>";
 
+/// A Go call whose candidate is a bare import path (`<path>|Member`): the
+/// hook found no package of this repository for it. In-repo candidates start
+/// with a place marker, and `GO_UNKNOWN_QUALIFIER` marks a qualifier not yet
+/// resolved.
+fn go_foreign_import_call(r: &Reference<'_>) -> bool {
+    r.source_lang == "go"
+        && r.edge_kind == "CALLS"
+        && r.import_candidates.first().is_some_and(|c| {
+            !c.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE, GO_UNKNOWN_QUALIFIER])
+                && c.contains('|')
+        })
+}
+
 /// C# `Type.Member` reads (the only C# `USES` edges, issue #247) are
 /// speculative: most hit framework members (`DateTime.UtcNow`), so binding
 /// them to `ext:` stubs is pure noise. They stay unresolved (and retryable)
@@ -3233,6 +3324,12 @@ fn never_external(r: &Reference<'_>) -> bool {
 /// extractor, which writes them, and `Resolver::resolve_go_package_member`.
 pub(crate) const GO_SAME_PACKAGE: char = '=';
 pub(crate) const GO_IMPORTED_PACKAGE: char = '>';
+/// `?<qualifier>|Name`: a call `qualifier.Name()` whose qualifier is not an
+/// import alias the file's text names, not a local, and so is a package-level
+/// variable or an import whose package name differs from its path's last
+/// element. Only the Go import hook, which can read the imported package's own
+/// `package` clause, tells them apart.
+pub(crate) const GO_UNKNOWN_QUALIFIER: char = '?';
 
 /// The `ext:` marker every external stub qualname starts with.
 const EXTERNAL_STUB_PREFIX: &str = "ext:";
@@ -4287,9 +4384,21 @@ impl Db {
             params![graph_version],
             |row| row.get(0),
         )?;
+        // A Go call typed in its own file (`=dir|Type.Method`) hangs on the
+        // type's declaration -- its embedded types -- not on any symbol
+        // sharing the method's name, so a miss is always retried too.
+        let has_go_typed_rows: bool = self.read_conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM unresolved_references ur
+                 JOIN files f ON f.id = ur.file_id
+                 WHERE ur.graph_version = ? AND ur.edge_kind = 'CALLS'
+                   AND f.language = 'go' AND ur.import_candidates IS NOT NULL)",
+            params![graph_version],
+            |row| row.get(0),
+        )?;
         if !symbols_deleted_this_batch
             && !inheritance_changed
             && !has_deferred_rows
+            && !has_go_typed_rows
             && max_symbol_id <= watermark
         {
             return Ok(0);
@@ -4349,6 +4458,8 @@ impl Db {
                  WHERE ur.graph_version = ?1
                    AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
                         OR ur.deferred_kind IS NOT NULL
+                        OR (f.language = 'go' AND ur.edge_kind = 'CALLS'
+                            AND ur.import_candidates IS NOT NULL)
                         OR (?3 AND ur.reason IN ('ambiguous', 'private')))",
             )?;
             let rows = stmt.query_map(
@@ -4693,6 +4804,91 @@ impl Db {
         Ok(total_resolved)
     }
 
+    /// Re-judge the Go calls bound to a method their receiver's type got
+    /// from an embedded type (the bound symbol is not the `Type.Method` the
+    /// call named): editing the struct, or giving the type a method of its
+    /// own, changes the answer without touching the call or its target.
+    pub fn retry_go_promoted_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "JOIN symbols promoted ON promoted.id = e.target_symbol_id",
+            "AND e.kind = 'CALLS' AND e.resolution_kind = 'receiver_type'
+             AND e.deferred_kind IS NULL AND e.import_candidates IS NOT NULL
+             AND e.target_qualname LIKE '%.%'
+             AND substr(promoted.qualname, -length(e.target_qualname) - 1)
+                 != '.' || e.target_qualname
+             AND e.file_id IN (SELECT id FROM files WHERE language = 'go')",
+        )
+    }
+
+    /// Re-judge the edges a name tier bound (`bare_name`, `two_segment`)
+    /// whose name a symbol added since the watermark now shares with another
+    /// one: a fresh reindex sees both candidates and refuses (or binds the
+    /// better one), so an incremental sync that keeps the first guess would
+    /// diverge from it. Only a name carried by 2+ live symbols can have
+    /// changed, which bounds the rescan.
+    pub fn retry_name_tier_edges(&self, graph_version: i64) -> Result<usize> {
+        let ids = self.name_tier_edges_to_rejudge(graph_version)?;
+        let mut total = 0;
+        for chunk in ids.chunks(500) {
+            let list = chunk
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            total +=
+                self.rejudge_bound_edges(graph_version, "", &format!("AND e.id IN ({list})"))?;
+        }
+        Ok(total)
+    }
+
+    /// The name-bound edges whose name a symbol added since the watermark
+    /// now shares with another one.
+    fn name_tier_edges_to_rejudge(&self, graph_version: i64) -> Result<Vec<i64>> {
+        let watermark = self
+            .get_meta_i64("unresolved_reference_watermark")?
+            .unwrap_or(0);
+        let conn = self.read_conn()?;
+        let mut names_stmt = conn.prepare(
+            "SELECT DISTINCT n.name FROM symbols n
+             WHERE n.graph_version = ?1 AND n.id > ?2 AND n.kind != 'external'
+               AND (SELECT COUNT(*) FROM symbols o
+                    WHERE o.graph_version = ?1 AND o.name = n.name
+                      AND o.kind != 'external') > 1",
+        )?;
+        let shared_new_names = names_stmt
+            .query_map(params![graph_version, watermark], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<std::collections::HashSet<String>>>()?;
+        if shared_new_names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = conn.prepare(&format!(
+            "SELECT e.id, e.target_qualname FROM edges e
+             WHERE e.graph_version = ?1 AND e.target_symbol_id IS NOT NULL
+               AND e.kind NOT IN ({})
+               AND e.resolution_kind IN ('{}', '{}')",
+            edge_views::sql_list(edge_views::TYPE_HIERARCHY),
+            ResolutionKind::BareName.as_str(),
+            ResolutionKind::TwoSegment.as_str(),
+        ))?;
+        let rows = stmt
+            .query_map(params![graph_version], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, qualname)| {
+                qualname
+                    .as_deref()
+                    .is_some_and(|qn| shared_new_names.contains(qualname_trailing_name(qn)))
+            })
+            .map(|(id, _)| id)
+            .collect())
+    }
+
     /// Re-judge every bound value reference. Its target depends on symbols
     /// outside its own file (a function that became a constant, a second
     /// candidate that made the name ambiguous), which neither the store
@@ -4815,6 +5011,18 @@ impl Db {
             eprintln!(
                 "lidx: re-judged {deferred_rejudged} deferred-receiver edge(s) after {context}"
             );
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let promoted_rejudged = self.retry_go_promoted_edges(graph_version)?;
+        if promoted_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {promoted_rejudged} promoted-method edge(s) after {context}"
+            );
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let name_rejudged = self.retry_name_tier_edges(graph_version)?;
+        if name_rejudged > 0 {
+            eprintln!("lidx: re-judged {name_rejudged} name-bound edge(s) after {context}");
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
         let value_rejudged = self.retry_value_reference_edges(graph_version)?;
