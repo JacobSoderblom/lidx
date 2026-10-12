@@ -192,6 +192,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
 
     pairs = {}
     lidx_by_caller_line = defaultdict(list)  # (caller_key, line) -> [(status, detail)]
+    lidx_by_file_line = defaultdict(list)  # (file, line) -> [(caller_key, callee_key)] for resolved edges
     uses_by_line = defaultdict(list)  # edges of kinds not graded here, for FN diagnostics
     for e in edges:
         if e["kind"] not in edge_kinds:
@@ -219,8 +220,11 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
             continue
         for ln in span(line, e["end_line"]):
             lidx_by_caller_line[(cck, ln)].append(("resolved", t["key"], res))
+            lidx_by_file_line[(s["file"], ln)].append((cck, cn(t["key"])))
         p = pairs.setdefault((cck, cn(t["key"])), {"caller": s, "callee": t, "kinds": Counter(), "lines": set(), "edge_kinds": set(),
                                               "epaths": set()})
+        if (s["key"], t["key"]) < (p["caller"]["key"], p["callee"]["key"]):
+            p["caller"], p["callee"] = s, t  # merged declarations: keep the smallest key so output is stable across runs
         p["kinds"][res] += 1
         p["lines"].add(line)
         p.setdefault("span", set()).update(span(line, e["end_line"]))
@@ -327,7 +331,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         if callee_indexed:
             best = None
             sibling = False
-            prio = {"wrong_target": 0, "marked_external": 1, "unresolved": 2}
+            prio = {"wrong_target": 0, "marked_external": 1, "unresolved": 2, "attributed_to_other_caller": 3}
             names = {"resolved": "wrong_target", "external": "marked_external", "unresolved": "unresolved"}
             for st in r["sites"]:
                 _, _, ln = st.rpartition(":")
@@ -339,6 +343,14 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
                         c = names[status]
                         if best is None or prio[c] < best[0]:
                             best = (prio[c], c, d, res)
+            if best is None:
+                # a lidx edge to this very callee at the site, but from a different caller (misattribution)?
+                for st in r["sites"]:
+                    sf, _, ln = st.rpartition(":")
+                    others = [c for c, t in lidx_by_file_line.get((sf, int(ln)), []) if t in {cn(x) for x in r["tks"]}]
+                    if others:
+                        best = (3, "attributed_to_other_caller", others[0], None)
+                        break
             if best is None and not sibling:
                 for st in r["sites"]:
                     _, _, ln = st.rpartition(":")

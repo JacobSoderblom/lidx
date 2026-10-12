@@ -17,3 +17,4 @@ benchmarks/agent/references/private/
 __pycache__/
 /benchmarks/oracle/ts_oracle/node_modules/
 benchmarks/oracle/.work/
+benchmarks/oracle/results/lists/*.dispatch_fn.json

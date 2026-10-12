@@ -173,8 +173,9 @@ def git_info():
 
 def dump_list(path, data):
     """One compact JSON object per line: diff-friendly and about a third the size of indented JSON."""
+    rows = sorted(json.dumps(x, separators=(",", ":"), sort_keys=True) for x in data)  # stable across runs
     with open(path, "w") as f:
-        f.write("[\n" + ",\n".join(json.dumps(x, separators=(",", ":"), sort_keys=True) for x in data) + "\n]\n")
+        f.write("[\n" + ",\n".join(rows) + "\n]\n")
 
 
 def main():
@@ -230,7 +231,9 @@ def main():
                                                                    "matched_oracle_edges")}
             res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES", "USES")}
             fid = cell["id"].replace("/", "__")
-            for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap)):
+            dispatch_fn = [x for x in fn if x["category"] == "dispatch"]
+            fn = [x for x in fn if x["category"] != "dispatch"]
+            for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap), ("dispatch_fn", dispatch_fn)):
                 dump_list(os.path.join(a.results, "lists", "%s.%s.json" % (fid, suffix)), data)
             out["cells"][cell["id"]] = res
             print("   %s: P=%s R=%s (graded=%d, oracle=%d)" % (cell["id"], summ["precision"], summ["recall"], summ["graded"],
