@@ -32,7 +32,7 @@ class FakeLidx:
     def call(self, method, params):
         self.calls.append((method, params))
         sid = params.get("id", params.get("start_id"))
-        k = params["max_depth"] if "max_depth" in params else params["max_hops"]
+        k = params.get("max_depth", params.get("max_hops", 3))  # a call without either is the default depth
         if method == "trace_flow":
             hops, start_stop, trunc = self.down.get((sid, k), ([], None, False))
             r = {"trace": hops, "budget": {"truncated": trunc}, "truncated": trunc}

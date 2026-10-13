@@ -1,5 +1,6 @@
 [
 {"k":"3","member":"src/client/client.ts:133 hc","node":"src/client/client.ts|src/client/client.hc","seed":"src/jsx/context.ts:69","seed_name":"getCurrentStore"},
+{"k":"3","member":"src/jsx/base.ts:179 toStringToBuffer","node":"src/jsx/base.ts|src/jsx/base.JSXNode.toStringToBuffer","seed":"src/jsx/context.ts:84","seed_name":"getContextValuesIn"},
 {"k":"3","member":"src/middleware/combine/index.ts:141 except","node":"src/middleware/combine/index.ts|src/middleware/combine.except","seed":"src/jsx/children.ts:3","seed_name":"toArray"},
 {"k":"3","member":"src/middleware/combine/index.ts:99 every","node":"src/middleware/combine/index.ts|src/middleware/combine.every","seed":"src/jsx/children.ts:3","seed_name":"toArray"},
 {"k":"3","member":"src/middleware/cors/index.ts:63 cors","node":"src/middleware/cors/index.ts|src/middleware/cors.cors","seed":"src/context.ts:546","seed_name":"set"},

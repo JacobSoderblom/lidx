@@ -1,6 +1,9 @@
 use super::{Db, RPC_NAME_ONLY_FILTER, edge_from_row, symbol_from_row};
 use crate::edge_views;
-use crate::model::{CONTAINMENT_KIND, Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
+use crate::model::{
+    CONTAINMENT_KIND, DISPATCH_CALL_DETAIL, DISPATCH_HOP_DETAIL, Edge, EdgeSnapshotRow,
+    INTERFACE_DISPATCH_KIND, Symbol,
+};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
@@ -576,7 +579,14 @@ impl Db {
                 source_symbol_id: Some(source),
                 target_symbol_id: Some(imp),
                 target_qualname: None,
-                detail: Some("interface dispatch".to_string()),
+                detail: Some(
+                    if source == iface {
+                        DISPATCH_HOP_DETAIL
+                    } else {
+                        DISPATCH_CALL_DETAIL
+                    }
+                    .to_string(),
+                ),
                 evidence_snippet: None,
                 evidence_start_line: None,
                 evidence_end_line: None,

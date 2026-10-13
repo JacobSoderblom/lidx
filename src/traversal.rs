@@ -320,6 +320,22 @@ struct QueueItem {
     entry: Entry,
 }
 
+/// A node whose free pass-through has run and whose other edges wait for the
+/// rest of its level.
+struct LevelItem {
+    item: QueueItem,
+    edges: Vec<Edge>,
+    qn: String,
+    outcome: Outcome,
+}
+
+/// One unit of BFS work: the free phase of a queued node, or the ordinary
+/// edges of a node of the level whose free phase is done.
+enum Work {
+    Free(QueueItem),
+    Normal(LevelItem),
+}
+
 /// BFS traversal of the symbol graph from `seeds`, following edges in the
 /// configured direction with bridge-edge crossing and byte budgeting.
 pub fn trace_flow(
@@ -378,82 +394,127 @@ pub fn trace_flow(
     let mut outcomes: HashMap<(i64, usize), Outcome> = HashMap::new();
     let mut unexpanded: HashMap<(i64, usize), Entry> = HashMap::new();
 
-    while let Some(QueueItem {
-        id: current_id,
-        dist,
-        prev_file,
-        entry,
-    }) = queue.pop_front()
-    {
-        // A node at `dist == max_hops` was already recorded as a hop when
-        // its parent expanded (below); it must not itself expand, or its
-        // children would be recorded at `max_hops + 1`. BFS pops in
-        // non-decreasing `dist` order (all seeds start at 0, children are
-        // always enqueued at `dist + 1`), so once one node hits the depth
-        // limit every remaining queued node does too -- the rest of the
-        // queue at this point *is* the frontier sitting at the ceiling, so
-        // it's safe to stop the whole loop rather than skip node by node.
-        //
-        // Whether stopping here is a truncation depends on whether that
-        // frontier actually has more graph beyond it. A trace whose
-        // reachable graph happens to end exactly at `max_hops` (the
-        // ceiling nodes are leaves, or their only further edges are
-        // filtered out) is complete, not truncated -- reporting truncation
-        // there would be a false positive. But a frontier that still has
-        // edges we're declining to follow genuinely lost information to
-        // the depth cutoff, so `depth_limited` must reflect that: it gates the
-        // deeper re-trace next_hop in `handle_trace_flow`, one of lidx's
-        // most valuable affordances.
-        if dist >= config.max_hops {
-            unexpanded.insert((current_id, dist), entry.clone());
-            for q in &queue {
-                unexpanded.insert((q.id, q.dist), q.entry.clone());
-            }
-            // Without an end target the leaf stops decide `depth_limited`
-            // after the BFS; only an end-target trace (which has no leaves)
-            // needs the frontier probe.
-            let ceiling_frontier = std::iter::once((current_id, entry.clone()))
-                .chain(queue.iter().map(|q| (q.id, q.entry.clone())))
-                .filter(|_| end_id.is_some());
-            for (candidate, candidate_entry) in ceiling_frontier {
-                if has_further_edges(
-                    db,
-                    candidate,
-                    is_upstream,
-                    config,
-                    &candidate_entry,
-                    languages,
-                    graph_version,
-                )? {
-                    depth_limited = true;
-                    break;
-                }
-            }
-            break;
-        }
-        if dist > last_level {
-            last_level = dist;
-            if budget_exhausted(&trace, config) {
-                byte_limited = true;
-                unexpanded.insert((current_id, dist), entry.clone());
-                for q in &queue {
-                    unexpanded.insert((q.id, q.dist), q.entry.clone());
-                }
+    // Levels, not single nodes, are the unit of work: a level's nodes first
+    // follow the pass-through between an interface method and its
+    // implementation (`Edge::is_dispatch_hop`) to a fixed point, which costs
+    // no hop, and only then their other edges, one hop deeper. A call through
+    // an interface is therefore one hop, and a node's hop depth never depends
+    // on the order its edges were processed in.
+    let mut level_items: Vec<LevelItem> = Vec::new();
+    let mut normal_work: VecDeque<LevelItem> = VecDeque::new();
+    loop {
+        let work = if let Some(item) = normal_work.pop_front() {
+            Work::Normal(item)
+        } else {
+            let more_in_level = match (queue.front(), level_items.first()) {
+                (Some(q), Some(l)) => q.dist == l.item.dist,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if more_in_level {
+                Work::Free(queue.pop_front().expect("front checked"))
+            } else if !level_items.is_empty() {
+                normal_work = std::mem::take(&mut level_items).into();
+                continue;
+            } else {
                 break;
             }
-        }
-
-        let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
-        let current_qn = db
-            .get_symbol_by_id(current_id)?
-            .map(|s| s.qualname)
-            .unwrap_or_default();
+        };
+        let free_phase = matches!(work, Work::Free(_));
+        let (
+            QueueItem {
+                id: current_id,
+                dist,
+                prev_file,
+                entry,
+            },
+            edges,
+            current_qn,
+            mut outcome,
+        ) = match work {
+            Work::Free(item) => {
+                // A node at `dist == max_hops` was already recorded as a hop
+                // when its parent expanded (below); it must not itself take
+                // ordinary edges, or its children would be recorded at
+                // `max_hops + 1`. It still follows the free pass-through to
+                // an implementation, which is the same hop. BFS pops in
+                // non-decreasing `dist` order (all seeds start at 0, free
+                // children are pushed in front at the same `dist`, others at
+                // `dist + 1`), so every ceiling node is popped after every
+                // node that can still expand.
+                //
+                // Whether stopping here is a truncation depends on whether
+                // the node actually has more graph beyond it. A trace whose
+                // reachable graph happens to end exactly at `max_hops` (the
+                // ceiling nodes are leaves, or their only further edges are
+                // filtered out) is complete, not truncated -- reporting
+                // truncation there would be a false positive. But a frontier
+                // that still has edges we're declining to follow genuinely
+                // lost information to the depth cutoff, so `depth_limited`
+                // must reflect that: it gates the deeper re-trace next_hop in
+                // `handle_trace_flow`, one of lidx's most valuable
+                // affordances.
+                let at_ceiling = item.dist >= config.max_hops;
+                if at_ceiling {
+                    unexpanded.insert((item.id, item.dist), item.entry.clone());
+                    // Without an end target the leaf stops decide
+                    // `depth_limited` after the BFS; only an end-target trace
+                    // (which has no leaves) needs the frontier probe.
+                    if end_id.is_some()
+                        && !depth_limited
+                        && has_further_edges(
+                            db,
+                            item.id,
+                            is_upstream,
+                            config,
+                            &item.entry,
+                            languages,
+                            graph_version,
+                        )?
+                    {
+                        depth_limited = true;
+                    }
+                } else if item.dist > last_level {
+                    last_level = item.dist;
+                    if budget_exhausted(&trace, config) {
+                        byte_limited = true;
+                        unexpanded.insert((item.id, item.dist), item.entry.clone());
+                        for q in &queue {
+                            unexpanded.insert((q.id, q.dist), q.entry.clone());
+                        }
+                        break;
+                    }
+                }
+                // `max_hops == 0` asks for no hops at all, not even a free one.
+                if config.max_hops == 0 {
+                    continue;
+                }
+                let edges = db.edges_for_symbol_with_dispatch(item.id, languages, graph_version)?;
+                let current_qn = db
+                    .get_symbol_by_id(item.id)?
+                    .map(|s| s.qualname)
+                    .unwrap_or_default();
+                (item, edges, current_qn, Outcome::default())
+            }
+            Work::Normal(LevelItem {
+                item,
+                edges,
+                qn,
+                outcome,
+            }) => (item, edges, qn, outcome),
+        };
+        let at_ceiling = dist >= config.max_hops;
 
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
         let allowed = ConfigScope::allowed(&entry, &edges);
-        let mut outcome = Outcome::default();
+        // The depth of what this phase reaches: a free hop stays on the
+        // level, any other edge is one hop deeper.
+        let child_dist = dist + usize::from(!free_phase);
 
         for edge in &edges {
+            if edge.is_dispatch_hop() != free_phase {
+                continue;
+            }
             let kind_ok = config.allowed_kinds.contains(&edge.kind);
             // An edge with no resolution kind (a Bridge Edge kind) is always
             // traversable here -- bridging is governed separately below via
@@ -519,26 +580,31 @@ pub fn trace_flow(
                 // Reached again through a call with other type arguments:
                 // expand it again so those closed impls are reached too.
                 if widened && let Ok(Some(sym)) = db.get_symbol_by_id(next_id) {
-                    queue.push_back(QueueItem {
+                    let item = QueueItem {
                         id: next_id,
-                        dist: dist + 1,
+                        dist: child_dist,
                         prev_file: sym.file_path.clone(),
                         entry: Entry::Unscoped,
-                    });
+                    };
+                    if free_phase {
+                        queue.push_front(item);
+                    } else {
+                        queue.push_back(item);
+                    }
                 }
                 let key = tie_key(&current_qn, edge);
                 if retie(
                     &mut trace,
                     &mut slots,
                     &(next_id, Entry::Unscoped),
-                    dist + 1,
+                    child_dist,
                     key,
                     || {
                         let sym = db.get_symbol_by_id(next_id).ok()??;
                         Some(build_hop(
                             &sym,
                             edge,
-                            dist + 1,
+                            (child_dist, dist),
                             (current_id, &current_qn),
                             &prev_file,
                             config.include_snippets,
@@ -555,7 +621,7 @@ pub fn trace_flow(
                 let hop = build_hop(
                     &next_sym,
                     edge,
-                    dist + 1,
+                    (child_dist, dist),
                     (current_id, &current_qn),
                     &prev_file,
                     config.include_snippets,
@@ -567,7 +633,7 @@ pub fn trace_flow(
                     (next_id, admission.entry.clone()),
                     HopSlot {
                         idx: hop_idx,
-                        dist: dist + 1,
+                        dist: child_dist,
                         key: tie_key(&current_qn, edge),
                     },
                 );
@@ -581,16 +647,41 @@ pub fn trace_flow(
                 // An external stub is a leaf: its other callers are unrelated
                 // to this trace (issue #175), so never expand through it.
                 if admission.expand && !next_sym.is_external() {
-                    queue.push_back(QueueItem {
+                    let item = QueueItem {
                         id: next_id,
-                        dist: dist + 1,
+                        dist: child_dist,
                         prev_file: next_sym.file_path.clone(),
                         entry: admission.entry,
-                    });
+                    };
+                    if free_phase {
+                        queue.push_front(item);
+                    } else {
+                        queue.push_back(item);
+                    }
                 } else if !admission.expand {
-                    unexpanded.insert((next_id, dist + 1), admission.entry);
+                    unexpanded.insert((next_id, child_dist), admission.entry);
                 }
             }
+        }
+
+        if free_phase {
+            if !reached_target && !at_ceiling {
+                level_items.push(LevelItem {
+                    item: QueueItem {
+                        id: current_id,
+                        dist,
+                        prev_file,
+                        entry,
+                    },
+                    edges,
+                    qn: current_qn,
+                    outcome,
+                });
+            }
+            if reached_target {
+                break;
+            }
+            continue;
         }
 
         if !reached_target {
@@ -633,7 +724,7 @@ pub fn trace_flow(
                             let mut hop = build_hop(
                                 bridged_sym,
                                 bridged_edge,
-                                dist + 1,
+                                (dist + 1, dist),
                                 (current_id, &current_qn),
                                 &prev_file,
                                 config.include_snippets,
@@ -1092,16 +1183,16 @@ type LeafStops = (BTreeMap<StopReason, usize>, Vec<Option<TraceStop>>);
 fn leaf_stops(ctx: &StopContext, trace: &[TraceHop]) -> Result<LeafStops> {
     let parents: HashSet<(i64, usize)> = trace
         .iter()
-        .filter_map(|h| Some((h.predecessor_id, h.distance.checked_sub(1)?)))
+        .map(|h| (h.predecessor_id, h.parent_depth))
         .collect();
     let leaf_idx: Vec<usize> = (0..trace.len())
-        .filter(|&i| !parents.contains(&(trace[i].symbol.id, trace[i].distance)))
+        .filter(|&i| !parents.contains(&(trace[i].symbol.id, trace[i].depth)))
         .collect();
     let mut leaves: Vec<(LeafRef, Decision)> = Vec::with_capacity(leaf_idx.len());
     for &i in &leaf_idx {
         let leaf = LeafRef {
             sym: &trace[i].symbol,
-            dist: trace[i].distance,
+            dist: trace[i].depth,
         };
         let decision = decide(ctx, &leaf)?;
         leaves.push((leaf, decision));
@@ -1140,17 +1231,18 @@ fn start_stop_reason(ctx: &StopContext, start: &Symbol) -> Result<Option<TraceSt
 /// only turns ceiling leaves into parents of at least one new hop, so the
 /// count never shrinks.
 ///
-/// The key includes the distance because a symbol can appear at several
-/// distances (config-scoped re-entry); a hop's parent is the hop for its
-/// `predecessor_id` exactly one level closer to the seed.
+/// The key includes the hop depth because a symbol can appear at several
+/// depths (config-scoped re-entry); a hop's parent is the hop for its
+/// `predecessor_id` at its `parent_depth` (one closer to the seed, or the
+/// same depth across a free interface-dispatch pass-through).
 fn count_leaves(trace: &[TraceHop]) -> usize {
     let parents: HashSet<(i64, usize)> = trace
         .iter()
-        .filter_map(|h| Some((h.predecessor_id, h.distance.checked_sub(1)?)))
+        .map(|h| (h.predecessor_id, h.parent_depth))
         .collect();
     trace
         .iter()
-        .filter(|h| !parents.contains(&(h.symbol.id, h.distance)))
+        .filter(|h| !parents.contains(&(h.symbol.id, h.depth)))
         .count()
 }
 
@@ -1161,25 +1253,25 @@ fn count_leaves(trace: &[TraceHop]) -> usize {
 fn path_indices(trace: &[TraceHop], end_id: i64) -> Vec<usize> {
     let mut by_id_dist: HashMap<(i64, usize), usize> = HashMap::new();
     for (i, h) in trace.iter().enumerate() {
-        by_id_dist.entry((h.symbol.id, h.distance)).or_insert(i);
+        by_id_dist.entry((h.symbol.id, h.depth)).or_insert(i);
     }
     let mut path = Vec::new();
     let mut cur = trace.iter().position(|h| h.symbol.id == end_id);
     while let Some(i) = cur {
         path.push(i);
         let h = &trace[i];
-        cur = h
-            .distance
-            .checked_sub(1)
-            .and_then(|d| by_id_dist.get(&(h.predecessor_id, d)).copied());
+        cur = by_id_dist.get(&(h.predecessor_id, h.parent_depth)).copied();
     }
     path
 }
 
+/// `depth` is `(hop depth of the node, hop depth of its predecessor)`. They
+/// differ by one except across a free interface-dispatch pass-through, where
+/// they are equal; the reported `distance` starts at 1 either way.
 fn build_hop(
     next_sym: &Symbol,
     edge: &Edge,
-    distance: usize,
+    depth: (usize, usize),
     predecessor: (i64, &str),
     prev_file: &str,
     include_snippets: bool,
@@ -1210,7 +1302,9 @@ fn build_hop(
     TraceHop {
         symbol: next_sym.clone(),
         edge_kind: edge.kind.clone(),
-        distance,
+        distance: depth.0.max(1),
+        depth: depth.0,
+        parent_depth: depth.1,
         predecessor: predecessor.1.to_string(),
         predecessor_id: predecessor.0,
         language: next_lang,
@@ -2320,6 +2414,8 @@ mod tests {
             },
             edge_kind: "CALLS".to_string(),
             distance: 1,
+            depth: 1,
+            parent_depth: 0,
             predecessor: String::new(),
             predecessor_id: 0,
             language: "python".to_string(),
@@ -2431,7 +2527,7 @@ mod tsx_normalization_tests {
             ("components/App.tsx", "components/Bar.tsx", ".tsx -> .tsx"),
         ] {
             let target_sym = dummy_symbol(target);
-            let hop = build_hop(&target_sym, &edge, 1, (0, "p"), source, true);
+            let hop = build_hop(&target_sym, &edge, (1, 0), (0, "p"), source, true);
             assert!(!hop.cross_language, "{label} should not be cross-language");
             assert!(
                 hop.boundary_type.is_none(),
@@ -2447,7 +2543,7 @@ mod tsx_normalization_tests {
 
         for (source, label) in [("frontend/util.ts", ".ts"), ("frontend/App.tsx", ".tsx")] {
             let target_sym = dummy_symbol("backend/app.py");
-            let hop = build_hop(&target_sym, &edge, 1, (0, "p"), source, true);
+            let hop = build_hop(&target_sym, &edge, (1, 0), (0, "p"), source, true);
             assert!(
                 hop.cross_language,
                 "{label} -> .py should be cross-language"
@@ -2468,7 +2564,7 @@ mod tsx_normalization_tests {
             ("src/main.rs", "ext:std::fs::read", "Rust -> std external"),
         ] {
             let target_sym = dummy_external_symbol(target_qualname);
-            let hop = build_hop(&target_sym, &edge, 1, (0, "p"), source, true);
+            let hop = build_hop(&target_sym, &edge, (1, 0), (0, "p"), source, true);
             assert!(
                 !hop.cross_language,
                 "{label}: external stub should not be reported as cross-language"

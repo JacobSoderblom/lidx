@@ -2193,7 +2193,12 @@ fn build_impact_config(
     languages: Option<&[String]>,
 ) -> crate::impact::config::MultiLayerConfig {
     let mut config = crate::impact::config::MultiLayerConfig::builder()
-        .max_depth(params.max_depth.unwrap_or(3).min(10))
+        .max_depth(
+            params
+                .max_depth
+                .unwrap_or(DEFAULT_IMPACT_DEPTH)
+                .min(MAX_IMPACT_DEPTH),
+        )
         .direction(
             params
                 .direction
@@ -2450,6 +2455,8 @@ fn batch_error_entry(
             is_lower_bound: false,
             unresolved_count: 0,
         },
+        depth_limited: false,
+        beyond_depth: 0,
         recovery,
     }
 }
@@ -2510,6 +2517,78 @@ fn empty_test_layer_note(
         "next_hops": next_hops,
     }))
 }
+
+/// What an `analyze_impact` answer may weigh: the caller's cap, or the
+/// dispatcher's default.
+fn impact_response_cap(raw_params: &Value) -> usize {
+    super::format::extract_max_response_bytes("analyze_impact", raw_params)
+        .unwrap_or(super::DEFAULT_MAX_RESPONSE_BYTES)
+}
+
+/// Shrinks an `analyze_impact` answer toward `cap` bytes by dropping the
+/// parts that explain a symbol before dropping the symbols themselves, so the
+/// generic response cut (which removes the farthest entries) fires later.
+///
+/// In order: the alternative paths, the paths of entries three or more calls
+/// away, every path, then the per-file symbol lists of the summary (the
+/// `affected` list names the same symbols). Each step that fires is recorded
+/// (`paths_omitted`, `summary.symbols_omitted`) and only runs while the answer
+/// is over the cap, so a small answer is returned whole.
+fn fit_impact_response(value: &mut Value, cap: usize) {
+    let weight = |v: &Value| serde_json::to_string(v).map_or(0, |s| s.len());
+    if weight(value) <= cap {
+        return;
+    }
+    let strip = |value: &mut Value, field: &str, min_distance: u64| {
+        let Some(entries) = value.get_mut("affected").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for entry in entries {
+            if entry["distance"].as_u64().unwrap_or(0) >= min_distance
+                && let Some(map) = entry.as_object_mut()
+            {
+                map.remove(field);
+            }
+        }
+    };
+    strip(value, "also_via", 0);
+    if weight(value) <= cap {
+        return;
+    }
+    strip(value, "path", 3);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("paths_omitted".to_string(), json!("distance_3_and_beyond"));
+    }
+    if weight(value) <= cap {
+        return;
+    }
+    strip(value, "path", 0);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("paths_omitted".to_string(), json!("all"));
+    }
+    if weight(value) <= cap {
+        return;
+    }
+    if let Some(files) = value
+        .pointer_mut("/summary/by_file")
+        .and_then(Value::as_array_mut)
+    {
+        for file in files {
+            if let Some(map) = file.as_object_mut() {
+                map.remove("symbols");
+            }
+        }
+        if let Some(summary) = value.get_mut("summary").and_then(Value::as_object_mut) {
+            summary.insert("symbols_omitted".to_string(), json!(true));
+        }
+    }
+}
+
+/// Depth `analyze_impact` walks when `max_depth` is omitted.
+pub(super) const DEFAULT_IMPACT_DEPTH: usize = 3;
+
+/// Deepest `analyze_impact` walk a caller can ask for.
+pub(super) const MAX_IMPACT_DEPTH: usize = 10;
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let mut resolution = None;
@@ -2600,6 +2679,8 @@ fn analyze_impact_inner(
                             truncation_reason: result.truncation_reason,
                             layers: result.layers,
                             lower_bound: result.lower_bound,
+                            depth_limited: result.depth_limited,
+                            beyond_depth: result.beyond_depth,
                             recovery: None,
                             config_seeds,
                         }
@@ -2776,7 +2857,12 @@ fn analyze_impact_inner(
 
     // Build multi-layer configuration
     let config = crate::impact::config::MultiLayerConfig::builder()
-        .max_depth(params.max_depth.unwrap_or(3).min(10))
+        .max_depth(
+            params
+                .max_depth
+                .unwrap_or(DEFAULT_IMPACT_DEPTH)
+                .min(MAX_IMPACT_DEPTH),
+        )
         .direction(direction.clone())
         .include_tests(params.include_tests.unwrap_or(false))
         .include_paths(params.include_paths.unwrap_or(true))
@@ -2886,6 +2972,20 @@ fn analyze_impact_inner(
             retry_params.insert("graph_version".to_string(), json!(gv));
         }
 
+        let current_depth = result.config.max_depth;
+        if result.depth_limited && current_depth < MAX_IMPACT_DEPTH {
+            let mut deeper = retry_params.clone();
+            let next_depth = (current_depth * 2).clamp(current_depth + 1, MAX_IMPACT_DEPTH);
+            deeper.insert("max_depth".to_string(), json!(next_depth));
+            resolution_next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": deeper,
+                "description": format!(
+                    "Depth {current_depth} cut the walk: at least {} more symbols lie one level deeper. Retry with max_depth {next_depth}",
+                    result.beyond_depth
+                ),
+            }));
+        }
         if has_exclude_filter {
             resolution_next_hops.push(json!({
                 "method": "analyze_impact",
@@ -3009,23 +3109,20 @@ fn analyze_impact_inner(
         return Ok(value);
     }
 
-    if resolution_next_hops.is_empty() && test_layer_note.is_none() && config_seeds_note.is_none() {
-        Ok(json!(result))
-    } else {
-        let mut value = serde_json::to_value(&result)?;
-        if let Some(obj) = value.as_object_mut() {
-            if !resolution_next_hops.is_empty() {
-                obj.insert("next_hops".to_string(), json!(resolution_next_hops));
-            }
-            if let Some(note) = test_layer_note {
-                obj.insert("test_layer".to_string(), note);
-            }
-            if let Some(note) = config_seeds_note {
-                obj.insert("config_seeds".to_string(), note);
-            }
+    let mut value = serde_json::to_value(&result)?;
+    if let Some(obj) = value.as_object_mut() {
+        if !resolution_next_hops.is_empty() {
+            obj.insert("next_hops".to_string(), json!(resolution_next_hops));
         }
-        Ok(value)
+        if let Some(note) = test_layer_note {
+            obj.insert("test_layer".to_string(), note);
+        }
+        if let Some(note) = config_seeds_note {
+            obj.insert("config_seeds".to_string(), note);
+        }
     }
+    fit_impact_response(&mut value, impact_response_cap(&raw_params));
+    Ok(value)
 }
 
 fn is_removal(change_type: &str) -> bool {
@@ -4026,5 +4123,86 @@ mod explain_symbol_cross_boundary_tests {
             "{v:#}"
         );
         assert_eq!(v["tests_total"], 1);
+    }
+}
+
+#[cfg(test)]
+mod fit_impact_response_tests {
+    use super::*;
+
+    fn entry(name: &str, distance: u64, steps: usize) -> Value {
+        let path: Vec<Value> = (0..steps)
+            .map(|i| json!({"edge_kind": "CALLS", "from_symbol": format!("{name}{i}"), "to_symbol": name}))
+            .collect();
+        json!({
+            "symbol": {"qualname": name},
+            "distance": distance,
+            "path": {"steps": path},
+            "also_via": [{"steps": path}],
+        })
+    }
+
+    fn answer(n: usize) -> Value {
+        let affected: Vec<Value> = (0..n)
+            .map(|i| entry(&format!("pkg.sym{i:03}"), 1 + (i as u64 % 5), 1 + (i % 5)))
+            .collect();
+        let names: Vec<Value> = (0..n).map(|i| json!(format!("pkg.sym{i:03}"))).collect();
+        json!({
+            "affected": affected,
+            "summary": {"by_file": [{"path": "a.go", "symbol_count": n, "symbols": names}]},
+        })
+    }
+
+    fn size(v: &Value) -> usize {
+        v.to_string().len()
+    }
+
+    #[test]
+    fn a_small_answer_is_returned_whole() {
+        let mut v = answer(3);
+        let before = v.clone();
+        fit_impact_response(&mut v, 100_000);
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn explanations_go_before_symbols_and_say_so() {
+        let full = answer(40);
+        // Shrink the cap until the far paths are the first thing to go.
+        let mut cap = size(&full);
+        let v = loop {
+            cap -= 100;
+            let mut trial = full.clone();
+            fit_impact_response(&mut trial, cap);
+            if trial.get("paths_omitted").is_some() {
+                break trial;
+            }
+        };
+        assert_eq!(v["paths_omitted"], "distance_3_and_beyond");
+        let entries = v["affected"].as_array().unwrap();
+        assert_eq!(entries.len(), 40, "no symbol is dropped to save a path");
+        for e in entries {
+            assert!(e.get("also_via").is_none());
+            assert_eq!(e.get("path").is_some(), e["distance"].as_u64().unwrap() < 3);
+        }
+    }
+
+    #[test]
+    fn a_tight_cap_drops_every_path_then_the_per_file_symbol_lists() {
+        let mut v = answer(40);
+        let names_only = {
+            let mut t = v.clone();
+            fit_impact_response(&mut t, 0);
+            t
+        };
+        assert_eq!(names_only["paths_omitted"], "all");
+        assert!(names_only["affected"][0].get("path").is_none());
+        assert!(names_only["summary"]["by_file"][0].get("symbols").is_none());
+        assert_eq!(names_only["summary"]["symbols_omitted"], true);
+        assert_eq!(names_only["summary"]["by_file"][0]["symbol_count"], 40);
+        // The symbols are all still there: only the generic cut may drop them.
+        assert_eq!(names_only["affected"].as_array().unwrap().len(), 40);
+        fit_impact_response(&mut v, size(&names_only));
+        assert!(size(&v) <= size(&names_only));
     }
 }

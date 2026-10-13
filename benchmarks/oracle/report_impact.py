@@ -141,16 +141,21 @@ def section(results_dir):
           "`analyze_impact(id, direction=up, max_depth=3, include_tests=true)` with every other parameter at its default (30,000-byte response cut, all layers); "
           "`beyond 10` = seeds whose oracle closure has callers farther than 10 hops.")
         w("")
-        w("| Cell | hidden (oracle) | hidden (oracle, alt. closure) | hidden (lidx) | Plain call recall | Plain call truncated seeds | beyond 10 |")
-        w("|---|---|---|---|---:|---:|")
+        w("`Default call` leaves `max_depth` out as well (the depth lidx picks), `depth cut` = seeds whose answer says it stopped at the depth with more beyond it (`depth_limited`), `mean bytes` the mean size of the answer.")
+        w("")
+        w("| Cell | hidden (oracle) | hidden (oracle, alt. closure) | hidden (lidx) | Plain call recall | Plain call truncated seeds | Default call recall | Default call truncated seeds | depth cut | mean bytes | beyond 10 |")
+        w("|---|---|---|---|---:|---:|---|---:|---:|---:|---:|")
         for c in lc:
             t = cells[c]["tables"]
             hd = t["depth_hides_over_half"]
             pl = t["up_default"]["3"]
-            w("| %s | %d/%d = %s | %d/%d = %s | %d/%d = %s | %s | %d | %d |" % (
+            df = t["up_default"].get("default") or {}
+            w("| %s | %d/%d = %s | %d/%d = %s | %d/%d = %s | %s | %d | %s | %s | %s | %s | %d |" % (
                 cell_short(c), hd["oracle_hidden"], hd["oracle_seeds"], p(hd["oracle_share"]), hd["alt_hidden"], hd["alt_seeds"], p(hd["alt_share"]),
                 hd["lidx_hidden"], hd["lidx_seeds"], p(hd["lidx_share"]),
-                pci(pl["recall"], pl["recall_ci"]), pl["truncated_seeds"], t["oracle_deeper_than_cap_seeds"]))
+                pci(pl["recall"], pl["recall_ci"]), pl["truncated_seeds"],
+                pci(df["recall"], df["recall_ci"]) if df else "-", df.get("truncated_seeds", "-"), df.get("depth_limited_seeds", "-"), df.get("mean_bytes", "-"),
+                t["oracle_deeper_than_cap_seeds"]))
         w("")
         w("**`lower_bound` against per-seed completeness** (does `lower_bound: true` hold exactly when lidx misses an oracle caller?). "
           "Cells are `lb and incomplete / lb and complete / no lb and incomplete / no lb and complete` over seeds lidx did not truncate; "

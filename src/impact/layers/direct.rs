@@ -400,7 +400,16 @@ pub fn analyze_direct_impact_scoped(
     // this is a "was a heuristic edge traversed" signal, not an exhaustive audit.
     let mut traversed_edge_ids: Vec<i64> = Vec::new();
 
-    // BFS traversal with level-by-level batch queries
+    // BFS traversal with level-by-level batch queries.
+    //
+    // A level holds the nodes at one depth. The pass-through between an
+    // interface method and its implementation (`Edge::is_dispatch_hop`) costs
+    // no depth level: it is walked first, to a fixed point, so a call through
+    // an interface is one hop and the interface method sits at the depth of
+    // the node it was reached from. Only then are the level's other edges
+    // followed, one level deeper. A node at the depth ceiling still follows
+    // the pass-through (its implementations are the same hop) but nothing else.
+    let mut beyond_depth: HashSet<i64> = HashSet::new();
     while !queue.is_empty() {
         // Check timeout
         if start.elapsed() > timeout {
@@ -433,17 +442,15 @@ pub fn analyze_direct_impact_scoped(
             queue.pop_front();
         }
 
-        // Don't expand beyond max depth
-        if current_distance >= max_depth {
-            continue;
-        }
+        let at_ceiling = current_distance >= max_depth;
 
         // Batch fetch edges for all symbols at this level
         let mut level_ids: Vec<i64> = current_level.iter().map(|(id, _)| *id).collect();
         level_ids.sort_unstable();
         level_ids.dedup();
-        let edges_by_symbol =
+        let mut edges_by_symbol =
             db.edges_for_symbols_with_dispatch(&level_ids, languages, graph_version)?;
+        let mut fetched: HashSet<i64> = level_ids.into_iter().collect();
 
         // Issue #81: an edge with no resolution kind (a Bridge Edge kind) is
         // always traversable, since bridging is governed separately below.
@@ -454,128 +461,190 @@ pub fn analyze_direct_impact_scoped(
             )
         };
 
-        // Collect all neighbor IDs for batch symbol loading
-        let mut neighbor_ids = Vec::new();
-        for (current_id, _) in &current_level {
-            if let Some(edges) = edges_by_symbol.get(current_id) {
-                for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests)
-                        || excluded(edge)
-                        || !entry_args.allows(*current_id, edge)
-                    {
-                        continue;
-                    }
-                    if let Some(id) = resolve_next_id(
-                        edge,
-                        *current_id,
-                        direction_at(*current_id, current_distance),
-                    ) && !visited.contains(&id)
-                    {
-                        neighbor_ids.push(id);
-                    }
-                }
-            }
-        }
-
-        // Batch load neighbor symbols
-        cache_symbols(
-            db,
-            &mut symbol_cache,
-            &mut symbol_checked,
-            &neighbor_ids,
-            languages,
-            graph_version,
-        )?;
-
         // Collect bridgeable edges for cross-service traversal
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
 
-        // Process edges and update BFS state
-        for (current_id, entry) in &current_level {
-            if let Some(edges) = edges_by_symbol.get(current_id) {
-                let allowed = ConfigScope::allowed(entry, edges);
-                for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests)
-                        || excluded(edge)
-                        || !config_edge_allowed(edge, allowed.as_ref())
-                        || !entry_args.allows(*current_id, edge)
-                    {
-                        continue;
-                    }
+        'phases: for free_phase in [true, false] {
+            // The pass-through grows the level (an implementation is a node
+            // of the same level); the other edges feed the next one.
+            let mut cursor = 0;
+            while cursor < current_level.len() {
+                let end = current_level.len();
 
-                    // Collect bridge targets
-                    let walk = direction_at(*current_id, current_distance).into();
-                    if let Some(ref tq) = edge.target_qualname
-                        && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
-                        && crate::indexer::channel::bridge_crossing_allowed(&edge.kind, walk)
-                    {
-                        bridge_targets.extend(ConfigScope::bridges_for(
-                            entry,
-                            edges,
-                            edge,
-                            tq,
-                            *current_id,
-                            walk,
-                        ));
-                    }
+                // Edges of the nodes the free phase just added.
+                let mut missing: Vec<i64> = current_level[cursor..end]
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .filter(|id| !fetched.contains(id))
+                    .collect();
+                missing.sort_unstable();
+                missing.dedup();
+                if !missing.is_empty() {
+                    edges_by_symbol.extend(db.edges_for_symbols_with_dispatch(
+                        &missing,
+                        languages,
+                        graph_version,
+                    )?);
+                    fetched.extend(missing);
+                }
 
-                    let Some(next_id) = resolve_next_id(
-                        edge,
-                        *current_id,
-                        direction_at(*current_id, current_distance),
-                    ) else {
-                        continue;
-                    };
-
-                    let widened = matches!(direction, TraversalDirection::Downstream)
-                        && entry_args.record(next_id, edge, db)?;
-                    let Some(admission) = scope.admit_plain(next_id) else {
-                        // Reached again through a call with other type
-                        // arguments: expand it again for those closed impls.
-                        if widened && symbol_cache.contains_key(&next_id) {
-                            queue.push_back(QueueItem {
-                                id: next_id,
-                                distance: current_distance + 1,
-                                entry: Entry::Unscoped,
-                            });
+                // Collect all neighbor IDs for batch symbol loading
+                let mut neighbor_ids = Vec::new();
+                for (current_id, _) in &current_level[cursor..end] {
+                    if let Some(edges) = edges_by_symbol.get(current_id) {
+                        for edge in edges {
+                            if edge.is_dispatch_hop() != free_phase
+                                || !edge_matches_filter(edge, kinds, include_tests)
+                                || excluded(edge)
+                                || !entry_args.allows(*current_id, edge)
+                            {
+                                continue;
+                            }
+                            if let Some(id) = resolve_next_id(
+                                edge,
+                                *current_id,
+                                direction_at(*current_id, current_distance),
+                            ) && !visited.contains(&id)
+                            {
+                                neighbor_ids.push(id);
+                            }
                         }
-                        continue;
-                    };
-                    visited.insert(next_id);
-                    if !symbol_cache.contains_key(&next_id) {
-                        continue;
-                    }
-
-                    distance_map.entry(next_id).or_insert(current_distance + 1);
-                    parent_map.entry(next_id).or_insert((
-                        *current_id,
-                        edge.kind.clone(),
-                        edge.resolution_kind.clone(),
-                        edge.source_symbol_id == Some(next_id),
-                    ));
-                    // An external stub is a leaf: its other callers are
-                    // unrelated to this impact set (issue #175).
-                    if admission.expand && !symbol_cache[&next_id].is_external() {
-                        queue.push_back(QueueItem {
-                            id: next_id,
-                            distance: current_distance + 1,
-                            entry: admission.entry,
-                        });
-                    }
-                    traversed_edge_ids.push(edge.id);
-
-                    if visited.len() >= limit {
-                        truncated = true;
-                        break;
                     }
                 }
 
-                if truncated {
+                // Batch load neighbor symbols
+                cache_symbols(
+                    db,
+                    &mut symbol_cache,
+                    &mut symbol_checked,
+                    &neighbor_ids,
+                    languages,
+                    graph_version,
+                )?;
+
+                if !free_phase && at_ceiling {
+                    // Nothing beyond the ceiling is followed; count what a
+                    // deeper walk would add, so the answer can say it was cut.
+                    beyond_depth.extend(
+                        neighbor_ids
+                            .iter()
+                            .copied()
+                            .filter(|id| symbol_cache.contains_key(id)),
+                    );
+                    break 'phases;
+                }
+
+                // Process edges and update BFS state
+                for idx in cursor..end {
+                    let (current_id, entry) = current_level[idx].clone();
+                    let Some(edges) = edges_by_symbol.get(&current_id) else {
+                        continue;
+                    };
+                    let allowed = ConfigScope::allowed(&entry, edges);
+                    // A free hop stays at this level.
+                    let next_distance = current_distance + usize::from(!free_phase);
+                    // Reported distances start at 1: a transparent interface
+                    // method next to a seed is a direct dependent.
+                    let reported_distance = next_distance.max(1);
+                    for edge in edges {
+                        if edge.is_dispatch_hop() != free_phase
+                            || !edge_matches_filter(edge, kinds, include_tests)
+                            || excluded(edge)
+                            || !config_edge_allowed(edge, allowed.as_ref())
+                            || !entry_args.allows(current_id, edge)
+                        {
+                            continue;
+                        }
+
+                        // Collect bridge targets
+                        let walk = direction_at(current_id, current_distance).into();
+                        if let Some(ref tq) = edge.target_qualname
+                            && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
+                            && crate::indexer::channel::bridge_crossing_allowed(&edge.kind, walk)
+                        {
+                            bridge_targets.extend(ConfigScope::bridges_for(
+                                &entry, edges, edge, tq, current_id, walk,
+                            ));
+                        }
+
+                        let Some(next_id) = resolve_next_id(
+                            edge,
+                            current_id,
+                            direction_at(current_id, current_distance),
+                        ) else {
+                            continue;
+                        };
+
+                        let widened = matches!(direction, TraversalDirection::Downstream)
+                            && entry_args.record(next_id, edge, db)?;
+                        let Some(admission) = scope.admit_plain(next_id) else {
+                            // Reached again through a call with other type
+                            // arguments: expand it again for those closed impls.
+                            if widened && symbol_cache.contains_key(&next_id) {
+                                let item = QueueItem {
+                                    id: next_id,
+                                    distance: next_distance,
+                                    entry: Entry::Unscoped,
+                                };
+                                if free_phase {
+                                    current_level.push((item.id, item.entry));
+                                } else {
+                                    queue.push_back(item);
+                                }
+                            }
+                            continue;
+                        };
+                        visited.insert(next_id);
+                        if !symbol_cache.contains_key(&next_id) {
+                            continue;
+                        }
+
+                        distance_map.entry(next_id).or_insert(reported_distance);
+                        parent_map.entry(next_id).or_insert((
+                            current_id,
+                            edge.kind.clone(),
+                            edge.resolution_kind.clone(),
+                            edge.source_symbol_id == Some(next_id),
+                        ));
+                        // An external stub is a leaf: its other callers are
+                        // unrelated to this impact set (issue #175).
+                        if admission.expand && !symbol_cache[&next_id].is_external() {
+                            if free_phase {
+                                current_level.push((next_id, admission.entry));
+                            } else {
+                                queue.push_back(QueueItem {
+                                    id: next_id,
+                                    distance: next_distance,
+                                    entry: admission.entry,
+                                });
+                            }
+                        }
+                        traversed_edge_ids.push(edge.id);
+
+                        if visited.len() >= limit {
+                            truncated = true;
+                            break;
+                        }
+                    }
+
+                    if truncated {
+                        break 'phases;
+                    }
+                }
+
+                cursor = end;
+                // The other edges do not grow the level: one pass.
+                if !free_phase {
                     break;
                 }
             }
         }
 
+        // The pass-through above may have grown the level; bridges and the
+        // ceiling are judged from the level's own distance.
+        if at_ceiling {
+            continue;
+        }
         // Bridge pass: follow cross-service edges via bridge complements
         if !truncated {
             bridge_targets.sort();
@@ -665,6 +734,7 @@ pub fn analyze_direct_impact_scoped(
         parent_map,
         alt_parents,
         traversed_heuristic_kind,
+        beyond_depth: beyond_depth.len(),
     })
 }
 

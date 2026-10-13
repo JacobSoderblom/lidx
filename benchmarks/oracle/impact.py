@@ -455,7 +455,7 @@ def grade_cell(cell, graph, syms, lidx, src, seeds, variant_kinds=True, log=None
             if k == 3 and lang in ("go", "ts"):
                 rec["up"]["3"]["dispatch"] = dispatch_one(oup, graph, syms, lidx, sid, node)
             if k == 3:
-                rec["up_default"] = {"3": plain_one(oup, graph, syms, lidx, sid, node)}
+                rec["up_default"] = {"3": plain_one(oup, graph, syms, lidx, sid, node, depth=3), "default": plain_one(oup, graph, syms, lidx, sid, node)}
             if variant_kinds:
                 # the default call (every edge kind): its answer beyond the calls is reported, not graded
                 a = rec["all_kinds"][kname(k)] = up_one(rec, node, k, oup, len(ocl) - len(oup), graph, syms, lidx, sid, None, seed, None)
@@ -541,16 +541,21 @@ def dispatch_one(oup, graph, syms, lidx, sid, node):
     return {"members": len(via), "right": right, "wrong": wrong}
 
 
-def plain_one(oup, graph, syms, lidx, sid, node):
-    """What a plain call returns: `analyze_impact(id, direction=up, max_depth=3, include_tests=true)` with every other parameter at its
-    default (response cap 30,000 bytes, paths included, all three layers)."""
-    res = lidx.call("analyze_impact", {"id": sid, "direction": "up", "max_depth": 3, "include_tests": True})
+def plain_one(oup, graph, syms, lidx, sid, node, depth=None):
+    """What a plain call returns: `analyze_impact(id, direction=up, max_depth=depth, include_tests=true)` with every other parameter at its
+    default (response cap 30,000 bytes, paths included, all three layers). `depth=None` leaves `max_depth` out too: what the default depth gives."""
+    params = {"id": sid, "direction": "up", "include_tests": True}
+    if depth is not None:
+        params["max_depth"] = depth
+    res = lidx.call("analyze_impact", params)
     if "_error" in res:
         return {"error": res["_error"]}
     res = dict(res, affected=[e for e in res.get("affected", []) if e["relationship"] != "HISTORICAL" and not e["relationship"].startswith("CO")])
     lset = members(res, syms, graph, exclude={node})
     tp, fp, fn, ungr, extra, missing = compare(oup, lset, graph)
     return {"oracle": len(oup), "lidx": len(lset), "tp": tp, "fp": fp, "fn": fn, "ungradable": ungr, "truncated": bool(res.get("truncated")),
+            "depth_limited": bool(res.get("depth_limited")), "beyond_depth": res.get("beyond_depth", 0), "max_depth": (res.get("config") or {}).get("max_depth"),
+            "bytes": len(json.dumps(res)),
             "lower_bound": bool(res["lower_bound"]["is_lower_bound"]), "unresolved_count": res["lower_bound"]["unresolved_count"]}
 
 
@@ -668,7 +673,12 @@ def aggregate(rows, tests_graded):
         return res
 
     out["up"] = family("up")
-    out["up_default"] = family("up_default", ks=("3",))
+    out["up_default"] = family("up_default", ks=("3", "default"))
+    for kn, d in out["up_default"].items():
+        es = [r["up_default"][kn] for r in live if kn in r["up_default"] and "error" not in r["up_default"][kn]]
+        d["depth_limited_seeds"] = sum(1 for e in es if e.get("depth_limited"))
+        d["max_depth"] = sorted({e.get("max_depth") for e in es if e.get("max_depth") is not None})
+        d["mean_bytes"] = round(sum(e.get("bytes", 0) for e in es) / len(es)) if es else 0
     ds = [r["up"]["3"]["dispatch"] for r in live if "dispatch" in r["up"].get("3", {}) and "error" not in r["up"]["3"]["dispatch"]]
     out["dispatch"] = {"seeds": len(ds), "members": sum(d["members"] for d in ds), "right": sum(d["right"] for d in ds), "wrong": sum(d["wrong"] for d in ds),
                        "seeds_with_dispatch": sum(1 for d in ds if d["members"])} if ds else {}

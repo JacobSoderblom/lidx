@@ -1,5 +1,7 @@
 [
 {"k":"3","member":"app.go:165 Setup","node":"app.go|app.App.Setup","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"3","member":"app.go:313 RunContext","node":"app.go|app.App.RunContext","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"3","member":"app.go:338 RunAsSubcommand","node":"app.go|app.App.RunAsSubcommand","seed":"flag_ext.go:26","seed_name":"IsVisible"},
 {"k":"3","member":"category.go:101 newFlagCategoriesFromFlags","node":"category.go|category.newFlagCategoriesFromFlags","seed":"flag_ext.go:26","seed_name":"IsVisible"},
 {"k":"3","member":"command.go:382 VisibleFlagCategories","node":"command.go|command.Command.VisibleFlagCategories","seed":"flag_ext.go:26","seed_name":"IsVisible"},
 {"k":"inf","member":"app.go:165 Setup","node":"app.go|app.App.Setup","seed":"flag_ext.go:26","seed_name":"IsVisible"},

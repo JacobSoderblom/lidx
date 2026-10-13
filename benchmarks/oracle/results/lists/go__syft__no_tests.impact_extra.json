@@ -1,9 +1,12 @@
 [
+{"k":"3","member":"cmd/syft/internal/commands/attest.go:249 generateSBOMForAttestation","node":"cmd/syft/internal/commands/attest.go|cmd/syft/internal/commands/attest.generateSBOMForAttestation","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
+{"k":"3","member":"cmd/syft/internal/commands/scan.go:173 runScan","node":"cmd/syft/internal/commands/scan.go|cmd/syft/internal/commands/scan.runScan","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
 {"k":"3","member":"cmd/syft/internal/commands/scan.go:260 generateSBOM","node":"cmd/syft/internal/commands/scan.go|cmd/syft/internal/commands/scan.generateSBOM","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
+{"k":"3","member":"examples/create_custom_sbom/main.go:23 main","node":"examples/create_custom_sbom/main.go|examples/create_custom_sbom/main.main","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
 {"k":"3","member":"examples/create_custom_sbom/main.go:57 getSBOM","node":"examples/create_custom_sbom/main.go|examples/create_custom_sbom/main.getSBOM","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
+{"k":"3","member":"examples/create_simple_sbom/main.go:19 main","node":"examples/create_simple_sbom/main.go|examples/create_simple_sbom/main.main","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
 {"k":"3","member":"examples/create_simple_sbom/main.go:51 getSBOM","node":"examples/create_simple_sbom/main.go|examples/create_simple_sbom/main.getSBOM","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
+{"k":"3","member":"examples/select_catalogers/main.go:19 main","node":"examples/select_catalogers/main.go|examples/select_catalogers/main.main","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
 {"k":"3","member":"examples/select_catalogers/main.go:55 getSBOM","node":"examples/select_catalogers/main.go|examples/select_catalogers/main.getSBOM","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
-{"k":"3","member":"examples/source_from_registry/main.go:14 main","node":"examples/source_from_registry/main.go|examples/source_from_registry/main.main","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
-{"k":"3","member":"syft/create_sbom.go:31 CreateSBOM","node":"syft/create_sbom.go|syft/create_sbom.CreateSBOM","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"},
-{"k":"3","member":"syft/create_sbom_config.go:474 Create","node":"syft/create_sbom_config.go|syft/create_sbom_config.CreateSBOMConfig.Create","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"}
+{"k":"3","member":"examples/source_from_registry/main.go:14 main","node":"examples/source_from_registry/main.go|examples/source_from_registry/main.main","seed":"internal/task/relationship_tasks.go:22","seed_name":"ID"}
 ]

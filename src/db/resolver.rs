@@ -5583,6 +5583,7 @@ impl Db {
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  JOIN symbols s ON (s.qualname = ur.reference_name OR s.name = ur.name_tail)
                  WHERE ur.graph_version = ?1
+                   AND ur.reason != 'function_value'
                    AND s.graph_version = ?1
                    AND s.id > ?2
 
@@ -5822,7 +5823,8 @@ impl Db {
         let sql = if unresolved {
             "SELECT ur.id, ur.reference_name FROM unresolved_references ur
              JOIN files f ON f.id = ur.file_id
-             WHERE ur.graph_version = ?1 AND ur.edge_kind = 'CALLS' AND f.language = 'rust'"
+             WHERE ur.graph_version = ?1 AND ur.edge_kind = 'CALLS' AND f.language = 'rust'
+               AND ur.reason != 'function_value'"
         } else {
             "SELECT e.id, e.target_qualname FROM edges e JOIN files f ON f.id = e.file_id
              WHERE e.graph_version = ?1 AND e.target_symbol_id IS NOT NULL
@@ -6701,6 +6703,32 @@ pub(crate) fn store_reference_name_and_tail(
     Some((None, qualname_trailing_name(first).to_string()))
 }
 
+/// `unresolved_references.reason` of a call whose callee is a function value
+/// (a parameter, local, field or element of function type): there is no
+/// declaration to find, so the call is a gap in the graph and never a retry
+/// candidate. Its `reference_name` is the callee text, its `name_tail` empty
+/// so no name join (retry, dead-code) ever matches it.
+pub(crate) const FUNCTION_VALUE_REASON: &str = "function_value";
+
+/// The callee text of a `CALLS` edge that names nothing to resolve: no target
+/// and no import candidates, only the call-site text the extractor kept in
+/// `detail` (`fn(v)`, `middlewares[i](h)`, `f()(x)`).
+pub(crate) fn function_value_reference(
+    edge_kind: &str,
+    target_qualname: Option<&str>,
+    import_candidates: &[String],
+    detail: Option<&str>,
+) -> Option<String> {
+    if edge_kind != edge_views::CALLS || target_qualname.is_some() || !import_candidates.is_empty()
+    {
+        return None;
+    }
+    detail
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+}
+
 /// The language value the same-language tiers compare against.
 /// `typescript`, `tsx` and `javascript` are separate `files.language`
 /// values only because each needs its own tree-sitter grammar; for
@@ -6839,6 +6867,38 @@ fn qualname_trailing_two_segments(qn: &str) -> Option<&str> {
 fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
     let two = qualname_trailing_two_segments(qn)?;
     Some((two.to_string(), format!("%.{two}"), format!("%::{two}")))
+}
+
+#[cfg(test)]
+mod function_value_tests {
+    use super::function_value_reference;
+
+    #[test]
+    fn a_nameless_call_keeps_its_callee_text() {
+        assert_eq!(
+            function_value_reference("CALLS", None, &[], Some(" middlewares[i] ")),
+            Some("middlewares[i]".to_string())
+        );
+    }
+
+    #[test]
+    fn a_call_with_something_to_resolve_is_no_function_value() {
+        let cands = ["pkg|f".to_string()];
+        assert_eq!(
+            function_value_reference("CALLS", Some("f"), &[], Some("f")),
+            None
+        );
+        assert_eq!(
+            function_value_reference("CALLS", None, &cands, Some("f")),
+            None
+        );
+        assert_eq!(function_value_reference("CALLS", None, &[], None), None);
+        assert_eq!(
+            function_value_reference("CALLS", None, &[], Some("  ")),
+            None
+        );
+        assert_eq!(function_value_reference("USES", None, &[], Some("f")), None);
+    }
 }
 
 #[cfg(test)]
