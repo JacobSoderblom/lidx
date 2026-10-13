@@ -367,8 +367,6 @@ interfaces keyed at the wrong declaration); the oracle was fixed and the sample 
 | rust/nextest/path_tests_excluded | P 1.00 [0.72, 1.00] (n=10); R 1.00 [0.72, 1.00] (n=10) | n/a (0 pairs) | P 1.00 [0.86, 1.00] (n=24); R 1.00 [0.86, 1.00] (n=24) |
 
 What the numbers say: lidx's precision is 1.00 almost everywhere (one wrong TypeScript `extends`: an unimported global `Event` resolved to an unrelated alias). Recall is where the
-gaps are: Go struct embedding has no edge at all (0 of 94 `embeds` pairs), Go methods declared in another file than their receiver type never join it
-(163 of 788 override pairs, issue #455; embedding, #456), TypeScript has no override pairs (0 of 116; interface members are not symbols and base-class overrides need the
-`override` keyword, #458) and Rust's `implements` recall is 1.00 on every cell with pairs since #457 (an impl in another module than its type, a trait of another workspace package and a std trait
-that shares a name with a repo type used to lose or misplace the edge). `extends` for TypeScript and `implements` for
-Go are good (779 of 779 and 525 of 544). Go `implements` recall caps the dispatch-credited call recall (see the report).
+gaps are: at the commit of the committed results, Go struct embedding had no edge and Go methods declared in another file than their receiver type never joined it (issues #455, #456, fixed since; regenerate the results to see the current figures), TypeScript has no override pairs (interface members are not symbols and base-class overrides need the
+`override` keyword, #458), while Rust's `implements` recall is 1.00 on every cell with pairs since #457. `extends` for TypeScript and `implements` for
+Go are good (see the tables). Go `implements` recall caps the dispatch-credited call recall (see the report).
