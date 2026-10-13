@@ -706,6 +706,11 @@ pub struct EdgeInput {
     pub call_shape: Option<CallShape>,
 }
 
+/// `receiver_type` of a JS/TS EXTENDS/IMPLEMENTS edge whose bare name the ES
+/// module neither imports nor declares: it binds only a symbol recorded
+/// `global` (a script or `declare global` declaration), by no other tier.
+pub const GLOBAL_HERITAGE: &str = "\u{1}global-heritage";
+
 #[derive(Debug, Default)]
 pub struct ExtractedFile {
     pub symbols: Vec<SymbolInput>,
@@ -732,6 +737,9 @@ pub struct ExtractedFile {
     /// bound only by their exact qualname, never by a name-fallback tier --
     /// their `outer.f` shape is also how a member `f` of a type `outer` reads.
     pub local_qualnames: Vec<String>,
+    /// Qualnames of classes declared inside a function (JS/TS); they and
+    /// their members are recorded `local` too.
+    pub local_class_qualnames: Vec<String>,
     /// JS/TS only: hash of the file's export surface (see
     /// `javascript::export_surface_hash`), stored so a later sync can tell a
     /// body-only edit from one that changes what importers resolve.
@@ -740,6 +748,16 @@ pub struct ExtractedFile {
     /// per overload. Recorded into `symbols.visibility` as `override`;
     /// dispatch only pairs a base-class member with an override.
     pub override_symbols: Vec<(String, i64)>,
+    /// `(qualname, start_line)` of each bodiless member declaration
+    /// (TypeScript: an interface or type-literal member, a `declare class`
+    /// method signature). Recorded as the `decl` modifier: the member exists
+    /// for hierarchy and dispatch pairing and for exact typed-receiver
+    /// calls, but no name tier binds a call to it and it is never dead code.
+    pub decl_symbols: Vec<(String, i64)>,
+    /// `(qualname, start_line)` of each `static` member keyed by line (a
+    /// TypeScript static and an instance member may share a name); recorded
+    /// as `static` like `static_member_qualnames`.
+    pub static_symbols: Vec<(String, i64)>,
     /// Modifier words recorded on **every** symbol of the file (Go: the
     /// file's build constraint, see `indexer::go_build`).
     pub file_modifiers: Vec<String>,
@@ -750,6 +768,12 @@ pub struct ExtractedFile {
     /// Go `Example*` functions whose body ends in an `// Output:` comment:
     /// the only examples `go test` runs. Recorded as `example_output`.
     pub example_output_qualnames: Vec<String>,
+    /// Qualnames of JS/TS symbols visible as globals to every other file: a
+    /// top-level declaration of a script file (no import/export, `.d.ts`
+    /// ambient declarations included) and a member of `declare global { }`.
+    /// Recorded as the `global` modifier; only an unimported heritage name of
+    /// an ES module may bind a symbol that has it.
+    pub global_qualnames: Vec<String>,
 }
 
 /// The declaration modifiers one file's extraction recorded, written to
@@ -761,12 +785,18 @@ pub struct SymbolModifiers<'a> {
     pub local: &'a [String],
     /// `(qualname, start_line)`: overloads share a qualname.
     pub overrides: &'a [(String, i64)],
+    /// `(qualname, start_line)` of bodiless member declarations.
+    pub decls: &'a [(String, i64)],
+    /// `(qualname, start_line)` of `static` members.
+    pub static_lines: &'a [(String, i64)],
     /// Words every symbol of the file carries.
     pub file_wide: &'a [String],
     /// Declared with an unrestricted `pub` (Rust).
     pub public: &'a [String],
     /// Go examples with an `// Output:` comment.
     pub example_output: &'a [String],
+    /// Qualnames of global declarations.
+    pub globals: &'a [String],
 }
 
 impl ExtractedFile {
@@ -777,9 +807,12 @@ impl ExtractedFile {
             statics: &self.static_member_qualnames,
             local: &self.local_qualnames,
             overrides: &self.override_symbols,
+            decls: &self.decl_symbols,
+            static_lines: &self.static_symbols,
             file_wide: &self.file_modifiers,
             public: &self.public_qualnames,
             example_output: &self.example_output_qualnames,
+            globals: &self.global_qualnames,
         }
     }
 }
