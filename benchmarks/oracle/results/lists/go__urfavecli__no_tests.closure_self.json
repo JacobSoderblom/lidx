@@ -1,0 +1,6 @@
+[
+{"callee":{"file":"app.go","line":403,"name":"VisibleCategories"},"caller":{"file":"app.go","line":403,"name":"VisibleCategories"},"closure":true,"closure_self":true,"sites":["app.go:411"]},
+{"callee":{"file":"command.go","line":355,"name":"VisibleCategories"},"caller":{"file":"command.go","line":355,"name":"VisibleCategories"},"closure":true,"closure_self":true,"sites":["command.go:363"]},
+{"callee":{"file":"internal/build/build.go","line":43,"name":"main"},"caller":{"file":"internal/build/build.go","line":43,"name":"main"},"closure":true,"closure_self":true,"sites":["internal/build/build.go:50"]},
+{"callee":{"file":"internal/build/build.go","line":658,"name":"V2Diff"},"caller":{"file":"internal/build/build.go","line":658,"name":"V2Diff"},"closure":true,"closure_self":true,"sites":["internal/build/build.go:672"]}
+]

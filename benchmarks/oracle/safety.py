@@ -19,14 +19,16 @@ import time
 
 # command lines that mean corpus code (or a build of it) runs: build-script executables, the proc-macro server, and a cargo
 # subcommand that compiles. `cargo metadata` (reads manifests only) and rustc's own `--print` probes are allowed.
-FORBIDDEN_PROCESS = re.compile(r"proc-macro-srv|(^|/)build-script-|\bcargo\s+(-\S+\s+)*(check|build|clippy|test|run|bench|rustc|doc)\b")
+# `cargo rustc ... --print ...` is rust-analyzer asking rustc for the target's cfg / target-spec: cargo runs rustc to print and
+# compiles nothing (no build script, no proc macro), so that one form is allowed; any other `cargo rustc` compiles.
+FORBIDDEN_PROCESS = re.compile(r"proc-macro-srv|(^|/)build-script-|\bcargo\s+(-\S+\s+)*(check|build|clippy|test|run|bench|doc|rustc\b(?!.*\s--print\b))")
 
 
 class UnsafeRun(RuntimeError):
     pass
 
 
-def rust_config(cache, repo_name):
+def rust_config(cache, repo_name, all_features=False):
     """Write the rust-analyzer config and the stub sysroot used for `rust-analyzer scip`; return the config path.
 
     - `cargo.buildScripts.overrideCommand`: the `scip` subcommand loads build-script output by running
@@ -34,6 +36,10 @@ def rust_config(cache, repo_name):
       instead; `true` prints nothing, so there is no build-script output and no proc-macro dylib to load.
     - `cargo.sysroot`: rust-analyzer starts `<sysroot>/libexec/rust-analyzer-proc-macro-srv` (the choice is hard-coded to
       the sysroot server). The stub sysroot holds only `lib` (std sources and metadata), so there is no server to start.
+    - `cargo.features = "all"` (all_features): rust-analyzer analyses every feature of every workspace crate, so code behind
+      `#[cfg(feature = "...")]` is part of the program. It only changes which cfgs rust-analyzer turns on while it reads the
+      sources and what `cargo metadata` resolves (manifests only); with the override command above nothing is compiled or run
+      either way. `test_safety.py` proves it on a crate with a feature-gated module next to the marker build script and macro.
     """
     d = os.path.join(cache, "scip")
     stub = os.path.join(d, "sysroot-stub")
@@ -43,10 +49,12 @@ def rust_config(cache, repo_name):
     if os.path.islink(link) or os.path.exists(link):
         os.remove(link)
     os.symlink(os.path.join(real, "lib"), link)
-    cfg = os.path.join(d, "ra-config.json")
+    cfg = os.path.join(d, "ra-config-allfeat.json" if all_features else "ra-config.json")
+    cargo = {"buildScripts": {"enable": False, "overrideCommand": ["true"]}, "autoreload": False, "sysroot": stub}
+    if all_features:
+        cargo["features"] = "all"
     with open(cfg, "w") as f:
-        json.dump({"cargo": {"buildScripts": {"enable": False, "overrideCommand": ["true"]}, "autoreload": False, "sysroot": stub},
-                   "procMacro": {"enable": False}, "checkOnSave": False}, f)
+        json.dump({"cargo": cargo, "procMacro": {"enable": False}, "checkOnSave": False}, f)
     return cfg
 
 

@@ -1,4 +1,5 @@
 """Tests for the guards that keep the oracles from executing corpus code. Run: python3 -m unittest discover -s benchmarks/oracle -p 'test_*.py'"""
+import json
 import os
 import shutil
 import subprocess
@@ -20,7 +21,7 @@ class Detection(unittest.TestCase):
     def test_forbidden_process_command_lines(self):
         bad = ["/x/target/debug/build/bat-0123456789abcdef/build-script-main",
                "/r/libexec/rust-analyzer-proc-macro-srv",
-               "/r/bin/cargo check --workspace --message-format=json", "cargo -q build"]
+               "/r/bin/cargo check --workspace --message-format=json", "cargo -q build", "cargo rustc --release", "cargo rustc -- -O"]
         ok = ["/r/bin/cargo metadata --format-version 1", "rustc --print sysroot", "rust-analyzer scip /repo", "/usr/bin/true"]
         for c in bad:
             self.assertTrue(safety.FORBIDDEN_PROCESS.search(c), c)
@@ -30,7 +31,9 @@ class Detection(unittest.TestCase):
     def test_allowed_processes_are_not_flagged(self):
         # the probes the oracle needs must never trip the guard, or every run would fail
         for c in ["cargo metadata --format-version 1 --all-features --filter-platform aarch64-apple-darwin",
-                  "cargo locate-project", "/r/bin/rustc -vV", "rustc - --crate-name ___ --print=file-names --print=cfg",
+                  "cargo locate-project",
+                  "/c/bin/cargo rustc -Z unstable-options --print cfg --target aarch64-apple-darwin -- -O",
+                  "cargo rustc -Z unstable-options --print target-spec-json --target aarch64-apple-darwin -- -Z unstable-options", "/r/bin/rustc -vV", "rustc - --crate-name ___ --print=file-names --print=cfg",
                   "rustc --print sysroot", "rust-analyzer scip /repo --output x.scip", "true"]:
             self.assertFalse(safety.FORBIDDEN_PROCESS.search(c), c)
 
@@ -88,12 +91,13 @@ class RustAnalyzerRunsNothing(unittest.TestCase):
             os.makedirs(marks)
             crate = os.path.join(d, "corpus")
             touch(os.path.join(crate, "Cargo.toml"),
-                  '[package]\nname = "toy"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ntoymacros = { path = "macros" }\n')
+                  '[package]\nname = "toy"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ntoymacros = { path = "macros" }\n[features]\nextra = []\n')
             touch(os.path.join(crate, "build.rs"), BUILD_RS % os.path.join(marks, "build"))
             touch(os.path.join(crate, "macros", "Cargo.toml"),
                   '[package]\nname = "toymacros"\nversion = "0.1.0"\nedition = "2021"\n[lib]\nproc-macro = true\n')
             touch(os.path.join(crate, "macros", "src", "lib.rs"), MACRO_LIB % os.path.join(marks, "macro"))
-            touch(os.path.join(crate, "src", "main.rs"), "toymacros::mk!();\nfn helper() {}\nfn main() { helper(); made(); }\n")
+            touch(os.path.join(crate, "src", "main.rs"), "toymacros::mk!();\n#[cfg(feature = \"extra\")]\nmod extra;\nfn helper() {}\nfn main() {\n    helper();\n    made();\n    #[cfg(feature = \"extra\")]\n    extra::gated_only_with_feature();\n}\n")
+            touch(os.path.join(crate, "src", "extra.rs"), "pub fn gated_only_with_feature() {}\n")
             wrapper = os.path.join(d, "wrapper.sh")
             touch(wrapper, '#!/bin/sh\ntouch "%s/wrapper-$$"\nexec "$@"\n' % marks)
             os.chmod(wrapper, 0o755)
@@ -105,14 +109,22 @@ class RustAnalyzerRunsNothing(unittest.TestCase):
             subprocess.run(["git", "-C", crate, "add", "."], check=True)
             subprocess.run(["git", "-C", crate, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"], check=True)
             cache = os.path.join(d, "cache")
-            cfg = safety.rust_config(cache, "toy")
-            target = os.path.join(cache, "target-toy")
-            rc, bad = safety.run_watched(["rust-analyzer", "scip", crate, "--output", os.path.join(cache, "toy.scip"), "--config-path", cfg],
-                                         env=safety.hardened_env(target), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.assertEqual(rc, 0)
-            self.assertEqual(os.listdir(marks), [])
-            safety.assert_clean_run(bad, crate, target)
-            self.assertGreater(os.path.getsize(os.path.join(cache, "toy.scip")), 0)
+            seen = {}
+            for all_features in (False, True):
+                cfg = safety.rust_config(cache, "toy", all_features=all_features)
+                self.assertEqual(json.load(open(cfg))["cargo"].get("features"), "all" if all_features else None)
+                target = os.path.join(cache, "target-toy-%s" % all_features)
+                scip = os.path.join(cache, "toy-%s.scip" % all_features)
+                rc, bad = safety.run_watched(["rust-analyzer", "scip", crate, "--output", scip, "--config-path", cfg],
+                                             env=safety.hardened_env(target), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.assertEqual(rc, 0)
+                self.assertEqual(os.listdir(marks), [])  # no build script, proc macro or rustc wrapper ran, with or without features
+                safety.assert_clean_run(bad, crate, target)
+                data = open(scip, "rb").read()
+                self.assertGreater(len(data), 0)
+                seen[all_features] = b"gated_only_with_feature" in data
+            # the feature-gated module is analysed only with cargo.features = "all": that is what the setting buys
+            self.assertEqual(seen, {False: False, True: True})
 
 
 if __name__ == "__main__":

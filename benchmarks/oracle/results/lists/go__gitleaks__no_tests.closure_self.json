@@ -1,0 +1,9 @@
+[
+{"callee":{"file":"cmd/diagnostics.go","line":136,"name":"StartHttpHandler"},"caller":{"file":"cmd/diagnostics.go","line":136,"name":"StartHttpHandler"},"closure":true,"closure_self":true,"sites":["cmd/diagnostics.go:141"]},
+{"callee":{"file":"cmd/generate/config/base/config.go","line":11,"name":"CreateGlobalConfig"},"caller":{"file":"cmd/generate/config/base/config.go","line":11,"name":"CreateGlobalConfig"},"closure":true,"closure_self":true,"sites":["cmd/generate/config/base/config.go:34"]},
+{"callee":{"file":"cmd/root.go","line":438,"name":"findingSummaryAndExit"},"caller":{"file":"cmd/root.go","line":438,"name":"findingSummaryAndExit"},"closure":true,"closure_self":true,"sites":["cmd/root.go:477"]},
+{"callee":{"file":"detect/detect.go","line":153,"name":"AddGitleaksIgnore"},"caller":{"file":"detect/detect.go","line":153,"name":"AddGitleaksIgnore"},"closure":true,"closure_self":true,"sites":["detect/detect.go:159"]},
+{"callee":{"file":"detect/detect.go","line":276,"name":"DetectContext"},"caller":{"file":"detect/detect.go","line":276,"name":"DetectContext"},"closure":true,"closure_self":true,"sites":["detect/detect.go:290"]},
+{"callee":{"file":"detect/detect.go","line":371,"name":"detectRule"},"caller":{"file":"detect/detect.go","line":371,"name":"detectRule"},"closure":true,"closure_self":true,"sites":["detect/detect.go:380"]},
+{"callee":{"file":"sources/file.go","line":90,"name":"extractorFragments"},"caller":{"file":"sources/file.go","line":90,"name":"extractorFragments"},"closure":true,"closure_self":true,"sites":["sources/file.go:99"]}
+]

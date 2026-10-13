@@ -1,9 +1,5 @@
 [
-{"callee":{"file":"app.go","line":403,"name":"VisibleCategories"},"caller":{"file":"app.go","line":403,"name":"VisibleCategories"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["app.go:411"]},
 {"callee":{"file":"category.go","line":65,"name":"Name"},"caller":{"file":"category.go","line":20,"name":"Less"},"category":"other_call_on_line_missed","detail":null,"fanout":3,"sites":["category.go:21","category.go:21"]},
-{"callee":{"file":"command.go","line":355,"name":"VisibleCategories"},"caller":{"file":"command.go","line":355,"name":"VisibleCategories"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["command.go:363"]},
 {"callee":{"file":"help.go","line":122,"name":"ShowAppHelp"},"caller":{"file":"help.go","line":122,"name":"ShowAppHelp"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["help.go:138"]},
-{"callee":{"file":"internal/build/build.go","line":43,"name":"main"},"caller":{"file":"internal/build/build.go","line":43,"name":"main"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["internal/build/build.go:50"]},
-{"callee":{"file":"internal/build/build.go","line":658,"name":"V2Diff"},"caller":{"file":"internal/build/build.go","line":658,"name":"V2Diff"},"category":"other_call_on_line_missed","detail":null,"fanout":1,"sites":["internal/build/build.go:672"]},
 {"callee":{"file":"parse.go","line":78,"name":"splitShortOptions"},"caller":{"file":"parse.go","line":78,"name":"splitShortOptions"},"category":"other_call_on_line_missed","detail":null,"fanout":2,"sites":["parse.go:88"]}
 ]

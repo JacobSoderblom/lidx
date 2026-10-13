@@ -6,8 +6,8 @@
   "go/syft/no_tests",
   "ts/zod",
   "ts/hono",
-  "rust/ripgrep/path_tests_excluded",
-  "rust/fd/path_tests_excluded"
+  "rust/ripgrep/path_tests_excluded_all_features",
+  "rust/fd/path_tests_excluded_all_features"
  ],
  "languages": {
   "go": {
@@ -41,138 +41,73 @@
      ]
     },
     {
-     "id": "da557447",
-     "cell": "go/syft/no_tests",
-     "kind": "fn",
-     "caller": "fetchPkgs",
-     "callee": "fetchPkgs",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:240",
-     "callee_at": "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:240",
-     "call_site": {
-      "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:241": [
-       "240: func (ni nativeImageElf) fetchPkgs() (pkgs []pkg.Package, relationships []artifact.Relationship, retErr error) {",
-       "241: \tdefer func() {",
-       "242: \t\tif r := recover(); r != nil {"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "240: func (ni nativeImageElf) fetchPkgs() (pkgs []pkg.Package, relationships []artifact.Relationship, retErr error) {"
-     ],
-     "callee_decl": [
-      "240: func (ni nativeImageElf) fetchPkgs() (pkgs []pkg.Package, relationships []artifact.Relationship, retErr error) {",
-      "241: \tdefer func() {",
-      "242: \t\tif r := recover(); r != nil {"
-     ]
-    },
-    {
-     "id": "f1744fd0",
-     "cell": "go/syft/no_tests",
-     "kind": "fn",
-     "caller": "ContentsFromZip",
-     "callee": "ContentsFromZip",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "internal/file/zip_file_traversal.go:117",
-     "callee_at": "internal/file/zip_file_traversal.go:117",
-     "call_site": {
-      "internal/file/zip_file_traversal.go:130": [
-       "129: \t\t}",
-       "130: \t\tdefer func() {",
-       "131: \t\t\tif err := zippedFile.Close(); err != nil {"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "117: func ContentsFromZip(ctx context.Context, archivePath string, paths ...string) (map[string]string, error) {"
-     ],
-     "callee_decl": [
-      "117: func ContentsFromZip(ctx context.Context, archivePath string, paths ...string) (map[string]string, error) {",
-      "118: \tresults := make(map[string]string)",
-      "119: "
-     ]
-    },
-    {
-     "id": "0ff62cf0",
-     "cell": "go/syft/no_tests",
-     "kind": "fn",
-     "caller": "getLicenseFromNpmRegistry",
-     "callee": "getLicenseFromNpmRegistry",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "syft/pkg/cataloger/javascript/package.go:269",
-     "callee_at": "syft/pkg/cataloger/javascript/package.go:269",
-     "call_site": {
-      "syft/pkg/cataloger/javascript/package.go:290": [
-       "289: \t}",
-       "290: \tdefer func() {",
-       "291: \t\tif err := resp.Body.Close(); err != nil {"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "269: func getLicenseFromNpmRegistry(baseURL, packageName, version string) (string, error) {"
-     ],
-     "callee_decl": [
-      "269: func getLicenseFromNpmRegistry(baseURL, packageName, version string) (string, error) {",
-      "270: \t// \"https://registry.npmjs.org/%s/%s\", packageName, version",
-      "271: \trequestURL, err := formatNpmRegistryURL(baseURL, packageName, version)"
-     ]
-    },
-    {
-     "id": "196e5f1b",
+     "id": "f01f7d36",
      "cell": "go/cobra/tests",
      "kind": "fn",
-     "caller": "TestGenManNoHiddenParents",
-     "callee": "TestGenManNoHiddenParents",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "doc/man_docs_test.go:69",
-     "callee_at": "doc/man_docs_test.go:69",
+     "caller": "TestValidateFlagGroups",
+     "callee": "MarkFlagsRequiredTogether",
+     "category": "marked_external",
+     "detail": {
+      "lidx_target": "ext:testing.T.Run",
+      "resolution_kind": "external"
+     },
+     "caller_at": "flag_groups_test.go:22",
+     "callee_at": "flag_groups.go:33",
      "call_site": {
-      "doc/man_docs_test.go:79": [
-       "78: \t\tf.Hidden = true",
-       "79: \t\tdefer func() { f.Hidden = false }()",
-       "80: \t}"
+      "flag_groups_test.go:168": [
+       "167: \t\t\tfor _, flagGroup := range tc.flagGroupsRequired {",
+       "168: \t\t\t\tc.MarkFlagsRequiredTogether(strings.Split(flagGroup, \" \")...)",
+       "169: \t\t\t}"
+      ],
+      "flag_groups_test.go:177": [
+       "176: \t\t\tfor _, flagGroup := range tc.subCmdFlagGroupsRequired {",
+       "177: \t\t\t\tsub.MarkFlagsRequiredTogether(strings.Split(flagGroup, \" \")...)",
+       "178: \t\t\t}"
       ]
      },
      "fanout": 1,
      "caller_decl": [
-      "69: func TestGenManNoHiddenParents(t *testing.T) {"
+      "22: func TestValidateFlagGroups(t *testing.T) {"
      ],
      "callee_decl": [
-      "69: func TestGenManNoHiddenParents(t *testing.T) {",
-      "70: \theader := &GenManHeader{",
-      "71: \t\tTitle:   \"Project\","
+      "33: func (c *Command) MarkFlagsRequiredTogether(flagNames ...string) {",
+      "34: \tc.mergePersistentFlags()",
+      "35: \tfor _, v := range flagNames {"
      ]
     },
     {
-     "id": "3569aaba",
-     "cell": "go/syft/no_tests",
+     "id": "100c0d0f",
+     "cell": "go/cobra/tests",
      "kind": "fn",
-     "caller": "fetchPkgs",
-     "callee": "Add",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:511",
-     "callee_at": "syft/file/location_set.go:25",
+     "caller": "TestValidateFlagGroups",
+     "callee": "MarkFlagsMutuallyExclusive",
+     "category": "marked_external",
+     "detail": {
+      "lidx_target": "ext:testing.T.Run",
+      "resolution_kind": "external"
+     },
+     "caller_at": "flag_groups_test.go:22",
+     "callee_at": "flag_groups.go:65",
      "call_site": {
-      "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:540": [
-       "539: \t\t\tfor i := range newPkgs {",
-       "540: \t\t\t\tnewPkgs[i].Locations.Add(location)",
-       "541: \t\t\t}"
+      "flag_groups_test.go:174": [
+       "173: \t\t\tfor _, flagGroup := range tc.flagGroupsExclusive {",
+       "174: \t\t\t\tc.MarkFlagsMutuallyExclusive(strings.Split(flagGroup, \" \")...)",
+       "175: \t\t\t}"
+      ],
+      "flag_groups_test.go:183": [
+       "182: \t\t\tfor _, flagGroup := range tc.subCmdFlagGroupsExclusive {",
+       "183: \t\t\t\tsub.MarkFlagsMutuallyExclusive(strings.Split(flagGroup, \" \")...)",
+       "184: \t\t\t}"
       ]
      },
      "fanout": 1,
      "caller_decl": [
-      "511: func fetchPkgs(reader unionreader.UnionReader, location file.Location) ([]pkg.Package, []artifact.Relationship) {"
+      "22: func TestValidateFlagGroups(t *testing.T) {"
      ],
      "callee_decl": [
-      "25: func (s *LocationSet) Add(locations ...Location) {",
-      "26: \tif s.set == nil {",
-      "27: \t\ts.set = make(map[LocationData]LocationMetadata)"
+      "65: func (c *Command) MarkFlagsMutuallyExclusive(flagNames ...string) {",
+      "66: \tc.mergePersistentFlags()",
+      "67: \tfor _, v := range flagNames {"
      ]
     },
     {
@@ -206,33 +141,6 @@
      ]
     },
     {
-     "id": "54467d2d",
-     "cell": "go/cobra/tests",
-     "kind": "fn",
-     "caller": "TestWrongGroupForCompletion",
-     "callee": "TestWrongGroupForCompletion",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "command_test.go:2109",
-     "callee_at": "command_test.go:2109",
-     "call_site": {
-      "command_test.go:2118": [
-       "2117: ",
-       "2118: \tdefer func() {",
-       "2119: \t\tif recover() == nil {"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "2109: func TestWrongGroupForCompletion(t *testing.T) {"
-     ],
-     "callee_decl": [
-      "2109: func TestWrongGroupForCompletion(t *testing.T) {",
-      "2110: \tvar rootCmd = &Command{Use: \"root\", Short: \"test\", Run: emptyRun}",
-      "2111: \tvar childCmd = &Command{Use: \"child\", Run: emptyRun}"
-     ]
-    },
-    {
      "id": "34f52a0b",
      "cell": "go/syft/no_tests",
      "kind": "fn",
@@ -260,170 +168,119 @@
      ]
     },
     {
-     "id": "b65c3fe0",
+     "id": "27292f42",
      "cell": "go/cobra/tests",
      "kind": "fn",
-     "caller": "TestGenRSTNoTag",
-     "callee": "TestGenRSTNoTag",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "doc/rest_docs_test.go:66",
-     "callee_at": "doc/rest_docs_test.go:66",
+     "caller": "TestValidateFlagGroups",
+     "callee": "Commands",
+     "category": "marked_external",
+     "detail": {
+      "lidx_target": "ext:testing.T.Run",
+      "resolution_kind": "external"
+     },
+     "caller_at": "flag_groups_test.go:22",
+     "callee_at": "command.go:1332",
      "call_site": {
-      "doc/rest_docs_test.go:68": [
-       "67: \trootCmd.DisableAutoGenTag = true",
-       "68: \tdefer func() { rootCmd.DisableAutoGenTag = false }()",
-       "69: "
+      "flag_groups_test.go:166": [
+       "165: \t\t\tc := getCmd()",
+       "166: \t\t\tsub := c.Commands()[0]",
+       "167: \t\t\tfor _, flagGroup := range tc.flagGroupsRequired {"
       ]
      },
      "fanout": 1,
      "caller_decl": [
-      "66: func TestGenRSTNoTag(t *testing.T) {"
+      "22: func TestValidateFlagGroups(t *testing.T) {"
      ],
      "callee_decl": [
-      "66: func TestGenRSTNoTag(t *testing.T) {",
-      "67: \trootCmd.DisableAutoGenTag = true",
-      "68: \tdefer func() { rootCmd.DisableAutoGenTag = false }()"
+      "1332: func (c *Command) Commands() []*Command {",
+      "1333: \t// do not sort commands if it already sorted or sorting was disabled",
+      "1334: \tif EnableCommandSorting && !c.commandsAreSorted {"
      ]
     },
     {
-     "id": "922ec878",
-     "cell": "go/cobra/tests",
+     "id": "548fac4a",
+     "cell": "go/syft/no_tests",
      "kind": "fn",
-     "caller": "TestDisableDescriptions",
-     "callee": "TestDisableDescriptions",
+     "caller": "getModuleProxy",
+     "callee": "getModuleProxy",
      "category": "no_edge_at_site",
      "detail": null,
-     "caller_at": "completions_test.go:3822",
-     "callee_at": "completions_test.go:3822",
+     "caller_at": "syft/pkg/cataloger/golang/licenses.go:291",
+     "callee_at": "syft/pkg/cataloger/golang/licenses.go:291",
      "call_site": {
-      "completions_test.go:3909": [
-       "3908: ",
-       "3909: \t\t\trun()",
-       "3910: "
+      "syft/pkg/cataloger/golang/licenses.go:331": [
+       "330: \t\t_ = tmpFile.Close()",
+       "331: \t\tcleanupFile()",
+       "332: \t}"
+      ]
+     },
+     "fanout": 281,
+     "caller_decl": [
+      "291: func getModuleProxy(ctx context.Context, proxy string, moduleName string, moduleVersion string) (moduleURL string, out fs.FS, cleanup func(), _ error) {"
+     ],
+     "callee_decl": [
+      "291: func getModuleProxy(ctx context.Context, proxy string, moduleName string, moduleVersion string) (moduleURL string, out fs.FS, cleanup func(), _ error) {",
+      "292: \tu := fmt.Sprintf(\"%s/%s/@v/%s.zip\", proxy, moduleName, moduleVersion)",
+      "293: "
+     ]
+    },
+    {
+     "id": "ef04e6b9",
+     "cell": "go/cobra/tests",
+     "kind": "fn",
+     "caller": "TestValidateFlagGroups",
+     "callee": "Execute",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "flag_groups_test.go:22",
+     "callee_at": "command.go:1070",
+     "call_site": {
+      "flag_groups_test.go:186": [
+       "185: \t\t\tc.SetArgs(tc.args)",
+       "186: \t\t\terr := c.Execute()",
+       "187: \t\t\tswitch {"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "22: func TestValidateFlagGroups(t *testing.T) {"
+     ],
+     "callee_decl": [
+      "1070: func (c *Command) Execute() error {",
+      "1071: \t_, err := c.ExecuteC()",
+      "1072: \treturn err"
+     ]
+    },
+    {
+     "id": "c9d2acae",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "enrichmentEnabled",
+     "callee": "enrichmentEnabled",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "cmd/syft/internal/options/catalog.go:304",
+     "callee_at": "cmd/syft/internal/options/catalog.go:304",
+     "call_site": {
+      "cmd/syft/internal/options/catalog.go:324": [
+       "323: ",
+       "324: \tenableAll := enabled(\"all\")",
+       "325: \tdisableAll := enabled(\"none\")"
       ],
-      "completions_test.go:3916": [
-       "3915: \t\t\t\t}",
-       "3916: \t\t\t\trun()",
-       "3917: \t\t\t}"
+      "cmd/syft/internal/options/catalog.go:325": [
+       "324: \tenableAll := enabled(\"all\")",
+       "325: \tdisableAll := enabled(\"none\")",
+       "326: "
       ]
      },
      "fanout": 1,
      "caller_decl": [
-      "3822: func TestDisableDescriptions(t *testing.T) {"
+      "304: func enrichmentEnabled(enrichDirectives []string, features ...string) *bool {"
      ],
      "callee_decl": [
-      "3822: func TestDisableDescriptions(t *testing.T) {",
-      "3823: \trootCmd := &Command{",
-      "3824: \t\tUse: \"root\","
-     ]
-    },
-    {
-     "id": "996a96f7",
-     "cell": "go/syft/no_tests",
-     "kind": "fn",
-     "caller": "AllLocations",
-     "callee": "AllLocations",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "syft/internal/fileresolver/container_image_all_layers.go:251",
-     "callee_at": "syft/internal/fileresolver/container_image_all_layers.go:251",
-     "call_site": {
-      "syft/internal/fileresolver/container_image_all_layers.go:253": [
-       "252: \tresults := make(chan file.Location)",
-       "253: \tgo func() {",
-       "254: \t\tdefer close(results)"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "251: func (r *ContainerImageAllLayers) AllLocations(ctx context.Context) <-chan file.Location {"
-     ],
-     "callee_decl": [
-      "251: func (r *ContainerImageAllLayers) AllLocations(ctx context.Context) <-chan file.Location {",
-      "252: \tresults := make(chan file.Location)",
-      "253: \tgo func() {"
-     ]
-    },
-    {
-     "id": "02c26139",
-     "cell": "go/cobra/tests",
-     "kind": "fn",
-     "caller": "TestFlagCompletionConcurrentRegistration",
-     "callee": "TestFlagCompletionConcurrentRegistration",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "completions_test.go:2121",
-     "callee_at": "completions_test.go:2121",
-     "call_site": {
-      "completions_test.go:2146": [
-       "2145: \t\twg.Add(1)",
-       "2146: \t\tgo func() {",
-       "2147: \t\t\tdefer wg.Done()"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "2121: func TestFlagCompletionConcurrentRegistration(t *testing.T) {"
-     ],
-     "callee_decl": [
-      "2121: func TestFlagCompletionConcurrentRegistration(t *testing.T) {",
-      "2122: \trootCmd := &Command{Use: \"root\", Run: emptyRun}",
-      "2123: \tconst maxFlags = 50"
-     ]
-    },
-    {
-     "id": "14148b06",
-     "cell": "go/gitleaks/no_tests",
-     "kind": "fn",
-     "caller": "extractorFragments",
-     "callee": "extractorFragments",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "sources/file.go:90",
-     "callee_at": "sources/file.go:90",
-     "call_site": {
-      "sources/file.go:99": [
-       "98: \t\t\t}",
-       "99: \t\t\tdefer func() {",
-       "100: \t\t\t\t_ = tmpfile.Close()"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "90: func (s *File) extractorFragments(ctx context.Context, extractor archives.Extractor, reader io.Reader, yield FragmentsFunc) error {"
-     ],
-     "callee_decl": [
-      "90: func (s *File) extractorFragments(ctx context.Context, extractor archives.Extractor, reader io.Reader, yield FragmentsFunc) error {",
-      "91: \tif _, isSeekReaderAt := reader.(seekReaderAt); !isSeekReaderAt {",
-      "92: \t\tswitch extractor.(type) {"
-     ]
-    },
-    {
-     "id": "c0be9704",
-     "cell": "go/syft/no_tests",
-     "kind": "fn",
-     "caller": "packagesToRemove",
-     "callee": "ToSlice",
-     "category": "other_call_on_line_missed",
-     "detail": null,
-     "caller_at": "internal/task/scope_tasks.go:26",
-     "callee_at": "syft/file/location_set.go:59",
-     "call_site": {
-      "internal/task/scope_tasks.go:33": [
-       "32: \t\t\tnoPrimary := true",
-       "33: \t\t\tfor _, l := range p.Locations.ToSlice() {",
-       "34: \t\t\t\tisPrimaryEvidence := l.Annotations[pkg.EvidenceAnnotationKey] == pkg.PrimaryEvidenceAnnotation"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "26: func packagesToRemove(accessor sbomsync.Accessor) []artifact.ID {"
-     ],
-     "callee_decl": [
-      "59: func (s LocationSet) ToSlice(sorters ...func(a, b Location) int) []Location {",
-      "60: \tlocations := s.ToUnorderedSlice()",
-      "61: "
+      "304: func enrichmentEnabled(enrichDirectives []string, features ...string) *bool {",
+      "305: \tif len(enrichDirectives) == 0 {",
+      "306: \t\treturn nil"
      ]
     },
     {
@@ -446,60 +303,6 @@
      "fanout": 1,
      "caller_decl": [
       "32: func parseSBOM(_ context.Context, resolver file.Resolver, _ *generic.Environment, reader file.LocationReadCloser) ([]pkg.Package, []artifact.Relationship, error) {"
-     ],
-     "callee_decl": [
-      "40: func Decode(reader io.Reader) (*sbom.SBOM, sbom.FormatID, string, error) {",
-      "41: \treturn staticDecoders.Decode(reader)",
-      "42: }"
-     ]
-    },
-    {
-     "id": "32b2141e",
-     "cell": "go/syft/no_tests",
-     "kind": "fn",
-     "caller": "String",
-     "callee": "AuthorString",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "syft/pkg/cataloger/javascript/parse_package_json.go:237",
-     "callee_at": "syft/pkg/cataloger/javascript/parse_package_json.go:113",
-     "call_site": {
-      "syft/pkg/cataloger/javascript/parse_package_json.go:244": [
-       "243: \tfor i, auth := range p {",
-       "244: \t\tauthorStrings[i] = auth.AuthorString()",
-       "245: \t}"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "237: func (p people) String() string {"
-     ],
-     "callee_decl": [
-      "113: func (p *person) AuthorString() string {",
-      "114: \tresult := p.Name",
-      "115: \tif p.Email != \"\" {"
-     ]
-    },
-    {
-     "id": "6aa29692",
-     "cell": "go/syft/no_tests",
-     "kind": "fn",
-     "caller": "RunConvert",
-     "callee": "Decode",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "cmd/syft/internal/commands/convert.go:62",
-     "callee_at": "syft/format/decoders.go:40",
-     "call_site": {
-      "cmd/syft/internal/commands/convert.go:88": [
-       "87: ",
-       "88: \ts, _, _, err := format.Decode(reader)",
-       "89: \tif err != nil {"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "62: func RunConvert(opts *ConvertOptions, userInput string) error {"
      ],
      "callee_decl": [
       "40: func Decode(reader io.Reader) (*sbom.SBOM, sbom.FormatID, string, error) {",
@@ -535,30 +338,257 @@
      ]
     },
     {
-     "id": "479e7eb5",
+     "id": "ab118955",
      "cell": "go/syft/no_tests",
      "kind": "fn",
-     "caller": "fetchLatestApplicationVersion",
-     "callee": "fetchLatestApplicationVersion",
+     "caller": "parseSBOM",
+     "callee": "Decode",
      "category": "no_edge_at_site",
      "detail": null,
-     "caller_at": "cmd/syft/internal/commands/update.go:92",
-     "callee_at": "cmd/syft/internal/commands/update.go:92",
+     "caller_at": "syft/pkg/cataloger/sbom/cataloger.go:40",
+     "callee_at": "syft/format/decoders.go:40",
      "call_site": {
-      "cmd/syft/internal/commands/update.go:104": [
-       "103: \t}",
-       "104: \tdefer func() { _ = resp.Body.Close() }()",
-       "105: "
+      "syft/pkg/cataloger/sbom/cataloger.go:45": [
+       "44: \t}",
+       "45: \ts, _, _, err := format.Decode(readSeeker)",
+       "46: \tif err != nil {"
       ]
      },
-     "fanout": 281,
+     "fanout": 1,
      "caller_decl": [
-      "92: func fetchLatestApplicationVersion(id clio.Identification) (*hashiVersion.Version, error) {"
+      "40: func parseSBOM(_ context.Context, _ file.Resolver, _ *generic.Environment, reader file.LocationReadCloser) ([]pkg.Package, []artifact.Relationship, error) {"
      ],
      "callee_decl": [
-      "92: func fetchLatestApplicationVersion(id clio.Identification) (*hashiVersion.Version, error) {",
-      "93: \treq, err := http.NewRequest(http.MethodGet, latestAppVersionURL.host+latestAppVersionURL.path, nil)",
-      "94: \tif err != nil {"
+      "40: func Decode(reader io.Reader) (*sbom.SBOM, sbom.FormatID, string, error) {",
+      "41: \treturn staticDecoders.Decode(reader)",
+      "42: }"
+     ]
+    },
+    {
+     "id": "058b744c",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "ToFormatModel",
+     "callee": "ID",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "syft/format/common/cyclonedxhelpers/to_format_model.go:36",
+     "callee_at": "syft/file/coordinates.go:26",
+     "call_site": {
+      "syft/format/common/cyclonedxhelpers/to_format_model.go:83": [
+       "82: \t\tcomponents = append(components, cyclonedx.Component{",
+       "83: \t\t\tBOMRef: string(coordinate.ID()),",
+       "84: \t\t\tType:   cyclonedx.ComponentTypeFile,"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "36: func ToFormatModel(s sbom.SBOM) *cyclonedx.BOM {"
+     ],
+     "callee_decl": [
+      "26: func (c Coordinates) ID() artifact.ID {",
+      "27: \tf, err := artifact.IDByHash(c)",
+      "28: \tif err != nil {"
+     ]
+    },
+    {
+     "id": "145903c3",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "parseSBOMOutputFlags",
+     "callee": "String",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "cmd/syft/internal/options/writer.go:47",
+     "callee_at": "syft/sbom/format.go:10",
+     "call_site": {
+      "cmd/syft/internal/options/writer.go:52": [
+       "51: \tif len(outputs) == 0 {",
+       "52: \t\toutputs = append(outputs, table.ID.String())",
+       "53: \t}"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "47: func parseSBOMOutputFlags(outputs []string, defaultFile string, encoders []sbom.FormatEncoder) (out []sbomWriterDescription, errs error) {"
+     ],
+     "callee_decl": [
+      "10: func (f FormatID) String() string {",
+      "11: \treturn string(f)",
+      "12: }"
+     ]
+    },
+    {
+     "id": "32b2141e",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "String",
+     "callee": "AuthorString",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "syft/pkg/cataloger/javascript/parse_package_json.go:237",
+     "callee_at": "syft/pkg/cataloger/javascript/parse_package_json.go:113",
+     "call_site": {
+      "syft/pkg/cataloger/javascript/parse_package_json.go:244": [
+       "243: \tfor i, auth := range p {",
+       "244: \t\tauthorStrings[i] = auth.AuthorString()",
+       "245: \t}"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "237: func (p people) String() string {"
+     ],
+     "callee_decl": [
+      "113: func (p *person) AuthorString() string {",
+      "114: \tresult := p.Name",
+      "115: \tif p.Email != \"\" {"
+     ]
+    },
+    {
+     "id": "6c563952",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "coordinatesForSelection",
+     "callee": "CoordinateSet",
+     "category": "other_call_on_line_missed",
+     "detail": null,
+     "caller_at": "internal/task/file_tasks.go:144",
+     "callee_at": "syft/file/location_set.go:96",
+     "call_site": {
+      "internal/task/file_tasks.go:168": [
+       "167: \t\t\tfor p := range sbom.Artifacts.Packages.Enumerate() {",
+       "168: \t\t\t\tcoordinates.Add(p.Locations.CoordinateSet().ToSlice()...)",
+       "169: \t\t\t}"
+      ]
+     },
+     "fanout": 3,
+     "caller_decl": [
+      "144: func coordinatesForSelection(selection file.Selection, accessor sbomsync.Accessor) ([]file.Coordinates, bool) {"
+     ],
+     "callee_decl": [
+      "96: func (s *LocationSet) CoordinateSet() CoordinateSet {",
+      "97: \tif s.set == nil {",
+      "98: \t\treturn NewCoordinateSet()"
+     ]
+    },
+    {
+     "id": "be741afb",
+     "cell": "go/cobra/tests",
+     "kind": "fn",
+     "caller": "Less",
+     "callee": "Name",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "doc/util.go:52",
+     "callee_at": "command.go:1541",
+     "call_site": {
+      "doc/util.go:52": [
+       "51: func (s byName) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }",
+       "52: func (s byName) Less(i, j int) bool { return s[i].Name() < s[j].Name() }",
+       "53: "
+      ]
+     },
+     "fanout": 2,
+     "caller_decl": [
+      "52: func (s byName) Less(i, j int) bool { return s[i].Name() < s[j].Name() }"
+     ],
+     "callee_decl": [
+      "1541: func (c *Command) Name() string {",
+      "1542: \tname := c.Use",
+      "1543: \ti := strings.Index(name, \" \")"
+     ]
+    },
+    {
+     "id": "45b8beb9",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "ParseScope",
+     "callee": "String",
+     "category": "marked_external",
+     "detail": {
+      "lidx_target": "ext:strings.ToLower",
+      "resolution_kind": "external"
+     },
+     "caller_at": "syft/source/scope.go:27",
+     "callee_at": "syft/source/scope.go:39",
+     "call_site": {
+      "syft/source/scope.go:29": [
+       "28: \tswitch strings.ToLower(userStr) {",
+       "29: \tcase SquashedScope.String():",
+       "30: \t\treturn SquashedScope"
+      ],
+      "syft/source/scope.go:31": [
+       "30: \t\treturn SquashedScope",
+       "31: \tcase \"all\", \"alllayers\", AllLayersScope.String():",
+       "32: \t\treturn AllLayersScope"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "27: func ParseScope(userStr string) Scope {"
+     ],
+     "callee_decl": [
+      "39: func (o Scope) String() string {",
+      "40: \treturn string(o)",
+      "41: }"
+     ]
+    },
+    {
+     "id": "6283277b",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "selectByExpressions",
+     "callee": "String",
+     "category": "marked_external",
+     "detail": {
+      "lidx_target": "ext:fmt.Sprintf",
+      "resolution_kind": "external"
+     },
+     "caller_at": "internal/task/selection.go:215",
+     "callee_at": "internal/task/expression.go:178",
+     "call_site": {
+      "internal/task/selection.go:244": [
+       "243: \t\tif len(selectedTasks) == 0 {",
+       "244: \t\t\tlog.WithFields(\"selection\", fmt.Sprintf(\"%q\", node.String())).Warn(\"no cataloger tasks selected found for given selection (this might be a misconfiguration)\")",
+       "245: \t\t}"
+      ]
+     },
+     "fanout": 2,
+     "caller_decl": [
+      "215: func selectByExpressions(ts tasks, nodes Expressions) (tasks, Selection) {"
+     ],
+     "callee_decl": [
+      "178: func (e Expression) String() string {",
+      "179: \tvar op string",
+      "180: \tswitch e.Operation {"
+     ]
+    },
+    {
+     "id": "29971731",
+     "cell": "go/syft/no_tests",
+     "kind": "fn",
+     "caller": "defaultAttestOutputOptions",
+     "callee": "String",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "cmd/syft/internal/commands/attest.go:86",
+     "callee_at": "syft/sbom/format.go:10",
+     "call_site": {
+      "cmd/syft/internal/commands/attest.go:96": [
+       "95: \t\t},",
+       "96: \t\tOutputs: []string{syftjson.ID.String()},",
+       "97: \t\t// OutputFile is omitted (defaults to Enabled: false, explicitly not allowed for attestation)"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "86: func defaultAttestOutputOptions() options.Output {"
+     ],
+     "callee_decl": [
+      "10: func (f FormatID) String() string {",
+      "11: \treturn string(f)",
+      "12: }"
      ]
     }
    ]
@@ -1697,35 +1727,99 @@
   "rust": {
    "fp": [
     {
-     "id": "c3fee44e",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "d412bc1b",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
-     "caller": "crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2",
-     "callee": "crate::matcher::RegexMatcherBuilder::jit_if_available",
-     "category": "no_call_at_site",
+     "caller": "crate::wtr::StandardStream::supports_color",
+     "callee": "crate::counter::CounterWriter::supports_color",
+     "category": "external_callee_at_site",
      "detail": null,
-     "caller_at": "crates/core/flags/hiargs.rs:411",
-     "callee_at": "crates/pcre2/src/matcher.rs:273",
-     "resolution_kind": "receiver_type",
+     "caller_at": "crates/cli/src/wtr.rs:91",
+     "callee_at": "crates/printer/src/counter.rs:69",
+     "resolution_kind": "bare_name",
      "call_site": {
-      "crates/core/flags/hiargs.rs:431": [
-       "430:                 builder",
-       "431:                     .jit_if_available(true)",
-       "432:                     // The PCRE2 docs say that 32KB is the default, and that 1MB"
+      "crates/cli/src/wtr.rs:95": [
+       "94:         match self.0 {",
+       "95:             LineBuffered(ref w) => w.supports_color(),",
+       "96:             BlockBuffered(ref w) => w.supports_color(),"
+      ],
+      "crates/cli/src/wtr.rs:96": [
+       "95:             LineBuffered(ref w) => w.supports_color(),",
+       "96:             BlockBuffered(ref w) => w.supports_color(),",
+       "97:         }"
       ]
      },
      "caller_decl": [
-      "411:     fn matcher_pcre2(&self) -> anyhow::Result<PatternMatcher> {"
+      "91:     fn supports_color(&self) -> bool {"
      ],
      "callee_decl": [
-      "273:     pub fn jit_if_available(&mut self, yes: bool) -> &mut RegexMatcherBuilder {",
-      "274:         self.builder.jit_if_available(yes);",
-      "275:         self"
+      "69:     fn supports_color(&self) -> bool {",
+      "70:         self.wtr.supports_color()",
+      "71:     }"
      ]
     },
     {
-     "id": "c8e0d691",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "d8f68bfb",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::Error::clone",
+     "callee": "crate::error::Error::new",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/ignore/src/lib.rs:121",
+     "callee_at": "crates/regex/src/error.rs:12",
+     "resolution_kind": "two_segment",
+     "call_site": {
+      "crates/ignore/src/lib.rs:140": [
+       "139:                 None => {",
+       "140:                     Error::Io(std::io::Error::new(err.kind(), err.to_string()))",
+       "141:                 }"
+      ]
+     },
+     "caller_decl": [
+      "121:     fn clone(&self) -> Error {"
+     ],
+     "callee_decl": [
+      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
+      "13:         Error { kind }",
+      "14:     }"
+     ]
+    },
+    {
+     "id": "6fe58a70",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::wtr::StandardStream::is_synchronous",
+     "callee": "crate::counter::CounterWriter::is_synchronous",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/cli/src/wtr.rs:141",
+     "callee_at": "crates/printer/src/counter.rs:94",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "crates/cli/src/wtr.rs:145": [
+       "144:         match self.0 {",
+       "145:             LineBuffered(ref w) => w.is_synchronous(),",
+       "146:             BlockBuffered(ref w) => w.is_synchronous(),"
+      ],
+      "crates/cli/src/wtr.rs:146": [
+       "145:             LineBuffered(ref w) => w.is_synchronous(),",
+       "146:             BlockBuffered(ref w) => w.is_synchronous(),",
+       "147:         }"
+      ]
+     },
+     "caller_decl": [
+      "141:     fn is_synchronous(&self) -> bool {"
+     ],
+     "callee_decl": [
+      "94:     fn is_synchronous(&self) -> bool {",
+      "95:         self.wtr.is_synchronous()",
+      "96:     }"
+     ]
+    },
+    {
+     "id": "e461b918",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
      "caller": "crate::wtr::StandardStream::set_color",
      "callee": "crate::counter::CounterWriter::set_color",
@@ -1756,180 +1850,8 @@
      ]
     },
     {
-     "id": "8c185b7b",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::hostname::hostname",
-     "callee": "crate::error::Error::new",
-     "category": "no_call_at_site",
-     "detail": null,
-     "caller_at": "crates/cli/src/hostname.rs:16",
-     "callee_at": "crates/regex/src/error.rs:12",
-     "resolution_kind": "two_segment",
-     "call_site": {
-      "crates/cli/src/hostname.rs:28": [
-       "27:     {",
-       "28:         Err(io::Error::new(",
-       "29:             io::ErrorKind::Other,"
-      ]
-     },
-     "caller_decl": [
-      "16: pub fn hostname() -> io::Result<OsString> {"
-     ],
-     "callee_decl": [
-      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
-      "13:         Error { kind }",
-      "14:     }"
-     ]
-    },
-    {
-     "id": "e1a1edb0",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2",
-     "callee": "crate::matcher::RegexMatcherBuilder::build_many",
-     "category": "no_call_at_site",
-     "detail": null,
-     "caller_at": "crates/core/flags/hiargs.rs:411",
-     "callee_at": "crates/pcre2/src/matcher.rs:45",
-     "resolution_kind": "receiver_type",
-     "call_site": {
-      "crates/core/flags/hiargs.rs:446": [
-       "445:             }",
-       "446:             let m = builder.build_many(&self.patterns.patterns)?;",
-       "447:             Ok(PatternMatcher::PCRE2(m))"
-      ]
-     },
-     "caller_decl": [
-      "411:     fn matcher_pcre2(&self) -> anyhow::Result<PatternMatcher> {"
-     ],
-     "callee_decl": [
-      "45:     pub fn build_many<P: AsRef<str>>(",
-      "46:         &self,",
-      "47:         patterns: &[P],"
-     ]
-    },
-    {
-     "id": "30a0e6ad",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::walk::device_num",
-     "callee": "crate::error::Error::new",
-     "category": "no_call_at_site",
-     "detail": null,
-     "caller_at": "crates/ignore/src/walk.rs:2109",
-     "callee_at": "crates/regex/src/error.rs:12",
-     "resolution_kind": "two_segment",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2110": [
-       "2109: fn device_num<P: AsRef<Path>>(_: P) -> io::Result<u64> {",
-       "2110:     Err(io::Error::new(",
-       "2111:         io::ErrorKind::Other,"
-      ]
-     },
-     "caller_decl": [
-      "2109: fn device_num<P: AsRef<Path>>(_: P) -> io::Result<u64> {"
-     ],
-     "callee_decl": [
-      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
-      "13:         Error { kind }",
-      "14:     }"
-     ]
-    },
-    {
-     "id": "9cdf9527",
-     "cell": "rust/fd/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::run",
-     "callee": "crate::cli::Opts::gen_completions",
-     "category": "external_callee_at_site",
-     "detail": null,
-     "caller_at": "src/main.rs:75",
-     "callee_at": "src/cli.rs:776",
-     "resolution_kind": "bare_name",
-     "call_site": {
-      "src/main.rs:79": [
-       "78:     #[cfg(feature = \"completions\")]",
-       "79:     if let Some(shell) = opts.gen_completions()? {",
-       "80:         return print_completions(shell);"
-      ]
-     },
-     "caller_decl": [
-      "75: fn run() -> Result<ExitCode> {"
-     ],
-     "callee_decl": [
-      "776:     pub fn gen_completions(&self) -> anyhow::Result<Option<Shell>> {",
-      "777:         self.gen_completions",
-      "778:             .map(|maybe_shell| match maybe_shell {"
-     ]
-    },
-    {
-     "id": "94836cbc",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::wtr::StandardStream::set_hyperlink",
-     "callee": "crate::counter::CounterWriter::set_hyperlink",
-     "category": "external_callee_at_site",
-     "detail": null,
-     "caller_at": "crates/cli/src/wtr.rs:121",
-     "callee_at": "crates/printer/src/counter.rs:84",
-     "resolution_kind": "bare_name",
-     "call_site": {
-      "crates/cli/src/wtr.rs:125": [
-       "124:         match self.0 {",
-       "125:             LineBuffered(ref mut w) => w.set_hyperlink(link),",
-       "126:             BlockBuffered(ref mut w) => w.set_hyperlink(link),"
-      ],
-      "crates/cli/src/wtr.rs:126": [
-       "125:             LineBuffered(ref mut w) => w.set_hyperlink(link),",
-       "126:             BlockBuffered(ref mut w) => w.set_hyperlink(link),",
-       "127:         }"
-      ]
-     },
-     "caller_decl": [
-      "121:     fn set_hyperlink(&mut self, link: &HyperlinkSpec) -> io::Result<()> {"
-     ],
-     "callee_decl": [
-      "84:     fn set_hyperlink(&mut self, link: &HyperlinkSpec) -> io::Result<()> {",
-      "85:         self.wtr.set_hyperlink(link)",
-      "86:     }"
-     ]
-    },
-    {
-     "id": "6e0dd1c5",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::crates::core::search::SearchWorker::search_preprocessor",
-     "callee": "crate::error::Error::new",
-     "category": "external_callee_at_site",
-     "detail": null,
-     "caller_at": "crates/core/search.rs:296",
-     "callee_at": "crates/regex/src/error.rs:12",
-     "resolution_kind": "two_segment",
-     "call_site": {
-      "crates/core/search.rs:307": [
-       "306:         let mut rdr = self.command_builder.build(&mut cmd).map_err(|err| {",
-       "307:             io::Error::new(",
-       "308:                 io::ErrorKind::Other,"
-      ],
-      "crates/core/search.rs:315": [
-       "314:         let result = self.search_reader(path, &mut rdr).map_err(|err| {",
-       "315:             io::Error::new(",
-       "316:                 io::ErrorKind::Other,"
-      ]
-     },
-     "caller_decl": [
-      "296:     fn search_preprocessor("
-     ],
-     "callee_decl": [
-      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
-      "13:         Error { kind }",
-      "14:     }"
-     ]
-    },
-    {
-     "id": "41feb418",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "2c2617e1",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
      "caller": "crate::decompress::DecompressionMatcherBuilder::build",
      "callee": "crate::error::Error::new",
@@ -1965,35 +1887,207 @@
      ]
     },
     {
-     "id": "7daf264b",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "daa234d3",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
-     "caller": "crate::walk::DirEntryRaw::from_entry_os",
-     "callee": "crate::Error::with_depth",
-     "category": "no_call_at_site",
+     "caller": "crate::crates::core::search::SearchWorker::search_preprocessor",
+     "callee": "crate::error::Error::new",
+     "category": "external_callee_at_site",
      "detail": null,
-     "caller_at": "crates/ignore/src/walk.rs:338",
-     "callee_at": "crates/ignore/src/lib.rs:269",
-     "resolution_kind": "bare_name",
+     "caller_at": "crates/core/search.rs:296",
+     "callee_at": "crates/regex/src/error.rs:12",
+     "resolution_kind": "two_segment",
      "call_site": {
-      "crates/ignore/src/walk.rs:344": [
-       "343:         let md = ent.metadata().map_err(|err| {",
-       "344:             let err = Error::Io(err).with_depth(depth).with_path(ent.path());",
-       "345:             Error::WithDepth { depth, err: Box::new(err) }"
+      "crates/core/search.rs:307": [
+       "306:         let mut rdr = self.command_builder.build(&mut cmd).map_err(|err| {",
+       "307:             io::Error::new(",
+       "308:                 io::ErrorKind::Other,"
+      ],
+      "crates/core/search.rs:315": [
+       "314:         let result = self.search_reader(path, &mut rdr).map_err(|err| {",
+       "315:             io::Error::new(",
+       "316:                 io::ErrorKind::Other,"
       ]
      },
      "caller_decl": [
-      "338:     fn from_entry_os("
+      "296:     fn search_preprocessor("
      ],
      "callee_decl": [
-      "269:     fn with_depth(self, depth: usize) -> Error {",
-      "270:         Error::WithDepth { depth, err: Box::new(self) }",
-      "271:     }"
+      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
+      "13:         Error { kind }",
+      "14:     }"
      ]
     },
     {
-     "id": "1455b2e9",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "31217685",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::wtr::StandardStream::set_hyperlink",
+     "callee": "crate::counter::CounterWriter::set_hyperlink",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/cli/src/wtr.rs:121",
+     "callee_at": "crates/printer/src/counter.rs:84",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "crates/cli/src/wtr.rs:125": [
+       "124:         match self.0 {",
+       "125:             LineBuffered(ref mut w) => w.set_hyperlink(link),",
+       "126:             BlockBuffered(ref mut w) => w.set_hyperlink(link),"
+      ],
+      "crates/cli/src/wtr.rs:126": [
+       "125:             LineBuffered(ref mut w) => w.set_hyperlink(link),",
+       "126:             BlockBuffered(ref mut w) => w.set_hyperlink(link),",
+       "127:         }"
+      ]
+     },
+     "caller_decl": [
+      "121:     fn set_hyperlink(&mut self, link: &HyperlinkSpec) -> io::Result<()> {"
+     ],
+     "callee_decl": [
+      "84:     fn set_hyperlink(&mut self, link: &HyperlinkSpec) -> io::Result<()> {",
+      "85:         self.wtr.set_hyperlink(link)",
+      "86:     }"
+     ]
+    },
+    {
+     "id": "6b4ea36e",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::walk::tests::symlink",
+     "callee": "crate::walk::tests::symlink",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/ignore/src/walk.rs:2138",
+     "callee_at": "crates/ignore/src/walk.rs:2138",
+     "resolution_kind": "exact",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2140": [
+       "2139:         use std::os::unix::fs::symlink;",
+       "2140:         symlink(src, dst).unwrap();",
+       "2141:     }"
+      ]
+     },
+     "caller_decl": [
+      "2138:     fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) {"
+     ],
+     "callee_decl": [
+      "2138:     fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) {",
+      "2139:         use std::os::unix::fs::symlink;",
+      "2140:         symlink(src, dst).unwrap();"
+     ]
+    },
+    {
+     "id": "0920a9f4",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::counter::CounterWriter::set_color",
+     "callee": "crate::wtr::StandardStream::set_color",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/printer/src/counter.rs:79",
+     "callee_at": "crates/cli/src/wtr.rs:111",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "crates/printer/src/counter.rs:80": [
+       "79:     fn set_color(&mut self, spec: &ColorSpec) -> io::Result<()> {",
+       "80:         self.wtr.set_color(spec)",
+       "81:     }"
+      ]
+     },
+     "caller_decl": [
+      "79:     fn set_color(&mut self, spec: &ColorSpec) -> io::Result<()> {"
+     ],
+     "callee_decl": [
+      "111:     fn set_color(&mut self, spec: &termcolor::ColorSpec) -> io::Result<()> {",
+      "112:         use self::StandardStreamKind::*;",
+      "113: "
+     ]
+    },
+    {
+     "id": "68411f3a",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::matcher::RegexMatcher::shortest_match_at",
+     "callee": "crate::Match::offset",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/regex/src/matcher.rs:471",
+     "callee_at": "crates/matcher/src/lib.rs:138",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "crates/regex/src/matcher.rs:477": [
+       "476:         let input = Input::new(haystack).span(at..haystack.len());",
+       "477:         Ok(self.regex.search_half(&input).map(|hm| hm.offset()))",
+       "478:     }"
+      ]
+     },
+     "caller_decl": [
+      "471:     fn shortest_match_at("
+     ],
+     "callee_decl": [
+      "138:     pub fn offset(&self, amount: usize) -> Match {",
+      "139:         Match {",
+      "140:             start: self.start.checked_add(amount).unwrap(),"
+     ]
+    },
+    {
+     "id": "34ced537",
+     "cell": "rust/fd/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::run",
+     "callee": "crate::cli::Opts::gen_completions",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "src/main.rs:75",
+     "callee_at": "src/cli.rs:776",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "src/main.rs:79": [
+       "78:     #[cfg(feature = \"completions\")]",
+       "79:     if let Some(shell) = opts.gen_completions()? {",
+       "80:         return print_completions(shell);"
+      ]
+     },
+     "caller_decl": [
+      "75: fn run() -> Result<ExitCode> {"
+     ],
+     "callee_decl": [
+      "776:     pub fn gen_completions(&self) -> anyhow::Result<Option<Shell>> {",
+      "777:         self.gen_completions",
+      "778:             .map(|maybe_shell| match maybe_shell {"
+     ]
+    },
+    {
+     "id": "59260c2e",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::searcher::Config::default",
+     "callee": "crate::line_buffer::BinaryDetection::default",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/searcher/src/searcher/mod.rs:188",
+     "callee_at": "crates/searcher/src/line_buffer.rs:67",
+     "resolution_kind": "two_segment",
+     "call_site": {
+      "crates/searcher/src/searcher/mod.rs:198": [
+       "197:             mmap: MmapChoice::default(),",
+       "198:             binary: BinaryDetection::default(),",
+       "199:             multi_line: false,"
+      ]
+     },
+     "caller_decl": [
+      "188:     fn default() -> Config {"
+     ],
+     "callee_decl": [
+      "67:     fn default() -> BinaryDetection {",
+      "68:         BinaryDetection::None",
+      "69:     }"
+     ]
+    },
+    {
+     "id": "2d24cb00",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
      "caller": "io::Error::from",
      "callee": "crate::error::Error::new",
@@ -2019,8 +2113,8 @@
      ]
     },
     {
-     "id": "7a64b5dd",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "541c996a",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
      "caller": "crate::decompress::try_resolve_binary",
      "callee": "crate::error::Error::new",
@@ -2056,62 +2150,8 @@
      ]
     },
     {
-     "id": "45374717",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::walk::DirEntryRaw::from_entry_os",
-     "callee": "crate::walk::DirEntry::metadata",
-     "category": "no_call_at_site",
-     "detail": null,
-     "caller_at": "crates/ignore/src/walk.rs:338",
-     "callee_at": "crates/ignore/src/walk.rs:60",
-     "resolution_kind": "receiver_type",
-     "call_site": {
-      "crates/ignore/src/walk.rs:343": [
-       "342:     ) -> Result<DirEntryRaw, Error> {",
-       "343:         let md = ent.metadata().map_err(|err| {",
-       "344:             let err = Error::Io(err).with_depth(depth).with_path(ent.path());"
-      ]
-     },
-     "caller_decl": [
-      "338:     fn from_entry_os("
-     ],
-     "callee_decl": [
-      "60:     pub fn metadata(&self) -> Result<Metadata, Error> {",
-      "61:         self.dent.metadata()",
-      "62:     }"
-     ]
-    },
-    {
-     "id": "7246198e",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2",
-     "callee": "crate::matcher::RegexMatcherBuilder::utf",
-     "category": "no_call_at_site",
-     "detail": null,
-     "caller_at": "crates/core/flags/hiargs.rs:411",
-     "callee_at": "crates/pcre2/src/matcher.rs:225",
-     "resolution_kind": "receiver_type",
-     "call_site": {
-      "crates/core/flags/hiargs.rs:438": [
-       "437:             if !self.no_unicode {",
-       "438:                 builder.utf(true).ucp(true);",
-       "439:             }"
-      ]
-     },
-     "caller_decl": [
-      "411:     fn matcher_pcre2(&self) -> anyhow::Result<PatternMatcher> {"
-     ],
-     "callee_decl": [
-      "225:     pub fn utf(&mut self, yes: bool) -> &mut RegexMatcherBuilder {",
-      "226:         self.builder.utf(yes);",
-      "227:         self"
-     ]
-    },
-    {
-     "id": "3e7adc9a",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "002f604c",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
      "caller": "crate::walk::DirEntryInner::metadata",
      "callee": "crate::error::Error::new",
@@ -2137,35 +2177,121 @@
      ]
     },
     {
-     "id": "dac05fac",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "c3188498",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
-     "caller": "crate::pattern::patterns_from_stdin",
-     "callee": "crate::error::Error::new",
+     "caller": "crate::new_regex_set",
+     "callee": "crate::matcher::RegexMatcherBuilder::dot_matches_new_line",
      "category": "external_callee_at_site",
      "detail": null,
-     "caller_at": "crates/cli/src/pattern.rs:104",
-     "callee_at": "crates/regex/src/error.rs:12",
-     "resolution_kind": "two_segment",
+     "caller_at": "crates/globset/src/lib.rs:287",
+     "callee_at": "crates/regex/src/matcher.rs:143",
+     "resolution_kind": "bare_name",
      "call_site": {
-      "crates/cli/src/pattern.rs:108": [
-       "107:     patterns_from_reader(locked).map_err(|err| {",
-       "108:         io::Error::new(io::ErrorKind::Other, format!(\"<stdin>:{}\", err))",
-       "109:     })"
+      "crates/globset/src/lib.rs:290": [
+       "289:         .utf8(false)",
+       "290:         .dot_matches_new_line(true);",
+       "291:     let config = Regex::config()"
       ]
      },
      "caller_decl": [
-      "104: pub fn patterns_from_stdin() -> io::Result<Vec<String>> {"
+      "287: fn new_regex_set(pats: Vec<String>) -> Result<Regex, Error> {"
      ],
      "callee_decl": [
-      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
-      "13:         Error { kind }",
-      "14:     }"
+      "143:     pub fn dot_matches_new_line(",
+      "144:         &mut self,",
+      "145:         yes: bool,"
      ]
     },
     {
-     "id": "029b2bf4",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "f18e677a",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::counter::CounterWriter::supports_hyperlinks",
+     "callee": "crate::wtr::StandardStream::supports_hyperlinks",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/printer/src/counter.rs:74",
+     "callee_at": "crates/cli/src/wtr.rs:101",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "crates/printer/src/counter.rs:75": [
+       "74:     fn supports_hyperlinks(&self) -> bool {",
+       "75:         self.wtr.supports_hyperlinks()",
+       "76:     }"
+      ]
+     },
+     "caller_decl": [
+      "74:     fn supports_hyperlinks(&self) -> bool {"
+     ],
+     "callee_decl": [
+      "101:     fn supports_hyperlinks(&self) -> bool {",
+      "102:         use self::StandardStreamKind::*;",
+      "103: "
+     ]
+    },
+    {
+     "id": "9abf4aa8",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::build::set_git_revision_hash",
+     "callee": "crate::tests::util::TestCommand::output",
+     "category": "calls_test_code",
+     "detail": null,
+     "caller_at": "build.rs:36",
+     "callee_at": "tests/util.rs:327",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "build.rs:40": [
+       "39:     let args = &[\"rev-parse\", \"--short=10\", \"HEAD\"];",
+       "40:     let output = Command::new(\"git\").args(args).output();",
+       "41:     match output {"
+      ]
+     },
+     "caller_decl": [
+      "36: fn set_git_revision_hash() {"
+     ],
+     "callee_decl": [
+      "327:     pub fn output(&mut self) -> process::Output {",
+      "328:         let output = self.raw_output();",
+      "329:         self.expect_success(output)"
+     ]
+    },
+    {
+     "id": "495d6e45",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fp",
+     "caller": "crate::wtr::StandardStream::supports_hyperlinks",
+     "callee": "crate::counter::CounterWriter::supports_hyperlinks",
+     "category": "external_callee_at_site",
+     "detail": null,
+     "caller_at": "crates/cli/src/wtr.rs:101",
+     "callee_at": "crates/printer/src/counter.rs:74",
+     "resolution_kind": "bare_name",
+     "call_site": {
+      "crates/cli/src/wtr.rs:105": [
+       "104:         match self.0 {",
+       "105:             LineBuffered(ref w) => w.supports_hyperlinks(),",
+       "106:             BlockBuffered(ref w) => w.supports_hyperlinks(),"
+      ],
+      "crates/cli/src/wtr.rs:106": [
+       "105:             LineBuffered(ref w) => w.supports_hyperlinks(),",
+       "106:             BlockBuffered(ref w) => w.supports_hyperlinks(),",
+       "107:         }"
+      ]
+     },
+     "caller_decl": [
+      "101:     fn supports_hyperlinks(&self) -> bool {"
+     ],
+     "callee_decl": [
+      "74:     fn supports_hyperlinks(&self) -> bool {",
+      "75:         self.wtr.supports_hyperlinks()",
+      "76:     }"
+     ]
+    },
+    {
+     "id": "f4bd9a38",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fp",
      "caller": "io::Error::from",
      "callee": "crate::error::Error::new",
@@ -2189,417 +2315,51 @@
       "13:         Error { kind }",
       "14:     }"
      ]
-    },
-    {
-     "id": "bd6b7271",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2",
-     "callee": "crate::matcher::RegexMatcherBuilder::case_smart",
-     "category": "no_call_at_site",
-     "detail": null,
-     "caller_at": "crates/core/flags/hiargs.rs:411",
-     "callee_at": "crates/pcre2/src/matcher.rs:115",
-     "resolution_kind": "receiver_type",
-     "call_site": {
-      "crates/core/flags/hiargs.rs:419": [
-       "418:                 CaseMode::Insensitive => builder.caseless(true),",
-       "419:                 CaseMode::Smart => builder.case_smart(true),",
-       "420:             };"
-      ]
-     },
-     "caller_decl": [
-      "411:     fn matcher_pcre2(&self) -> anyhow::Result<PatternMatcher> {"
-     ],
-     "callee_decl": [
-      "115:     pub fn case_smart(&mut self, yes: bool) -> &mut RegexMatcherBuilder {",
-      "116:         self.case_smart = yes;",
-      "117:         self"
-     ]
-    },
-    {
-     "id": "eb8822b8",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2",
-     "callee": "crate::matcher::RegexMatcherBuilder::crlf",
-     "category": "no_call_at_site",
-     "detail": null,
-     "caller_at": "crates/core/flags/hiargs.rs:411",
-     "callee_at": "crates/pcre2/src/matcher.rs:160",
-     "resolution_kind": "receiver_type",
-     "call_site": {
-      "crates/core/flags/hiargs.rs:444": [
-       "443:             if self.crlf {",
-       "444:                 builder.crlf(true);",
-       "445:             }"
-      ]
-     },
-     "caller_decl": [
-      "411:     fn matcher_pcre2(&self) -> anyhow::Result<PatternMatcher> {"
-     ],
-     "callee_decl": [
-      "160:     pub fn crlf(&mut self, yes: bool) -> &mut RegexMatcherBuilder {",
-      "161:         self.builder.crlf(yes);",
-      "162:         self"
-     ]
-    },
-    {
-     "id": "964492e3",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fp",
-     "caller": "crate::walk::DirEntryRaw::from_entry_os",
-     "callee": "crate::walk::DirEntry::path",
-     "category": "external_callee_at_site",
-     "detail": null,
-     "caller_at": "crates/ignore/src/walk.rs:338",
-     "callee_at": "crates/ignore/src/walk.rs:37",
-     "resolution_kind": "receiver_type",
-     "call_site": {
-      "crates/ignore/src/walk.rs:344": [
-       "343:         let md = ent.metadata().map_err(|err| {",
-       "344:             let err = Error::Io(err).with_depth(depth).with_path(ent.path());",
-       "345:             Error::WithDepth { depth, err: Box::new(err) }"
-      ],
-      "crates/ignore/src/walk.rs:348": [
-       "347:         Ok(DirEntryRaw {",
-       "348:             path: ent.path(),",
-       "349:             ty,"
-      ]
-     },
-     "caller_decl": [
-      "338:     fn from_entry_os("
-     ],
-     "callee_decl": [
-      "37:     pub fn path(&self) -> &Path {",
-      "38:         self.dent.path()",
-      "39:     }"
-     ]
     }
    ],
    "fn": [
     {
-     "id": "8f028001",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "9c16d8fe",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
-     "caller": "empty",
-     "callee": "escape",
+     "caller": "new",
+     "callee": "[Default]default",
      "category": "no_edge_at_site",
      "detail": null,
-     "caller_at": "crates/cli/src/escape.rs:90",
-     "callee_at": "crates/cli/src/escape.rs:26",
+     "caller_at": "crates/searcher/src/line_buffer.rs:116",
+     "callee_at": "crates/searcher/src/line_buffer.rs:98",
      "call_site": {
-      "crates/cli/src/escape.rs:92": [
-       "91:         assert_eq!(b(b\"\"), unescape(r\"\"));",
-       "92:         assert_eq!(r\"\", escape(b\"\"));",
-       "93:     }"
+      "crates/searcher/src/line_buffer.rs:117": [
+       "116:     pub(crate) fn new() -> LineBufferBuilder {",
+       "117:         LineBufferBuilder { config: Config::default() }",
+       "118:     }"
       ]
      },
      "fanout": 1,
      "caller_decl": [
-      "90:     fn empty() {"
+      "116:     pub(crate) fn new() -> LineBufferBuilder {"
      ],
      "callee_decl": [
-      "26: pub fn escape(bytes: &[u8]) -> String {",
-      "27:     bytes.escape_bytes().to_string()",
-      "28: }"
+      "98:     fn default() -> Config {",
+      "99:         Config {",
+      "100:             capacity: DEFAULT_BUFFER_CAPACITY,"
      ]
     },
     {
-     "id": "e837637f",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "is_match",
-     "callee": "is_match",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/globset/src/lib.rs:665",
-     "callee_at": "crates/globset/src/lib.rs:870",
-     "call_site": {
-      "crates/globset/src/lib.rs:672": [
-       "671:             Prefix(ref s) => s.is_match(candidate),",
-       "672:             Suffix(ref s) => s.is_match(candidate),",
-       "673:             RequiredExtension(ref s) => s.is_match(candidate),"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "665:     fn is_match(&self, candidate: &Candidate<'_>) -> bool {"
-     ],
-     "callee_decl": [
-      "870:     fn is_match(&self, candidate: &Candidate<'_>) -> bool {",
-      "871:         let path = candidate.path_suffix(self.longest);",
-      "872:         for m in self.matcher.find_overlapping_iter(path) {"
-     ]
-    },
-    {
-     "id": "f206a09a",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "[Sink]binary_data",
-     "callee": "as_path",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/printer/src/summary.rs:679",
-     "callee_at": "crates/printer/src/util.rs:353",
-     "call_site": {
-      "crates/printer/src/summary.rs:689": [
-       "688:                      offset {binary_byte_offset}\",",
-       "689:                     path = path.as_path().display(),",
-       "690:                 );"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "679:     fn binary_data("
-     ],
-     "callee_decl": [
-      "353:     pub(crate) fn as_path(&self) -> &Path {",
-      "354:         #[cfg(unix)]",
-      "355:         fn imp<'p>(p: &'p PrinterPath<'_>) -> &'p Path {"
-     ]
-    },
-    {
-     "id": "1c413754",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "line_terminator_crlf",
-     "callee": "crlf",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/pcre2/src/matcher.rs:455",
-     "callee_at": "crates/pcre2/src/matcher.rs:160",
-     "call_site": {
-      "crates/pcre2/src/matcher.rs:473": [
-       "472:             .multi_line(true)",
-       "473:             .crlf(true)",
-       "474:             .build(r\"abc$\")"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "455:     fn line_terminator_crlf() {"
-     ],
-     "callee_decl": [
-      "160:     pub fn crlf(&mut self, yes: bool) -> &mut RegexMatcherBuilder {",
-      "161:         self.builder.crlf(yes);",
-      "162:         self"
-     ]
-    },
-    {
-     "id": "3d479363",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "matches_all",
-     "callee": "matches_all",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/globset/src/lib.rs:695",
-     "callee_at": "crates/globset/src/lib.rs:880",
-     "call_site": {
-      "crates/globset/src/lib.rs:702": [
-       "701:             Prefix(ref s) => s.matches_all(candidate),",
-       "702:             Suffix(ref s) => s.matches_all(candidate),",
-       "703:             RequiredExtension(ref s) => s.matches_all(candidate),"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "695:     fn matches_all(&self, candidate: &Candidate<'_>) -> bool {"
-     ],
-     "callee_decl": [
-      "880:     fn matches_all(&self, candidate: &Candidate<'_>) -> bool {",
-      "881:         let path = candidate.path_suffix(self.longest);",
-      "882:         let mut count = 0;"
-     ]
-    },
-    {
-     "id": "96563fd6",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "carriage",
-     "callee": "escape",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/cli/src/escape.rs:121",
-     "callee_at": "crates/cli/src/escape.rs:26",
-     "call_site": {
-      "crates/cli/src/escape.rs:123": [
-       "122:         assert_eq!(b(b\"\\r\"), unescape(r\"\\r\"));",
-       "123:         assert_eq!(r\"\\r\", escape(b\"\\r\"));",
-       "124:     }"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "121:     fn carriage() {"
-     ],
-     "callee_decl": [
-      "26: pub fn escape(bytes: &[u8]) -> String {",
-      "27:     bytes.escape_bytes().to_string()",
-      "28: }"
-     ]
-    },
-    {
-     "id": "d76bbf0f",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "search_parallel",
-     "callee": "has_match",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/core/main.rs:160",
-     "callee_at": "crates/core/search.rs:178",
-     "call_site": {
-      "crates/core/main.rs:197": [
-       "196:             };",
-       "197:             if search_result.has_match() {",
-       "198:                 matched.store(true, Ordering::SeqCst);"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "160: fn search_parallel(args: &HiArgs, mode: SearchMode) -> anyhow::Result<bool> {"
-     ],
-     "callee_decl": [
-      "178:     pub(crate) fn has_match(&self) -> bool {",
-      "179:         self.has_match",
-      "180:     }"
-     ]
-    },
-    {
-     "id": "2193c4a3",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "is_match",
-     "callee": "is_match",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/globset/src/lib.rs:665",
-     "callee_at": "crates/globset/src/lib.rs:825",
-     "call_site": {
-      "crates/globset/src/lib.rs:671": [
-       "670:             Extension(ref s) => s.is_match(candidate),",
-       "671:             Prefix(ref s) => s.is_match(candidate),",
-       "672:             Suffix(ref s) => s.is_match(candidate),"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "665:     fn is_match(&self, candidate: &Candidate<'_>) -> bool {"
-     ],
-     "callee_decl": [
-      "825:     fn is_match(&self, candidate: &Candidate<'_>) -> bool {",
-      "826:         let path = candidate.path_prefix(self.longest);",
-      "827:         for m in self.matcher.find_overlapping_iter(path) {"
-     ]
-    },
-    {
-     "id": "e9271555",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "into_io_error",
-     "callee": "into_io_error",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/ignore/src/lib.rs:230",
-     "callee_at": "crates/ignore/src/lib.rs:230",
-     "call_site": {
-      "crates/ignore/src/lib.rs:234": [
-       "233:                 if errs.len() == 1 {",
-       "234:                     errs.remove(0).into_io_error()",
-       "235:                 } else {"
-      ],
-      "crates/ignore/src/lib.rs:239": [
-       "238:             }",
-       "239:             Error::WithLineNumber { err, .. } => err.into_io_error(),",
-       "240:             Error::WithPath { err, .. } => err.into_io_error(),"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "230:     pub fn into_io_error(self) -> Option<std::io::Error> {"
-     ],
-     "callee_decl": [
-      "230:     pub fn into_io_error(self) -> Option<std::io::Error> {",
-      "231:         match self {",
-      "232:             Error::Partial(mut errs) => {"
-     ]
-    },
-    {
-     "id": "a74e2ad1",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "matches_all",
-     "callee": "matches_all",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/globset/src/lib.rs:695",
-     "callee_at": "crates/globset/src/lib.rs:798",
-     "call_site": {
-      "crates/globset/src/lib.rs:700": [
-       "699:             BasenameLiteral(ref s) => s.matches_all(candidate),",
-       "700:             Extension(ref s) => s.matches_all(candidate),",
-       "701:             Prefix(ref s) => s.matches_all(candidate),"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "695:     fn matches_all(&self, candidate: &Candidate<'_>) -> bool {"
-     ],
-     "callee_decl": [
-      "798:     fn matches_all(&self, candidate: &Candidate<'_>) -> bool {",
-      "799:         self.0.len() == 1 && self.is_match(candidate)",
-      "800:     }"
-     ]
-    },
-    {
-     "id": "24855293",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "word",
-     "callee": "build",
-     "category": "no_edge_at_site",
-     "detail": null,
-     "caller_at": "crates/pcre2/src/matcher.rs:443",
-     "callee_at": "crates/pcre2/src/matcher.rs:37",
-     "call_site": {
-      "crates/pcre2/src/matcher.rs:445": [
-       "444:         let matcher =",
-       "445:             RegexMatcherBuilder::new().word(true).build(r\"-2\").unwrap();",
-       "446:         assert!(matcher.is_match(b\"abc -2 foo\").unwrap());"
-      ],
-      "crates/pcre2/src/matcher.rs:449": [
-       "448:         let matcher =",
-       "449:             RegexMatcherBuilder::new().word(false).build(r\"\\b-2\\b\").unwrap();",
-       "450:         assert!(!matcher.is_match(b\"abc -2 foo\").unwrap());"
-      ]
-     },
-     "fanout": 3,
-     "caller_decl": [
-      "443:     fn word() {"
-     ],
-     "callee_decl": [
-      "37:     pub fn build(&self, pattern: &str) -> Result<RegexMatcher, Error> {",
-      "38:         self.build_many(&[pattern])",
-      "39:     }"
-     ]
-    },
-    {
-     "id": "c507c5d7",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "e902f270",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
      "caller": "matches_into",
      "callee": "matches_into",
      "category": "no_edge_at_site",
      "detail": null,
      "caller_at": "crates/globset/src/lib.rs:678",
-     "callee_at": "crates/globset/src/lib.rs:803",
+     "callee_at": "crates/globset/src/lib.rs:893",
      "call_site": {
-      "crates/globset/src/lib.rs:687": [
-       "686:             BasenameLiteral(ref s) => s.matches_into(candidate, matches),",
-       "687:             Extension(ref s) => s.matches_into(candidate, matches),",
-       "688:             Prefix(ref s) => s.matches_into(candidate, matches),"
+      "crates/globset/src/lib.rs:689": [
+       "688:             Prefix(ref s) => s.matches_into(candidate, matches),",
+       "689:             Suffix(ref s) => s.matches_into(candidate, matches),",
+       "690:             RequiredExtension(ref s) => s.matches_into(candidate, matches),"
       ]
      },
      "fanout": 1,
@@ -2607,206 +2367,321 @@
       "678:     fn matches_into("
      ],
      "callee_decl": [
-      "803:     fn matches_into(",
-      "804:         &self,",
-      "805:         candidate: &Candidate<'_>,"
+      "893:     fn matches_into(",
+      "894:         &self,",
+      "895:         candidate: &Candidate<'_>,"
      ]
     },
     {
-     "id": "4e176012",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "f53f3f46",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
-     "caller": "other_context_by_line",
-     "callee": "end",
-     "category": "other_call_on_line_missed",
-     "detail": null,
-     "caller_at": "crates/searcher/src/searcher/core.rs:311",
-     "callee_at": "crates/matcher/src/lib.rs:100",
-     "call_site": {
-      "crates/searcher/src/searcher/core.rs:320": [
-       "319:             range.start(),",
-       "320:             range.end(),",
-       "321:         );"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "311:     pub(crate) fn other_context_by_line("
-     ],
-     "callee_decl": [
-      "100:     pub fn end(&self) -> usize {",
-      "101:         self.end",
-      "102:     }"
-     ]
-    },
-    {
-     "id": "1aa2aa45",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "configs",
-     "callee": "new",
+     "caller": "generate",
+     "callee": "generate",
      "category": "no_edge_at_site",
      "detail": null,
-     "caller_at": "crates/searcher/src/testutil.rs:516",
-     "callee_at": "crates/searcher/src/testutil.rs:32",
+     "caller_at": "crates/core/main.rs:355",
+     "callee_at": "crates/core/flags/complete/powershell.rs:43",
      "call_site": {
-      "crates/searcher/src/testutil.rs:519": [
-       "518: ",
-       "519:         let matcher = RegexMatcher::new(&self.pattern);",
-       "520:         let mut builder = SearcherBuilder::new();"
+      "crates/core/main.rs:364": [
+       "363:         GenerateMode::CompletePowerShell => {",
+       "364:             flags::generate_complete_powershell()",
+       "365:         }"
       ]
      },
      "fanout": 1,
      "caller_decl": [
-      "516:     fn configs(&self) -> Vec<TesterConfig> {"
+      "355: fn generate(mode: crate::flags::GenerateMode) -> anyhow::Result<ExitCode> {"
      ],
      "callee_decl": [
-      "32:     pub(crate) fn new(pattern: &str) -> RegexMatcher {",
-      "33:         let regex = RegexBuilder::new(pattern)",
-      "34:             .multi_line(true) // permits ^ and $ to match at \\n boundaries"
+      "43: pub(crate) fn generate() -> String {",
+      "44:     let mut flags = String::new();",
+      "45:     for (i, flag) in FLAGS.iter().enumerate() {"
      ]
     },
     {
-     "id": "7701037d",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "19f79140",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
-     "caller": "write_colored_line",
-     "callee": "[WriteColor]supports_color",
+     "caller": "path",
+     "callee": "path",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/ignore/src/walk.rs:137",
+     "callee_at": "crates/ignore/src/walk.rs:271",
+     "call_site": {
+      "crates/ignore/src/walk.rs:142": [
+       "141:             Walkdir(ref x) => x.path(),",
+       "142:             Raw(ref x) => x.path(),",
+       "143:         }"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "137:     fn path(&self) -> &Path {"
+     ],
+     "callee_decl": [
+      "271:     fn path(&self) -> &Path {",
+      "272:         &self.path",
+      "273:     }"
+     ]
+    },
+    {
+     "id": "44ec0ed3",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "case_smart",
+     "callee": "build",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/regex/src/matcher.rs:626",
+     "callee_at": "crates/regex/src/matcher.rs:45",
+     "call_site": {
+      "crates/regex/src/matcher.rs:628": [
+       "627:         let matcher =",
+       "628:             RegexMatcherBuilder::new().case_smart(true).build(r\"abc\").unwrap();",
+       "629:         assert!(matcher.is_match(b\"ABC\").unwrap());"
+      ],
+      "crates/regex/src/matcher.rs:632": [
+       "631:         let matcher =",
+       "632:             RegexMatcherBuilder::new().case_smart(true).build(r\"aBc\").unwrap();",
+       "633:         assert!(!matcher.is_match(b\"ABC\").unwrap());"
+      ]
+     },
+     "fanout": 3,
+     "caller_decl": [
+      "626:     fn case_smart() {"
+     ],
+     "callee_decl": [
+      "45:     pub fn build(&self, pattern: &str) -> Result<RegexMatcher, Error> {",
+      "46:         self.build_many(&[pattern])",
+      "47:     }"
+     ]
+    },
+    {
+     "id": "a1e081c8",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "metadata",
+     "callee": "metadata",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/ignore/src/walk.rs:171",
+     "callee_at": "crates/ignore/src/walk.rs:283",
+     "call_site": {
+      "crates/ignore/src/walk.rs:186": [
+       "185:             }),",
+       "186:             Raw(ref x) => x.metadata(),",
+       "187:         }"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "171:     fn metadata(&self) -> Result<Metadata, Error> {"
+     ],
+     "callee_decl": [
+      "283:     fn metadata(&self) -> Result<Metadata, Error> {",
+      "284:         self.metadata_internal()",
+      "285:     }"
+     ]
+    },
+    {
+     "id": "d5d02850",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "before_context_by_line",
+     "callee": "is_empty",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/searcher/src/searcher/core.rs:240",
+     "callee_at": "crates/matcher/src/lib.rs:153",
+     "call_site": {
+      "crates/searcher/src/searcher/core.rs:249": [
+       "248:         let range = Range::new(self.last_line_visited, upto);",
+       "249:         if range.is_empty() {",
+       "250:             return Ok(true);"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "240:     pub(crate) fn before_context_by_line("
+     ],
+     "callee_decl": [
+      "153:     pub fn is_empty(&self) -> bool {",
+      "154:         self.len() == 0",
+      "155:     }"
+     ]
+    },
+    {
+     "id": "24a355fc",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "new",
+     "callee": "[Default]default",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/printer/src/json.rs:60",
+     "callee_at": "crates/printer/src/json.rs:32",
+     "call_site": {
+      "crates/printer/src/json.rs:61": [
+       "60:     pub fn new() -> JSONBuilder {",
+       "61:         JSONBuilder { config: Config::default() }",
+       "62:     }"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "60:     pub fn new() -> JSONBuilder {"
+     ],
+     "callee_decl": [
+      "32:     fn default() -> Config {",
+      "33:         Config {",
+      "34:             pretty: false,"
+     ]
+    },
+    {
+     "id": "eb4d59d0",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "end_line_highlight",
+     "callee": "[WriteColor]reset",
      "category": "other_call_on_line_missed",
      "detail": null,
-     "caller_at": "crates/printer/src/standard.rs:1219",
-     "callee_at": "crates/printer/src/counter.rs:69",
+     "caller_at": "crates/printer/src/standard.rs:1512",
+     "callee_at": "crates/printer/src/counter.rs:89",
      "call_site": {
-      "crates/printer/src/standard.rs:1226": [
-       "1225:         let spec = self.config().colors.matched();",
-       "1226:         if !self.wtr().borrow().supports_color() || spec.is_none() {",
-       "1227:             return self.write_line(bytes);"
+      "crates/printer/src/standard.rs:1514": [
+       "1513:         if self.highlight_on() {",
+       "1514:             self.wtr().borrow_mut().reset()?;",
+       "1515:         }"
       ]
      },
      "fanout": 2,
      "caller_decl": [
-      "1219:     fn write_colored_line("
+      "1512:     fn end_line_highlight(&self) -> io::Result<()> {"
      ],
      "callee_decl": [
-      "69:     fn supports_color(&self) -> bool {",
-      "70:         self.wtr.supports_color()",
-      "71:     }"
+      "89:     fn reset(&mut self) -> io::Result<()> {",
+      "90:         self.wtr.reset()",
+      "91:     }"
      ]
     },
     {
-     "id": "ef56579e",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "b08ace6f",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
-     "caller": "check_symlink_loop",
-     "callee": "path",
-     "category": "marked_external",
-     "detail": {
-      "lidx_target": "ext:Handle::from_path",
-      "resolution_kind": "external"
-     },
-     "caller_at": "crates/ignore/src/walk.rs:1961",
-     "callee_at": "crates/ignore/src/dir.rs:721",
-     "call_site": {
-      "crates/ignore/src/walk.rs:1970": [
-       "1969:     for ig in ig_parent.parents().take_while(|ig| !ig.is_absolute_parent()) {",
-       "1970:         let h = Handle::from_path(ig.path()).map_err(|err| {",
-       "1971:             Error::from(err).with_path(child_path).with_depth(child_depth)"
-      ],
-      "crates/ignore/src/walk.rs:1975": [
-       "1974:             return Err(Error::Loop {",
-       "1975:                 ancestor: ig.path().to_path_buf(),",
-       "1976:                 child: child_path.to_path_buf(),"
-      ]
-     },
-     "fanout": 1,
-     "caller_decl": [
-      "1961: fn check_symlink_loop("
-     ],
-     "callee_decl": [
-      "721:     pub(crate) fn path(&self) -> &Path {",
-      "722:         &self.inner.dir",
-      "723:     }"
-     ]
-    },
-    {
-     "id": "bffe4814",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "kind": "fn",
-     "caller": "new",
-     "callee": "end",
+     "caller": "case_smart",
+     "callee": "case_smart",
      "category": "no_edge_at_site",
      "detail": null,
-     "caller_at": "crates/printer/src/json.rs:856",
-     "callee_at": "crates/matcher/src/lib.rs:100",
+     "caller_at": "crates/regex/src/matcher.rs:626",
+     "callee_at": "crates/regex/src/matcher.rs:120",
      "call_site": {
-      "crates/printer/src/json.rs:868": [
-       "867:                 start: mat.start(),",
-       "868:                 end: mat.end(),",
-       "869:             }])"
+      "crates/regex/src/matcher.rs:628": [
+       "627:         let matcher =",
+       "628:             RegexMatcherBuilder::new().case_smart(true).build(r\"abc\").unwrap();",
+       "629:         assert!(matcher.is_match(b\"ABC\").unwrap());"
       ],
-      "crates/printer/src/json.rs:878": [
-       "877:                     start: mat.start(),",
-       "878:                     end: mat.end(),",
-       "879:                 });"
+      "crates/regex/src/matcher.rs:632": [
+       "631:         let matcher =",
+       "632:             RegexMatcherBuilder::new().case_smart(true).build(r\"aBc\").unwrap();",
+       "633:         assert!(!matcher.is_match(b\"ABC\").unwrap());"
       ]
      },
-     "fanout": 1,
+     "fanout": 3,
      "caller_decl": [
-      "856:     fn new("
+      "626:     fn case_smart() {"
      ],
      "callee_decl": [
-      "100:     pub fn end(&self) -> usize {",
-      "101:         self.end",
-      "102:     }"
+      "120:     pub fn case_smart(&mut self, yes: bool) -> &mut RegexMatcherBuilder {",
+      "121:         self.config.case_smart = yes;",
+      "122:         self"
      ]
     },
     {
-     "id": "63d58e1c",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "2f59b077",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
-     "caller": "path_is_symlink",
-     "callee": "path_is_symlink",
+     "caller": "build",
+     "callee": "is_whitelist",
      "category": "no_edge_at_site",
      "detail": null,
-     "caller_at": "crates/ignore/src/walk.rs:155",
-     "callee_at": "crates/ignore/src/walk.rs:279",
+     "caller_at": "crates/ignore/src/gitignore.rs:349",
+     "callee_at": "crates/ignore/src/gitignore.rs:63",
      "call_site": {
-      "crates/ignore/src/walk.rs:160": [
-       "159:             Walkdir(ref x) => x.path_is_symlink(),",
-       "160:             Raw(ref x) => x.path_is_symlink(),",
-       "161:         }"
+      "crates/ignore/src/gitignore.rs:350": [
+       "349:     pub fn build(&self) -> Result<Gitignore, Error> {",
+       "350:         let nignore = self.globs.iter().filter(|g| !g.is_whitelist()).count();",
+       "351:         let nwhite = self.globs.iter().filter(|g| g.is_whitelist()).count();"
+      ],
+      "crates/ignore/src/gitignore.rs:351": [
+       "350:         let nignore = self.globs.iter().filter(|g| !g.is_whitelist()).count();",
+       "351:         let nwhite = self.globs.iter().filter(|g| g.is_whitelist()).count();",
+       "352:         let set = self"
       ]
      },
      "fanout": 1,
      "caller_decl": [
-      "155:     fn path_is_symlink(&self) -> bool {"
+      "349:     pub fn build(&self) -> Result<Gitignore, Error> {"
      ],
      "callee_decl": [
-      "279:     fn path_is_symlink(&self) -> bool {",
-      "280:         self.ty.is_symlink() || self.follow_link",
-      "281:     }"
+      "63:     pub fn is_whitelist(&self) -> bool {",
+      "64:         self.is_whitelist",
+      "65:     }"
      ]
     },
     {
-     "id": "2cac66a7",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "ca673999",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
-     "caller": "absolute_path",
+     "caller": "after_context_by_line",
+     "callee": "start",
+     "category": "other_call_on_line_missed",
+     "detail": null,
+     "caller_at": "crates/searcher/src/searcher/core.rs:276",
+     "callee_at": "crates/matcher/src/lib.rs:94",
+     "call_site": {
+      "crates/searcher/src/searcher/core.rs:288": [
+       "287:             self.config.line_term.as_byte(),",
+       "288:             range.start(),",
+       "289:             range.end(),"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "276:     pub(crate) fn after_context_by_line("
+     ],
+     "callee_decl": [
+      "94:     pub fn start(&self) -> usize {",
+      "95:         self.start",
+      "96:     }"
+     ]
+    },
+    {
+     "id": "64932513",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "empty",
      "callee": "is_none",
      "category": "no_edge_at_site",
      "detail": null,
-     "caller_at": "crates/ignore/src/overrides.rs:264",
+     "caller_at": "crates/ignore/src/overrides.rs:201",
      "callee_at": "crates/ignore/src/lib.rs:427",
      "call_site": {
-      "crates/ignore/src/overrides.rs:266": [
-       "265:         let ov = ov(&[\"!/bar\"]);",
-       "266:         assert!(ov.matched(\"./foo/bar\", false).is_none());",
-       "267:     }"
+      "crates/ignore/src/overrides.rs:203": [
+       "202:         let ov = ov(&[]);",
+       "203:         assert!(ov.matched(\"a.foo\", false).is_none());",
+       "204:         assert!(ov.matched(\"a\", false).is_none());"
+      ],
+      "crates/ignore/src/overrides.rs:204": [
+       "203:         assert!(ov.matched(\"a.foo\", false).is_none());",
+       "204:         assert!(ov.matched(\"a\", false).is_none());",
+       "205:         assert!(ov.matched(\"\", false).is_none());"
       ]
      },
      "fanout": 2,
      "caller_decl": [
-      "264:     fn absolute_path() {"
+      "201:     fn empty() {"
      ],
      "callee_decl": [
       "427:     pub fn is_none(&self) -> bool {",
@@ -2815,30 +2690,187 @@
      ]
     },
     {
-     "id": "45c196bc",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "191f4c69",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "kind": "fn",
-     "caller": "match_by_line_fast_invert",
+     "caller": "nothing_hex2",
+     "callee": "escape",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/cli/src/escape.rs:148",
+     "callee_at": "crates/cli/src/escape.rs:26",
+     "call_site": {
+      "crates/cli/src/escape.rs:151": [
+       "150:         assert_eq!(b(b\"\\\\xzz\"), unescape(r\"\\\\xzz\"));",
+       "151:         assert_eq!(r\"\\\\xzz\", escape(b\"\\\\xzz\"));",
+       "152:     }"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "148:     fn nothing_hex2() {"
+     ],
+     "callee_decl": [
+      "26: pub fn escape(bytes: &[u8]) -> String {",
+      "27:     bytes.escape_bytes().to_string()",
+      "28: }"
+     ]
+    },
+    {
+     "id": "899a23e2",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "build",
+     "callee": "path",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/core/haystack.rs:49",
+     "callee_at": "crates/ignore/src/walk.rs:37",
+     "call_site": {
+      "crates/core/haystack.rs:73": [
+       "72:                  file type: {:?}, metadata: {:?}\",",
+       "73:                 hay.dent.path().display(),",
+       "74:                 hay.dent.file_type(),"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "49:     fn build(&self, dent: ignore::DirEntry) -> Option<Haystack> {"
+     ],
+     "callee_decl": [
+      "37:     pub fn path(&self) -> &Path {",
+      "38:         self.dent.path()",
+      "39:     }"
+     ]
+    },
+    {
+     "id": "f082c46b",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "matches_all",
+     "callee": "matches_all",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/globset/src/lib.rs:695",
+     "callee_at": "crates/globset/src/lib.rs:997",
+     "call_site": {
+      "crates/globset/src/lib.rs:704": [
+       "703:             RequiredExtension(ref s) => s.matches_all(candidate),",
+       "704:             Regex(ref s) => s.matches_all(candidate),",
+       "705:         }"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "695:     fn matches_all(&self, candidate: &Candidate<'_>) -> bool {"
+     ],
+     "callee_decl": [
+      "997:     fn matches_all(&self, candidate: &Candidate<'_>) -> bool {",
+      "998:         let patset = self.find_matches(candidate);",
+      "999:         patset.is_full()"
+     ]
+    },
+    {
+     "id": "c4dd838d",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "into_inner",
+     "callee": "into_inner",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/printer/src/standard.rs:611",
+     "callee_at": "crates/printer/src/counter.rs:47",
+     "call_site": {
+      "crates/printer/src/standard.rs:612": [
+       "611:     pub fn into_inner(self) -> W {",
+       "612:         self.wtr.into_inner().into_inner()",
+       "613:     }"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "611:     pub fn into_inner(self) -> W {"
+     ],
+     "callee_decl": [
+      "47:     pub(crate) fn into_inner(self) -> W {",
+      "48:         self.wtr",
+      "49:     }"
+     ]
+    },
+    {
+     "id": "75c98424",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "visit",
+     "callee": "run",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/ignore/src/walk.rs:1393",
+     "callee_at": "crates/ignore/src/walk.rs:1695",
+     "call_site": {
+      "crates/ignore/src/walk.rs:1463": [
+       "1462:                 })",
+       "1463:                 .map(|worker| s.spawn(|| worker.run()))",
+       "1464:                 .collect();"
+      ]
+     },
+     "fanout": 1,
+     "caller_decl": [
+      "1393:     pub fn visit(mut self, builder: &mut dyn ParallelVisitorBuilder<'_>) {"
+     ],
+     "callee_decl": [
+      "1695:     fn run(mut self) {",
+      "1696:         while let Some(work) = self.get_work() {",
+      "1697:             if let WalkState::Quit = self.run_one(work) {"
+     ]
+    },
+    {
+     "id": "347edabc",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "definitions",
+     "callee": "name",
+     "category": "no_edge_at_site",
+     "detail": null,
+     "caller_at": "crates/ignore/src/types.rs:367",
+     "callee_at": "crates/ignore/src/types.rs:153",
+     "call_site": {
+      "crates/ignore/src/types.rs:374": [
+       "373:         }",
+       "374:         defs.sort_by(|def1, def2| def1.name().cmp(def2.name()));",
+       "375:         defs"
+      ]
+     },
+     "fanout": 2,
+     "caller_decl": [
+      "367:     pub fn definitions(&self) -> Vec<FileTypeDef> {"
+     ],
+     "callee_decl": [
+      "153:     pub fn name(&self) -> &str {",
+      "154:         &self.name",
+      "155:     }"
+     ]
+    },
+    {
+     "id": "58208150",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "kind": "fn",
+     "caller": "other_context_by_line",
      "callee": "start",
      "category": "other_call_on_line_missed",
      "detail": null,
-     "caller_at": "crates/searcher/src/searcher/core.rs:430",
+     "caller_at": "crates/searcher/src/searcher/core.rs:311",
      "callee_at": "crates/matcher/src/lib.rs:94",
      "call_site": {
-      "crates/searcher/src/searcher/core.rs:443": [
-       "442:             Some(line) => {",
-       "443:                 let range = Range::new(self.pos(), line.start());",
-       "444:                 self.set_pos(line.end());"
-      ],
-      "crates/searcher/src/searcher/core.rs:452": [
-       "451:         self.has_matched = true;",
-       "452:         if !self.after_context_by_line(buf, invert_match.start())? {",
-       "453:             return Ok(false);"
+      "crates/searcher/src/searcher/core.rs:319": [
+       "318:             self.config.line_term.as_byte(),",
+       "319:             range.start(),",
+       "320:             range.end(),"
       ]
      },
-     "fanout": 3,
+     "fanout": 1,
      "caller_decl": [
-      "430:     fn match_by_line_fast_invert("
+      "311:     pub(crate) fn other_context_by_line("
      ],
      "callee_decl": [
       "94:     pub fn start(&self) -> usize {",
@@ -4581,108 +4613,33 @@
   "rust": {
    "capture_gap:macro_generated": [
     {
-     "id": "e87071db",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "e9b0e32f",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "capture_gap:macro_generated",
      "bucket_size": 62,
-     "caller": "cls18",
-     "callee": "rclassn",
-     "caller_at": "crates/globset/src/glob.rs:1266",
-     "callee_at": "crates/globset/src/glob.rs:1221",
+     "caller": "extract_prefix1",
+     "callee": "s",
+     "caller_at": "crates/globset/src/glob.rs:1669",
+     "callee_at": "crates/globset/src/glob.rs:1205",
      "call_site": {
-      "crates/globset/src/glob.rs:1266": [
-       "1265:     syntax!(cls17, \"[a-z0-9]\", vec![rclass(&[('a', 'z'), ('0', '9')])]);",
-       "1266:     syntax!(cls18, \"[!0-9a-z]\", vec![rclassn(&[('0', '9'), ('a', 'z')])]);",
-       "1267:     syntax!(cls19, \"[!a-z0-9]\", vec![rclassn(&[('a', 'z'), ('0', '9')])]);"
+      "crates/globset/src/glob.rs:1669": [
+       "1668: ",
+       "1669:     prefix!(extract_prefix1, \"/foo\", Some(s(\"/foo\")));",
+       "1670:     prefix!(extract_prefix2, \"/foo/*\", Some(s(\"/foo/\")));"
       ]
      },
      "caller_decl": [
-      "1266:     syntax!(cls18, \"[!0-9a-z]\", vec![rclassn(&[('0', '9'), ('a', 'z')])]);"
+      "1669:     prefix!(extract_prefix1, \"/foo\", Some(s(\"/foo\")));"
      ],
      "callee_decl": [
-      "1221:     fn rclassn(ranges: &[(char, char)]) -> Token {",
-      "1222:         Class { negated: true, ranges: ranges.to_vec() }",
-      "1223:     }"
+      "1205:     fn s(string: &str) -> String {",
+      "1206:         string.to_string()",
+      "1207:     }"
      ]
     },
     {
-     "id": "b0b1e990",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "capture_gap:macro_generated",
-     "bucket_size": 62,
-     "caller": "matchnot2",
-     "callee": "types",
-     "caller_at": "crates/ignore/src/types.rs:555",
-     "callee_at": "crates/ignore/src/types.rs:529",
-     "call_site": {
-      "crates/ignore/src/types.rs:555": [
-       "554:     matched!(not, matchnot1, types(), vec![\"rust\"], vec![], \"index.html\");",
-       "555:     matched!(not, matchnot2, types(), vec![], vec![\"rust\"], \"main.rs\");",
-       "556:     matched!(not, matchnot3, types(), vec![\"foo\"], vec![\"rust\"], \"main.rs\");"
-      ]
-     },
-     "caller_decl": [
-      "555:     matched!(not, matchnot2, types(), vec![], vec![\"rust\"], \"main.rs\");"
-     ],
-     "callee_decl": [
-      "529:     fn types() -> Vec<&'static str> {",
-      "530:         vec![",
-      "531:             \"html:*.html\","
-     ]
-    },
-    {
-     "id": "ce1ba5b6",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "capture_gap:macro_generated",
-     "bucket_size": 62,
-     "caller": "matchnot4",
-     "callee": "types",
-     "caller_at": "crates/ignore/src/types.rs:557",
-     "callee_at": "crates/ignore/src/types.rs:529",
-     "call_site": {
-      "crates/ignore/src/types.rs:557": [
-       "556:     matched!(not, matchnot3, types(), vec![\"foo\"], vec![\"rust\"], \"main.rs\");",
-       "557:     matched!(not, matchnot4, types(), vec![\"rust\"], vec![\"foo\"], \"main.rs\");",
-       "558:     matched!(not, matchnot5, types(), vec![\"rust\"], vec![\"foo\"], \"main.foo\");"
-      ]
-     },
-     "caller_decl": [
-      "557:     matched!(not, matchnot4, types(), vec![\"rust\"], vec![\"foo\"], \"main.rs\");"
-     ],
-     "callee_decl": [
-      "529:     fn types() -> Vec<&'static str> {",
-      "530:         vec![",
-      "531:             \"html:*.html\","
-     ]
-    },
-    {
-     "id": "df12a935",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "capture_gap:macro_generated",
-     "bucket_size": 62,
-     "caller": "cls7",
-     "callee": "class",
-     "caller_at": "crates/globset/src/glob.rs:1251",
-     "callee_at": "crates/globset/src/glob.rs:1209",
-     "call_site": {
-      "crates/globset/src/glob.rs:1251": [
-       "1250:     syntax!(cls6, \"[]]\", vec![class(']', ']')]);",
-       "1251:     syntax!(cls7, \"[*]\", vec![class('*', '*')]);",
-       "1252:     syntax!(cls8, \"[!!]\", vec![classn('!', '!')]);"
-      ]
-     },
-     "caller_decl": [
-      "1251:     syntax!(cls7, \"[*]\", vec![class('*', '*')]);"
-     ],
-     "callee_decl": [
-      "1209:     fn class(s: char, e: char) -> Token {",
-      "1210:         Class { negated: false, ranges: vec![(s, e)] }",
-      "1211:     }"
-     ]
-    },
-    {
-     "id": "5f7904e4",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "9c32eeba",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "capture_gap:macro_generated",
      "bucket_size": 62,
      "caller": "cls4",
@@ -4706,8 +4663,33 @@
      ]
     },
     {
-     "id": "eedffa74",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "d3beec70",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "capture_gap:macro_generated",
+     "bucket_size": 62,
+     "caller": "cls6",
+     "callee": "class",
+     "caller_at": "crates/globset/src/glob.rs:1250",
+     "callee_at": "crates/globset/src/glob.rs:1209",
+     "call_site": {
+      "crates/globset/src/glob.rs:1250": [
+       "1249:     syntax!(cls5, \"[-]\", vec![class('-', '-')]);",
+       "1250:     syntax!(cls6, \"[]]\", vec![class(']', ']')]);",
+       "1251:     syntax!(cls7, \"[*]\", vec![class('*', '*')]);"
+      ]
+     },
+     "caller_decl": [
+      "1250:     syntax!(cls6, \"[]]\", vec![class(']', ']')]);"
+     ],
+     "callee_decl": [
+      "1209:     fn class(s: char, e: char) -> Token {",
+      "1210:         Class { negated: false, ranges: vec![(s, e)] }",
+      "1211:     }"
+     ]
+    },
+    {
+     "id": "d974e618",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "capture_gap:macro_generated",
      "bucket_size": 62,
      "caller": "extract_lit4",
@@ -4731,83 +4713,8 @@
      ]
     },
     {
-     "id": "0ad208f3",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "capture_gap:macro_generated",
-     "bucket_size": 62,
-     "caller": "cls8",
-     "callee": "classn",
-     "caller_at": "crates/globset/src/glob.rs:1252",
-     "callee_at": "crates/globset/src/glob.rs:1213",
-     "call_site": {
-      "crates/globset/src/glob.rs:1252": [
-       "1251:     syntax!(cls7, \"[*]\", vec![class('*', '*')]);",
-       "1252:     syntax!(cls8, \"[!!]\", vec![classn('!', '!')]);",
-       "1253:     syntax!(cls9, \"[a-]\", vec![rclass(&[('a', 'a'), ('-', '-')])]);"
-      ]
-     },
-     "caller_decl": [
-      "1252:     syntax!(cls8, \"[!!]\", vec![classn('!', '!')]);"
-     ],
-     "callee_decl": [
-      "1213:     fn classn(s: char, e: char) -> Token {",
-      "1214:         Class { negated: true, ranges: vec![(s, e)] }",
-      "1215:     }"
-     ]
-    },
-    {
-     "id": "fbc2b43b",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "capture_gap:macro_generated",
-     "bucket_size": 62,
-     "caller": "cls2",
-     "callee": "classn",
-     "caller_at": "crates/globset/src/glob.rs:1246",
-     "callee_at": "crates/globset/src/glob.rs:1213",
-     "call_site": {
-      "crates/globset/src/glob.rs:1246": [
-       "1245:     syntax!(cls1, \"[a]\", vec![class('a', 'a')]);",
-       "1246:     syntax!(cls2, \"[!a]\", vec![classn('a', 'a')]);",
-       "1247:     syntax!(cls3, \"[a-z]\", vec![class('a', 'z')]);"
-      ]
-     },
-     "caller_decl": [
-      "1246:     syntax!(cls2, \"[!a]\", vec![classn('a', 'a')]);"
-     ],
-     "callee_decl": [
-      "1213:     fn classn(s: char, e: char) -> Token {",
-      "1214:         Class { negated: true, ranges: vec![(s, e)] }",
-      "1215:     }"
-     ]
-    },
-    {
-     "id": "9c22b0c8",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "capture_gap:macro_generated",
-     "bucket_size": 62,
-     "caller": "matchnot5",
-     "callee": "types",
-     "caller_at": "crates/ignore/src/types.rs:558",
-     "callee_at": "crates/ignore/src/types.rs:529",
-     "call_site": {
-      "crates/ignore/src/types.rs:558": [
-       "557:     matched!(not, matchnot4, types(), vec![\"rust\"], vec![\"foo\"], \"main.rs\");",
-       "558:     matched!(not, matchnot5, types(), vec![\"rust\"], vec![\"foo\"], \"main.foo\");",
-       "559:     matched!(not, matchnot6, types(), vec![\"combo\"], vec![], \"leftpad.js\");"
-      ]
-     },
-     "caller_decl": [
-      "558:     matched!(not, matchnot5, types(), vec![\"rust\"], vec![\"foo\"], \"main.foo\");"
-     ],
-     "callee_decl": [
-      "529:     fn types() -> Vec<&'static str> {",
-      "530:         vec![",
-      "531:             \"html:*.html\","
-     ]
-    },
-    {
-     "id": "cc693aa1",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "50930cdd",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "capture_gap:macro_generated",
      "bucket_size": 62,
      "caller": "extract_ext3",
@@ -4829,157 +4736,152 @@
       "1206:         string.to_string()",
       "1207:     }"
      ]
+    },
+    {
+     "id": "f8bd79ae",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "capture_gap:macro_generated",
+     "bucket_size": 62,
+     "caller": "match2",
+     "callee": "types",
+     "caller_at": "crates/ignore/src/types.rs:543",
+     "callee_at": "crates/ignore/src/types.rs:529",
+     "call_site": {
+      "crates/ignore/src/types.rs:543": [
+       "542:     matched!(match1, types(), vec![\"rust\"], vec![], \"lib.rs\");",
+       "543:     matched!(match2, types(), vec![\"html\"], vec![], \"index.html\");",
+       "544:     matched!(match3, types(), vec![\"html\"], vec![], \"index.htm\");"
+      ]
+     },
+     "caller_decl": [
+      "543:     matched!(match2, types(), vec![\"html\"], vec![], \"index.html\");"
+     ],
+     "callee_decl": [
+      "529:     fn types() -> Vec<&'static str> {",
+      "530:         vec![",
+      "531:             \"html:*.html\","
+     ]
+    },
+    {
+     "id": "0b713c43",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "capture_gap:macro_generated",
+     "bucket_size": 62,
+     "caller": "matchnot6",
+     "callee": "types",
+     "caller_at": "crates/ignore/src/types.rs:559",
+     "callee_at": "crates/ignore/src/types.rs:529",
+     "call_site": {
+      "crates/ignore/src/types.rs:559": [
+       "558:     matched!(not, matchnot5, types(), vec![\"rust\"], vec![\"foo\"], \"main.foo\");",
+       "559:     matched!(not, matchnot6, types(), vec![\"combo\"], vec![], \"leftpad.js\");",
+       "560:     matched!(not, matchnot7, types(), vec![\"py\"], vec![], \"index.html\");"
+      ]
+     },
+     "caller_decl": [
+      "559:     matched!(not, matchnot6, types(), vec![\"combo\"], vec![], \"leftpad.js\");"
+     ],
+     "callee_decl": [
+      "529:     fn types() -> Vec<&'static str> {",
+      "530:         vec![",
+      "531:             \"html:*.html\","
+     ]
+    },
+    {
+     "id": "fbfa6719",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "capture_gap:macro_generated",
+     "bucket_size": 62,
+     "caller": "extract_suffix5",
+     "callee": "s",
+     "caller_at": "crates/globset/src/glob.rs:1678",
+     "callee_at": "crates/globset/src/glob.rs:1205",
+     "call_site": {
+      "crates/globset/src/glob.rs:1678": [
+       "1677:     suffix!(extract_suffix4, \"foo/bar\", Some((s(\"foo/bar\"), false)));",
+       "1678:     suffix!(extract_suffix5, \"*.foo\", Some((s(\".foo\"), false)));",
+       "1679:     suffix!(extract_suffix6, \"*.foo\", None, SLASHLIT);"
+      ]
+     },
+     "caller_decl": [
+      "1678:     suffix!(extract_suffix5, \"*.foo\", Some((s(\".foo\"), false)));"
+     ],
+     "callee_decl": [
+      "1205:     fn s(string: &str) -> String {",
+      "1206:         string.to_string()",
+      "1207:     }"
+     ]
+    },
+    {
+     "id": "9171d4c6",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "capture_gap:macro_generated",
+     "bucket_size": 62,
+     "caller": "match4",
+     "callee": "types",
+     "caller_at": "crates/ignore/src/types.rs:545",
+     "callee_at": "crates/ignore/src/types.rs:529",
+     "call_site": {
+      "crates/ignore/src/types.rs:545": [
+       "544:     matched!(match3, types(), vec![\"html\"], vec![], \"index.htm\");",
+       "545:     matched!(match4, types(), vec![\"html\", \"rust\"], vec![], \"main.rs\");",
+       "546:     matched!(match5, types(), vec![], vec![], \"index.html\");"
+      ]
+     },
+     "caller_decl": [
+      "545:     matched!(match4, types(), vec![\"html\", \"rust\"], vec![], \"main.rs\");"
+     ],
+     "callee_decl": [
+      "529:     fn types() -> Vec<&'static str> {",
+      "530:         vec![",
+      "531:             \"html:*.html\","
+     ]
+    },
+    {
+     "id": "c3dcfc0f",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "capture_gap:macro_generated",
+     "bucket_size": 62,
+     "caller": "extract_req_ext5",
+     "callee": "s",
+     "caller_at": "crates/globset/src/glob.rs:1663",
+     "callee_at": "crates/globset/src/glob.rs:1205",
+     "call_site": {
+      "crates/globset/src/glob.rs:1663": [
+       "1662:     required_ext!(extract_req_ext4, \"/foo/bar/.rs\", Some(s(\".rs\")));",
+       "1663:     required_ext!(extract_req_ext5, \".rs\", Some(s(\".rs\")));",
+       "1664:     required_ext!(extract_req_ext6, \"./rs\", None);"
+      ]
+     },
+     "caller_decl": [
+      "1663:     required_ext!(extract_req_ext5, \".rs\", Some(s(\".rs\")));"
+     ],
+     "callee_decl": [
+      "1205:     fn s(string: &str) -> String {",
+      "1206:         string.to_string()",
+      "1207:     }"
+     ]
     }
    ],
    "dispatch": [
     {
-     "id": "cb548fbf",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "e0e1cf10",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "dispatch",
      "bucket_size": 127,
-     "caller": "replace_with_captures_at",
-     "callee": "get",
-     "caller_at": "crates/matcher/src/lib.rs:948",
-     "callee_at": "crates/matcher/src/lib.rs:390",
-     "call_site": {
-      "crates/matcher/src/lib.rs:961": [
-       "960:         self.captures_iter_at(haystack, at, caps, |caps| {",
-       "961:             let m = caps.get(0).unwrap();",
-       "962:             dst.extend(&haystack[last_match..m.start]);"
-      ]
-     },
-     "caller_decl": [
-      "948:     fn replace_with_captures_at<F>("
-     ],
-     "callee_decl": [
-      "390:     fn get(&self, i: usize) -> Option<Match>;",
-      "391: ",
-      "392:     /// Return the overall match for the capture."
-     ]
-    },
-    {
-     "id": "e926b5cc",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "dispatch",
-     "bucket_size": 127,
-     "caller": "[Matcher]non_matching_bytes",
-     "callee": "non_matching_bytes",
-     "caller_at": "crates/matcher/src/lib.rs:1363",
-     "callee_at": "crates/matcher/src/lib.rs:1065",
-     "call_site": {
-      "crates/matcher/src/lib.rs:1364": [
-       "1363:     fn non_matching_bytes(&self) -> Option<&ByteSet> {",
-       "1364:         (*self).non_matching_bytes()",
-       "1365:     }"
-      ]
-     },
-     "caller_decl": [
-      "1363:     fn non_matching_bytes(&self) -> Option<&ByteSet> {"
-     ],
-     "callee_decl": [
-      "1065:     fn non_matching_bytes(&self) -> Option<&ByteSet> {",
-      "1066:         None",
-      "1067:     }"
-     ]
-    },
-    {
-     "id": "95b94969",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "dispatch",
-     "bucket_size": 127,
-     "caller": "parse",
-     "callee": "update",
-     "caller_at": "crates/core/flags/parse.rs:221",
-     "callee_at": "crates/core/flags/mod.rs:177",
-     "call_site": {
-      "crates/core/flags/parse.rs:286": [
-       "285:             mat.flag",
-       "286:                 .update(value, args)",
-       "287:                 .with_context(|| format!(\"error parsing flag {mat}\"))?;"
-      ]
-     },
-     "caller_decl": [
-      "221:     fn parse<I, O>(&self, rawargs: I, args: &mut LowArgs) -> anyhow::Result<()>"
-     ],
-     "callee_decl": [
-      "177:     fn update(",
-      "178:         &self,",
-      "179:         value: FlagValue,"
-     ]
-    },
-    {
-     "id": "e98da0b5",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "dispatch",
-     "bucket_size": 127,
-     "caller": "generate",
-     "callee": "doc_choices",
-     "caller_at": "crates/core/flags/complete/bash.rs:63",
-     "callee_at": "crates/core/flags/mod.rs:149",
-     "call_site": {
-      "crates/core/flags/complete/bash.rs:84": [
-       "83:     for flag in FLAGS.iter() {",
-       "84:         let template = if !flag.doc_choices().is_empty() {",
-       "85:             let choices = flag.doc_choices().join(\" \");"
-      ],
-      "crates/core/flags/complete/bash.rs:85": [
-       "84:         let template = if !flag.doc_choices().is_empty() {",
-       "85:             let choices = flag.doc_choices().join(\" \");",
-       "86:             TEMPLATE_CASE_CHOICES.trim_end().replace(\"!CHOICES!\", &choices)"
-      ]
-     },
-     "caller_decl": [
-      "63: pub(crate) fn generate() -> String {"
-     ],
-     "callee_decl": [
-      "149:     fn doc_choices(&self) -> &'static [&'static str] {",
-      "150:         &[]",
-      "151:     }"
-     ]
-    },
-    {
-     "id": "0f3ffceb",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "dispatch",
-     "bucket_size": 127,
-     "caller": "new",
-     "callee": "name_short",
-     "caller_at": "crates/core/flags/parse.rs:176",
-     "callee_at": "crates/core/flags/mod.rs:81",
-     "call_site": {
-      "crates/core/flags/parse.rs:198": [
-       "197:                 }",
-       "198:                 if let Some(byte) = flag.name_short() {",
-       "199:                     infos.push(FlagInfo {"
-      ]
-     },
-     "caller_decl": [
-      "176:     fn new() -> &'static Parser {"
-     ],
-     "callee_decl": [
-      "81:     fn name_short(&self) -> Option<u8> {",
-      "82:         None",
-      "83:     }"
-     ]
-    },
-    {
-     "id": "2f69885a",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "dispatch",
-     "bucket_size": 127,
-     "caller": "find_similar_names",
+     "caller": "non_switches_have_variable_names",
      "callee": "name_long",
-     "caller_at": "crates/core/flags/parse.rs:418",
+     "caller_at": "crates/core/flags/defs.rs:7734",
      "callee_at": "crates/core/flags/mod.rs:89",
      "call_site": {
-      "crates/core/flags/parse.rs:429": [
-       "428:     for &flag in FLAGS.iter() {",
-       "429:         let name = flag.name_long();",
-       "430:         let bow = ngrams(name);"
+      "crates/core/flags/defs.rs:7739": [
+       "7738:             }",
+       "7739:             let long = flag.name_long();",
+       "7740:             assert!("
       ]
      },
      "caller_decl": [
-      "418: fn find_similar_names(unrecognized: &str) -> Vec<&'static str> {"
+      "7734:     fn non_switches_have_variable_names() {"
      ],
      "callee_decl": [
       "89:     fn name_long(&self) -> &'static str;",
@@ -4988,33 +4890,58 @@
      ]
     },
     {
-     "id": "c1854c62",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "eacc6c59",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "dispatch",
      "bucket_size": 127,
-     "caller": "[Matcher]find_candidate_line",
-     "callee": "shortest_match",
-     "caller_at": "crates/regex/src/matcher.rs:491",
-     "callee_at": "crates/matcher/src/lib.rs:1010",
+     "caller": "[`ParallelVisitorBuilder<'s>`]build",
+     "callee": "build",
+     "caller_at": "crates/ignore/src/walk.rs:1302",
+     "callee_at": "crates/ignore/src/walk.rs:1296",
      "call_site": {
-      "crates/regex/src/matcher.rs:503": [
-       "502:             None => {",
-       "503:                 self.shortest_match(haystack)?.map(LineMatchKind::Confirmed)",
-       "504:             }"
+      "crates/ignore/src/walk.rs:1303": [
+       "1302:     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {",
+       "1303:         (**self).build()",
+       "1304:     }"
       ]
      },
      "caller_decl": [
-      "491:     fn find_candidate_line("
+      "1302:     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {"
      ],
      "callee_decl": [
-      "1010:     fn shortest_match(",
-      "1011:         &self,",
-      "1012:         haystack: &[u8],"
+      "1296:     fn build(&mut self) -> Box<dyn ParallelVisitor + 's>;",
+      "1297: }",
+      "1298: "
      ]
     },
     {
-     "id": "d6507e6c",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "a9170fbd",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "dispatch",
+     "bucket_size": 127,
+     "caller": "[Matcher]shortest_match_at",
+     "callee": "shortest_match_at",
+     "caller_at": "crates/matcher/src/lib.rs:1354",
+     "callee_at": "crates/matcher/src/lib.rs:1036",
+     "call_site": {
+      "crates/matcher/src/lib.rs:1359": [
+       "1358:     ) -> Result<Option<usize>, Self::Error> {",
+       "1359:         (*self).shortest_match_at(haystack, at)",
+       "1360:     }"
+      ]
+     },
+     "caller_decl": [
+      "1354:     fn shortest_match_at("
+     ],
+     "callee_decl": [
+      "1036:     fn shortest_match_at(",
+      "1037:         &self,",
+      "1038:         haystack: &[u8],"
+     ]
+    },
+    {
+     "id": "eaf77669",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "dispatch",
      "bucket_size": 127,
      "caller": "choices_ascii_alphanumeric",
@@ -5038,145 +4965,338 @@
      ]
     },
     {
-     "id": "87e63b84",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "0d74919f",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "dispatch",
      "bucket_size": 127,
-     "caller": "[Matcher]capture_index",
-     "callee": "capture_index",
-     "caller_at": "crates/matcher/src/lib.rs:1162",
-     "callee_at": "crates/matcher/src/lib.rs:611",
+     "caller": "available_shorts",
+     "callee": "name_short",
+     "caller_at": "crates/core/flags/defs.rs:7620",
+     "callee_at": "crates/core/flags/mod.rs:81",
      "call_site": {
-      "crates/matcher/src/lib.rs:1163": [
-       "1162:     fn capture_index(&self, name: &str) -> Option<usize> {",
-       "1163:         (*self).capture_index(name)",
-       "1164:     }"
+      "crates/core/flags/defs.rs:7633": [
+       "7632:         for flag in FLAGS.iter() {",
+       "7633:             let Some(short) = flag.name_short() else { continue };",
+       "7634:             taken[usize::from(short)] = true;"
       ]
      },
      "caller_decl": [
-      "1162:     fn capture_index(&self, name: &str) -> Option<usize> {"
+      "7620:     fn available_shorts() {"
      ],
      "callee_decl": [
-      "611:     fn capture_index(&self, _name: &str) -> Option<usize> {",
-      "612:         None",
-      "613:     }"
+      "81:     fn name_short(&self) -> Option<u8> {",
+      "82:         None",
+      "83:     }"
      ]
     },
     {
-     "id": "51b9a6c9",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "2b4ce94a",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "dispatch",
      "bucket_size": 127,
-     "caller": "line_terminator_crlf",
-     "callee": "is_match",
-     "caller_at": "crates/pcre2/src/matcher.rs:455",
-     "callee_at": "crates/matcher/src/lib.rs:974",
+     "caller": "sink_after_context",
+     "callee": "context",
+     "caller_at": "crates/searcher/src/searcher/core.rs:585",
+     "callee_at": "crates/searcher/src/sink.rs:143",
      "call_site": {
-      "crates/pcre2/src/matcher.rs:461": [
-       "460:             .unwrap();",
-       "461:         assert!(matcher.is_match(b\"abc\\n\").unwrap());",
-       "462: "
-      ],
-      "crates/pcre2/src/matcher.rs:468": [
-       "467:             .unwrap();",
-       "468:         assert!(!matcher.is_match(b\"abc\\r\\n\").unwrap());",
-       "469: "
+      "crates/searcher/src/searcher/core.rs:597": [
+       "596:         let offset = self.absolute_byte_offset + range.start() as u64;",
+       "597:         let keepgoing = self.sink.context(",
+       "598:             &self.searcher,"
       ]
      },
      "caller_decl": [
-      "455:     fn line_terminator_crlf() {"
+      "585:     fn sink_after_context("
+     ],
+     "callee_decl": [
+      "143:     fn context(",
+      "144:         &mut self,",
+      "145:         _searcher: &Searcher,"
+     ]
+    },
+    {
+     "id": "ddea34a8",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "dispatch",
+     "bucket_size": 127,
+     "caller": "case_smart",
+     "callee": "is_match",
+     "caller_at": "crates/pcre2/src/matcher.rs:481",
+     "callee_at": "crates/matcher/src/lib.rs:974",
+     "call_site": {
+      "crates/pcre2/src/matcher.rs:484": [
+       "483:             RegexMatcherBuilder::new().case_smart(true).build(r\"abc\").unwrap();",
+       "484:         assert!(matcher.is_match(b\"ABC\").unwrap());",
+       "485: "
+      ],
+      "crates/pcre2/src/matcher.rs:488": [
+       "487:             RegexMatcherBuilder::new().case_smart(true).build(r\"aBc\").unwrap();",
+       "488:         assert!(!matcher.is_match(b\"ABC\").unwrap());",
+       "489:     }"
+      ]
+     },
+     "caller_decl": [
+      "481:     fn case_smart() {"
      ],
      "callee_decl": [
       "974:     fn is_match(&self, haystack: &[u8]) -> Result<bool, Self::Error> {",
       "975:         self.is_match_at(haystack, 0)",
       "976:     }"
      ]
+    },
+    {
+     "id": "e7d7c214",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "dispatch",
+     "bucket_size": 127,
+     "caller": "generate_short_flag",
+     "callee": "doc_short",
+     "caller_at": "crates/core/flags/doc/help.rs:51",
+     "callee_at": "crates/core/flags/mod.rs:139",
+     "call_site": {
+      "crates/core/flags/doc/help.rs:77": [
+       "76:     // And now the second column, with the description.",
+       "77:     write!(col2, \"{}\", flag.doc_short());",
+       "78: "
+      ]
+     },
+     "caller_decl": [
+      "51: fn generate_short_flag(flag: &dyn Flag) -> (String, String) {"
+     ],
+     "callee_decl": [
+      "139:     fn doc_short(&self) -> &'static str;",
+      "140: ",
+      "141:     /// A (possibly very) longer documentation string describing in full"
+     ]
+    },
+    {
+     "id": "9afebf79",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "dispatch",
+     "bucket_size": 127,
+     "caller": "generate_flag",
+     "callee": "is_switch",
+     "caller_at": "crates/core/flags/doc/man.rs:46",
+     "callee_at": "crates/core/flags/mod.rs:74",
+     "call_site": {
+      "crates/core/flags/doc/man.rs:101": [
+       "100:         // But for switches, the behavior is always the same.",
+       "101:         if flag.is_switch() {",
+       "102:             writeln!(out, \".sp\");"
+      ]
+     },
+     "caller_decl": [
+      "46: fn generate_flag(flag: &'static dyn Flag, out: &mut String) {"
+     ],
+     "callee_decl": [
+      "74:     fn is_switch(&self) -> bool;",
+      "75: ",
+      "76:     /// A short single byte name for this flag. This returns `None` by default,"
+     ]
+    },
+    {
+     "id": "4d4f22b3",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "dispatch",
+     "bucket_size": 127,
+     "caller": "multi_line_with_matcher",
+     "callee": "non_matching_bytes",
+     "caller_at": "crates/searcher/src/searcher/mod.rs:896",
+     "callee_at": "crates/matcher/src/lib.rs:1065",
+     "call_site": {
+      "crates/searcher/src/searcher/mod.rs:905": [
+       "904:         }",
+       "905:         if let Some(non_matching) = matcher.non_matching_bytes() {",
+       "906:             // If the line terminator is CRLF, we don't actually need to care"
+      ]
+     },
+     "caller_decl": [
+      "896:     pub fn multi_line_with_matcher<M: Matcher>(&self, matcher: M) -> bool {"
+     ],
+     "callee_decl": [
+      "1065:     fn non_matching_bytes(&self) -> Option<&ByteSet> {",
+      "1066:         None",
+      "1067:     }"
+     ]
     }
    ],
    "ungradable:caller_file_not_covered": [
     {
-     "id": "422a664d",
-     "cell": "rust/fd/path_tests_excluded",
+     "id": "42c7aa2e",
+     "cell": "rust/fd/path_tests_excluded_all_features",
      "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::tests::test_custom_ignore_precedence",
-     "callee": "crate::tests::testenv::TestEnv::new",
-     "caller_at": "tests/tests.rs:862",
-     "callee_at": "tests/testenv/mod.rs:148",
+     "bucket_size": 360,
+     "caller": "crate::tests::tests::test_no_global_ignore",
+     "callee": "crate::tests::testenv::TestEnv::assert_output",
+     "caller_at": "tests/tests.rs:1049",
+     "callee_at": "tests/testenv/mod.rs:248",
      "call_site": {
-      "tests/tests.rs:865": [
-       "864:     let files = &[\"inner/foo\"];",
-       "865:     let te = TestEnv::new(dirs, files);",
-       "866: "
+      "tests/tests.rs:1051": [
+       "1050:     let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES).global_ignore_file(\"one\");",
+       "1051:     te.assert_output(&[flag, \"foo\"], expected_output);",
+       "1052: }"
       ]
      },
-     "resolution_kind": "two_segment",
+     "resolution_kind": "bare_name",
      "caller_decl": [
-      "862: fn test_custom_ignore_precedence() {"
+      "1049: fn test_no_global_ignore(flag: &str, expected_output: &str) {"
      ],
      "callee_decl": [
-      "148:     pub fn new(directories: &[&'static str], files: &[&'static str]) -> TestEnv {",
-      "149:         let temp_dir = create_working_directory(directories, files).expect(\"working directory\");",
-      "150:         let fd_exe = find_fd_exe();"
+      "248:     pub fn assert_output(&self, args: &[&str], expected: &str) {",
+      "249:         self.assert_output_subdirectory(\".\", args, expected)",
+      "250:     }"
      ]
     },
     {
-     "id": "796f6b3e",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "80f49837",
+     "cell": "rust/fd/path_tests_excluded_all_features",
      "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::util::TestCommand::output",
-     "callee": "crate::tests::util::TestCommand::raw_output",
-     "caller_at": "tests/util.rs:327",
-     "callee_at": "tests/util.rs:334",
+     "bucket_size": 360,
+     "caller": "crate::tests::tests::test_gitignore_parent",
+     "callee": "crate::tests::testenv::TestEnv::assert_output_subdirectory",
+     "caller_at": "tests/tests.rs:2799",
+     "callee_at": "tests/testenv/mod.rs:262",
      "call_site": {
-      "tests/util.rs:328": [
-       "327:     pub fn output(&mut self) -> process::Output {",
-       "328:         let output = self.raw_output();",
-       "329:         self.expect_success(output)"
+      "tests/tests.rs:2807": [
+       "2806: ",
+       "2807:     te.assert_output_subdirectory(\"sub\", &[\"--hidden\"], \"\");",
+       "2808:     te.assert_output_subdirectory(\"sub\", &[\"--hidden\", \"--search-path\", \".\"], \"\");"
+      ],
+      "tests/tests.rs:2808": [
+       "2807:     te.assert_output_subdirectory(\"sub\", &[\"--hidden\"], \"\");",
+       "2808:     te.assert_output_subdirectory(\"sub\", &[\"--hidden\", \"--search-path\", \".\"], \"\");",
+       "2809: }"
+      ]
+     },
+     "resolution_kind": "receiver_type",
+     "caller_decl": [
+      "2799: fn test_gitignore_parent() {"
+     ],
+     "callee_decl": [
+      "262:     pub fn assert_output_subdirectory<P: AsRef<Path>>(",
+      "263:         &self,",
+      "264:         path: P,"
+     ]
+    },
+    {
+     "id": "2a203df0",
+     "cell": "rust/fd/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_file_not_covered",
+     "bucket_size": 360,
+     "caller": "crate::tests::tests::test_glob_searches",
+     "callee": "crate::tests::testenv::TestEnv::assert_output",
+     "caller_at": "tests/tests.rs:574",
+     "callee_at": "tests/testenv/mod.rs:248",
+     "call_site": {
+      "tests/tests.rs:577": [
+       "576: ",
+       "577:     te.assert_output(",
+       "578:         &[\"--glob\", \"*.foo\"],"
+      ],
+      "tests/tests.rs:585": [
+       "584: ",
+       "585:     te.assert_output(",
+       "586:         &[\"--glob\", \"[a-c].foo\"],"
+      ]
+     },
+     "resolution_kind": "receiver_type",
+     "caller_decl": [
+      "574: fn test_glob_searches() {"
+     ],
+     "callee_decl": [
+      "248:     pub fn assert_output(&self, args: &[&str], expected: &str) {",
+      "249:         self.assert_output_subdirectory(\".\", args, expected)",
+      "250:     }"
+     ]
+    },
+    {
+     "id": "f8437017",
+     "cell": "rust/fd/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_file_not_covered",
+     "bucket_size": 360,
+     "caller": "crate::tests::tests::test_invalid_cwd",
+     "callee": "crate::tests::testenv::TestEnv::test_root",
+     "caller_at": "tests/tests.rs:2738",
+     "callee_at": "tests/testenv/mod.rs:200",
+     "call_site": {
+      "tests/tests.rs:2741": [
+       "2740: ",
+       "2741:     let root = te.test_root().join(\"foo\");",
+       "2742:     fs::create_dir(&root).unwrap();"
+      ],
+      "tests/tests.rs:2748": [
+       "2747:         .arg(\"query\")",
+       "2748:         .arg(te.test_root())",
+       "2749:         .output()"
+      ]
+     },
+     "resolution_kind": "receiver_type",
+     "caller_decl": [
+      "2738: fn test_invalid_cwd() {"
+     ],
+     "callee_decl": [
+      "200:     pub fn test_root(&self) -> PathBuf {",
+      "201:         self.temp_dir.path().to_path_buf()",
+      "202:     }"
+     ]
+    },
+    {
+     "id": "f749c332",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_file_not_covered",
+     "bucket_size": 360,
+     "caller": "crate::tests::test_matcher::matcher_no_caps",
+     "callee": "crate::tests::util::RegexMatcherNoCaps",
+     "caller_at": "crates/matcher/tests/test_matcher.rs:12",
+     "callee_at": "crates/matcher/tests/util.rs:67",
+     "call_site": {
+      "crates/matcher/tests/test_matcher.rs:13": [
+       "12: fn matcher_no_caps(pattern: &str) -> RegexMatcherNoCaps {",
+       "13:     RegexMatcherNoCaps(Regex::new(pattern).unwrap())",
+       "14: }"
+      ]
+     },
+     "resolution_kind": "bare_name",
+     "caller_decl": [
+      "12: fn matcher_no_caps(pattern: &str) -> RegexMatcherNoCaps {"
+     ],
+     "callee_decl": [
+      "67: pub(crate) struct RegexMatcherNoCaps(pub(crate) Regex);",
+      "68: ",
+      "69: impl Matcher for RegexMatcherNoCaps {"
+     ]
+    },
+    {
+     "id": "2bc1594f",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_file_not_covered",
+     "bucket_size": 360,
+     "caller": "crate::tests::test_matcher::no_captures",
+     "callee": "crate::tests::test_matcher::matcher_no_caps",
+     "caller_at": "crates/matcher/tests/test_matcher.rs:156",
+     "callee_at": "crates/matcher/tests/test_matcher.rs:12",
+     "call_site": {
+      "crates/matcher/tests/test_matcher.rs:157": [
+       "156: fn no_captures() {",
+       "157:     let matcher = matcher_no_caps(r\"(?P<a>\\w+)\\s+(?P<b>\\w+)\");",
+       "158:     assert_eq!(matcher.capture_count(), 0);"
       ]
      },
      "resolution_kind": "exact",
      "caller_decl": [
-      "327:     pub fn output(&mut self) -> process::Output {"
+      "156: fn no_captures() {"
      ],
      "callee_decl": [
-      "334:     pub fn raw_output(&mut self) -> process::Output {",
-      "335:         let mut output = self.cmd.output().unwrap();",
-      "336:         output.stderr = strip_jemalloc_nonsense(&output.stderr);"
+      "12: fn matcher_no_caps(pattern: &str) -> RegexMatcherNoCaps {",
+      "13:     RegexMatcherNoCaps(Regex::new(pattern).unwrap())",
+      "14: }"
      ]
     },
     {
-     "id": "1ef89168",
-     "cell": "rust/fd/path_tests_excluded",
+     "id": "ce6bd3bb",
+     "cell": "rust/fd/path_tests_excluded_all_features",
      "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::tests::test_custom_path_separator",
-     "callee": "crate::tests::testenv::TestEnv::new",
-     "caller_at": "tests/tests.rs:2495",
-     "callee_at": "tests/testenv/mod.rs:148",
-     "call_site": {
-      "tests/tests.rs:2496": [
-       "2495: fn test_custom_path_separator() {",
-       "2496:     let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES);",
-       "2497: "
-      ]
-     },
-     "resolution_kind": "two_segment",
-     "caller_decl": [
-      "2495: fn test_custom_path_separator() {"
-     ],
-     "callee_decl": [
-      "148:     pub fn new(directories: &[&'static str], files: &[&'static str]) -> TestEnv {",
-      "149:         let temp_dir = create_working_directory(directories, files).expect(\"working directory\");",
-      "150:         let fd_exe = find_fd_exe();"
-     ]
-    },
-    {
-     "id": "ea743e8a",
-     "cell": "rust/fd/path_tests_excluded",
-     "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
+     "bucket_size": 360,
      "caller": "crate::tests::tests::test_print0",
      "callee": "crate::tests::testenv::TestEnv::assert_output",
      "caller_at": "tests/tests.rs:1139",
@@ -5199,368 +5319,88 @@
      ]
     },
     {
-     "id": "e8ec3920",
-     "cell": "rust/fd/path_tests_excluded",
+     "id": "da4192e6",
+     "cell": "rust/fd/path_tests_excluded_all_features",
      "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::tests::test_custom_ignore_precedence",
-     "callee": "crate::tests::testenv::TestEnv::test_root",
-     "caller_at": "tests/tests.rs:862",
-     "callee_at": "tests/testenv/mod.rs:200",
+     "bucket_size": 360,
+     "caller": "crate::tests::tests::test_and_plus_glob",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "caller_at": "tests/tests.rs:216",
+     "callee_at": "tests/testenv/mod.rs:148",
      "call_site": {
-      "tests/tests.rs:868": [
-       "867:     // Ignore 'foo' via .gitignore",
-       "868:     fs::File::create(te.test_root().join(\"inner/.gitignore\"))",
-       "869:         .unwrap()"
-      ],
-      "tests/tests.rs:874": [
-       "873:     // Whitelist 'foo' via .fdignore",
-       "874:     fs::File::create(te.test_root().join(\".fdignore\"))",
-       "875:         .unwrap()"
+      "tests/tests.rs:217": [
+       "216: fn test_and_plus_glob() {",
+       "217:     let te = TestEnv::new(DEFAULT_DIRS, AND_EXTRA_FILES);",
+       "218: "
+      ]
+     },
+     "resolution_kind": "two_segment",
+     "caller_decl": [
+      "216: fn test_and_plus_glob() {"
+     ],
+     "callee_decl": [
+      "148:     pub fn new(directories: &[&'static str], files: &[&'static str]) -> TestEnv {",
+      "149:         let temp_dir = create_working_directory(directories, files).expect(\"working directory\");",
+      "150:         let fd_exe = find_fd_exe();"
+     ]
+    },
+    {
+     "id": "39a850ae",
+     "cell": "rust/fd/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_file_not_covered",
+     "bucket_size": 360,
+     "caller": "crate::tests::tests::test_error_if_hidden_not_set_and_pattern_starts_with_dot",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "caller_at": "tests/tests.rs:2703",
+     "callee_at": "tests/testenv/mod.rs:148",
+     "call_site": {
+      "tests/tests.rs:2704": [
+       "2703: fn test_error_if_hidden_not_set_and_pattern_starts_with_dot() {",
+       "2704:     let te = TestEnv::new(&[], &[\".gitignore\", \".whatever\", \"non-hidden\"]);",
+       "2705: "
+      ]
+     },
+     "resolution_kind": "two_segment",
+     "caller_decl": [
+      "2703: fn test_error_if_hidden_not_set_and_pattern_starts_with_dot() {"
+     ],
+     "callee_decl": [
+      "148:     pub fn new(directories: &[&'static str], files: &[&'static str]) -> TestEnv {",
+      "149:         let temp_dir = create_working_directory(directories, files).expect(\"working directory\");",
+      "150:         let fd_exe = find_fd_exe();"
+     ]
+    },
+    {
+     "id": "99b7cc9d",
+     "cell": "rust/fd/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_file_not_covered",
+     "bucket_size": 360,
+     "caller": "crate::tests::tests::test_exec_batch_multi",
+     "callee": "crate::tests::testenv::TestEnv::assert_failure_with_error",
+     "caller_at": "tests/tests.rs:1997",
+     "callee_at": "tests/testenv/mod.rs:280",
+     "call_site": {
+      "tests/tests.rs:2049": [
+       "2048: ",
+       "2049:     te.assert_failure_with_error(",
+       "2050:         &["
       ]
      },
      "resolution_kind": "receiver_type",
      "caller_decl": [
-      "862: fn test_custom_ignore_precedence() {"
+      "1997: fn test_exec_batch_multi() {"
      ],
      "callee_decl": [
-      "200:     pub fn test_root(&self) -> PathBuf {",
-      "201:         self.temp_dir.path().to_path_buf()",
-      "202:     }"
-     ]
-    },
-    {
-     "id": "264ab3a4",
-     "cell": "rust/fd/path_tests_excluded",
-     "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::tests::test_exec_multi",
-     "callee": "crate::tests::testenv::TestEnv::assert_output",
-     "caller_at": "tests/tests.rs:1846",
-     "callee_at": "tests/testenv/mod.rs:248",
-     "call_site": {
-      "tests/tests.rs:1849": [
-       "1848: ",
-       "1849:     te.assert_output(",
-       "1850:         &["
-      ],
-      "tests/tests.rs:1878": [
-       "1877: ",
-       "1878:     te.assert_output(",
-       "1879:         &["
-      ]
-     },
-     "resolution_kind": "receiver_type",
-     "caller_decl": [
-      "1846: fn test_exec_multi() {"
-     ],
-     "callee_decl": [
-      "248:     pub fn assert_output(&self, args: &[&str], expected: &str) {",
-      "249:         self.assert_output_subdirectory(\".\", args, expected)",
-      "250:     }"
-     ]
-    },
-    {
-     "id": "bf32c63c",
-     "cell": "rust/fd/path_tests_excluded",
-     "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::tests::test_symlink_and_absolute_path",
-     "callee": "crate::tests::tests::get_test_env_with_abs_path",
-     "caller_at": "tests/tests.rs:1569",
-     "callee_at": "tests/tests.rs:49",
-     "call_site": {
-      "tests/tests.rs:1570": [
-       "1569: fn test_symlink_and_absolute_path() {",
-       "1570:     let (te, abs_path) = get_test_env_with_abs_path(DEFAULT_DIRS, DEFAULT_FILES);",
-       "1571: "
-      ]
-     },
-     "resolution_kind": "exact",
-     "caller_decl": [
-      "1569: fn test_symlink_and_absolute_path() {"
-     ],
-     "callee_decl": [
-      "49: fn get_test_env_with_abs_path(dirs: &[&'static str], files: &[&'static str]) -> (TestEnv, String) {",
-      "50:     let env = TestEnv::new(dirs, files);",
-      "51:     let root_path = get_absolute_root_path(&env);"
-     ]
-    },
-    {
-     "id": "cc790d78",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::util::TestCommand::assert_err",
-     "callee": "crate::tests::util::TestCommand::raw_output",
-     "caller_at": "tests/util.rs:341",
-     "callee_at": "tests/util.rs:334",
-     "call_site": {
-      "tests/util.rs:342": [
-       "341:     pub fn assert_err(&mut self) {",
-       "342:         let o = self.raw_output();",
-       "343:         if o.status.success() {"
-      ]
-     },
-     "resolution_kind": "exact",
-     "caller_decl": [
-      "341:     pub fn assert_err(&mut self) {"
-     ],
-     "callee_decl": [
-      "334:     pub fn raw_output(&mut self) -> process::Output {",
-      "335:         let mut output = self.cmd.output().unwrap();",
-      "336:         output.stderr = strip_jemalloc_nonsense(&output.stderr);"
-     ]
-    },
-    {
-     "id": "34ade1f4",
-     "cell": "rust/fd/path_tests_excluded",
-     "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::tests::test_exec_batch_with_limit",
-     "callee": "crate::tests::testenv::TestEnv::assert_success_and_get_output",
-     "caller_at": "tests/tests.rs:2065",
-     "callee_at": "tests/testenv/mod.rs:218",
-     "call_site": {
-      "tests/tests.rs:2073": [
-       "2072: ",
-       "2073:     let output = te.assert_success_and_get_output(",
-       "2074:         \".\","
-      ]
-     },
-     "resolution_kind": "receiver_type",
-     "caller_decl": [
-      "2065: fn test_exec_batch_with_limit() {"
-     ],
-     "callee_decl": [
-      "218:     pub fn assert_success_and_get_output<P: AsRef<Path>>(",
-      "219:         &self,",
-      "220:         path: P,"
-     ]
-    },
-    {
-     "id": "93419cdd",
-     "cell": "rust/fd/path_tests_excluded",
-     "bucket": "ungradable:caller_file_not_covered",
-     "bucket_size": 369,
-     "caller": "crate::tests::tests::test_and_basic",
-     "callee": "crate::tests::testenv::TestEnv::assert_output",
-     "caller_at": "tests/tests.rs:104",
-     "callee_at": "tests/testenv/mod.rs:248",
-     "call_site": {
-      "tests/tests.rs:107": [
-       "106: ",
-       "107:     te.assert_output(",
-       "108:         &[\"foo\", \"--and\", \"c\"],"
-      ],
-      "tests/tests.rs:114": [
-       "113: ",
-       "114:     te.assert_output(",
-       "115:         &[\"f\", \"--and\", \"[ad]\", \"--and\", \"[_]\"],"
-      ]
-     },
-     "resolution_kind": "receiver_type",
-     "caller_decl": [
-      "104: fn test_and_basic() {"
-     ],
-     "callee_decl": [
-      "248:     pub fn assert_output(&self, args: &[&str], expected: &str) {",
-      "249:         self.assert_output_subdirectory(\".\", args, expected)",
-      "250:     }"
+      "280:     pub fn assert_failure_with_error(&self, args: &[&str], expected: &str) {",
+      "281:         let status = self.assert_error_subdirectory(\".\", args, Some(expected));",
+      "282:         if status.success() {"
      ]
     }
    ],
    "ungradable:caller_not_judged": [
     {
-     "id": "d3627809",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::same_file_system",
-     "callee": "crate::walk::tests::mkdirp",
-     "caller_at": "crates/ignore/src/walk.rs:2495",
-     "callee_at": "crates/ignore/src/walk.rs:2143",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2511": [
-       "2510: ",
-       "2511:         mkdirp(td.path().join(\"same_file\"));",
-       "2512:         symlink(\"/sys\", td.path().join(\"same_file\").join(\"alink\"));"
-      ]
-     },
-     "resolution_kind": "exact",
-     "caller_decl": [
-      "2495:     fn same_file_system() {"
-     ],
-     "callee_decl": [
-      "2143:     fn mkdirp<P: AsRef<Path>>(path: P) {",
-      "2144:         fs::create_dir_all(path).unwrap();",
-      "2145:     }"
-     ]
-    },
-    {
-     "id": "e9b06b11",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::same_file_system",
-     "callee": "crate::walk::WalkBuilder::follow_links",
-     "caller_at": "crates/ignore/src/walk.rs:2495",
-     "callee_at": "crates/ignore/src/walk.rs:710",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2519": [
-       "2518:         let mut builder = WalkBuilder::new(td.path());",
-       "2519:         builder.follow_links(true).same_file_system(true);",
-       "2520:         assert_paths(td.path(), &builder, &[\"same_file\", \"same_file/alink\"]);"
-      ]
-     },
-     "resolution_kind": "receiver_type",
-     "caller_decl": [
-      "2495:     fn same_file_system() {"
-     ],
-     "callee_decl": [
-      "710:     pub fn follow_links(&mut self, yes: bool) -> &mut WalkBuilder {",
-      "711:         self.follow_links = yes;",
-      "712:         self"
-     ]
-    },
-    {
-     "id": "c4be5523",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::same_file_system",
-     "callee": "crate::walk::device_num",
-     "caller_at": "crates/ignore/src/walk.rs:2495",
-     "callee_at": "crates/ignore/src/walk.rs:2094",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2507": [
-       "2506:         let td = tmpdir();",
-       "2507:         if device_num(td.path()).unwrap() == device_num(\"/sys\").unwrap() {",
-       "2508:             return;"
-      ]
-     },
-     "resolution_kind": "bare_name",
-     "caller_decl": [
-      "2495:     fn same_file_system() {"
-     ],
-     "callee_decl": [
-      "2094: fn device_num<P: AsRef<Path>>(path: P) -> io::Result<u64> {",
-      "2095:     use std::os::unix::fs::MetadataExt;",
-      "2096: "
-     ]
-    },
-    {
-     "id": "550792fe",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::same_file_system",
-     "callee": "crate::tests::TempDir::path",
-     "caller_at": "crates/ignore/src/walk.rs:2495",
-     "callee_at": "crates/ignore/src/lib.rs:543",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2507": [
-       "2506:         let td = tmpdir();",
-       "2507:         if device_num(td.path()).unwrap() == device_num(\"/sys\").unwrap() {",
-       "2508:             return;"
-      ],
-      "crates/ignore/src/walk.rs:2511": [
-       "2510: ",
-       "2511:         mkdirp(td.path().join(\"same_file\"));",
-       "2512:         symlink(\"/sys\", td.path().join(\"same_file\").join(\"alink\"));"
-      ]
-     },
-     "resolution_kind": "receiver_type",
-     "caller_decl": [
-      "2495:     fn same_file_system() {"
-     ],
-     "callee_decl": [
-      "543:         pub fn path(&self) -> &Path {",
-      "544:             &self.0",
-      "545:         }"
-     ]
-    },
-    {
-     "id": "b1126286",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::no_read_permissions",
-     "callee": "crate::walk::WalkBuilder::new",
-     "caller_at": "crates/ignore/src/walk.rs:2525",
-     "callee_at": "crates/ignore/src/walk.rs:551",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2538": [
-       "2537:         // Check that we can't descend but get an entry for the parent dir.",
-       "2538:         let builder = WalkBuilder::new(&dir_path);",
-       "2539:         assert_paths(dir_path.parent().unwrap(), &builder, &[\"root\"]);"
-      ]
-     },
-     "resolution_kind": "exact",
-     "caller_decl": [
-      "2525:     fn no_read_permissions() {"
-     ],
-     "callee_decl": [
-      "551:     pub fn new<P: AsRef<Path>>(path: P) -> WalkBuilder {",
-      "552:         WalkBuilder::from_iter([path])",
-      "553:     }"
-     ]
-    },
-    {
-     "id": "e268005d",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::same_file_system",
-     "callee": "crate::walk::tests::assert_paths",
-     "caller_at": "crates/ignore/src/walk.rs:2495",
-     "callee_at": "crates/ignore/src/walk.rs:2210",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2520": [
-       "2519:         builder.follow_links(true).same_file_system(true);",
-       "2520:         assert_paths(td.path(), &builder, &[\"same_file\", \"same_file/alink\"]);",
-       "2521:     }"
-      ]
-     },
-     "resolution_kind": "exact",
-     "caller_decl": [
-      "2495:     fn same_file_system() {"
-     ],
-     "callee_decl": [
-      "2210:     fn assert_paths(prefix: &Path, builder: &WalkBuilder, expected: &[&str]) {",
-      "2211:         let got = walk_collect(prefix, builder);",
-      "2212:         assert_eq!(got, mkpaths(expected), \"single threaded\");"
-     ]
-    },
-    {
-     "id": "e28b88be",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::same_file_system",
-     "callee": "crate::walk::tests::tmpdir",
-     "caller_at": "crates/ignore/src/walk.rs:2495",
-     "callee_at": "crates/ignore/src/walk.rs:2206",
-     "call_site": {
-      "crates/ignore/src/walk.rs:2506": [
-       "2505:         // then this test is meaningless and we shouldn't run it.",
-       "2506:         let td = tmpdir();",
-       "2507:         if device_num(td.path()).unwrap() == device_num(\"/sys\").unwrap() {"
-      ]
-     },
-     "resolution_kind": "exact",
-     "caller_decl": [
-      "2495:     fn same_file_system() {"
-     ],
-     "callee_decl": [
-      "2206:     fn tmpdir() -> TempDir {",
-      "2207:         TempDir::new().unwrap()",
-      "2208:     }"
-     ]
-    },
-    {
-     "id": "e9b2c00d",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "7a144ac7",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "ungradable:caller_not_judged",
      "bucket_size": 12,
      "caller": "crate::hyperlink::tests::convert_to_hyperlink_path",
@@ -5585,8 +5425,216 @@
      ]
     },
     {
-     "id": "e9f34c08",
-     "cell": "rust/ripgrep/path_tests_excluded",
+     "id": "cc0fc423",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::device_num",
+     "caller_at": "crates/ignore/src/walk.rs:2495",
+     "callee_at": "crates/ignore/src/walk.rs:2094",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2507": [
+       "2506:         let td = tmpdir();",
+       "2507:         if device_num(td.path()).unwrap() == device_num(\"/sys\").unwrap() {",
+       "2508:             return;"
+      ]
+     },
+     "resolution_kind": "bare_name",
+     "caller_decl": [
+      "2495:     fn same_file_system() {"
+     ],
+     "callee_decl": [
+      "2094: fn device_num<P: AsRef<Path>>(path: P) -> io::Result<u64> {",
+      "2095:     use std::os::unix::fs::MetadataExt;",
+      "2096: "
+     ]
+    },
+    {
+     "id": "63eb33de",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::tests::tmpdir",
+     "caller_at": "crates/ignore/src/walk.rs:2495",
+     "callee_at": "crates/ignore/src/walk.rs:2206",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2506": [
+       "2505:         // then this test is meaningless and we shouldn't run it.",
+       "2506:         let td = tmpdir();",
+       "2507:         if device_num(td.path()).unwrap() == device_num(\"/sys\").unwrap() {"
+      ]
+     },
+     "resolution_kind": "exact",
+     "caller_decl": [
+      "2495:     fn same_file_system() {"
+     ],
+     "callee_decl": [
+      "2206:     fn tmpdir() -> TempDir {",
+      "2207:         TempDir::new().unwrap()",
+      "2208:     }"
+     ]
+    },
+    {
+     "id": "328d28a0",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::WalkBuilder::same_file_system",
+     "caller_at": "crates/ignore/src/walk.rs:2495",
+     "callee_at": "crates/ignore/src/walk.rs:962",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2519": [
+       "2518:         let mut builder = WalkBuilder::new(td.path());",
+       "2519:         builder.follow_links(true).same_file_system(true);",
+       "2520:         assert_paths(td.path(), &builder, &[\"same_file\", \"same_file/alink\"]);"
+      ]
+     },
+     "resolution_kind": "receiver_type",
+     "caller_decl": [
+      "2495:     fn same_file_system() {"
+     ],
+     "callee_decl": [
+      "962:     pub fn same_file_system(&mut self, yes: bool) -> &mut WalkBuilder {",
+      "963:         self.same_file_system = yes;",
+      "964:         self"
+     ]
+    },
+    {
+     "id": "545fcfeb",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::no_read_permissions",
+     "callee": "crate::walk::WalkBuilder::new",
+     "caller_at": "crates/ignore/src/walk.rs:2525",
+     "callee_at": "crates/ignore/src/walk.rs:551",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2538": [
+       "2537:         // Check that we can't descend but get an entry for the parent dir.",
+       "2538:         let builder = WalkBuilder::new(&dir_path);",
+       "2539:         assert_paths(dir_path.parent().unwrap(), &builder, &[\"root\"]);"
+      ]
+     },
+     "resolution_kind": "exact",
+     "caller_decl": [
+      "2525:     fn no_read_permissions() {"
+     ],
+     "callee_decl": [
+      "551:     pub fn new<P: AsRef<Path>>(path: P) -> WalkBuilder {",
+      "552:         WalkBuilder::from_iter([path])",
+      "553:     }"
+     ]
+    },
+    {
+     "id": "896e38da",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::tests::mkdirp",
+     "caller_at": "crates/ignore/src/walk.rs:2495",
+     "callee_at": "crates/ignore/src/walk.rs:2143",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2511": [
+       "2510: ",
+       "2511:         mkdirp(td.path().join(\"same_file\"));",
+       "2512:         symlink(\"/sys\", td.path().join(\"same_file\").join(\"alink\"));"
+      ]
+     },
+     "resolution_kind": "exact",
+     "caller_decl": [
+      "2495:     fn same_file_system() {"
+     ],
+     "callee_decl": [
+      "2143:     fn mkdirp<P: AsRef<Path>>(path: P) {",
+      "2144:         fs::create_dir_all(path).unwrap();",
+      "2145:     }"
+     ]
+    },
+    {
+     "id": "8c93d7e2",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::tests::symlink",
+     "caller_at": "crates/ignore/src/walk.rs:2495",
+     "callee_at": "crates/ignore/src/walk.rs:2138",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2512": [
+       "2511:         mkdirp(td.path().join(\"same_file\"));",
+       "2512:         symlink(\"/sys\", td.path().join(\"same_file\").join(\"alink\"));",
+       "2513: "
+      ]
+     },
+     "resolution_kind": "exact",
+     "caller_decl": [
+      "2495:     fn same_file_system() {"
+     ],
+     "callee_decl": [
+      "2138:     fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) {",
+      "2139:         use std::os::unix::fs::symlink;",
+      "2140:         symlink(src, dst).unwrap();"
+     ]
+    },
+    {
+     "id": "cfaa323c",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::WalkBuilder::new",
+     "caller_at": "crates/ignore/src/walk.rs:2495",
+     "callee_at": "crates/ignore/src/walk.rs:551",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2518": [
+       "2517:         // completely.",
+       "2518:         let mut builder = WalkBuilder::new(td.path());",
+       "2519:         builder.follow_links(true).same_file_system(true);"
+      ]
+     },
+     "resolution_kind": "exact",
+     "caller_decl": [
+      "2495:     fn same_file_system() {"
+     ],
+     "callee_decl": [
+      "551:     pub fn new<P: AsRef<Path>>(path: P) -> WalkBuilder {",
+      "552:         WalkBuilder::from_iter([path])",
+      "553:     }"
+     ]
+    },
+    {
+     "id": "db365484",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:caller_not_judged",
+     "bucket_size": 12,
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::WalkBuilder::follow_links",
+     "caller_at": "crates/ignore/src/walk.rs:2495",
+     "callee_at": "crates/ignore/src/walk.rs:710",
+     "call_site": {
+      "crates/ignore/src/walk.rs:2519": [
+       "2518:         let mut builder = WalkBuilder::new(td.path());",
+       "2519:         builder.follow_links(true).same_file_system(true);",
+       "2520:         assert_paths(td.path(), &builder, &[\"same_file\", \"same_file/alink\"]);"
+      ]
+     },
+     "resolution_kind": "receiver_type",
+     "caller_decl": [
+      "2495:     fn same_file_system() {"
+     ],
+     "callee_decl": [
+      "710:     pub fn follow_links(&mut self, yes: bool) -> &mut WalkBuilder {",
+      "711:         self.follow_links = yes;",
+      "712:         self"
+     ]
+    },
+    {
+     "id": "48e6783e",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
      "bucket": "ungradable:caller_not_judged",
      "bucket_size": 12,
      "caller": "crate::walk::tests::no_read_permissions",
@@ -5609,31 +5657,189 @@
       "2211:         let got = walk_collect(prefix, builder);",
       "2212:         assert_eq!(got, mkpaths(expected), \"single threaded\");"
      ]
+    }
+   ],
+   "ungradable:cfg_gated_evidence": [
+    {
+     "id": "0e4b19f2",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:cfg_gated_evidence",
+     "bucket_size": 7,
+     "caller": "crate::walk::DirEntryRaw::from_entry_os",
+     "callee": "crate::error::Error::new",
+     "caller_at": "crates/ignore/src/walk.rs:376",
+     "callee_at": "crates/regex/src/error.rs:12",
+     "call_site": {
+      "crates/ignore/src/walk.rs:381": [
+       "380:     ) -> Result<DirEntryRaw, Error> {",
+       "381:         Err(Error::Io(io::Error::new(",
+       "382:             io::ErrorKind::Other,"
+      ]
+     },
+     "resolution_kind": "two_segment",
+     "caller_decl": [
+      "376:     fn from_entry_os("
+     ],
+     "callee_decl": [
+      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
+      "13:         Error { kind }",
+      "14:     }"
+     ]
     },
     {
-     "id": "af12e011",
-     "cell": "rust/ripgrep/path_tests_excluded",
-     "bucket": "ungradable:caller_not_judged",
-     "bucket_size": 12,
-     "caller": "crate::walk::tests::same_file_system",
-     "callee": "crate::walk::WalkBuilder::same_file_system",
-     "caller_at": "crates/ignore/src/walk.rs:2495",
-     "callee_at": "crates/ignore/src/walk.rs:962",
+     "id": "23fc7eb9",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:cfg_gated_evidence",
+     "bucket_size": 7,
+     "caller": "crate::walk::device_num",
+     "callee": "crate::error::Error::new",
+     "caller_at": "crates/ignore/src/walk.rs:2109",
+     "callee_at": "crates/regex/src/error.rs:12",
      "call_site": {
-      "crates/ignore/src/walk.rs:2519": [
-       "2518:         let mut builder = WalkBuilder::new(td.path());",
-       "2519:         builder.follow_links(true).same_file_system(true);",
-       "2520:         assert_paths(td.path(), &builder, &[\"same_file\", \"same_file/alink\"]);"
+      "crates/ignore/src/walk.rs:2110": [
+       "2109: fn device_num<P: AsRef<Path>>(_: P) -> io::Result<u64> {",
+       "2110:     Err(io::Error::new(",
+       "2111:         io::ErrorKind::Other,"
+      ]
+     },
+     "resolution_kind": "two_segment",
+     "caller_decl": [
+      "2109: fn device_num<P: AsRef<Path>>(_: P) -> io::Result<u64> {"
+     ],
+     "callee_decl": [
+      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
+      "13:         Error { kind }",
+      "14:     }"
+     ]
+    },
+    {
+     "id": "e7dd6520",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:cfg_gated_evidence",
+     "bucket_size": 7,
+     "caller": "crate::hostname::hostname",
+     "callee": "crate::error::Error::new",
+     "caller_at": "crates/cli/src/hostname.rs:16",
+     "callee_at": "crates/regex/src/error.rs:12",
+     "call_site": {
+      "crates/cli/src/hostname.rs:28": [
+       "27:     {",
+       "28:         Err(io::Error::new(",
+       "29:             io::ErrorKind::Other,"
+      ]
+     },
+     "resolution_kind": "two_segment",
+     "caller_decl": [
+      "16: pub fn hostname() -> io::Result<OsString> {"
+     ],
+     "callee_decl": [
+      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
+      "13:         Error { kind }",
+      "14:     }"
+     ]
+    },
+    {
+     "id": "9043aca0",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:cfg_gated_evidence",
+     "bucket_size": 7,
+     "caller": "crate::walk::DirEntryRaw::from_entry_os",
+     "callee": "crate::Error::with_depth",
+     "caller_at": "crates/ignore/src/walk.rs:338",
+     "callee_at": "crates/ignore/src/lib.rs:269",
+     "call_site": {
+      "crates/ignore/src/walk.rs:344": [
+       "343:         let md = ent.metadata().map_err(|err| {",
+       "344:             let err = Error::Io(err).with_depth(depth).with_path(ent.path());",
+       "345:             Error::WithDepth { depth, err: Box::new(err) }"
+      ]
+     },
+     "resolution_kind": "bare_name",
+     "caller_decl": [
+      "338:     fn from_entry_os("
+     ],
+     "callee_decl": [
+      "269:     fn with_depth(self, depth: usize) -> Error {",
+      "270:         Error::WithDepth { depth, err: Box::new(self) }",
+      "271:     }"
+     ]
+    },
+    {
+     "id": "d66ad16e",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:cfg_gated_evidence",
+     "bucket_size": 7,
+     "caller": "crate::walk::DirEntryRaw::from_path",
+     "callee": "crate::error::Error::new",
+     "caller_at": "crates/ignore/src/walk.rs:426",
+     "callee_at": "crates/regex/src/error.rs:12",
+     "call_site": {
+      "crates/ignore/src/walk.rs:431": [
+       "430:     ) -> Result<DirEntryRaw, Error> {",
+       "431:         Err(Error::Io(io::Error::new(",
+       "432:             io::ErrorKind::Other,"
+      ]
+     },
+     "resolution_kind": "two_segment",
+     "caller_decl": [
+      "426:     fn from_path("
+     ],
+     "callee_decl": [
+      "12:     pub(crate) fn new(kind: ErrorKind) -> Error {",
+      "13:         Error { kind }",
+      "14:     }"
+     ]
+    },
+    {
+     "id": "0d40f56e",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:cfg_gated_evidence",
+     "bucket_size": 7,
+     "caller": "crate::walk::DirEntryRaw::from_entry_os",
+     "callee": "crate::Error::with_path",
+     "caller_at": "crates/ignore/src/walk.rs:338",
+     "callee_at": "crates/ignore/src/lib.rs:261",
+     "call_site": {
+      "crates/ignore/src/walk.rs:344": [
+       "343:         let md = ent.metadata().map_err(|err| {",
+       "344:             let err = Error::Io(err).with_depth(depth).with_path(ent.path());",
+       "345:             Error::WithDepth { depth, err: Box::new(err) }"
+      ]
+     },
+     "resolution_kind": "bare_name",
+     "caller_decl": [
+      "338:     fn from_entry_os("
+     ],
+     "callee_decl": [
+      "261:     fn with_path<P: AsRef<Path>>(self, path: P) -> Error {",
+      "262:         Error::WithPath {",
+      "263:             path: path.as_ref().to_path_buf(),"
+     ]
+    },
+    {
+     "id": "320040fc",
+     "cell": "rust/ripgrep/path_tests_excluded_all_features",
+     "bucket": "ungradable:cfg_gated_evidence",
+     "bucket_size": 7,
+     "caller": "crate::pathutil::is_hidden",
+     "callee": "crate::walk::DirEntry::metadata",
+     "caller_at": "crates/ignore/src/pathutil.rs:28",
+     "callee_at": "crates/ignore/src/walk.rs:60",
+     "call_site": {
+      "crates/ignore/src/pathutil.rs:35": [
+       "34:     // entry and stores it on the DirEntry itself. So this is \"free.\"",
+       "35:     if let Ok(md) = dent.metadata() {",
+       "36:         if file::is_hidden(md.file_attributes() as u64) {"
       ]
      },
      "resolution_kind": "receiver_type",
      "caller_decl": [
-      "2495:     fn same_file_system() {"
+      "28: pub(crate) fn is_hidden(dent: &DirEntry) -> bool {"
      ],
      "callee_decl": [
-      "962:     pub fn same_file_system(&mut self, yes: bool) -> &mut WalkBuilder {",
-      "963:         self.same_file_system = yes;",
-      "964:         self"
+      "60:     pub fn metadata(&self) -> Result<Metadata, Error> {",
+      "61:         self.dent.metadata()",
+      "62:     }"
      ]
     }
    ]

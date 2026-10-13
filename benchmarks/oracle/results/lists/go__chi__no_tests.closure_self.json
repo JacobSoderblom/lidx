@@ -1,0 +1,5 @@
+[
+{"callee":{"file":"middleware/logger.go","line":44,"name":"RequestLogger"},"caller":{"file":"middleware/logger.go","line":44,"name":"RequestLogger"},"closure":true,"closure_self":true,"sites":["middleware/logger.go:51"]},
+{"callee":{"file":"middleware/recoverer.go","line":22,"name":"Recoverer"},"caller":{"file":"middleware/recoverer.go","line":22,"name":"Recoverer"},"closure":true,"closure_self":true,"sites":["middleware/recoverer.go:24"]},
+{"callee":{"file":"middleware/throttle.go","line":44,"name":"ThrottleWithOpts"},"caller":{"file":"middleware/throttle.go","line":44,"name":"ThrottleWithOpts"},"closure":true,"closure_self":true,"sites":["middleware/throttle.go:86","middleware/throttle.go:93","middleware/throttle.go:114"]}
+]

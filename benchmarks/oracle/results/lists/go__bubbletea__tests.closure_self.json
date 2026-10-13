@@ -1,0 +1,16 @@
+[
+{"callee":{"file":"signals_unix.go","line":15,"name":"listenForResize"},"caller":{"file":"signals_unix.go","line":15,"name":"listenForResize"},"closure":true,"closure_self":true,"sites":["signals_unix.go:19"]},
+{"callee":{"file":"tea.go","line":122,"name":"shutdown"},"caller":{"file":"tea.go","line":122,"name":"shutdown"},"closure":true,"closure_self":true,"sites":["tea.go:126"]},
+{"callee":{"file":"tea.go","line":273,"name":"handleSignals"},"caller":{"file":"tea.go","line":273,"name":"handleSignals"},"closure":true,"closure_self":true,"sites":["tea.go:287","tea.go:284"]},
+{"callee":{"file":"tea.go","line":333,"name":"handleCommands"},"caller":{"file":"tea.go","line":333,"name":"handleCommands"},"closure":true,"closure_self":true,"sites":["tea.go:336","tea.go:357","tea.go:354"]},
+{"callee":{"file":"tea.go","line":578,"name":"Run"},"caller":{"file":"tea.go","line":578,"name":"Run"},"closure":true,"closure_self":true,"sites":["tea.go:584","tea.go:588","tea.go:588","tea.go:635","tea.go:588","tea.go:689"]},
+{"callee":{"file":"tea_test.go","line":102,"name":"TestTeaWaitQuit"},"caller":{"file":"tea_test.go","line":102,"name":"TestTeaWaitQuit"},"closure":true,"closure_self":true,"sites":["tea_test.go:113","tea_test.go:118","tea_test.go:138"]},
+{"callee":{"file":"tea_test.go","line":152,"name":"TestTeaWaitKill"},"caller":{"file":"tea_test.go","line":152,"name":"TestTeaWaitKill"},"closure":true,"closure_self":true,"sites":["tea_test.go:163","tea_test.go:168","tea_test.go:188"]},
+{"callee":{"file":"tea_test.go","line":208,"name":"testTeaWithFilter"},"caller":{"file":"tea_test.go","line":208,"name":"testTeaWithFilter"},"closure":true,"closure_self":true,"sites":["tea_test.go:228"]},
+{"callee":{"file":"tea_test.go","line":243,"name":"TestTeaKill"},"caller":{"file":"tea_test.go","line":243,"name":"TestTeaKill"},"closure":true,"closure_self":true,"sites":["tea_test.go:249"]},
+{"callee":{"file":"tea_test.go","line":301,"name":"TestTeaContextImplodeDeadlock"},"caller":{"file":"tea_test.go","line":301,"name":"TestTeaContextImplodeDeadlock"},"closure":true,"closure_self":true,"sites":["tea_test.go:308"]},
+{"callee":{"file":"tea_test.go","line":354,"name":"TestTeaBatchMsg"},"caller":{"file":"tea_test.go","line":354,"name":"TestTeaBatchMsg"},"closure":true,"closure_self":true,"sites":["tea_test.go:364"]},
+{"callee":{"file":"tea_test.go","line":478,"name":"TestTeaPanic"},"caller":{"file":"tea_test.go","line":478,"name":"TestTeaPanic"},"closure":true,"closure_self":true,"sites":["tea_test.go:484"]},
+{"callee":{"file":"tea_test.go","line":505,"name":"TestTeaGoroutinePanic"},"caller":{"file":"tea_test.go","line":505,"name":"TestTeaGoroutinePanic"},"closure":true,"closure_self":true,"sites":["tea_test.go:511"]},
+{"callee":{"file":"tea_test.go","line":81,"name":"TestTeaQuit"},"caller":{"file":"tea_test.go","line":81,"name":"TestTeaQuit"},"closure":true,"closure_self":true,"sites":["tea_test.go:87"]}
+]
