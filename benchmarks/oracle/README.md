@@ -367,6 +367,4 @@ interfaces keyed at the wrong declaration); the oracle was fixed and the sample 
 | rust/nextest/path_tests_excluded | P 1.00 [0.70, 1.00] (n=9); R 0.90 [0.60, 0.98] (n=10) | n/a (0 pairs) | P 1.00 [0.86, 1.00] (n=24); R 1.00 [0.86, 1.00] (n=24) |
 
 What the numbers say: lidx's precision is 1.00 everywhere. Recall is where the
-gaps are: Go struct embedding has no edge at all (0 of 94 `embeds` pairs), Go methods declared in another file than their receiver type never join it
-(163 of 788 override pairs, issue #455; embedding, #456) and Rust loses the type-level IMPLEMENTS when the impl sits in another file than its type (#457). TypeScript is complete (`extends` 779 of 779, `overrides` 116 of 116: interface and type-literal
-members are `decl` symbols, `override` is optional so a base-class member pairs without it, #458) and Go `implements` is good (525 of 544). Go `implements` recall caps the dispatch-credited call recall (see the report).
+gaps are: at the commit of the committed results, Go struct embedding had no edge and Go methods declared in another file than their receiver type never joined it (issues #455, #456, fixed since; regenerate the results to see the current figures), Rust loses the type-level IMPLEMENTS when the impl sits in another file than its type (#457). TypeScript is complete (`overrides` 116 of 116: interface and type-literal members are `decl` symbols and `override` is optional, #458) and Go `implements` is good (see the tables). Go `implements` recall caps the dispatch-credited call recall (see the report).

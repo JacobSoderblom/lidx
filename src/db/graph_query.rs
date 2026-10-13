@@ -236,6 +236,10 @@ pub(super) enum DispatchSeed {
     /// Base members: the containing interfaces / classes, their implementors
     /// (a reverse closure) and those classes' ancestors are expanded.
     Bases(String),
+    /// [`Self::Bases`] for members the classes reach by `CONTAINS` edge from
+    /// another file than the class's (a Go method declared apart from its
+    /// receiver type): their qualname is not under the class's.
+    BasesCross(String),
 }
 
 impl DispatchSeed {
@@ -246,6 +250,15 @@ impl DispatchSeed {
 
     pub(super) fn bases(ids: &[i64]) -> Self {
         Self::Bases(id_list(ids))
+    }
+
+    pub(super) fn bases_cross(ids: &[i64]) -> Self {
+        Self::BasesCross(id_list(ids))
+    }
+
+    /// Whether the query starts from the classes (and walks to members).
+    fn starts_from_classes(&self) -> bool {
+        matches!(self, Self::Bases(_) | Self::BasesCross(_))
     }
 
     /// Containers of the members in `list`: qualname minus `<sep><name>` or
@@ -272,7 +285,7 @@ impl DispatchSeed {
                 String::new(),
                 format!("AND source_symbol_id IN ({})", Self::containers(list, gv)),
             ),
-            Self::Bases(list) => (
+            Self::Bases(list) | Self::BasesCross(list) => (
                 format!(
                     "rel(id, d) AS (
                          SELECT id, 0 FROM ({seeds})
@@ -375,7 +388,17 @@ pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> St
     // Queried by base member: start from the (few) implementing classes and
     // walk to their members by qualname range, in this order (`CROSS JOIN`
     // pins it); otherwise start from the queried member `cm`.
-    let head = if matches!(seed, DispatchSeed::Bases(_)) {
+    let head = if matches!(seed, DispatchSeed::BasesCross(_)) {
+        format!(
+            "FROM ({ancestors}) a
+             CROSS JOIN symbols c ON c.id = a.cid AND c.graph_version = {gv}
+             CROSS JOIN symbols i ON i.id = a.iid
+             CROSS JOIN edges ce ON ce.source_symbol_id = c.id AND ce.kind = 'CONTAINS'
+                                AND ce.graph_version = {gv}
+             CROSS JOIN symbols cm ON cm.id = ce.target_symbol_id AND cm.graph_version = {gv}
+                                  AND cm.file_id <> c.file_id"
+        )
+    } else if seed.starts_from_classes() {
         format!(
             "FROM ({ancestors}) a
              CROSS JOIN symbols c ON c.id = a.cid AND c.graph_version = {gv}
@@ -392,7 +415,7 @@ pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> St
              JOIN symbols i ON i.id = a.iid"
         )
     };
-    let join = if matches!(seed, DispatchSeed::Bases(_)) {
+    let join = if seed.starts_from_classes() {
         "CROSS JOIN"
     } else {
         "JOIN"
@@ -414,7 +437,11 @@ pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> St
          -- only with the interface it names, an implicit one keeps the tail.
          {join} symbols im ON im.qualname = CASE WHEN {cm_explicit}
                                                THEN i.qualname || '.' || cm.name
-                                               ELSE i.qualname || substr(cm.qualname, length(c.qualname) + 1) END
+                                               WHEN substr(cm.qualname, 1, length(c.qualname)) = c.qualname
+                                               THEN i.qualname || substr(cm.qualname, length(c.qualname) + 1)
+                                               -- a member declared apart from its class
+                                               -- (Go): its qualname is not under the class's
+                                               ELSE i.qualname || '.' || cm.name END
                         AND +im.name = +cm.name AND im.graph_version = {gv}
          JOIN files fc ON fc.id = cm.file_id
                       AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
@@ -453,6 +480,7 @@ impl Db {
         for (side, seed) in [
             ("cm", DispatchSeed::impls(ids)),
             ("im", DispatchSeed::bases(ids)),
+            ("im", DispatchSeed::bases_cross(ids)),
         ] {
             let from = dispatch_pairs_from(graph_version, &seed);
             let sql = format!("SELECT DISTINCT im.id, cm.id {from} AND {side}.id IN ({list})");
