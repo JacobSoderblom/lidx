@@ -592,6 +592,9 @@ pub enum DeclarationQuery<'a> {
     /// A type alias or interface with exactly this qualname (TypeScript
     /// callable types).
     Alias(&'a str),
+    /// A module with exactly this qualname (its `signature` carries the names
+    /// its `use`s bind: `model::rust_uses_data`).
+    Module(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -1143,6 +1146,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
             ),
             DeclarationQuery::Alias(qualname) => (
                 "s.kind IN ('type', 'interface') AND s.qualname = ?1",
+                qualname.to_string(),
+                String::new(),
+                String::new(),
+            ),
+            DeclarationQuery::Module(qualname) => (
+                "s.kind = 'module' AND s.qualname = ?1",
                 qualname.to_string(),
                 String::new(),
                 String::new(),
@@ -2813,10 +2822,7 @@ impl<'c> Resolver<'c> {
     ) -> Result<Option<(i64, ResolutionKind)>> {
         let segments: Vec<&str> = target_qualname.split("::").collect();
         let (root, name) = (segments[0], segments[segments.len() - 1]);
-        if segments.len() < 2
-            || matches!(root, "std" | "core" | "alloc")
-            || !self.rust_module_declared(root)?
-        {
+        if segments.len() < 2 || is_rust_std_root(root) || !self.rust_module_declared(root)? {
             return Ok(None);
         }
         let gv = self.graph_version;
@@ -2976,10 +2982,11 @@ impl<'c> Resolver<'c> {
         edge_kind: &str,
         caller: CallerContext<'_>,
     ) -> Result<Option<(i64, ResolutionKind)>> {
-        if matches!(
-            target_qualname.split("::").next(),
-            Some("std" | "core" | "alloc")
-        ) {
+        if target_qualname
+            .split("::")
+            .next()
+            .is_some_and(is_rust_std_root)
+        {
             return Ok(None);
         }
         let method = qualname_trailing_name(target_qualname);
@@ -3517,10 +3524,10 @@ impl<'c> Resolver<'c> {
                 if !is_foreign_rust_path(target_qualname) {
                     return Ok(false);
                 }
-                let std_root = matches!(
-                    target_qualname.split("::").next(),
-                    Some("std" | "core" | "alloc")
-                );
+                let std_root = target_qualname
+                    .split("::")
+                    .next()
+                    .is_some_and(is_rust_std_root);
                 // `Type::item` of a repo type that no tier bound (a blanket
                 // impl's method, a derive) is a repo-side miss, not a stub.
                 let repo_type = !std_root
@@ -3885,6 +3892,12 @@ pub(crate) fn parse_rust_crate_pin(candidate: &str) -> Option<(&str, &str)> {
         .and_then(|rest| rest.split_once(RUST_PIN_SEPARATOR))
 }
 pub(crate) const RUST_EXTERNAL_CRATE: &str = "~";
+
+/// Whether `root` (the first segment of a Rust path) is one of the standard
+/// library's crates.
+pub(crate) fn is_rust_std_root(root: &str) -> bool {
+    matches!(root, "std" | "core" | "alloc")
+}
 
 /// A Rust receiver type pinned to a package: `@<package dir>|<Type path>`.
 pub(crate) fn rust_pinned_type(receiver_type: &str) -> Option<(&str, &str)> {

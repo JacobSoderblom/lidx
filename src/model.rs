@@ -53,6 +53,54 @@ pub fn go_type_data(signature: &str) -> Option<&str> {
         .strip_suffix(GO_TYPE_MARKER_SUFFIX)
 }
 
+/// Line a Rust fn or struct/enum signature carries when a type written in its
+/// return type or field types points outside the repository or through a
+/// module path: `#[rust_types(<written>=<origin>;..)]`, `<origin>` being `~`
+/// (std or a dependency) or the absolute `crate::` path of a type another
+/// module may re-export. The resolver reads it back with [`rust_types_data`] so
+/// a signature parsed away from its file still knows where its types come
+/// from. Resolver-only, hidden on read like the other markers.
+pub const RUST_TYPES_MARKER_PREFIX: &str = "#[rust_types(";
+
+/// Line a Rust module symbol's signature carries for the names its `use`s
+/// bind: `#[rust_uses(<name>;<name>=<crate:: path>;..)]`, a bare name for an
+/// import from std or a dependency, `name=path` for one from the repo. Read
+/// through [`rust_uses_data`] to follow a `pub use` re-export from another
+/// file. Resolver-only.
+pub const RUST_USES_MARKER_PREFIX: &str = "#[rust_uses(";
+const RUST_MARKER_SUFFIX: &str = ")]";
+
+fn rust_marker(prefix: &str, entries: &[String]) -> Option<String> {
+    (!entries.is_empty()).then(|| format!("{prefix}{}{RUST_MARKER_SUFFIX}", entries.join(";")))
+}
+
+fn rust_marker_data<'a>(prefix: &str, signature: &'a str) -> Option<&'a str> {
+    signature
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix)?.strip_suffix(RUST_MARKER_SUFFIX))
+}
+
+/// The `#[rust_types(..)]` line for `entries` (`written=origin`); `None` when
+/// there are none.
+pub fn rust_types_marker(entries: &[String]) -> Option<String> {
+    rust_marker(RUST_TYPES_MARKER_PREFIX, entries)
+}
+
+/// The `written=origin;..` data of a stored signature's `#[rust_types(..)]`.
+pub fn rust_types_data(signature: &str) -> Option<&str> {
+    rust_marker_data(RUST_TYPES_MARKER_PREFIX, signature)
+}
+
+/// The `#[rust_uses(..)]` line for `entries`; `None` when there are none.
+pub fn rust_uses_marker(entries: &[String]) -> Option<String> {
+    rust_marker(RUST_USES_MARKER_PREFIX, entries)
+}
+
+/// The `name;name=path;..` data of a module's `#[rust_uses(..)]`.
+pub fn rust_uses_data(signature: &str) -> Option<&str> {
+    rust_marker_data(RUST_USES_MARKER_PREFIX, signature)
+}
+
 /// `signature` without the resolver-only marker lines of a Rust fn (the
 /// real `#[cfg(..)]` lines stay) and the Go typing line.
 pub fn strip_internal_markers(signature: &str) -> std::borrow::Cow<'_, str> {
@@ -60,6 +108,8 @@ pub fn strip_internal_markers(signature: &str) -> std::borrow::Cow<'_, str> {
         line.starts_with(NESTED_MARKER_PREFIX)
             || line == TRAIT_IMPL_MARKER
             || line.starts_with(GO_TYPE_MARKER_PREFIX)
+            || line.starts_with(RUST_TYPES_MARKER_PREFIX)
+            || line.starts_with(RUST_USES_MARKER_PREFIX)
     };
     if !signature.lines().any(internal) {
         return signature.into();
