@@ -439,6 +439,21 @@ fn a_method_on_an_undeclared_receiver_type_makes_the_implementation_unproven() {
 }
 
 #[test]
+fn an_implementation_reached_only_through_a_dispatch_edge_is_not_dead() {
+    let (_tmp, root, mut indexer) = indexed(&base());
+    let result = rpc::handle_method(
+        &mut indexer,
+        "dead_symbols",
+        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false}),
+    )
+    .unwrap();
+    let dead = result["dead_symbols"].to_string();
+    assert!(!dead.contains("impls.ImplA.Do"), "{dead}");
+    assert!(!dead.contains("impls.ImplB.Do"), "{dead}");
+    drop(root);
+}
+
+#[test]
 fn a_method_with_other_parameter_or_result_types_is_no_implementation() {
     let files = [
         ("go.mod", GO_MOD),
