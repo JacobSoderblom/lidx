@@ -257,7 +257,7 @@ edge for it, because lidx keeps only the call. Both removals are counted in the 
 
 **Counting.** A lidx pair is **correct** when the oracle has it as a reference that is not also a call, **wrong** when it does not and the pair is
 judgeable, **ungradable** otherwise (`oracle_call_wins`; a caller or callee in a file the oracle did not analyse; a Rust caller that is neither a function definition nor a module; `cfg_gated_evidence`, evidence in `#[cfg]`-disabled code;
-`no_evidence_line`, a USES row with no source line, which is how the Rust extractor records a `Type::f` path in value position: a module-level row that names no referencing declaration). Precision = correct / (correct + wrong). Recall = oracle pairs lidx has / oracle pairs whose caller and
+`no_evidence_line`, a USES row with no source line: a module-level row that names no referencing declaration. The Rust extractor used to record every `Type::f` path in value position that way; since #475 it records them as `REFERENCES` from the function that writes them, with the line, so the share is near 0 on the Rust cells). Precision = correct / (correct + wrong). Recall = oracle pairs lidx has / oracle pairs whose caller and
 callee are both lidx symbols; pairs with no lidx symbol at an end are `capture_gap` rows (also reported as `recall_incl_capture_gap`).
 
 Categories. Wrong pairs: `same_name_elsewhere` (lidx bound the reference to a different declaration of the same name as the one the compiler names at the
