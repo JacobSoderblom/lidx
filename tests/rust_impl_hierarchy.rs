@@ -629,10 +629,19 @@ fn a_recursive_trait_method_call_is_not_bound_to_the_trait_declaration() {
 fn from_iterator_is_in_the_prelude_from_edition_2021_only() {
     let src = "pub struct S;\nimpl FromIterator<u8> for S {\n    fn from_iter<I: IntoIterator<Item = u8>>(_: I) -> S { S }\n}\n";
     for (manifest, external) in [
-        ("[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2021\"\n", true),
-        ("[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2018\"\n", false),
+        (
+            "[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            true,
+        ),
+        (
+            "[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2018\"\n",
+            false,
+        ),
         ("[package]\nname = \"d\"\nversion = \"0.1.0\"\n", false),
-        ("[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2024\"\n", true),
+        (
+            "[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            true,
+        ),
     ] {
         let (_tmp, indexer) = index(&[("Cargo.toml", manifest), ("src/lib.rs", src)]);
         let got = implements(&indexer);
