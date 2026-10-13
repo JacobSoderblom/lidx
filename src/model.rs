@@ -366,6 +366,11 @@ impl ReadSymbolEntry {
 pub const DERIVED_DEFERRED_RPC: i64 = 1;
 /// `IMPLEMENTS` edges of Go's structural typing (`Db::rederive_go_implements`).
 pub const DERIVED_GO_STRUCTURAL: i64 = 2;
+/// `EXTENDS` edges of Go struct embedding (`Db::rederive_go_implements`).
+pub const DERIVED_GO_EMBED: i64 = 3;
+/// `CONTAINS` edges from a Go receiver type to a method declared in another
+/// file of its package (`Db::rederive_go_implements`).
+pub const DERIVED_GO_RECEIVER: i64 = 4;
 
 /// `resolution_kind` of the synthetic CALLS edges built by
 /// `Db::edges_for_symbols_with_dispatch` (interface method -> implementor).

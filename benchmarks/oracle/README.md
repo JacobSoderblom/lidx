@@ -334,3 +334,5 @@ gaps are: Go struct embedding has no edge at all (0 of 94 `embeds` pairs), Go me
 (163 of 788 override pairs, issue #455; embedding, #456), TypeScript has no override pairs (0 of 116; interface members are not symbols and base-class overrides need the
 `override` keyword, #458) and Rust loses the type-level IMPLEMENTS when the impl sits in another file than its type (#457). `extends` for TypeScript and `implements` for
 Go are good (779 of 779 and 525 of 544). Go `implements` recall caps the dispatch-credited call recall (see the report).
+
+After #455 and #456 (the tables above are the run before them) the Go cells with tests read: `embeds` 94 of 94, `overrides` 786 of 788, `implements` 532 of 544, `extends` unchanged at 19 of 23; precision stays 1.00 and the call-edge figures do not move.

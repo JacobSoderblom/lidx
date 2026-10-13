@@ -928,6 +928,21 @@ fn std_interface(path: &str, name: &str) -> Option<&'static [(&'static str, &'st
             ("Swap", "(i, j int)"),
         ],
         ("net/http", "Handler") => &[("ServeHTTP", "(http.ResponseWriter, *http.Request)")],
+        ("net/http", "ResponseWriter") => &[
+            ("Header", "() -> http.Header"),
+            WRITE,
+            ("WriteHeader", "(statusCode int)"),
+        ],
+        ("net/http", "Flusher") => &[("Flush", "()")],
+        ("net/http", "Hijacker") => &[("Hijack", "() -> (net.Conn, *bufio.ReadWriter, error)")],
+        ("net/http", "Pusher") => &[("Push", "(target string, opts *http.PushOptions) -> error")],
+        // A struct, not an interface: its listed methods are the ones an
+        // embedding type most often satisfies an interface with.
+        ("os/exec", "Cmd") => &[
+            ("Run", "() -> error"),
+            ("Start", "() -> error"),
+            ("Wait", "() -> error"),
+        ],
         ("context", "Context") => &[
             ("Deadline", "() -> (deadline time.Time, ok bool)"),
             ("Done", "() -> <-chan struct{}"),
@@ -1351,6 +1366,98 @@ impl Resolver<'_> {
     }
 }
 
+impl Resolver<'_> {
+    /// Every `(struct, embedded type, struct's file)` where a struct of the
+    /// repository embeds a type of the repository (`type S struct{ T }`,
+    /// `*T`, `T[A]`, an interface alike): the embedded type's declaration,
+    /// found in the struct's file's imports and package. A type the
+    /// repository declares more than once (and no build constraint tells
+    /// apart), or one outside it, gets no pair.
+    fn go_embeds(&mut self) -> Result<Vec<(i64, i64, i64)>> {
+        let structs = self.go_type_query(
+            "s.kind IN ('class', 'type') AND s.signature LIKE '%~%'",
+            params![self.graph_version],
+        )?;
+        let mut pairs = Vec::new();
+        for row in structs {
+            let embedded: Vec<String> = struct_fields(row.signature.as_deref())
+                .into_iter()
+                .filter(|(name, _)| name.is_none())
+                .map(|(_, text)| text)
+                .collect();
+            if embedded.is_empty() {
+                continue;
+            }
+            let imports = self.go_file_imports(row.file_id)?;
+            let dir = row.dir().to_string();
+            for text in embedded {
+                let Some(GoType::Repo { dir, name }) = canonical_type(&text, &dir, &imports) else {
+                    continue;
+                };
+                let found = self.go_types_named(&dir, &name)?;
+                if let [only] = &found[..]
+                    && only.id != row.id
+                {
+                    pairs.push((row.id, only.id, row.file_id));
+                }
+            }
+        }
+        Ok(pairs)
+    }
+
+    /// Every `(receiver type, method, method's file)` for a method whose
+    /// qualname names its own file's module (`altsrc/flag.IntSliceFlag.Apply`)
+    /// although its receiver type is declared in another file of the package
+    /// (`altsrc/flag_generated.IntSliceFlag`): Go allows methods in any file,
+    /// so the qualname's container names no symbol and the extractor's
+    /// `CONTAINS` edge has no source. The receiver is found by name in the
+    /// package directory, build-constraint twins reduced to the one the
+    /// method's own constraint (or the default host) selects.
+    fn go_receiver_contains(&mut self) -> Result<Vec<(i64, i64, i64)>> {
+        let methods = self.go_type_query("s.kind = 'method'", params![self.graph_version])?;
+        if methods.is_empty() {
+            return Ok(Vec::new());
+        }
+        let types = self.go_type_query(
+            "s.kind IN ('class', 'interface', 'type')",
+            params![self.graph_version],
+        )?;
+        let declared: HashSet<&str> = types.iter().map(|t| t.qualname.as_str()).collect();
+        let mut by_name: HashMap<(String, &str), Vec<&GoTypeRow>> = HashMap::new();
+        for t in &types {
+            by_name
+                .entry((t.dir().to_string(), t.name.as_str()))
+                .or_default()
+                .push(t);
+        }
+        let mut pairs = Vec::new();
+        for m in &methods {
+            let Some((container, _)) = m.qualname.rsplit_once('.') else {
+                continue;
+            };
+            if declared.contains(container) {
+                continue;
+            }
+            let Some((module, ty)) = container.rsplit_once('.') else {
+                continue;
+            };
+            let dir = module.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+            let Some(candidates) = by_name.get(&(dir, ty)) else {
+                continue;
+            };
+            let candidates = collapse_build_twins(
+                candidates.clone(),
+                |t: &&GoTypeRow| TwinKey::new(&t.kind, &t.name, t.visibility.as_deref()),
+                BuildTag::parse(m.visibility.as_deref()).as_ref(),
+            );
+            if let [only] = &candidates[..] {
+                pairs.push((only.id, m.id, m.file_id));
+            }
+        }
+        Ok(pairs)
+    }
+}
+
 impl Db {
     /// Rebuild the `IMPLEMENTS` edges of Go's structural typing (a type has
     /// the methods of an interface, so it implements it): the same edges C#
@@ -1359,65 +1466,110 @@ impl Db {
     /// (`edges_for_symbols_with_dispatch`). They depend only on the current
     /// symbols, and only the pairs that changed are written, so incremental
     /// sync equals a fresh reindex and an unchanged repo gets no new edge ids.
+    ///
+    /// Two more edge sets are rebuilt the same way, from the same symbols:
+    /// the `EXTENDS` edge of each struct embedding a type of the repository
+    /// (`DERIVED_GO_EMBED`), and the `CONTAINS` edge of a method declared in
+    /// another file than its receiver type, whose qualname names the
+    /// method's file (`DERIVED_GO_RECEIVER`).
     pub fn rederive_go_implements(&self, graph_version: i64) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let wanted: Vec<(i64, i64, i64)> = {
+        let (implements, embeds, receivers) = {
             let mut resolver = Resolver::new(&tx, graph_version)?;
-            resolver.go_structural_implements()?
+            (
+                resolver.go_structural_implements()?,
+                resolver.go_embeds()?,
+                resolver.go_receiver_contains()?,
+            )
         };
-        let existing: Vec<(i64, i64, i64)> = {
-            let mut stmt = tx.prepare(
-                "SELECT id, source_symbol_id, target_symbol_id FROM edges
-                 WHERE graph_version = ?1 AND derived = ?2 AND kind = 'IMPLEMENTS'",
-            )?;
-            stmt.query_map(
-                params![graph_version, crate::model::DERIVED_GO_STRUCTURAL],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                        row.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    ))
-                },
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        let wanted_set: HashSet<(i64, i64)> = wanted.iter().map(|&(c, i, _)| (c, i)).collect();
-        let mut kept: HashSet<(i64, i64)> = HashSet::new();
         let mut changed = 0;
-        for (id, source, target) in existing {
-            if wanted_set.contains(&(source, target)) && kept.insert((source, target)) {
-                continue;
-            }
-            tx.execute("DELETE FROM edges WHERE id = ?1", params![id])?;
-            changed += 1;
-        }
-        {
-            let mut insert = tx.prepare(
-                "INSERT INTO edges
-                 (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
-                  confidence, graph_version, resolution_kind, derived)
-                 VALUES (?1, ?2, ?3, 'IMPLEMENTS', (SELECT qualname FROM symbols WHERE id = ?3),
-                         'structural', 1.0, ?4, 'structural', ?5)",
-            )?;
-            for (class, iface, file_id) in wanted {
-                if kept.contains(&(class, iface)) {
-                    continue;
-                }
-                insert.execute(params![
-                    file_id,
-                    class,
-                    iface,
-                    graph_version,
-                    crate::model::DERIVED_GO_STRUCTURAL
-                ])?;
-                changed += 1;
-            }
+        for (kind, derived, detail, wanted) in [
+            (
+                "IMPLEMENTS",
+                crate::model::DERIVED_GO_STRUCTURAL,
+                "structural",
+                implements,
+            ),
+            (
+                "EXTENDS",
+                crate::model::DERIVED_GO_EMBED,
+                "embedded",
+                embeds,
+            ),
+            (
+                "CONTAINS",
+                crate::model::DERIVED_GO_RECEIVER,
+                "receiver",
+                receivers,
+            ),
+        ] {
+            changed += sync_derived_edges(&tx, graph_version, kind, derived, detail, wanted)?;
         }
         tx.commit()?;
         Ok(changed)
     }
+}
+
+/// Make the `kind` edges a pass owns (`derived`) exactly `wanted`
+/// (`(source, target, file_id)`): delete the rest, insert what is missing,
+/// leave the others untouched. Returns how many rows changed.
+fn sync_derived_edges(
+    tx: &rusqlite::Transaction<'_>,
+    graph_version: i64,
+    kind: &str,
+    derived: i64,
+    detail: &str,
+    wanted: Vec<(i64, i64, i64)>,
+) -> Result<usize> {
+    let existing: Vec<(i64, i64, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, source_symbol_id, target_symbol_id FROM edges
+             WHERE graph_version = ?1 AND derived = ?2 AND kind = ?3",
+        )?;
+        stmt.query_map(params![graph_version, derived, kind], |row| {
+            Ok((
+                row.get(0)?,
+                row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let wanted_set: HashSet<(i64, i64)> = wanted.iter().map(|&(c, i, _)| (c, i)).collect();
+    let mut kept: HashSet<(i64, i64)> = HashSet::new();
+    let mut changed = 0;
+    for (id, source, target) in existing {
+        if wanted_set.contains(&(source, target)) && kept.insert((source, target)) {
+            continue;
+        }
+        tx.execute("DELETE FROM edges WHERE id = ?1", params![id])?;
+        changed += 1;
+    }
+    let mut insert = tx.prepare(
+        "INSERT INTO edges
+         (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
+          confidence, graph_version, resolution_kind, derived)
+         VALUES (?1, ?2, ?3, ?4, (SELECT qualname FROM symbols WHERE id = ?3),
+                 ?5, 1.0, ?6, 'structural', ?7)",
+    )?;
+    let mut written: HashSet<(i64, i64)> = HashSet::new();
+    for (source, target, file_id) in wanted {
+        if kept.contains(&(source, target)) || !written.insert((source, target)) {
+            continue;
+        }
+        insert.execute(params![
+            file_id,
+            source,
+            target,
+            kind,
+            detail,
+            graph_version,
+            derived
+        ])?;
+        changed += 1;
+    }
+    Ok(changed)
 }
 
 #[cfg(test)]
