@@ -286,6 +286,12 @@ pub(crate) struct PackageView {
 }
 
 impl PackageView {
+    /// The directory of the Cargo package the file belongs to (`""` for the
+    /// repo root).
+    pub(crate) fn package(&self) -> &str {
+        &self.package
+    }
+
     /// The view of the file at `rel_path`; `None` when no `Cargo.toml` above
     /// it declares a package.
     pub(crate) fn of_file(workspace: &Rc<RustWorkspace>, rel_path: &str) -> Option<Self> {

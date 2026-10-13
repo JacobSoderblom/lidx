@@ -592,6 +592,9 @@ pub enum DeclarationQuery<'a> {
     /// A type alias or interface with exactly this qualname (TypeScript
     /// callable types).
     Alias(&'a str),
+    /// A module with exactly this qualname (its `signature` carries the names
+    /// its `use`s bind: `model::rust_uses_data`).
+    Module(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -1143,6 +1146,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
             ),
             DeclarationQuery::Alias(qualname) => (
                 "s.kind IN ('type', 'interface') AND s.qualname = ?1",
+                qualname.to_string(),
+                String::new(),
+                String::new(),
+            ),
+            DeclarationQuery::Module(qualname) => (
+                "s.kind = 'module' AND s.qualname = ?1",
                 qualname.to_string(),
                 String::new(),
                 String::new(),
@@ -2813,10 +2822,7 @@ impl<'c> Resolver<'c> {
     ) -> Result<Option<(i64, ResolutionKind)>> {
         let segments: Vec<&str> = target_qualname.split("::").collect();
         let (root, name) = (segments[0], segments[segments.len() - 1]);
-        if segments.len() < 2
-            || matches!(root, "std" | "core" | "alloc")
-            || !self.rust_module_declared(root)?
-        {
+        if segments.len() < 2 || is_rust_std_root(root) || !self.rust_module_declared(root)? {
             return Ok(None);
         }
         let gv = self.graph_version;
@@ -2976,10 +2982,11 @@ impl<'c> Resolver<'c> {
         edge_kind: &str,
         caller: CallerContext<'_>,
     ) -> Result<Option<(i64, ResolutionKind)>> {
-        if matches!(
-            target_qualname.split("::").next(),
-            Some("std" | "core" | "alloc")
-        ) {
+        if target_qualname
+            .split("::")
+            .next()
+            .is_some_and(is_rust_std_root)
+        {
             return Ok(None);
         }
         let method = qualname_trailing_name(target_qualname);
@@ -3039,9 +3046,19 @@ impl<'c> Resolver<'c> {
         let [Some(signature)] = signatures.as_slice() else {
             return Ok(None);
         };
-        let aliased = signature
+        let target_text = signature
             .split_once(" = ")
-            .map(|(_, target)| target.split('<').next().unwrap_or(target).trim())
+            .map(|(_, target)| target.split('<').next().unwrap_or(target).trim());
+        // `type Entry = walkdir::DirEntry;`: the extractor recorded that the
+        // target is outside the repo, so no repo type stands behind the alias.
+        let key: String = target_text.unwrap_or_default().split_whitespace().collect();
+        if crate::model::rust_types_data(signature).is_some_and(|data| {
+            data.split(';')
+                .any(|entry| entry.split_once('=') == Some((key.as_str(), RUST_EXTERNAL_CRATE)))
+        }) {
+            return Ok(Some(RUST_EXTERNAL_RECEIVER.to_string()));
+        }
+        let aliased = target_text
             .and_then(|path| path.rsplit("::").next())
             .filter(|target| target.starts_with(char::is_uppercase) && *target != name);
         Ok(aliased.map(str::to_string))
@@ -3517,10 +3534,10 @@ impl<'c> Resolver<'c> {
                 if !is_foreign_rust_path(target_qualname) {
                     return Ok(false);
                 }
-                let std_root = matches!(
-                    target_qualname.split("::").next(),
-                    Some("std" | "core" | "alloc")
-                );
+                let std_root = target_qualname
+                    .split("::")
+                    .next()
+                    .is_some_and(is_rust_std_root);
                 // `Type::item` of a repo type that no tier bound (a blanket
                 // impl's method, a derive) is a repo-side miss, not a stub.
                 let repo_type = !std_root
@@ -3885,6 +3902,12 @@ pub(crate) fn parse_rust_crate_pin(candidate: &str) -> Option<(&str, &str)> {
         .and_then(|rest| rest.split_once(RUST_PIN_SEPARATOR))
 }
 pub(crate) const RUST_EXTERNAL_CRATE: &str = "~";
+
+/// Whether `root` (the first segment of a Rust path) is one of the standard
+/// library's crates.
+pub(crate) fn is_rust_std_root(root: &str) -> bool {
+    matches!(root, "std" | "core" | "alloc")
+}
 
 /// A Rust receiver type pinned to a package: `@<package dir>|<Type path>`.
 pub(crate) fn rust_pinned_type(receiver_type: &str) -> Option<(&str, &str)> {
@@ -5105,8 +5128,11 @@ impl Db {
             params![graph_version],
             |row| row.get(0),
         )?;
+        // A stored call through a type alias hangs on the alias's declaration.
+        let alias_call_ids = self.rust_alias_call_ids(graph_version, true)?;
         if !symbols_deleted_this_batch
             && !inheritance_changed
+            && alias_call_ids.is_empty()
             && !has_deferred_rows
             && !has_go_typed_rows
             && max_symbol_id <= watermark
@@ -5137,7 +5163,16 @@ impl Db {
             // Issue #79: the store is self-contained now, so neither branch
             // joins back to `edges` at all -- every column comes straight
             // off `ur`.
-            let mut stmt = tx.prepare(
+            let alias_ids = if alias_call_ids.is_empty() {
+                "-1".to_string()
+            } else {
+                alias_call_ids
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            let mut stmt = tx.prepare(&format!(
                 "SELECT DISTINCT ur.id, ur.edge_id, ur.source_symbol_id, ur.file_id,
                         ur.edge_kind, ur.reference_name, ur.import_candidates,
                         ur.receiver_type, ur.bare_call, ur.detail, ur.evidence_snippet,
@@ -5170,8 +5205,9 @@ impl Db {
                         OR ur.deferred_kind IS NOT NULL
                         OR (f.language = 'go' AND ur.edge_kind = 'CALLS'
                             AND ur.import_candidates IS NOT NULL)
-                        OR (?3 AND ur.reason IN ('ambiguous', 'private')))",
-            )?;
+                        OR (?3 AND ur.reason IN ('ambiguous', 'private'))
+                        OR ur.id IN ({alias_ids}))"
+            ))?;
             let rows = stmt.query_map(
                 params![
                     graph_version,
@@ -5363,6 +5399,61 @@ impl Db {
             "AND e.target_symbol_id IS NOT NULL AND e.kind IN ('CALLS', 'DISPATCH')
              AND e.deferred_kind IS NOT NULL",
         )
+    }
+
+    /// Ids of the Rust calls (`unresolved` stored rows, else bound edges) made
+    /// through a type alias (`Alias::new()` where `type Alias = Target;`). Their
+    /// target hangs on the alias's declaration, which an edit can repoint (or
+    /// move outside the repo) without touching the call's file or its bound
+    /// target.
+    fn rust_alias_call_ids(&self, graph_version: i64, unresolved: bool) -> Result<Vec<i64>> {
+        let conn = self.read_conn()?;
+        let names: std::collections::HashSet<String> = conn
+            .prepare(
+                "SELECT DISTINCT s.name FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.kind = 'type' AND s.graph_version = ?1 AND f.language = 'rust'
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?1)",
+            )?
+            .query_map([graph_version], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = if unresolved {
+            "SELECT ur.id, ur.reference_name FROM unresolved_references ur
+             JOIN files f ON f.id = ur.file_id
+             WHERE ur.graph_version = ?1 AND ur.edge_kind = 'CALLS' AND f.language = 'rust'"
+        } else {
+            "SELECT e.id, e.target_qualname FROM edges e JOIN files f ON f.id = e.file_id
+             WHERE e.graph_version = ?1 AND e.target_symbol_id IS NOT NULL
+               AND e.kind = 'CALLS' AND f.language = 'rust'"
+        };
+        let rows = conn
+            .prepare(sql)?
+            .query_map([graph_version], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, name)| {
+                name.as_deref()
+                    .and_then(|n| n.rsplit("::").nth(1))
+                    .is_some_and(|segment| names.contains(segment))
+            })
+            .map(|(id, _)| id)
+            .collect())
+    }
+
+    /// Re-judge every bound Rust call through a type alias
+    /// ([`Self::rust_alias_call_ids`]).
+    pub fn retry_rust_alias_edges(&self, graph_version: i64) -> Result<usize> {
+        let ids = self.rust_alias_call_ids(graph_version, false)?;
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        self.rejudge_bound_edges(graph_version, "", &format!("AND e.id IN ({list})"))
     }
 
     /// Rebuild the `RPC_CALL` edges of calls through a deferred receiver
@@ -5775,6 +5866,11 @@ impl Db {
             eprintln!(
                 "lidx: re-judged {deferred_rejudged} deferred-receiver edge(s) after {context}"
             );
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let alias_rejudged = self.retry_rust_alias_edges(graph_version)?;
+        if alias_rejudged > 0 {
+            eprintln!("lidx: re-judged {alias_rejudged} type-alias edge(s) after {context}");
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
         let promoted_rejudged = self.retry_go_promoted_edges(graph_version)?;
