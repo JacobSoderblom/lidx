@@ -62,7 +62,9 @@ mod resolver_go;
 pub(crate) use resolver_go::go_deferred_candidate;
 
 use super::Db;
-use super::graph_query::{LOCAL_MODIFIER, has_modifier, has_modifier_sql};
+use super::graph_query::{
+    DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, has_modifier, has_modifier_sql,
+};
 use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
@@ -963,6 +965,9 @@ static SAME_LANG_SQL: LazyLock<String> = LazyLock::new(|| {
        -- exact qualname only: the name tiers would read it as member `f` of
        -- a type `outer`.
        AND NOT {local}
+       -- A bodiless member (an interface's) is bound by an exact typed
+       -- receiver only, not as the best name match of a call.
+       AND NOT {decl}
        AND s.graph_version = :gv
        AND (f.deleted_version IS NULL OR f.deleted_version > :gv)
        AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = :lang
@@ -974,7 +979,8 @@ static SAME_LANG_SQL: LazyLock<String> = LazyLock::new(|| {
             SELECT 1 FROM symbols p
              WHERE p.graph_version = s.graph_version
                AND p.qualname = substr(s.qualname, 1, length(s.qualname) - length(s.name) - 1)))",
-        local = has_modifier_sql("s", LOCAL_MODIFIER)
+        local = has_modifier_sql("s", LOCAL_MODIFIER),
+        decl = has_modifier_sql("s", DECL_MODIFIER)
     )
 });
 
@@ -994,9 +1000,13 @@ static ANY_LANG_SQL: LazyLock<String> = LazyLock::new(|| {
        AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
        AND NOT {local}
+       -- A bodiless member (an interface's) is bound by an exact typed
+       -- receiver only, not as the best name match of a call.
+       AND NOT {decl}
        AND s.graph_version = :gv
        AND (f.deleted_version IS NULL OR f.deleted_version > :gv)",
-        local = has_modifier_sql("s", LOCAL_MODIFIER)
+        local = has_modifier_sql("s", LOCAL_MODIFIER),
+        decl = has_modifier_sql("s", DECL_MODIFIER)
     )
 });
 
@@ -1519,6 +1529,21 @@ impl<'c> Resolver<'c> {
         self.exact_language =
             (r.source_lang == "rust" && !is_bridge_edge_kind(r.edge_kind)).then_some("rust");
         self.exact_skips_modules = r.source_lang == "rust" && r.edge_kind == "CALLS";
+        // A heritage name the module never binds is a global: only a symbol
+        // recorded `global` (a script / `declare global` declaration) is it.
+        if r.receiver_type == Some(crate::indexer::extract::GLOBAL_HERITAGE) {
+            let plain = Reference {
+                receiver_type: None,
+                ..*r
+            };
+            let resolution = self.resolve_tiers_and_refine(&plain, symbol_map)?;
+            if let Resolution::Resolved { target_id, .. } = resolution
+                && !self.has_symbol_modifier(target_id, GLOBAL_MODIFIER)?
+            {
+                return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+            }
+            return Ok(resolution);
+        }
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             let resolution = self.refuse_uncallable_kind(r, resolution)?;
@@ -1536,6 +1561,29 @@ impl<'c> Resolver<'c> {
         self.filter_value_reference(r, resolution)
     }
 
+    /// Whether symbol `id` carries `modifier` in `symbols.visibility`.
+    fn has_symbol_modifier(&self, id: i64, modifier: &str) -> Result<bool> {
+        let visibility: Option<Option<String>> = self
+            .conn
+            .prepare_cached("SELECT visibility FROM symbols WHERE id = ?")?
+            .query_row([id], |row| row.get(0))
+            .optional()?;
+        Ok(visibility.is_some_and(|v| has_modifier(v.as_deref(), modifier)))
+    }
+
+    /// Whether `id` is a `field` marked `decl` (an interface or type-literal
+    /// property whose type is not a function type).
+    fn is_decl_field(&self, id: i64) -> Result<bool> {
+        let row: Option<(String, Option<String>)> = self
+            .conn
+            .prepare_cached("SELECT kind, visibility FROM symbols WHERE id = ?")?
+            .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
+        Ok(row.is_some_and(|(kind, visibility)| {
+            kind == "field" && has_modifier(visibility.as_deref(), DECL_MODIFIER)
+        }))
+    }
+
     /// A call never targets a kind its language's profile refuses
     /// (`LanguageProfile::call_refused_kinds`): whatever tier bound one, the
     /// call stays unresolved.
@@ -1547,6 +1595,11 @@ impl<'c> Resolver<'c> {
         let Resolution::Resolved { target_id, .. } = resolution else {
             return Ok(resolution);
         };
+        // A bodiless non-callable member (`fetch?: typeof fetch`) is no
+        // declaration of the function a call runs through it.
+        if r.edge_kind == "CALLS" && self.is_decl_field(target_id)? {
+            return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        }
         let refused = profile_for(r.source_lang).call_refused_kinds;
         if refused.is_empty() || r.edge_kind != "CALLS" {
             return Ok(resolution);

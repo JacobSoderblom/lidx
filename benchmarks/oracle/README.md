@@ -353,12 +353,12 @@ interfaces keyed at the wrong declaration); the oracle was fixed and the sample 
 | go/urfavecli/tests | P 1.00 [0.99, 1.00] (n=270); R 1.00 [0.99, 1.00] (n=270) | P 1.00 [0.76, 1.00] (n=12); R 1.00 [0.76, 1.00] (n=12) | P 1.00 [0.98, 1.00] (n=189); R 0.54 [0.49, 0.59] (n=351) |
 | go/viper/tests | P 1.00 [0.86, 1.00] (n=23); R 0.96 [0.80, 0.99] (n=24) | P 1.00 [0.34, 1.00] (n=2); R 0.50 [0.15, 0.85] (n=4) | P 1.00 [0.86, 1.00] (n=23); R 0.96 [0.80, 0.99] (n=24) |
 | go/bubbletea/tests | P 1.00 [0.57, 1.00] (n=5); R 0.83 [0.44, 0.97] (n=6) | n/a (0 pairs) | P 1.00 [0.94, 1.00] (n=57); R 0.95 [0.86, 0.98] (n=60) |
-| ts/zod | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.99, 1.00] (n=652); R 1.00 [0.99, 1.00] (n=652) | P - (n=0); R 0.00 [0.00, 0.09] (n=39) |
-| ts/hono | P 1.00 [0.65, 1.00] (n=7); R 1.00 [0.65, 1.00] (n=7) | P 0.99 [0.93, 1.00] (n=75); R 1.00 [0.95, 1.00] (n=74) | P - (n=0); R 0.00 [0.00, 0.08] (n=45) |
-| ts/trpc | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.90, 1.00] (n=33); R 1.00 [0.90, 1.00] (n=33) | P - (n=0); R 0.00 [0.00, 0.49] (n=4) |
-| ts/ky | n/a (0 pairs) | P 1.00 [0.65, 1.00] (n=7); R 1.00 [0.65, 1.00] (n=7) | P - (n=0); R 0.00 [0.00, 0.43] (n=5) |
-| ts/immer | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.57, 1.00] (n=5); R 1.00 [0.57, 1.00] (n=5) | P - (n=0); R 0.00 [0.00, 0.66] (n=2) |
-| ts/h3 | P 1.00 [0.44, 1.00] (n=3); R 1.00 [0.44, 1.00] (n=3) | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | P - (n=0); R 0.00 [0.00, 0.15] (n=21) |
+| ts/zod | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.99, 1.00] (n=652); R 1.00 [0.99, 1.00] (n=652) | P 1.00 [0.91, 1.00] (n=39); R 1.00 [0.91, 1.00] (n=39) |
+| ts/hono | P 1.00 [0.65, 1.00] (n=7); R 1.00 [0.65, 1.00] (n=7) | P 1.00 [0.95, 1.00] (n=74); R 1.00 [0.95, 1.00] (n=74) | P 1.00 [0.92, 1.00] (n=45); R 1.00 [0.92, 1.00] (n=45) |
+| ts/trpc | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.90, 1.00] (n=33); R 1.00 [0.90, 1.00] (n=33) | P 1.00 [0.51, 1.00] (n=4); R 1.00 [0.51, 1.00] (n=4) |
+| ts/ky | n/a (0 pairs) | P 1.00 [0.65, 1.00] (n=7); R 1.00 [0.65, 1.00] (n=7) | P 1.00 [0.57, 1.00] (n=5); R 1.00 [0.57, 1.00] (n=5) |
+| ts/immer | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.57, 1.00] (n=5); R 1.00 [0.57, 1.00] (n=5) | P 1.00 [0.34, 1.00] (n=2); R 1.00 [0.34, 1.00] (n=2) |
+| ts/h3 | P 1.00 [0.44, 1.00] (n=3); R 1.00 [0.44, 1.00] (n=3) | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | P 1.00 [0.85, 1.00] (n=21); R 1.00 [0.85, 1.00] (n=21) |
 | rust/ripgrep/path_tests_excluded | P 1.00 [0.97, 1.00] (n=119); R 1.00 [0.97, 1.00] (n=119) | n/a (0 pairs) | P 1.00 [1.00, 1.00] (n=810); R 1.00 [1.00, 1.00] (n=810) |
 | rust/fd/path_tests_excluded | n/a (0 pairs) | n/a (0 pairs) | n/a (0 pairs) |
 | rust/bat/path_tests_excluded | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | P - (n=0); R - (n=0) | P 1.00 [0.84, 1.00] (n=20); R 1.00 [0.84, 1.00] (n=20) |
@@ -368,7 +368,5 @@ interfaces keyed at the wrong declaration); the oracle was fixed and the sample 
 | rust/just/path_tests_excluded | P 1.00 [0.89, 1.00] (n=32); R 1.00 [0.89, 1.00] (n=32) | n/a (0 pairs) | P 1.00 [0.90, 1.00] (n=36); R 1.00 [0.90, 1.00] (n=36) |
 | rust/nextest/path_tests_excluded | P 1.00 [0.72, 1.00] (n=10); R 1.00 [0.72, 1.00] (n=10) | n/a (0 pairs) | P 1.00 [0.86, 1.00] (n=24); R 1.00 [0.86, 1.00] (n=24) |
 
-What the numbers say: lidx's precision is 1.00 almost everywhere (one wrong TypeScript `extends`: an unimported global `Event` resolved to an unrelated alias). Recall is where the
-gaps are: at the commit of the committed results, Go struct embedding had no edge and Go methods declared in another file than their receiver type never joined it (issues #455, #456, fixed since; regenerate the results to see the current figures), TypeScript has no override pairs (interface members are not symbols and base-class overrides need the
-`override` keyword, #458), while Rust's `implements` recall is 1.00 on every cell with pairs since #457. `extends` for TypeScript and `implements` for
-Go are good (see the tables). Go `implements` recall caps the dispatch-credited call recall (see the report).
+What the numbers say: lidx's precision is 1.00 everywhere. Recall is where the
+gaps are: at the commit of the committed results, Go struct embedding had no edge and Go methods declared in another file than their receiver type never joined it (issues #455, #456, fixed since; regenerate the results to see the current figures), Rust's `implements` recall is 1.00 on every cell with pairs since #457. TypeScript is complete (`overrides` 116 of 116: interface and type-literal members are `decl` symbols and `override` is optional, #458) and Go `implements` is good (see the tables). Go `implements` recall caps the dispatch-credited call recall (see the report).

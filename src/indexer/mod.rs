@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 32;
+pub const EXTRACTOR_VERSION: i64 = 33;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 /// `meta` key of the Cargo manifest view (`rust_workspace`) the Rust files
 /// were last extracted against.
@@ -429,6 +429,12 @@ impl Indexer {
                 stats.skipped += 1;
                 continue;
             }
+            // A JS/TS declaration that turns global (or stops being one) in
+            // place changes what an unimported heritage name binds, though
+            // its qualname is not new: re-check the edges bound to it.
+            if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)? {
+                added_qualnames.extend(self.db.global_qualnames_of_file(existing.id)?);
+            }
             match self.index_scanned_file_symbols(&scanned) {
                 Ok(Some(ScannedFileSymbols {
                     extracted,
@@ -438,6 +444,7 @@ impl Indexer {
                     any_deleted,
                 })) => {
                     added_qualnames.extend(added);
+                    added_qualnames.extend(extracted.global_qualnames.iter().cloned());
                     any_symbols_deleted |= any_deleted;
                     indexed_files.push(scanned.clone());
                     pending.push((scanned, extracted, file_id, symbols));

@@ -1796,16 +1796,22 @@ impl Db {
             statics,
             local,
             overrides,
+            decls,
+            static_lines,
             file_wide,
             public,
             example_output,
+            globals,
         } = modifiers;
         if private.is_empty()
             && public.is_empty()
             && example_output.is_empty()
+            && globals.is_empty()
             && statics.is_empty()
             && local.is_empty()
             && overrides.is_empty()
+            && decls.is_empty()
+            && static_lines.is_empty()
             && file_wide.is_empty()
         {
             self.conn().execute(
@@ -1823,40 +1829,66 @@ impl Db {
         let local_ph = placeholders(local.len());
         let public_ph = placeholders(public.len());
         let example_ph = placeholders(example_output.len());
+        let global_ph = placeholders(globals.len());
         // Overloads share a qualname, so an override is keyed by its line too.
-        let override_test = if overrides.is_empty() {
-            "0".to_string()
-        } else {
-            format!(
-                "(qualname, start_line) IN (VALUES {})",
-                vec!["(?,?)"; overrides.len()].join(",")
-            )
+        let line_test = |pairs: &[(String, i64)]| {
+            if pairs.is_empty() {
+                "0".to_string()
+            } else {
+                format!(
+                    "(qualname, start_line) IN (VALUES {})",
+                    vec!["(?,?)"; pairs.len()].join(",")
+                )
+            }
         };
+        let override_test = line_test(overrides);
+        let decl_test = line_test(decls);
+        let static_line_test = line_test(static_lines);
         let sql = format!(
             "UPDATE symbols
                 SET visibility = NULLIF(TRIM(
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
-                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
+                    || CASE WHEN qualname IN ({static_ph}) OR {static_line_test} THEN ' static' ELSE '' END
                     || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
                     || CASE WHEN qualname IN ({public_ph}) THEN ' public' ELSE '' END
                     || CASE WHEN qualname IN ({example_ph}) THEN ' example_output' ELSE '' END
+                    || CASE WHEN qualname IN ({global_ph}) THEN ' {global_modifier}' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END
+                    || CASE WHEN {decl_test} THEN ' {decl_modifier}' ELSE '' END
                     || ?), '')
              WHERE file_id = ? AND graph_version = ?",
-            local_modifier = graph_query::LOCAL_MODIFIER
+            local_modifier = graph_query::LOCAL_MODIFIER,
+            decl_modifier = graph_query::DECL_MODIFIER,
+            global_modifier = graph_query::GLOBAL_MODIFIER
         );
+        // In the order the placeholders appear in the statement.
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private
             .iter()
             .chain(statics)
-            .chain(local)
-            .chain(public)
-            .chain(example_output)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
-        for (qualname, line) in overrides {
-            params.push(Box::new(qualname.clone()));
-            params.push(Box::new(*line));
-        }
+        let line_params = |pairs: &[(String, i64)]| {
+            pairs
+                .iter()
+                .flat_map(|(q, l)| {
+                    [
+                        Box::new(q.clone()) as Box<dyn rusqlite::ToSql>,
+                        Box::new(*l) as Box<dyn rusqlite::ToSql>,
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+        params.extend(line_params(static_lines));
+        params.extend(
+            local
+                .iter()
+                .chain(public)
+                .chain(example_output)
+                .chain(globals)
+                .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>),
+        );
+        params.extend(line_params(overrides));
+        params.extend(line_params(decls));
         // Words every symbol of the file carries, after the per-symbol ones.
         params.push(Box::new(
             file_wide
@@ -1871,6 +1903,20 @@ impl Db {
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
         )?;
         Ok(())
+    }
+
+    /// Qualnames of the `global` symbols a file currently holds (its latest
+    /// graph version), before a sync replaces them.
+    pub fn global_qualnames_of_file(&self, file_id: i64) -> Result<Vec<String>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT s.qualname FROM symbols s
+             WHERE s.file_id = ?1 AND {}
+               AND s.graph_version = (SELECT MAX(graph_version) FROM symbols WHERE file_id = ?1)",
+            graph_query::has_modifier_sql("s", graph_query::GLOBAL_MODIFIER)
+        ))?;
+        let rows = stmt.query_map([file_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn upsert_file_metrics(&mut self, file_id: i64, metrics: &FileMetricsInput) -> Result<()> {
