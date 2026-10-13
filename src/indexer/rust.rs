@@ -2035,15 +2035,15 @@ impl PathScope<'_> {
         if is_rust_std_root(root) {
             return true;
         }
-        match self.crates {
-            Some(crates) => {
-                let markers = crates.markers(std::slice::from_ref(&full.to_string()));
-                // A workspace package's path is pinned; a dependency's is not.
-                markers.is_empty() && !self.local_mods.contains(root)
-                    || markers.iter().any(|m| m == RUST_EXTERNAL_CRATE)
-            }
-            None => !self.local_mods.contains(root),
-        }
+        // Only a dependency the manifests declare is provably outside the repo:
+        // an unknown first segment may be a module of the crate root (an
+        // edition-2015 `use config::Config;`).
+        self.crates.is_some_and(|crates| {
+            crates
+                .markers(std::slice::from_ref(&full.to_string()))
+                .iter()
+                .any(|m| m == RUST_EXTERNAL_CRATE)
+        })
     }
 
     /// A bare type name: external when the scope imports it from outside the

@@ -1543,3 +1543,33 @@ mod go_type_marker_tests {
         assert_eq!(go_type_data("(a int) -> error"), None);
     }
 }
+
+#[cfg(test)]
+mod rust_marker_tests {
+    use super::*;
+
+    #[test]
+    fn rust_type_origins_round_trip_and_are_hidden() {
+        let line =
+            rust_types_marker(&["walkdir::DirEntry=~".into(), "a::B=crate::a::B".into()]).unwrap();
+        let stored = format!("{line}\n() -> walkdir::DirEntry");
+        assert_eq!(
+            rust_types_data(&stored),
+            Some("walkdir::DirEntry=~;a::B=crate::a::B")
+        );
+        assert_eq!(strip_internal_markers(&stored), "() -> walkdir::DirEntry");
+        assert_eq!(rust_types_marker(&[]), None);
+        assert_eq!(rust_types_data("() -> u32"), None);
+    }
+
+    #[test]
+    fn rust_module_uses_round_trip_and_are_hidden() {
+        let stored =
+            rust_uses_marker(&["DirEntry".into(), "Entry=crate::a::Entry".into()]).unwrap();
+        assert_eq!(
+            rust_uses_data(&stored),
+            Some("DirEntry;Entry=crate::a::Entry")
+        );
+        assert_eq!(public_signature(Some(stored)), None);
+    }
+}

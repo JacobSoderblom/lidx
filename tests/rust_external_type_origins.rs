@@ -196,6 +196,20 @@ pub fn go(e: &DirEntry) -> u32 { e.path() }
     assert!(binds(&t, "crate::user::go"));
 }
 
+/// Edition 2015 names a crate-root module without `crate::`: an import whose
+/// first segment is not a declared dependency is not provably external.
+#[test]
+fn a_bare_import_rooted_at_an_undeclared_name_still_binds() {
+    let user = "\
+use entry::DirEntry;
+pub fn go(e: &DirEntry) -> u32 { e.path() }
+pub fn via_path(e: &entry::DirEntry) -> u32 { e.path() }
+";
+    let t = tree(MAKER_REPO, user, "");
+    assert!(binds(&t, "crate::user::go"));
+    assert!(binds(&t, "crate::user::via_path"));
+}
+
 // ---- incremental sync == fresh reindex ----
 
 fn snapshot(indexer: &Indexer) -> BTreeSet<common::golden::EdgeKey> {
