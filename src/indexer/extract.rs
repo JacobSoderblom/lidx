@@ -732,6 +732,9 @@ pub struct ExtractedFile {
     /// bound only by their exact qualname, never by a name-fallback tier --
     /// their `outer.f` shape is also how a member `f` of a type `outer` reads.
     pub local_qualnames: Vec<String>,
+    /// Qualnames of classes declared inside a function (JS/TS); they and
+    /// their members are recorded `local` too.
+    pub local_class_qualnames: Vec<String>,
     /// JS/TS only: hash of the file's export surface (see
     /// `javascript::export_surface_hash`), stored so a later sync can tell a
     /// body-only edit from one that changes what importers resolve.

@@ -405,3 +405,89 @@ fn incremental_sync_matches_fresh_when_an_overriding_member_is_renamed() {
     assert_incremental_matches_fresh("ts-rename-override", &[base, sub0], &[sub1], &[base, sub1]);
     assert!(pairs_of(&[base, sub1]).is_empty());
 }
+
+const LOCAL_BASE: &str = "export class Base {\n  run() { return 1 }\n  stop() {}\n}\n";
+const LOCAL_USER: &str = "import { Base } from './base'\n\
+export function enable() {\n\
+  class Draft extends Base {\n    run() { return this.helper() }\n    helper() { return fetchIt() }\n  }\n\
+  class DraftMap extends Map {\n    get(k: string) { return helper2(k) }\n    set(k: string, v: number) { return this }\n  }\n\
+  return [new Draft(), new DraftMap()]\n}\n\
+function fetchIt() { return 1 }\n\
+function helper2(k: string) { return k }\n\
+export function other() { class Draft { run() {} } return Draft }\n";
+
+#[test]
+fn function_local_classes_are_local_symbols_with_their_own_calls_and_pairs() {
+    let files: Files = &[("src/base.ts", LOCAL_BASE), ("src/user.ts", LOCAL_USER)];
+    let (_tmp, root, db_path) = common::index_repo("lidx-ts-localclass-", files);
+    let mut indexer = Indexer::new(root, db_path).unwrap();
+    let got = pairs(indexer.db());
+    // Two `Draft` classes in different functions are two symbols; the base
+    // pairing goes to the one extending `Base`, `extends Map` pairs with nothing.
+    assert!(
+        got.contains("src/base.Base.run -> src/user.enable.Draft.run"),
+        "{got:#?}"
+    );
+    assert_eq!(
+        got.iter().filter(|p| p.contains("DraftMap")).count(),
+        0,
+        "{got:#?}"
+    );
+    let conn = indexer.db().read_conn().unwrap();
+    let vis = |q: &str| -> String {
+        conn.query_row(
+            "SELECT COALESCE(visibility, '') FROM symbols WHERE qualname = ?",
+            [q],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| panic!("no symbol {q}"))
+    };
+    for q in [
+        "src/user.enable.Draft",
+        "src/user.enable.Draft.run",
+        "src/user.enable.DraftMap.get",
+        "src/user.other.Draft",
+    ] {
+        assert!(vis(q).split_whitespace().any(|m| m == "local"), "{q}");
+    }
+    drop(conn);
+    // Calls inside a local method belong to that method.
+    let calls = |caller: &str| -> Vec<String> { common::call_targets(files, caller) };
+    assert!(calls("src/user.enable.Draft.helper").contains(&"src/user.fetchIt".to_string()));
+    assert!(calls("src/user.enable.DraftMap.get").contains(&"src/user.helper2".to_string()));
+    assert!(
+        calls("src/user.enable.Draft.run").contains(&"src/user.enable.Draft.helper".to_string()),
+        "{:?}",
+        calls("src/user.enable.Draft.run")
+    );
+    assert!(
+        calls("src/user.enable")
+            .iter()
+            .all(|t| t != "src/user.fetchIt")
+    );
+    // Not dead code, not a repo_map top-level symbol.
+    let result = rpc::handle_method(
+        &mut indexer,
+        "dead_symbols",
+        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false}),
+    )
+    .unwrap();
+    let dead = result.to_string();
+    assert!(!dead.contains("enable.Draft"), "{dead}");
+}
+
+#[test]
+fn incremental_sync_matches_fresh_when_a_local_class_changes() {
+    let base = ("src/base.ts", LOCAL_BASE);
+    let before = ("src/user.ts", LOCAL_USER);
+    let after = (
+        "src/user.ts",
+        "import { Base } from './base'\nexport function enable() {\n  class Draft extends Base {\n    stop() {}\n    run() { return 2 }\n  }\n  return new Draft()\n}\n",
+    );
+    assert_incremental_matches_fresh("ts-local-class", &[base, before], &[after], &[base, after]);
+    let got = pairs_of(&[base, after]);
+    assert!(
+        got.contains("src/base.Base.stop -> src/user.enable.Draft.stop"),
+        "{got:#?}"
+    );
+}

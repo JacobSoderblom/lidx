@@ -2066,6 +2066,7 @@ fn extract_with_parser(
     walk_node(root, &ctx, source, &mut output);
     bind_next_routes_to_handlers(&mut output, module_name);
     dedup_namespace_symbols(&mut output);
+    mark_local_class_members(&mut output);
     drop_ambiguous_locals(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
     mark_global_heritage(&ctx, &mut output);
@@ -2272,6 +2273,38 @@ fn mark_unexported_private(
         .collect();
     output.private_qualnames.extend(unexported);
     output.private_qualnames.extend(members);
+}
+
+/// Every member of a function-local class is `local` and private too (its
+/// qualname reads as a member of a type `outer`), so no name tier binds it
+/// and `drop_ambiguous_locals` removes a duplicate class with its members.
+fn mark_local_class_members(output: &mut ExtractedFile) {
+    if output.local_class_qualnames.is_empty() {
+        return;
+    }
+    let classes: Vec<String> = output
+        .local_class_qualnames
+        .iter()
+        .map(|q| format!("{q}."))
+        .collect();
+    let mut marked = Vec::new();
+    for symbol in &output.symbols {
+        if output.local_class_qualnames.contains(&symbol.qualname)
+            || classes
+                .iter()
+                .any(|c| symbol.qualname.starts_with(c.as_str()))
+        {
+            marked.push(symbol.qualname.clone());
+        }
+    }
+    for q in marked {
+        if !output.local_qualnames.contains(&q) {
+            output.local_qualnames.push(q.clone());
+        }
+        if !output.private_qualnames.contains(&q) {
+            output.private_qualnames.push(q);
+        }
+    }
 }
 
 /// A heritage name (`interface ExtendableEvent extends Event`) that this ES
@@ -2993,10 +3026,34 @@ fn handle_class_named(
     output: &mut ExtractedFile,
     name: String,
 ) {
-    if ctx.fn_depth > 0 || name.is_empty() {
+    if name.is_empty() {
         return;
     }
+    // A class declared inside a function is a symbol qualified under it
+    // (`mod.outer.Cls`, members `mod.outer.Cls.m`), like a local function:
+    // `local`, bound by its exact qualname only, its methods own their calls.
+    let local_ctx;
+    let mut ctx = ctx;
+    let is_local = ctx.fn_depth > 0;
+    if is_local {
+        let Some(scope) = ctx
+            .current_scope
+            .strip_prefix(ctx.module.as_str())
+            .and_then(|rest| rest.strip_prefix('.'))
+        else {
+            return;
+        };
+        let mut inner = ctx.clone();
+        inner.class_stack = scope.split('.').map(str::to_string).collect();
+        inner.ns_depth = 0;
+        inner.fn_depth = 0;
+        local_ctx = inner;
+        ctx = &local_ctx;
+    }
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
+    if is_local {
+        output.local_class_qualnames.push(qualname.clone());
+    }
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     output.symbols.push(SymbolInput {
         kind: "class".to_string(),
