@@ -732,6 +732,16 @@ pub struct ExtractedFile {
     /// per overload. Recorded into `symbols.visibility` as `override`;
     /// dispatch only pairs a base-class member with an override.
     pub override_symbols: Vec<(String, i64)>,
+    /// `(qualname, start_line)` of each bodiless member declaration
+    /// (TypeScript: an interface or type-literal member, a `declare class`
+    /// method signature). Recorded as the `decl` modifier: the member exists
+    /// for hierarchy and dispatch pairing and for exact typed-receiver
+    /// calls, but no name tier binds a call to it and it is never dead code.
+    pub decl_symbols: Vec<(String, i64)>,
+    /// `(qualname, start_line)` of each `static` member keyed by line (a
+    /// TypeScript static and an instance member may share a name); recorded
+    /// as `static` like `static_member_qualnames`.
+    pub static_symbols: Vec<(String, i64)>,
     /// Modifier words recorded on **every** symbol of the file (Go: the
     /// file's build constraint, see `indexer::go_build`).
     pub file_modifiers: Vec<String>,
@@ -746,6 +756,10 @@ pub struct SymbolModifiers<'a> {
     pub local: &'a [String],
     /// `(qualname, start_line)`: overloads share a qualname.
     pub overrides: &'a [(String, i64)],
+    /// `(qualname, start_line)` of bodiless member declarations.
+    pub decls: &'a [(String, i64)],
+    /// `(qualname, start_line)` of `static` members.
+    pub static_lines: &'a [(String, i64)],
     /// Words every symbol of the file carries.
     pub file_wide: &'a [String],
 }
@@ -758,6 +772,8 @@ impl ExtractedFile {
             statics: &self.static_member_qualnames,
             local: &self.local_qualnames,
             overrides: &self.override_symbols,
+            decls: &self.decl_symbols,
+            static_lines: &self.static_symbols,
             file_wide: &self.file_modifiers,
         }
     }

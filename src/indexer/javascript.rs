@@ -2068,6 +2068,7 @@ fn extract_with_parser(
     dedup_namespace_symbols(&mut output);
     drop_ambiguous_locals(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
+    mark_global_heritage(&ctx, &mut output);
     finish_value_references(&mut output);
     collect_type_references(root, &ctx, source, &mut output);
     output.export_surface = Some(surface_hash(root, source, &http_wrappers));
@@ -2271,6 +2272,35 @@ fn mark_unexported_private(
         .collect();
     output.private_qualnames.extend(unexported);
     output.private_qualnames.extend(members);
+}
+
+/// A heritage name (`interface ExtendableEvent extends Event`) that this ES
+/// module neither imports, requires nor declares anywhere (nested namespaces
+/// included) is a global of the runtime or of `lib`: never another module's
+/// export, so no name tier may bind it (hono bound `Event` to an unrelated
+/// exported alias).
+fn mark_global_heritage(ctx: &Context, output: &mut ExtractedFile) {
+    if !ctx.is_esm {
+        return;
+    }
+    let declared: HashSet<&str> = output.symbols.iter().map(|s| s.name.as_str()).collect();
+    for edge in &mut output.edges {
+        let Some(target) = edge.target_qualname.as_deref() else {
+            continue;
+        };
+        if !matches!(edge.kind.as_str(), "EXTENDS" | "IMPLEMENTS")
+            || target.contains('.')
+            || !edge.import_candidates.is_empty()
+            || declared.contains(target)
+            || ctx.import_bindings.contains_key(target)
+            || ctx.required_names.contains(target)
+            || ctx.declared_names.contains(target)
+            || ctx.declared_types.contains(target)
+        {
+            continue;
+        }
+        edge.receiver_type = ReceiverType::Unresolved;
+    }
 }
 
 /// Whether any `require(..)` call appears (marks a CommonJS module).
@@ -2911,8 +2941,14 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         "type_alias_declaration" => {
             // A block-scoped alias (`it(() => { type Env = ..})`) cannot be
             // imported and is no module symbol.
-            if !is_local_declaration(node) {
-                handle_named_item(node, ctx, source, output, "type");
+            if !is_local_declaration(node)
+                && let Some(qualname) = handle_named_item(node, ctx, source, output, "type")
+                && let Some(literal) = node
+                    .child_by_field_name("value")
+                    .filter(|v| v.kind() == "object_type")
+            {
+                let name = qualname.rsplit('.').next().unwrap_or(&qualname).to_string();
+                handle_type_members(literal, &name, ctx, source, output);
             }
             return;
         }
@@ -3072,6 +3108,10 @@ fn handle_interface(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         Some(value) => value,
         None => return,
     };
+    if let Some(body) = node.child_by_field_name("body") {
+        let name = node_text(node.child_by_field_name("name").unwrap_or(node), source);
+        handle_type_members(body, &name, ctx, source, output);
+    }
     // tree-sitter-typescript names an interface's heritage `extends_type_clause`
     // (a class's is `extends_clause` inside `class_heritage`).
     for target in collect_clause_targets_from(node, "extends_type_clause", source) {
@@ -3088,6 +3128,102 @@ fn handle_interface(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
             ..Default::default()
         });
     }
+}
+
+/// The members of an interface body or a type literal (`type T = { .. }`) as
+/// symbols of `owner`: `name: T` a `field`, `name(): T` and `name: () => T`
+/// a `method`, each marked `decl` (bodiless). Computed and numeric keys have
+/// no stable name and are skipped; an overloaded member is one
+/// symbol.
+fn handle_type_members(
+    body: Node<'_>,
+    owner: &str,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut member_ctx = ctx.clone();
+    member_ctx.class_stack.push(owner.to_string());
+    let mut seen = HashSet::new();
+    let mut cursor = body.walk();
+    for member in body.named_children(&mut cursor) {
+        let kind = match member.kind() {
+            "method_signature" => "method",
+            "property_signature" => {
+                let callable = member
+                    .child_by_field_name("type")
+                    .and_then(|t| t.named_child(0))
+                    .is_some_and(is_function_type);
+                if callable { "method" } else { "field" }
+            }
+            _ => continue,
+        };
+        let Some(name_node) = member.child_by_field_name("name") else {
+            continue;
+        };
+        // A quoted key (`"~request"()`) is named by its source text, as a
+        // class member's is.
+        if !matches!(name_node.kind(), "property_identifier" | "string") {
+            continue;
+        }
+        let name = node_text(name_node, source);
+        let qualname = build_qualname(&member_ctx.module, &member_ctx.class_stack, &name);
+        if name.is_empty() || !seen.insert(qualname.clone()) {
+            continue;
+        }
+        push_decl_member(member, kind, name, qualname, &member_ctx, source, output);
+    }
+}
+
+/// A function type, alone or as a member of a union (`((x) => y) | undefined`).
+fn is_function_type(ty: Node<'_>) -> bool {
+    match ty.kind() {
+        "function_type" => true,
+        "parenthesized_type" | "union_type" => {
+            let mut cursor = ty.walk();
+            ty.named_children(&mut cursor).any(is_function_type)
+        }
+        _ => false,
+    }
+}
+
+/// One bodiless member declaration of `ctx`'s innermost type (see
+/// `handle_type_members`).
+fn push_decl_member(
+    node: Node<'_>,
+    kind: &str,
+    name: String,
+    qualname: String,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    output.decl_symbols.push((qualname.clone(), start_line));
+    output.symbols.push(SymbolInput {
+        kind: kind.to_string(),
+        name,
+        qualname: qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature: (kind == "method")
+            .then(|| extract_signature(node, source))
+            .flatten(),
+        docstring: None,
+        identity: None,
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(container_qualname(&ctx.module, &ctx.class_stack)),
+        target_qualname: Some(qualname),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
 }
 
 fn collect_clause_targets_from(node: Node<'_>, clause_kind: &str, source: &str) -> Vec<String> {
@@ -3161,9 +3297,39 @@ fn clause_targets(node: Node<'_>, source: &str) -> Vec<String> {
 }
 
 fn walk_class_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    // A bodiless `foo(): T;` is an overload of the implementation that
+    // follows (not a symbol: calls resolve to the body) unless the class
+    // has none -- an ambient `declare class` method.
+    let implemented: HashSet<String> = {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .filter(|c| c.kind() == "method_definition")
+            .filter_map(|c| c.child_by_field_name("name"))
+            .map(|n| node_text(n, source))
+            .collect()
+    };
+    let mut declared = HashSet::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
+            "method_signature" => {
+                let Some(name_node) = child
+                    .child_by_field_name("name")
+                    .filter(|n| matches!(n.kind(), "property_identifier" | "string"))
+                else {
+                    continue;
+                };
+                let name = node_text(name_node, source);
+                if !implemented.contains(&name) && declared.insert(name.clone()) {
+                    let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
+                    if is_static_member(child) {
+                        output
+                            .static_symbols
+                            .push((qualname.clone(), child.start_position().row as i64 + 1));
+                    }
+                    push_decl_member(child, "method", name, qualname, ctx, source, output);
+                }
+            }
             "method_definition" | "abstract_method_signature" => {
                 handle_method(child, ctx, source, output);
             }
@@ -3190,6 +3356,9 @@ fn push_field(
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     if private {
         output.private_qualnames.push(qualname.clone());
+    }
+    if is_static_member(node) {
+        output.static_symbols.push((qualname.clone(), start_line));
     }
     // `request = (..) => ..` is callable: a method with the arrow's signature.
     let function_value = node
@@ -7339,6 +7508,12 @@ fn handle_function_named(
 /// Whether `node` (a `method_definition`) is private: an explicit
 /// `private` accessibility modifier (TypeScript), or a `#`-prefixed name
 /// (a JS/TS private class field/method).
+/// Whether the class member `node` carries the `static` keyword.
+fn is_static_member(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|c| c.kind() == "static")
+}
+
 fn is_private_member(node: Node<'_>, source: &str) -> bool {
     let mut cursor = node.walk();
     let has_modifier = node
@@ -7363,6 +7538,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     let signature = extract_signature(node, source);
     if is_private_member(node, source) {
         output.private_qualnames.push(qualname.clone());
+    }
+    if is_static_member(node) {
+        output.static_symbols.push((qualname.clone(), start_line));
     }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),

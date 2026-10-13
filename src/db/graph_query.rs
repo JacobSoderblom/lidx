@@ -127,6 +127,12 @@ pub(crate) fn has_modifier_sql(alias: &str, modifier: &str) -> String {
 /// same-named type; no top-level symbol (`dead_symbols`, `repo_map`).
 pub(crate) const LOCAL_MODIFIER: &str = "local";
 
+/// The `symbols.visibility` modifier of a bodiless member declaration
+/// (TypeScript interface / type-literal members, `declare class` method
+/// signatures): paired with its implementations by dispatch and bound by an
+/// exact typed-receiver call, but never by a name tier, and never dead code.
+pub(crate) const DECL_MODIFIER: &str = "decl";
+
 /// Rust form of [`has_modifier_sql`]: whether a `symbols.visibility` value
 /// carries `modifier`.
 pub(crate) fn has_modifier(visibility: Option<&str>, modifier: &str) -> bool {
@@ -176,7 +182,8 @@ pub(super) fn live_nested_member_sql(t: &str, gv: i64) -> String {
                      AND me.kind NOT IN ({structural})
                      AND me.graph_version = {gv})
               OR {is_override}
-              OR (m.kind = 'field' AND {is_static}))",
+              OR (m.kind = 'field' AND {is_static}
+                  AND (SELECT mf.language FROM files mf WHERE mf.id = m.file_id) = 'csharp'))",
         structural = edge_views::sql_list(edge_views::STRUCTURAL)
     )
 }
@@ -390,6 +397,17 @@ pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> St
     } else {
         "JOIN"
     };
+    // JavaScript/TypeScript: `override` is optional, so a base-class member
+    // pairs with every same-named one; a method and a function-valued field
+    // are one member kind.
+    // A constructor is no override; neither is an interface redeclaring a
+    // member (only a body or a class declaration implements one).
+    let cm_decl = has_modifier_sql("cm", DECL_MODIFIER);
+    let cm_static = has_modifier_sql("cm", "static");
+    let im_static = has_modifier_sql("im", "static");
+    let js = "fc.language IN ('typescript', 'tsx', 'javascript')";
+    let js_kinds =
+        format!("({js} AND +im.kind IN ('method', 'field') AND +cm.kind IN ('method', 'field'))");
     format!(
         "{head}
          -- One indexed `im.qualname = <expr>` equality: an explicit impl pairs
@@ -397,15 +415,18 @@ pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> St
          {join} symbols im ON im.qualname = CASE WHEN {cm_explicit}
                                                THEN i.qualname || '.' || cm.name
                                                ELSE i.qualname || substr(cm.qualname, length(c.qualname) + 1) END
-                        AND +im.name = +cm.name AND +im.kind = +cm.kind AND im.graph_version = {gv}
+                        AND +im.name = +cm.name AND im.graph_version = {gv}
          JOIN files fc ON fc.id = cm.file_id
                       AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
          JOIN files fi ON fi.id = im.file_id
                       AND (fi.deleted_version IS NULL OR fi.deleted_version > {gv})
-         WHERE cm.kind IN ('method', 'property', 'event') AND cm.graph_version = {gv}
+         WHERE (cm.kind IN ('method', 'property', 'event') OR ({js} AND cm.kind = 'field'))
+           AND cm.graph_version = {gv}
+           AND (+im.kind = +cm.kind OR {js_kinds})
+           AND NOT ({js} AND ({cm_static} OR {im_static} OR cm.name = 'constructor' OR ({cm_decl} AND c.kind IN ('interface', 'type'))))
            AND CASE WHEN {cm_explicit}
                     THEN i.kind = 'interface' AND {cm_names_i}
-                    ELSE (a.ov = 0 OR (' ' || COALESCE(cm.visibility, '') || ' ') LIKE '% override %')
+                    ELSE (a.ov = 0 OR {js} OR (' ' || COALESCE(cm.visibility, '') || ' ') LIKE '% override %')
                          -- an implicit impl is not paired with an interface whose closures all have explicit twins
                          AND NOT ({twin_excludes})
                END"

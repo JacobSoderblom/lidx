@@ -1784,12 +1784,16 @@ impl Db {
             statics,
             local,
             overrides,
+            decls,
+            static_lines,
             file_wide,
         } = modifiers;
         if private.is_empty()
             && statics.is_empty()
             && local.is_empty()
             && overrides.is_empty()
+            && decls.is_empty()
+            && static_lines.is_empty()
             && file_wide.is_empty()
         {
             self.conn().execute(
@@ -1806,35 +1810,57 @@ impl Db {
         let static_ph = placeholders(statics.len());
         let local_ph = placeholders(local.len());
         // Overloads share a qualname, so an override is keyed by its line too.
-        let override_test = if overrides.is_empty() {
-            "0".to_string()
-        } else {
-            format!(
-                "(qualname, start_line) IN (VALUES {})",
-                vec!["(?,?)"; overrides.len()].join(",")
-            )
+        let line_test = |pairs: &[(String, i64)]| {
+            if pairs.is_empty() {
+                "0".to_string()
+            } else {
+                format!(
+                    "(qualname, start_line) IN (VALUES {})",
+                    vec!["(?,?)"; pairs.len()].join(",")
+                )
+            }
         };
+        let override_test = line_test(overrides);
+        let decl_test = line_test(decls);
+        let static_line_test = line_test(static_lines);
         let sql = format!(
             "UPDATE symbols
                 SET visibility = NULLIF(TRIM(
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
-                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
+                    || CASE WHEN qualname IN ({static_ph}) OR {static_line_test} THEN ' static' ELSE '' END
                     || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END
+                    || CASE WHEN {decl_test} THEN ' {decl_modifier}' ELSE '' END
                     || ?), '')
              WHERE file_id = ? AND graph_version = ?",
-            local_modifier = graph_query::LOCAL_MODIFIER
+            local_modifier = graph_query::LOCAL_MODIFIER,
+            decl_modifier = graph_query::DECL_MODIFIER
         );
+        // In the order the placeholders appear in the statement.
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private
             .iter()
             .chain(statics)
-            .chain(local)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
-        for (qualname, line) in overrides {
-            params.push(Box::new(qualname.clone()));
-            params.push(Box::new(*line));
-        }
+        let line_params = |pairs: &[(String, i64)]| {
+            pairs
+                .iter()
+                .flat_map(|(q, l)| {
+                    [
+                        Box::new(q.clone()) as Box<dyn rusqlite::ToSql>,
+                        Box::new(*l) as Box<dyn rusqlite::ToSql>,
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+        params.extend(line_params(static_lines));
+        params.extend(
+            local
+                .iter()
+                .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>),
+        );
+        params.extend(line_params(overrides));
+        params.extend(line_params(decls));
         // Words every symbol of the file carries, after the per-symbol ones.
         params.push(Box::new(
             file_wide
