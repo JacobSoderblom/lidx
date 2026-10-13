@@ -787,6 +787,17 @@ pub trait LanguageExtractor {
     /// so a long-lived indexer sees only this run's declarations, as a fresh
     /// process would. Default: none.
     fn begin_run(&mut self) {}
+    /// Called right before `extract` with the repo-relative path of the file
+    /// about to be extracted, for an extractor whose output depends on where
+    /// the file sits (the Cargo package it belongs to). Default: none.
+    fn set_file(&mut self, _rel_path: &str) {}
+    /// A summary of the project files (Cargo manifests) this language's
+    /// extraction reads besides the source: when it differs from the one
+    /// recorded by the last index, every file of the language must be
+    /// extracted again. `None`: extraction reads nothing else. Default: none.
+    fn project_fingerprint(&mut self) -> Option<String> {
+        None
+    }
     /// Re-register extension methods a previous run stored, for the files
     /// this run does not re-extract (called right after `begin_run`), so the
     /// registry never depends on which files happen to be extracted now.

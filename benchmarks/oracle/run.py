@@ -206,6 +206,11 @@ def toolchain_versions():
             "python": sys.version.split()[0]}
 
 
+# `super(..)` the keyword, not a local that merely ends in it: zod's `_super(payload, ctx)` is a function value
+# captured from an interface member, an ordinary call (a capture gap), and was once counted as a lost `super(..)`.
+SUPER_CALL = re.compile(r"(?<![\w$])super\s*\(")
+
+
 def super_edge_stats(oracle, repo_dir, missed):
     """Oracle edges made by a `super(..)` call (callee: the base class, like `new X()`), and how many of them lidx has.
     `missed` is the FN plus capture-gap lists of the cell."""
@@ -217,7 +222,7 @@ def super_edge_stats(oracle, repo_dir, missed):
             f, _, ln = s.rpartition(":")
             if f not in cache:
                 cache[f] = open(os.path.join(repo_dir, f), encoding="utf-8", errors="replace").read().split("\n")
-            if 0 < int(ln) <= len(cache[f]) and "super(" in cache[f][int(ln) - 1]:
+            if 0 < int(ln) <= len(cache[f]) and SUPER_CALL.search(cache[f][int(ln) - 1]):
                 is_super = True
         if is_super:
             total += 1

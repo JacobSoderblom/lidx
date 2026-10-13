@@ -264,7 +264,11 @@ pub fn scan_repo(repo_root: &Path) -> Result<Vec<ScannedFile>> {
     scan_repo_with_options(repo_root, ScanOptions::default())
 }
 
-fn walker_from(dir: &Path, options: ScanOptions, max_depth: Option<usize>) -> ignore::Walk {
+pub(crate) fn walker_from(
+    dir: &Path,
+    options: ScanOptions,
+    max_depth: Option<usize>,
+) -> ignore::Walk {
     let mut builder = WalkBuilder::new(dir);
     builder.max_depth(max_depth);
     if options.no_ignore {

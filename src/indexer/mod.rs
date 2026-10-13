@@ -43,8 +43,11 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 25;
+pub const EXTRACTOR_VERSION: i64 = 27;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
+/// `meta` key of the Cargo manifest view (`rust_workspace`) the Rust files
+/// were last extracted against.
+const RUST_WORKSPACE_KEY: &str = "rust_workspace_fingerprint";
 
 pub mod batch;
 pub mod bicep;
@@ -67,6 +70,7 @@ pub mod proto;
 mod py_layout;
 pub mod python;
 pub mod rust;
+mod rust_workspace;
 pub mod scan;
 pub mod sql_extractor;
 pub mod stable_id;
@@ -372,6 +376,24 @@ impl Indexer {
             let stale_py = self.stale_python_files(graph_version)?;
             stale_files.extend(stale_py.into_iter().filter(|p| !batch_rels.contains(p)));
         }
+        // ... and Rust files when a manifest (or a library root's re-exports)
+        // changed what a crate-named path means.
+        let mut rust_fingerprint = None;
+        if batch_rels
+            .iter()
+            .any(|p| p.ends_with(".rs") || p.ends_with("Cargo.toml"))
+        {
+            let live_rust: Vec<String> = self
+                .db
+                .list_files(graph_version)?
+                .into_iter()
+                .filter(|f| f.language == "rust")
+                .map(|f| f.path)
+                .collect();
+            let (stale_rust, fingerprint) = self.stale_rust_files(live_rust)?;
+            stale_files.extend(stale_rust.into_iter().filter(|p| !batch_rels.contains(p)));
+            rust_fingerprint = fingerprint;
+        }
         self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
@@ -448,6 +470,9 @@ impl Indexer {
             stats.edges += xref_edges;
         }
         javascript::clear_export_cache();
+        if let Some(fingerprint) = &rust_fingerprint {
+            self.db.set_meta_str(RUST_WORKSPACE_KEY, fingerprint)?;
+        }
         if batch_rels.iter().any(|p| p.ends_with(".json")) {
             // Keep the reindex fingerprint current so the next reindex
             // doesn't re-extract every JS/TS file for a change sync handled.
@@ -618,6 +643,15 @@ impl Indexer {
 
         // ... and Python files whose package root a layout marker moved.
         stale_files.extend(self.stale_python_files(previous_graph_version)?);
+        // ... and Rust files when the Cargo manifests changed what a
+        // crate-named path means.
+        let scanned_rust: Vec<String> = scanned
+            .iter()
+            .filter(|f| f.language == "rust")
+            .map(|f| f.rel_path.clone())
+            .collect();
+        let (stale_rust, rust_fingerprint) = self.stale_rust_files(scanned_rust)?;
+        stale_files.extend(stale_rust);
         // ... and C# files whose project's `global using`s changed.
         let scanned_csharp: Vec<String> = scanned
             .iter()
@@ -921,6 +955,10 @@ impl Indexer {
             .as_secs() as i64;
         self.db
             .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, config_fingerprint)?;
+        match &rust_fingerprint {
+            Some(fingerprint) => self.db.set_meta_str(RUST_WORKSPACE_KEY, fingerprint)?,
+            None => self.db.delete_meta(RUST_WORKSPACE_KEY)?,
+        }
         self.db.set_meta_i64("last_indexed", now)?;
         self.db
             .set_meta_i64(crate::freshness::INDEXED_SCAN_AT_KEY, scan_started_at)?;
@@ -1173,6 +1211,31 @@ impl Indexer {
         Ok(stale)
     }
 
+    /// The Rust files among `rust_paths` to extract again because the Cargo
+    /// manifests (and the crate-level re-exports of library roots) they were
+    /// extracted against changed, with the view's current fingerprint to
+    /// record once this run completes. `(none, None)` for a repository
+    /// without Rust files.
+    fn stale_rust_files(
+        &mut self,
+        rust_paths: Vec<String>,
+    ) -> Result<(HashSet<String>, Option<String>)> {
+        if rust_paths.is_empty() {
+            return Ok((HashSet::new(), None));
+        }
+        let Some(extractor) = self.extractors.get_mut("rust") else {
+            return Ok((HashSet::new(), None));
+        };
+        extractor.begin_run();
+        let fingerprint = extractor.project_fingerprint();
+        let stale = if self.db.get_meta_str(RUST_WORKSPACE_KEY)? == fingerprint {
+            HashSet::new()
+        } else {
+            rust_paths.into_iter().collect()
+        };
+        Ok((stale, fingerprint))
+    }
+
     fn cs_globals_db(&self) -> cs_globals::CsGlobals<'_> {
         cs_globals::CsGlobals {
             db: &self.db,
@@ -1267,6 +1330,7 @@ impl Indexer {
             .extractors
             .get_mut(file.language.as_str())
             .ok_or_else(|| anyhow!("skip {}: unknown language {}", file.rel_path, file.language))?;
+        extractor.set_file(&file.rel_path);
         let mut extracted = extractor
             .extract(source, &module_name)
             .map_err(|err| anyhow!("extract error {} ({module_name}): {err}", file.rel_path))?;

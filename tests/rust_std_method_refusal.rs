@@ -56,8 +56,8 @@ impl T {
     pub fn count_things(&self) -> T { T }
     pub fn done(&self) {}
 }
-pub fn chained(v: Vec<u32>) {
-    v.iter()
+pub fn chained(t: T) {
+    t
         .count_things()
         .done();
 }

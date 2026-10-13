@@ -1,6 +1,6 @@
 use crate::db::resolver::{
-    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, SameFileTwins,
-    TwinTraits, VisibilityRule,
+    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_CRATE_PIN,
+    RUST_CRATE_ROOT, RUST_STD_RECEIVER, SameFileTwins, TwinTraits, VisibilityRule, rust_crate_pin,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -11,6 +11,7 @@ use crate::indexer::extract::{
 };
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::rust_workspace::{PackageView, RustWorkspace};
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, collect_identifier_names, module_symbol_fallback,
@@ -136,6 +137,9 @@ struct Context {
     /// `mod` doesn't see its parent's `use`s, only `super::`/`crate::`
     /// qualified access).
     imports: Rc<HashMap<String, Vec<String>>>,
+    /// Modules declared directly in this scope (`mod regex;`): a path that
+    /// starts with one names it, even when a dependency has the same name.
+    local_mods: Rc<HashSet<String>>,
     /// Qualnames of the traits declared directly in this scope (the file
     /// root or the current `mod` body), so `impl Local for T` resolves to
     /// the same-module declaration. Recomputed per scope like `imports`.
@@ -198,6 +202,8 @@ struct Context {
     /// `walk_declaration_list`. Keyed by node id so it can never leak onto
     /// a nested item that inherits this context.
     attr_start: Option<AttrStart>,
+    /// What this file's paths' first segments name when they are crates.
+    crates: Option<Rc<PackageView>>,
 }
 
 impl Context {
@@ -264,6 +270,11 @@ pub struct RustExtractor {
     /// Memoizes `find_crate_root`'s Cargo.toml walk per directory queried,
     /// since `module_name_from_rel_path` runs once per file.
     crate_root_cache: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
+    /// The repository's Cargo packages (`rust_workspace`), scanned once per
+    /// index run.
+    workspace: RefCell<Option<Rc<RustWorkspace>>>,
+    /// How the file about to be extracted sees the other crates.
+    file_crates: Option<Rc<PackageView>>,
 }
 
 impl RustExtractor {
@@ -275,6 +286,8 @@ impl RustExtractor {
             parser,
             repo_root: None,
             crate_root_cache: RefCell::new(HashMap::new()),
+            workspace: RefCell::new(None),
+            file_crates: None,
         })
     }
 
@@ -289,6 +302,16 @@ impl RustExtractor {
         self.repo_root = Some(repo_root);
         self
     }
+
+    /// The repository's Cargo packages, scanned on first use after
+    /// `begin_run`; `None` for an extractor without a repo root.
+    fn workspace(&self) -> Option<Rc<RustWorkspace>> {
+        let repo_root = self.repo_root.as_deref()?;
+        let mut slot = self.workspace.borrow_mut();
+        Some(Rc::clone(slot.get_or_insert_with(|| {
+            Rc::new(RustWorkspace::scan(repo_root))
+        })))
+    }
 }
 
 impl crate::indexer::extract::LanguageExtractor for RustExtractor {
@@ -301,6 +324,22 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             .unwrap_or_else(|| Path::new(""));
         let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
         module_name_from_rel_path(&strip_crate_root(rel_path, crate_root.as_deref()))
+    }
+
+    fn begin_run(&mut self) {
+        *self.workspace.borrow_mut() = None;
+        self.file_crates = None;
+    }
+
+    fn set_file(&mut self, rel_path: &str) {
+        self.file_crates = self
+            .workspace()
+            .and_then(|ws| PackageView::of_file(&ws, rel_path))
+            .map(Rc::new);
+    }
+
+    fn project_fingerprint(&mut self) -> Option<String> {
+        self.workspace().map(|ws| ws.fingerprint())
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
@@ -337,6 +376,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             grpc_service: None,
             grpc_clients: HashMap::new(),
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
+            local_mods: Rc::new(collect_mod_names(root, source)),
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             bound_names: Rc::new(HashSet::new()),
@@ -353,6 +393,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             impl_identity: None,
             macro_parser: Rc::new(RefCell::new(macro_parser)),
             attr_start: None,
+            crates: self.file_crates.clone(),
         };
         walk_node(root, &ctx, source, &mut output);
         collect_uses(root, &ctx, source, &mut output, &mut HashSet::new());
@@ -629,10 +670,13 @@ fn handle_named_item(
         end_col,
         start_byte,
         end_byte,
-        signature: if matches!(kind, "struct" | "enum") {
-            adt_signature(node, source)
-        } else {
-            None
+        signature: match kind {
+            "struct" | "enum" => adt_signature(node, source),
+            // `type Range = Match;`: the resolver follows the alias.
+            "type" => node
+                .child_by_field_name("type")
+                .map(|aliased| format!("type {name} = {}", node_text(aliased, source))),
+            _ => None,
         },
         docstring: None,
         identity: ctx.identity(),
@@ -739,7 +783,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // Fresh, not merged with `ctx.imports`: this module doesn't inherit its
     // parent's `use` bindings (see `Context::imports`).
     next_ctx.imports = Rc::new(collect_use_bindings(body, source, &next_ctx.module));
-    next_ctx.local_traits = Rc::new(collect_local_traits(body, source, &next_ctx.module));
+    next_ctx.local_mods = Rc::new(collect_mod_names(body, source));
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
@@ -1357,6 +1401,16 @@ pub(crate) fn is_std_method_name(name: &str) -> bool {
     STD_METHOD_NAMES.contains(&name)
 }
 
+/// The callee of a turbofished call (`x.parse::<T>()`, `foo::<T>(..)`): the
+/// `generic_function` node's own `function`; any other callee as it is.
+fn unwrap_turbofish(function: Node<'_>) -> Node<'_> {
+    if function.kind() == "generic_function" {
+        function.child_by_field_name("function").unwrap_or(function)
+    } else {
+        function
+    }
+}
+
 /// The method-name token of `recv.name(..)`.
 fn method_name_node(function_node: Node<'_>) -> Option<Node<'_>> {
     (function_node.kind() == "field_expression")
@@ -1468,6 +1522,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let Some(function_node) = node.child_by_field_name("function") else {
         return;
     };
+    // `x.parse::<T>()`, `make::<T>()`: the turbofish changes neither the
+    // receiver nor the callee.
+    let function_node = unwrap_turbofish(function_node);
     let raw = node_text(function_node, source);
     if raw.is_empty() {
         return;
@@ -1475,7 +1532,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // Collapsed once here so a multi-line chain feeds both tiers below the
     // same shape the single-line form would.
     let collapsed = collapse_call_target_whitespace(&raw);
-    let import_candidates = import_qualified_candidates(&collapsed, ctx);
+    let mut import_candidates = import_qualified_candidates(&collapsed, ctx);
+    if is_simple_call_target(&collapsed) && !collapsed.contains('.') {
+        add_crate_markers(&collapsed, &mut import_candidates, ctx);
+    }
     // When full resolution fails for a dotted call (e.g. `db.insert(...)`),
     // emit the bare method name as target_qualname rather than dropping the
     // target, giving Rust the same reach as Python, C#, and Go. Fully-resolved
@@ -1490,7 +1550,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let field = method_name_node(function_node);
     let mut receiver_type = infer_receiver_type(function_node, source, ctx);
     if receiver_type == ReceiverType::NotTracked
-        && field.is_some_and(|field| refuses_std_method(function_node, field, source))
+        && (field.is_some_and(|field| refuses_std_method(function_node, field, source))
+            // `<_>::deserialize(..)`, `<T as Trait>::f(..)`: the type is
+            // inferred or generic, so the name alone says nothing.
+            || collapsed.starts_with('<'))
     {
         receiver_type = ReceiverType::Unresolved;
     }
@@ -1613,11 +1676,12 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         }
         // `shadowed_names` holds every value use of a name, this one
         // included; only a glob `use` inside the body voids the import.
-        let imported = if ctx.shadowed_names.contains("*") {
+        let mut imported = if ctx.shadowed_names.contains("*") {
             Vec::new()
         } else {
             named_import_candidates(&raw, ctx)
         };
+        add_crate_markers(&raw, &mut imported, ctx);
         (format!("{}::{raw}", ctx.module), imported)
     } else {
         let first = raw.split("::").next().unwrap_or_default();
@@ -1655,11 +1719,12 @@ fn qualified_value_path(raw: &str, ctx: &Context) -> Option<(String, Vec<String>
         return Some((resolve_call_target(raw, ctx)?, Vec::new()));
     }
     let (first, rest) = raw.split_once("::")?;
-    let expanded: Vec<String> = ctx
+    let mut expanded: Vec<String> = ctx
         .imports
         .get(first)
         .map(|targets| targets.iter().map(|t| format!("{t}::{rest}")).collect())
         .unwrap_or_default();
+    add_crate_markers(raw, &mut expanded, ctx);
     Some((format!("{}::{raw}", ctx.module), expanded))
 }
 
@@ -1688,10 +1753,34 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         ctx: Some(ctx),
     };
     match env.expr_ty(value, &ctx.local_types) {
-        Ty::Named(ty) => ReceiverType::Known(ty),
+        Ty::Named(ty) => ReceiverType::Known(pin_imported_type(ty, ctx)),
         Ty::Pending(p) => ReceiverType::RustDeferred(p),
-        _ => ReceiverType::NotTracked,
+        // A value of a std shape (`Vec<_>`, `Option<_>`, an iterator, a
+        // tuple, a map) takes std's methods: a repo type's method sharing
+        // a name is not what runs.
+        Ty::Option(_)
+        | Ty::Result(..)
+        | Ty::Tuple(_)
+        | Ty::Seq(_)
+        | Ty::Iter(_)
+        | Ty::Future(_) => ReceiverType::Known(RUST_STD_RECEIVER.to_string()),
+        Ty::Unknown => ReceiverType::NotTracked,
     }
+}
+
+/// `ty` as a receiver type: pinned to its package (`@dir|Type`) when this
+/// file imports it from another package of the workspace, so a same-named
+/// type of a third package cannot stand in for it.
+fn pin_imported_type(ty: String, ctx: &Context) -> String {
+    let (Some(crates), Some([target])) = (&ctx.crates, ctx.imports.get(&ty).map(Vec::as_slice))
+    else {
+        return ty;
+    };
+    crates
+        .markers(std::slice::from_ref(target))
+        .into_iter()
+        .find(|m| m.starts_with(RUST_CRATE_PIN))
+        .unwrap_or(ty)
 }
 
 /// Std wrappers whose method calls mostly dispatch to the wrapped type
@@ -1726,7 +1815,7 @@ enum Ty {
 const STD_PASSTHROUGH_METHODS: &[&str] = &["unwrap", "expect", "clone"];
 
 /// Longest projection chain stored on a `Pending` type.
-const MAX_PENDING_STEPS: usize = 12;
+const MAX_PENDING_STEPS: usize = 24;
 
 /// Apply one projection step; `Unknown` when the shape doesn't fit.
 fn project(ty: Ty, step: Step) -> Ty {
@@ -1755,6 +1844,12 @@ fn project(ty: Ty, step: Step) -> Ty {
         (ty, Step::Method(m)) => method_ty(ty, &m),
         _ => Ty::Unknown,
     }
+}
+
+/// An element of a tuple pattern: a named node or the anonymous `_`, which
+/// keeps its position (`(_, stats)` binds `stats` to the second element).
+fn is_pattern_element(node: &Node<'_>) -> bool {
+    node.is_named() || node.kind() == "_"
 }
 
 /// Every tuple/`..`-free element list must line up positionally.
@@ -1913,6 +2008,10 @@ impl TypeEnv<'_> {
                     (Some("Result"), 1) => Ty::Result(Box::new(arg(0)), Box::new(Ty::Unknown)),
                     (Some("Result"), 2) => Ty::Result(Box::new(arg(0)), Box::new(arg(1))),
                     (Some("Vec" | "VecDeque"), 1) => Ty::Seq(Box::new(arg(0))),
+                    // A map iterates as its `(key, value)` pairs.
+                    (Some("HashMap" | "BTreeMap" | "IndexMap"), 2..=3) => {
+                        Ty::Seq(Box::new(Ty::Tuple(vec![arg(0), arg(1)])))
+                    }
                     (Some("IntoIter" | "Iter" | "IterMut" | "Drain"), 1) => {
                         Ty::Iter(Box::new(arg(0)))
                     }
@@ -1983,6 +2082,20 @@ impl TypeEnv<'_> {
                 let field = node_text(value.child_by_field_name("field")?, source);
                 Some(self.field_ty(base, &field))
             }
+            // `Enum::Variant`: a value of the enum (a constant `Type::MAX`
+            // has the constant's own type, so an all-capitals name is not
+            // read).
+            "scoped_identifier" => {
+                let name = node_text(value.child_by_field_name("name")?, source);
+                let is_variant =
+                    name.starts_with(char::is_uppercase) && name.chars().any(char::is_lowercase);
+                let owner = node_text(value.child_by_field_name("path")?, source);
+                let owner = owner.rsplit("::").next()?;
+                if !is_variant {
+                    return None;
+                }
+                self.usable(owner.to_string()).map(Ty::Named)
+            }
             "tuple_expression" => {
                 let mut cursor = value.walk();
                 Some(Ty::Tuple(
@@ -1997,7 +2110,7 @@ impl TypeEnv<'_> {
                 Some(Ty::Named(name))
             }
             "call_expression" => {
-                let function = value.child_by_field_name("function")?;
+                let function = unwrap_turbofish(value.child_by_field_name("function")?);
                 match function.kind() {
                     "field_expression" => {
                         let recv =
@@ -2026,7 +2139,7 @@ impl TypeEnv<'_> {
             {
                 return entry.clone().unwrap_or(Ty::Unknown);
             }
-            if matches!(method, "unwrap" | "expect") {
+            if STD_PASSTHROUGH_METHODS.contains(&method) {
                 return recv;
             }
             return self.pending(
@@ -2112,6 +2225,25 @@ impl TypeEnv<'_> {
                 }
             }
         }
+        // `Arc::new(x)` / `Rc::new(x)` / `Box::new(x)`: method lookup derefs
+        // to `x`'s type.
+        if matches!(
+            raw.rsplit("::").take(2).collect::<Vec<_>>().as_slice(),
+            ["new", "Arc" | "Rc" | "Box"]
+        ) {
+            return call_arguments(call)
+                .first()
+                .map(|inner| self.expr_ty(*inner, locals));
+        }
+        // `mem::replace(&mut x, new)` / `mem::take(&mut x)` return `x`'s type.
+        if matches!(
+            raw.as_str(),
+            "std::mem::replace" | "mem::replace" | "std::mem::take" | "mem::take"
+        ) {
+            return call_arguments(call)
+                .first()
+                .map(|place| self.expr_ty(*place, locals));
+        }
         let heuristic = self.ctor_type(function);
         let Some(ctx) = self.ctx else {
             return heuristic.map(Ty::Named);
@@ -2146,7 +2278,7 @@ impl TypeEnv<'_> {
                 return entry.clone();
             }
         }
-        let cands: Vec<String> = match (imported, segs[0]) {
+        let mut cands: Vec<String> = match (imported, segs[0]) {
             (Some(targets), _) => targets
                 .iter()
                 .map(|t| {
@@ -2165,6 +2297,25 @@ impl TypeEnv<'_> {
                 .collect(),
             _ => Vec::new(),
         };
+        // A callee in another package of the workspace is read from that
+        // package's declarations, not from a same-named item elsewhere.
+        if let Some(crates) = &ctx.crates {
+            let base = if imported.is_none()
+                && segs.len() > 1
+                && !is_anchored(segs[0])
+                && !ctx.local_mods.contains(segs[0])
+            {
+                vec![raw.clone()]
+            } else {
+                cands.clone()
+            };
+            cands.extend(
+                crates
+                    .markers(&base)
+                    .into_iter()
+                    .filter(|m| m.starts_with(RUST_CRATE_PIN)),
+            );
+        }
         if cands.is_empty() {
             return heuristic.map(Ty::Named);
         }
@@ -2227,7 +2378,10 @@ impl TypeEnv<'_> {
             }
             "tuple_pattern" => {
                 let mut cursor = pat.walk();
-                let elems: Vec<_> = pat.named_children(&mut cursor).collect();
+                let elems: Vec<_> = pat
+                    .children(&mut cursor)
+                    .filter(is_pattern_element)
+                    .collect();
                 match ty {
                     Ty::Tuple(tys) if !has_rest(&elems) && tys.len() == elems.len() => {
                         for (e, t) in elems.iter().zip(tys) {
@@ -2246,8 +2400,8 @@ impl TypeEnv<'_> {
                 let type_node = pat.child_by_field_name("type");
                 let mut cursor = pat.walk();
                 let elems: Vec<_> = pat
-                    .named_children(&mut cursor)
-                    .filter(|c| Some(*c) != type_node)
+                    .children(&mut cursor)
+                    .filter(|c| is_pattern_element(c) && Some(*c) != type_node)
                     .collect();
                 let step = match type_node.map(|t| node_text(t, source)).as_deref() {
                     Some("Some") => Some(Step::OptionSome),
@@ -2354,11 +2508,20 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         (Ty::Result(t, _), "ok") => Ty::Option(t),
         (Ty::Result(_, e), "err") => Ty::Option(e),
         (t @ (Ty::Option(_) | Ty::Result(..)), "as_ref" | "as_mut" | "clone") => t,
+        (t @ (Ty::Seq(_) | Ty::Tuple(_)), "clone") => t,
         (t @ Ty::Option(_), "take" | "cloned" | "copied") => t,
         (Ty::Seq(t), "iter" | "into_iter" | "iter_mut" | "drain") => Ty::Iter(t),
         (t @ Ty::Iter(_), "into_iter" | "by_ref") => t,
         (Ty::Iter(t), "next" | "next_back" | "last") => Ty::Option(t),
         (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last") => Ty::Option(t),
+        (Ty::Seq(t), "values" | "values_mut" | "into_values") => match *t {
+            Ty::Tuple(mut kv) if kv.len() == 2 => Ty::Iter(Box::new(kv.remove(1))),
+            _ => Ty::Unknown,
+        },
+        (Ty::Seq(t), "keys" | "into_keys") => match *t {
+            Ty::Tuple(mut kv) if kv.len() == 2 => Ty::Iter(Box::new(kv.remove(0))),
+            _ => Ty::Unknown,
+        },
         _ => Ty::Unknown,
     }
 }
@@ -2479,43 +2642,102 @@ fn resolve_deferred(
         DeferredSource::Field { owner, .. } => index.declarations(DeclarationQuery::Type(owner))?,
     };
     if declarations.is_empty() {
+        // A callee imported from a crate outside the repository (`use
+        // ignore::WalkBuilder;`) has no declaration here: the receiver is
+        // that crate's, whatever a repo method of the same name is called.
+        if let (DeferredSource::Call { candidates }, None) = (&deferred.source, &deferred.fallback)
+            && !candidates.is_empty()
+            && candidates.iter().all(|c| {
+                !c.starts_with(RUST_CRATE_ROOT)
+                    && !c.starts_with(RUST_CRATE_PIN)
+                    && !c.starts_with("self::")
+                    && !c.starts_with("super::")
+            })
+        {
+            // ... unless the root is a module of this repo (`use util::Thing;`
+            // with a sibling `mod util;`).
+            let mut local = false;
+            for candidate in candidates {
+                local |= index.is_repo_module(candidate.split("::").next().unwrap_or(candidate))?;
+            }
+            if !local {
+                return Ok(Some(Some(String::new())));
+            }
+        }
         return Ok(Some(deferred.fallback.clone()));
     }
-    let mut found: Option<String> = None;
+    // The type and the package whose declaration last contributed to it.
+    let mut found: Option<(String, String)> = None;
     for declaration in &declarations {
         let Some(signature) = &declaration.signature else {
             return Ok(Some(deferred.fallback.clone()));
         };
-        let Some(ty) = declared_receiver_type(deferred, &declaration.qualname, signature, index)?
+        let Some((ty, dir)) = declared_receiver_type(
+            deferred,
+            &declaration.qualname,
+            signature,
+            cargo_package_dir(&declaration.path),
+            index,
+        )?
         else {
             return Ok(Some(None));
         };
         match &found {
-            Some(prev) if *prev != ty => return Ok(Some(None)),
-            _ => found = Some(ty),
+            Some((prev, _)) if *prev != ty => return Ok(Some(None)),
+            _ => found = Some((ty, dir)),
         }
     }
-    Ok(Some(match found {
-        Some(ty) if index.is_repo_type(&ty)? => Some(ty),
-        _ => None,
-    }))
+    let Some((ty, dir)) = found else {
+        return Ok(Some(None));
+    };
+    if !index.is_repo_type(&ty)? {
+        return Ok(Some(None));
+    }
+    // Two packages declaring a type of this name: keep the one the
+    // declaration came from, so its methods are not looked up by name alone.
+    Ok(Some(Some(ty_in_package(index, ty, &dir)?)))
+}
+
+/// `ty` pinned to the package `dir` (`@dir|ty`) when other packages declare a
+/// type of the same name, else `ty` itself.
+fn ty_in_package(index: &dyn DeclarationIndex, ty: String, dir: &str) -> anyhow::Result<String> {
+    let declarations = index.declarations(DeclarationQuery::Type(&ty))?;
+    let mut packages: Vec<&str> = declarations
+        .iter()
+        .map(|d| cargo_package_dir(&d.path))
+        .collect();
+    packages.sort_unstable();
+    packages.dedup();
+    Ok(if packages.len() > 1 && packages.contains(&dir) {
+        rust_crate_pin(dir, &ty)
+    } else {
+        ty
+    })
 }
 
 /// The receiver type `deferred` reaches through one declaration's indexed
-/// signature: a callable's return type or a struct/enum's field type, then
-/// the marker's steps.
+/// signature (a callable's return type or a struct/enum's field type, then
+/// the marker's steps), with the package of the declaration that last
+/// contributed to it: `declared_in`, then each user method the steps pass.
 fn declared_receiver_type(
     deferred: &RustDeferred,
     qualname: &str,
     signature: &str,
+    declared_in: &str,
     index: &dyn DeclarationIndex,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<(String, String)>> {
     let Some(ty) = declared_source_ty(&deferred.source, qualname, signature) else {
         return Ok(None);
     };
-    receiver_through_steps(ty, &deferred.steps, |owner, method| {
-        user_method_ty(owner, method, index)
-    })
+    let package = RefCell::new(declared_in.to_string());
+    let ty = receiver_through_steps(ty, &deferred.steps, |owner, method| {
+        let (ty, dir) = user_method_ty(owner, method, index, &package.borrow())?;
+        if let Some(dir) = dir {
+            *package.borrow_mut() = dir;
+        }
+        Ok(ty)
+    })?;
+    Ok(ty.map(|ty| (ty, package.into_inner())))
 }
 
 /// `ty` after `steps`, as a repo type name. `user_method` gives the return
@@ -2546,26 +2768,41 @@ fn receiver_through_steps(
 /// `Unknown` when there is none or the declarations disagree. A method the
 /// type does not declare itself but every std type has (`clone`) keeps the
 /// type.
-fn user_method_ty(owner: &str, method: &str, index: &dyn DeclarationIndex) -> anyhow::Result<Ty> {
-    let declarations =
+fn user_method_ty(
+    owner: &str,
+    method: &str,
+    index: &dyn DeclarationIndex,
+    package: &str,
+) -> anyhow::Result<(Ty, Option<String>)> {
+    let mut declarations =
         index.declarations(DeclarationQuery::Method(&format!("{owner}::{method}")))?;
+    // Of a name several packages declare, the receiver's own package's.
+    if declarations
+        .iter()
+        .any(|d| cargo_package_dir(&d.path) == package)
+    {
+        declarations.retain(|d| cargo_package_dir(&d.path) == package);
+    }
     if declarations.is_empty() {
-        return Ok(Ty::Unknown);
+        return Ok((Ty::Unknown, None));
     }
     let mut found: Option<Ty> = None;
     for declaration in &declarations {
         let Some(signature) = &declaration.signature else {
-            return Ok(Ty::Unknown);
+            return Ok((Ty::Unknown, None));
         };
         let Some(ty) = callable_return_ty(&declaration.qualname, signature) else {
-            return Ok(Ty::Unknown);
+            return Ok((Ty::Unknown, None));
         };
         match &found {
-            Some(prev) if *prev != ty => return Ok(Ty::Unknown),
+            Some(prev) if *prev != ty => return Ok((Ty::Unknown, None)),
             _ => found = Some(ty),
         }
     }
-    Ok(found.unwrap_or(Ty::Unknown))
+    let dir = declarations
+        .first()
+        .map(|d| cargo_package_dir(&d.path).to_string());
+    Ok((found.unwrap_or(Ty::Unknown), dir))
 }
 
 /// A callable's declared return type, `Self` read as its owner (the
@@ -3892,6 +4129,43 @@ fn import_qualified_candidates(raw: &str, ctx: &Context) -> Vec<String> {
     named_import_candidates(raw, ctx)
 }
 
+/// Whether a path's first segment anchors it in the current crate.
+fn is_anchored(first: &str) -> bool {
+    matches!(first, "crate" | "self" | "super" | "Self")
+}
+
+/// Append the crate markers (`PackageView::markers`) of a call or value path
+/// to its import candidates: for a `::` path, its first segment read through
+/// the scope's `use`s (the expanded paths are added too, so an external
+/// stub is named by them); for a bare name, the candidates it already has.
+fn add_crate_markers(path: &str, candidates: &mut Vec<String>, ctx: &Context) {
+    let Some(crates) = &ctx.crates else {
+        return;
+    };
+    let expanded: Vec<String> = match path.split_once("::") {
+        None => candidates.clone(),
+        Some((first, _)) if is_anchored(first) => return,
+        Some((first, rest)) => match ctx.imports.get(first) {
+            Some(targets) => targets.iter().map(|t| format!("{t}::{rest}")).collect(),
+            // A module declared here is not the crate of that name.
+            None if ctx.local_mods.contains(first) => return,
+            None => vec![path.to_string()],
+        },
+    };
+    let markers = crates.markers(&expanded);
+    if markers.is_empty() {
+        return;
+    }
+    if path.contains("::") {
+        for full in expanded {
+            if !candidates.contains(&full) {
+                candidates.push(full);
+            }
+        }
+    }
+    candidates.extend(markers);
+}
+
 /// The targets this scope's `use`s bind the bare name `name` to: its own
 /// `use` if it has one, else that name inside each glob-imported module
 /// (`use super::*` makes `super::name` a candidate). A glob never shadows an
@@ -3991,11 +4265,26 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     {
         return Some(target);
     }
-    if raw.contains("::") {
-        return Some(raw.to_string());
-    }
+    // `Enum::Variant.method()`: a method call on a path's value, named by
+    // its method alone (the receiver's type decides which one).
     if raw.contains('.') {
         return None;
+    }
+    if let Some((first, rest)) = raw.split_once("::") {
+        match ctx.imports.get(first).map(Vec::as_slice) {
+            // `use crate::rpc;` ... `rpc::f()`: the path as the module it names.
+            Some([target]) if target.starts_with(RUST_CRATE_ROOT) => {
+                return Some(format!("{target}::{rest}"));
+            }
+            // `mod regex;` ... `regex::f()`: the module, not a crate of that name.
+            None if ctx.local_mods.contains(first) => {
+                return Some(format!("{}::{raw}", ctx.module));
+            }
+            _ => {}
+        }
+    }
+    if raw.contains("::") {
+        return Some(raw.to_string());
     }
     // A bare `f()` names a free function in scope -- the module's -- never
     // an associated function of the enclosing impl (those need `Self::f`).
@@ -4402,6 +4691,66 @@ fn collect_use_bindings(
         }
     }
     out
+}
+
+/// `pub use <crate> as <alias>;` and `pub extern crate <crate> as <alias>;`
+/// declarations at the top of a library root,
+/// as `alias -> crate` (read with the extractor's own `use` parser, so
+/// multi-line trees, `pub(crate)` and grouped `{a as b, ..}` forms count).
+/// A facade crate exposes another crate's name this way (`grep::cli`).
+pub(crate) fn reexported_crate_aliases(source: &str) -> std::collections::BTreeMap<String, String> {
+    let mut aliases = std::collections::BTreeMap::new();
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .is_err()
+    {
+        return aliases;
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return aliases;
+    };
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        let text = node_text(child, source);
+        if !text.trim_start().starts_with("pub") {
+            continue;
+        }
+        // `pub extern crate grep_cli as cli;`
+        if child.kind() == "extern_crate_declaration" {
+            if let (Some(name), Some(alias)) = (
+                child.child_by_field_name("name"),
+                child.child_by_field_name("alias"),
+            ) {
+                aliases.insert(
+                    node_text(alias, source),
+                    node_text(name, source).replace('-', "_"),
+                );
+            }
+            continue;
+        }
+        if child.kind() != "use_declaration" {
+            continue;
+        }
+        for (bound, target) in parse_use_bindings(&text) {
+            if bound != target && !target.contains("::") && bound != "*" {
+                aliases.insert(bound, target.replace('-', "_"));
+            }
+        }
+    }
+    aliases
+}
+
+/// Names of the modules declared directly in `scope` (`mod a;`, `mod a { .. }`).
+fn collect_mod_names(scope: Node<'_>, source: &str) -> HashSet<String> {
+    let mut cursor = scope.walk();
+    scope
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "mod_item")
+        .filter_map(|child| child.child_by_field_name("name"))
+        .map(|name| node_text(name, source))
+        .collect()
 }
 
 /// Strip a `use` declaration's leading visibility (`pub`, `pub(crate)`,
