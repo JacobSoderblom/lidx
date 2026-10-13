@@ -940,24 +940,20 @@ impl Db {
             .filter(|j| !j.public && !j.named_by_unresolved)
             .map(|j| j.claim.symbol.id)
             .collect();
-        // Computed on the first method that needs it.
-        let mut live: Option<HashSet<i64>> = None;
-        let mut implemented: HashMap<i64, Vec<String>> = HashMap::new();
-        let mut siblings: HashMap<i64, Vec<(String, Option<String>)>> = HashMap::new();
+        let mut probe = ExternalInterfaceProbe {
+            conn: &conn,
+            graph_version,
+            claimed: &claimed,
+            reachability: &reachability,
+            repo_root,
+            live: None,
+            implemented: HashMap::new(),
+            siblings: HashMap::new(),
+        };
         let mut out = DeadSymbols::default();
         for mut j in judged {
             if j.claim.symbol.kind == "method"
-                && let Some(iface) = self.external_interface_of(
-                    &conn,
-                    &j,
-                    graph_version,
-                    &claimed,
-                    &reachability,
-                    repo_root,
-                    &mut live,
-                    &mut implemented,
-                    &mut siblings,
-                )?
+                && let Some(iface) = probe.of(&j)?
             {
                 // Live through its type: not a claim. Listed on request only,
                 // never above medium.
@@ -983,34 +979,39 @@ impl Db {
         }
         Ok(out)
     }
+}
 
-    /// The external interface that makes method `j` live through its type
-    /// (`external_ifaces`), or `None` when it implements none or its type is
-    /// itself claimed dead. A method whose type cannot be found is given the
-    /// benefit of the doubt.
-    fn external_interface_of(
-        &self,
-        conn: &rusqlite::Connection,
-        j: &Judged,
-        graph_version: i64,
-        claimed: &HashSet<i64>,
-        reachability: &str,
-        repo_root: &Path,
-        live: &mut Option<HashSet<i64>>,
-        implemented: &mut HashMap<i64, Vec<String>>,
-        siblings: &mut HashMap<i64, Vec<(String, Option<String>)>>,
-    ) -> Result<Option<String>> {
+/// Finds the external interface that makes a method live through its type
+/// (`external_ifaces`), caching what it reads.
+struct ExternalInterfaceProbe<'a> {
+    conn: &'a rusqlite::Connection,
+    graph_version: i64,
+    claimed: &'a HashSet<i64>,
+    reachability: &'a str,
+    repo_root: &'a Path,
+    /// Computed on the first method that needs it.
+    live: Option<HashSet<i64>>,
+    implemented: HashMap<i64, Vec<String>>,
+    siblings: HashMap<i64, Vec<(String, Option<String>)>>,
+}
+
+impl ExternalInterfaceProbe<'_> {
+    /// The interface method `j` implements, or `None` when it implements none
+    /// or its type is not live. A method whose type cannot be found is given
+    /// the benefit of the doubt.
+    fn of(&mut self, j: &Judged) -> Result<Option<String>> {
+        let (conn, graph_version) = (self.conn, self.graph_version);
         if let Some(parent) = j.parent_id {
-            if live.is_none() {
-                *live = Some(live_symbols(
+            if self.live.is_none() {
+                self.live = Some(live_symbols(
                     conn,
                     graph_version,
-                    reachability,
-                    claimed,
-                    repo_root,
+                    self.reachability,
+                    self.claimed,
+                    self.repo_root,
                 )?);
             }
-            if !live.as_ref().is_some_and(|l| l.contains(&parent)) {
+            if !self.live.as_ref().is_some_and(|l| l.contains(&parent)) {
                 return Ok(None);
             }
         }
@@ -1021,7 +1022,8 @@ impl Db {
                 let Some(parent) = j.parent_id else {
                     return Ok(None);
                 };
-                if let std::collections::hash_map::Entry::Vacant(slot) = siblings.entry(parent) {
+                if let std::collections::hash_map::Entry::Vacant(slot) = self.siblings.entry(parent)
+                {
                     let mut stmt = conn.prepare_cached(
                         "SELECT m.name, m.signature FROM edges c
                          JOIN symbols m ON m.id = c.target_symbol_id
@@ -1038,14 +1040,14 @@ impl Db {
                 super::resolver::go_external_interface(
                     &method.name,
                     Some(j.signature.as_str()),
-                    &siblings[&parent],
+                    &self.siblings[&parent],
                 )
             }
             "typescript" | "tsx" | "javascript" => {
                 let names: &[String] = match j.parent_id {
                     Some(parent) => {
                         if let std::collections::hash_map::Entry::Vacant(slot) =
-                            implemented.entry(parent)
+                            self.implemented.entry(parent)
                         {
                             let mut stmt = conn.prepare_cached(
                                 "SELECT reference_name FROM unresolved_references
@@ -1059,7 +1061,7 @@ impl Db {
                                 .collect::<rusqlite::Result<Vec<_>>>()?;
                             slot.insert(rows);
                         }
-                        &implemented[&parent]
+                        &self.implemented[&parent]
                     }
                     None => &[],
                 };
@@ -1069,7 +1071,9 @@ impl Db {
         };
         Ok(found)
     }
+}
 
+impl Db {
     /// Issue #79: an IMPORTS reference the write path never resolved (an
     /// external package, e.g. `import json`) no longer gets a placeholder
     /// edge at all -- it lives only in `unresolved_references` (`edge_id IS
