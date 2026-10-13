@@ -5791,7 +5791,7 @@ fn collect_uses(
             }
         };
         if is_ref && !is_inner_path && !is_definition_name && !is_call_callee(node) {
-            emit(node_text(node, source), &ctx);
+            emit(node_text(node, source), ctx);
         }
         // `Type::new(..)`, `Type::Variant`, `module::Type::CONST`: the path
         // up to the last segment names a type; that is a use of it even
@@ -5802,7 +5802,7 @@ fn collect_uses(
         {
             let prefix = node_text(path, source);
             if prefix.rsplit("::").next().is_some_and(is_type_like_name) {
-                emit(prefix, &ctx);
+                emit(prefix, ctx);
             }
         }
         // A unit or tuple struct as an expression (`&Unrestricted`).
@@ -5814,7 +5814,7 @@ fn collect_uses(
         {
             let raw = node_text(node, source);
             if is_unit_struct_name(&raw) {
-                emit(raw, &ctx);
+                emit(raw, ctx);
             }
         }
         // Tokens of a macro call are not parsed: a `CamelCase` one may name
@@ -5822,12 +5822,12 @@ fn collect_uses(
         if node.kind() == "identifier" && parent.is_some_and(|p| p.kind() == "token_tree") {
             let raw = node_text(node, source);
             if is_type_like_name(&raw) {
-                emit(raw, &ctx);
+                emit(raw, ctx);
             }
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            collect_uses(child, &ctx, source, output, seen);
+            collect_uses(child, ctx, source, output, seen);
         }
     }
 }
