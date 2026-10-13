@@ -103,14 +103,15 @@ def process_tree(root_pid):
     return [c for pid, _, c in rows if pid in kids]
 
 
-def run_watched(cmd, interval=0.05, **kw):
+def run_watched(cmd, interval=0.05, forbidden=None, **kw):
     """Run cmd, sampling its process tree; return (returncode, set of forbidden command lines seen). Sampling can miss a
     process shorter than `interval`, which is why `assert_no_build_artifacts` checks the filesystem as well."""
+    forbidden = forbidden or FORBIDDEN_PROCESS
     p = subprocess.Popen(cmd, **kw)
     bad = set()
     while p.poll() is None:
         for c in process_tree(p.pid):
-            if FORBIDDEN_PROCESS.search(c):
+            if forbidden.search(c):
                 bad.add(c[:200])
         time.sleep(interval)
     return p.returncode, bad
@@ -159,4 +160,29 @@ def assert_clean_run(rc_bad, repo_dir, target_dir=None):
         raise UnsafeRun("forbidden processes ran: %s" % sorted(rc_bad)[:3])
     if target_dir:
         assert_no_build_artifacts(target_dir)
+    assert_tree_untouched(repo_dir)
+
+
+# ---------------------------------------------------------------- Go (dead-code oracle)
+# The dead-code oracle (go_oracle/dead) runs staticcheck's U1000 analyzer and RTA over `packages.Load`, which only runs `go list`.
+# Nothing is built, tested or generated, and cgo is off. `go_hardened_env` is the environment it runs under (its Go code sets the same
+# variables on the packages.Load config); test_safety.py asserts both layers.
+GO_HARDENING = {"CGO_ENABLED": "0", "GOFLAGS": "-mod=readonly", "GOWORK": "off", "GOPACKAGESDRIVER": "off"}
+
+# a command line that means Go compiled, tested, generated or ran something from the corpus: `go build|test|run|generate|vet|install`,
+# the compiler, linker, cgo or a test binary. `go list` (and the `go` wrapper that selects a toolchain) is fine.
+FORBIDDEN_GO_PROCESS = re.compile(r"(^|/)go\s+(-\S+\s+)*(build|test|run|generate|vet|install|get|tool)\b|/pkg/tool/[^ ]+/(compile|link|cgo|asm|vet|test2json)\b|\.test(\s|$)")
+
+
+def go_hardened_env(base=None):
+    """Environment for the Go oracles that a corpus cannot turn into code execution: GOFLAGS is replaced (so an inherited -toolexec
+    or -overlay cannot apply), cgo is off, go.work and a GOPACKAGESDRIVER binary are ignored, go.mod/go.sum are never rewritten."""
+    env = dict(os.environ if base is None else base)
+    env.update(GO_HARDENING)
+    return env
+
+
+def assert_clean_go_run(bad, repo_dir):
+    if bad:
+        raise UnsafeRun("forbidden Go processes ran: %s" % sorted(bad)[:3])
     assert_tree_untouched(repo_dir)

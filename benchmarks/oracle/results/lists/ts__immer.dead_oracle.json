@@ -1,0 +1,7 @@
+[
+{"api":false,"exported":true,"file":"src/types/types-external.ts","kind":"function","line":271,"name":"never_used","reach":"dead","subkind":"function","unref":"dead"},
+{"api":false,"exported":true,"file":"src/types/types-external.ts","kind":"type","line":100,"name":"Produced","subkind":"alias","unref":"dead"},
+{"api":false,"exported":true,"file":"src/types/types-internal.ts","kind":"type","line":13,"name":"ObjectishNoSet","subkind":"alias","unref":"dead"},
+{"api":false,"exported":true,"file":"src/types/types-internal.ts","kind":"type","line":50,"name":"GeneratePatches","subkind":"alias","unref":"dead"},
+{"api":false,"exported":true,"file":"src/utils/plugins.ts","kind":"function","line":68,"name":"clearPlugin","reach":"dead","subkind":"arrow","unref":"dead"}
+]

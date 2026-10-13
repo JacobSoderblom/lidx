@@ -1,0 +1,6 @@
+[
+{"api":false,"exported":false,"file":"src/main.rs","kind":"function","line":62,"name":"main","reach":"live","root":"main_init","subkind":"fn","unref":"dead"},
+{"api":false,"exported":false,"file":"src/regex_helper.rs","kind":"function","line":82,"name":"pattern_has_uppercase_char_simple","reach":"live","root":"test_root","subkind":"fn","unref":"dead"},
+{"api":false,"exported":false,"file":"src/regex_helper.rs","kind":"function","line":91,"name":"pattern_has_uppercase_char_advanced","reach":"live","root":"test_root","subkind":"fn","unref":"dead"},
+{"api":false,"exported":false,"file":"src/regex_helper.rs","kind":"function","line":99,"name":"matches_strings_with_leading_dot_simple","reach":"live","root":"test_root","subkind":"fn","unref":"dead"}
+]

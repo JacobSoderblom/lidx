@@ -1,0 +1,6 @@
+[
+{"api":false,"exported":false,"file":"app.go","kind":"method","line":296,"name":"newFlagSet","reach":"dead","unref":"live"},
+{"api":false,"exported":false,"file":"app.go","kind":"method","line":350,"name":"suggestFlagFromError","reach":"dead","unref":"dead"},
+{"api":false,"exported":false,"file":"errors.go","kind":"method","line":68,"name":"getMissingFlags","reach":"dead","unref":"live"},
+{"api":false,"exported":true,"file":"internal/build/build.go","kind":"function","line":238,"name":"VetActionFunc","reach":"dead","unref":"live"}
+]

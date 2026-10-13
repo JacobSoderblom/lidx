@@ -1,0 +1,4 @@
+[
+{"api":false,"exported":false,"file":"nil_renderer.go","kind":"method","line":9,"name":"repaint","reach":"dead","unref":"live"},
+{"api":true,"exported":true,"file":"tea.go","kind":"method","line":77,"name":"String","reach":"dead","unref":"live"}
+]

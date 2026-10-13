@@ -1,0 +1,6 @@
+[
+{"category":"referenced_function","exported":false,"file":"src/filter/time.rs","key":"src/filter/time.rs:24","kind":"function","lidx_kind":"function","line":24,"name":"now","policy":false,"qualname":"crate::filter::time::now","subkind":"fn"},
+{"category":"referenced_function","exported":false,"file":"src/output.rs","key":"src/output.rs:168","kind":"function","lidx_kind":"function","line":168,"name":"print_entry_uncolorized","policy":false,"qualname":"crate::output::print_entry_uncolorized","subkind":"fn"},
+{"category":"referenced_method","exported":false,"file":"src/exec/mod.rs","key":"src/exec/mod.rs:173","kind":"method","lidx_kind":"method","line":173,"name":"push","policy":false,"qualname":"crate::exec::CommandBuilder::push","subkind":"inherent"},
+{"category":"referenced_method","exported":false,"file":"src/exec/mod.rs","key":"src/exec/mod.rs:266","kind":"method","lidx_kind":"method","line":266,"name":"generate","policy":false,"qualname":"crate::exec::CommandTemplate::generate","subkind":"inherent"}
+]

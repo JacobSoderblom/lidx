@@ -1,0 +1,11 @@
+[
+{"bucket":"impl_for_foreign_type","column":"reach","file":"src/assets/lazy_theme_set.rs","kind":"method","line":64,"name":"try_from"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"src/theme.rs","kind":"method","line":308,"name":"should_detect"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"src/theme.rs","kind":"method","line":312,"name":"detect"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"src/assets/lazy_theme_set.rs","kind":"method","line":64,"name":"try_from"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"src/theme.rs","kind":"method","line":308,"name":"should_detect"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"src/theme.rs","kind":"method","line":312,"name":"detect"},
+{"bucket":"trait_declaration","column":"unref","file":"src/decorations.rs","kind":"type","line":12,"name":"Decoration"},
+{"bucket":"trait_declaration","column":"unref","file":"src/printer.rs","kind":"type","line":85,"name":"Printer"},
+{"bucket":"trait_declaration","column":"unref","file":"src/theme.rs","kind":"type","line":246,"name":"ColorSchemeDetector"}
+]

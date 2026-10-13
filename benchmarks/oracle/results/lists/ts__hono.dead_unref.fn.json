@@ -1,0 +1,3 @@
+[
+{"category":"incoming_from_tests_only","exported":true,"file":"src/jsx/dom/intrinsic-element/components.ts","incoming":["CALLS:test"],"key":"src/jsx/dom/intrinsic-element/components.ts:18","kind":"function","line":18,"name":"clearCache","subkind":"arrow"}
+]
