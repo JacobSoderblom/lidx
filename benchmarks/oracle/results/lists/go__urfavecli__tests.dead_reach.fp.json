@@ -1,8 +1,4 @@
 [
-{"category":"reachable_function","confidence":"high","exported":false,"file":"flag.go","key":"flag.go:317","kind":"function","lidx_kind":"function","line":317,"name":"withFileHint","policy":false,"qualname":"flag.withFileHint","subkind":""},
-{"category":"reachable_function","confidence":"high","exported":false,"file":"help.go","key":"help.go:317","kind":"function","lidx_kind":"function","line":317,"name":"printVersion","policy":false,"qualname":"help.printVersion","subkind":""},
-{"category":"reachable_function","confidence":"high","exported":false,"file":"help.go","key":"help.go:409","kind":"function","lidx_kind":"function","line":409,"name":"printHelp","policy":false,"qualname":"help.printHelp","subkind":""},
-{"category":"reachable_function","confidence":"high","exported":false,"file":"help.go","key":"help.go:542","kind":"function","lidx_kind":"function","line":542,"name":"offset","policy":false,"qualname":"help.offset","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"app_test.go","key":"app_test.go:2477","kind":"method","lidx_kind":"method","line":2477,"name":"String","policy":false,"qualname":"app_test.customBoolFlag.String","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"app_test.go","key":"app_test.go:2485","kind":"method","lidx_kind":"method","line":2485,"name":"TakesValue","policy":false,"qualname":"app_test.customBoolFlag.TakesValue","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"app_test.go","key":"app_test.go:2489","kind":"method","lidx_kind":"method","line":2489,"name":"GetValue","policy":false,"qualname":"app_test.customBoolFlag.GetValue","subkind":""},

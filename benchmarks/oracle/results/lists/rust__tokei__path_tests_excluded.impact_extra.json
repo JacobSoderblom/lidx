@@ -46,7 +46,6 @@
 {"k":"3","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/language/syntax.rs:285","seed_name":"line_is_comment"},
 {"k":"3","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/language/syntax.rs:79","seed_name":"new"},
 {"k":"3","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/stats.rs:21","seed_name":"new"},
-{"k":"3","member":"src/main.rs:14 main","node":"src/main.rs|crate::main","seed":"src/language/mod.rs:148","seed_name":"sort_by"},
 {"k":"inf","member":"src/language/language_type.rs:124 parse_lines","node":"src/language/language_type.rs|crate::language::language_type::LanguageType::parse_lines","seed":"src/language/language_type.rs:201","seed_name":"parse_jupyter"},
 {"k":"inf","member":"src/language/language_type.rs:124 parse_lines","node":"src/language/language_type.rs|crate::language::language_type::LanguageType::parse_lines","seed":"src/language/language_type.rs:56","seed_name":"parse_from_slice"},
 {"k":"inf","member":"src/language/language_type.rs:124 parse_lines","node":"src/language/language_type.rs|crate::language::language_type::LanguageType::parse_lines","seed":"src/language/syntax.rs:127","seed_name":"new"},
@@ -150,6 +149,5 @@
 {"k":"inf","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/language/syntax.rs:79","seed_name":"new"},
 {"k":"inf","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/language/syntax.rs:89","seed_name":"init"},
 {"k":"inf","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/language/syntax.rs:90","seed_name":"init_corasick"},
-{"k":"inf","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/stats.rs:21","seed_name":"new"},
-{"k":"inf","member":"src/main.rs:14 main","node":"src/main.rs|crate::main","seed":"src/language/mod.rs:148","seed_name":"sort_by"}
+{"k":"inf","member":"src/language/syntax.rs:345 parse_context","node":"src/language/syntax.rs|crate::language::syntax::SyntaxCounter::parse_context","seed":"src/stats.rs:21","seed_name":"new"}
 ]

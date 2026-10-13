@@ -1,5 +1,4 @@
 [
 {"category":"referenced_function","confidence":"high","exported":false,"file":"src/output.rs","key":"src/output.rs:168","kind":"function","lidx_kind":"function","line":168,"name":"print_entry_uncolorized","policy":false,"qualname":"crate::output::print_entry_uncolorized","subkind":"fn"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/exec/mod.rs","key":"src/exec/mod.rs:173","kind":"method","lidx_kind":"method","line":173,"name":"push","policy":false,"qualname":"crate::exec::CommandBuilder::push","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/exec/mod.rs","key":"src/exec/mod.rs:266","kind":"method","lidx_kind":"method","line":266,"name":"generate","policy":false,"qualname":"crate::exec::CommandTemplate::generate","subkind":"inherent"}
+{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/exec/mod.rs","key":"src/exec/mod.rs:173","kind":"method","lidx_kind":"method","line":173,"name":"push","policy":false,"qualname":"crate::exec::CommandBuilder::push","subkind":"inherent"}
 ]

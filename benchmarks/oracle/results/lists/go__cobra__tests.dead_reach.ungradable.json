@@ -1,12 +1,5 @@
 [
-{"confidence":"high","exported":false,"file":"command.go","key":"command.go:1937","kind":"type","lidx_kind":"class","line":1937,"name":"tmplFunc","qualname":"command.tmplFunc","reason":"not_a_function","subkind":"struct"},
-{"confidence":"high","exported":false,"file":"command_test.go","key":"command_test.go:2435","kind":"type","lidx_kind":"class","line":2435,"name":"calledAsTestcase","qualname":"command_test.calledAsTestcase","reason":"not_a_function","subkind":"struct"},
-{"confidence":"high","exported":false,"file":"completions.go","key":"completions.go:47","kind":"type","lidx_kind":"class","line":47,"name":"flagCompError","qualname":"completions.flagCompError","reason":"not_a_function","subkind":"struct"},
-{"confidence":"high","exported":false,"file":"doc/yaml_docs.go","key":"doc/yaml_docs.go:30","kind":"type","lidx_kind":"class","line":30,"name":"cmdOption","qualname":"doc/yaml_docs.cmdOption","reason":"not_a_function","subkind":"struct"},
-{"confidence":"high","exported":false,"file":"doc/yaml_docs.go","key":"doc/yaml_docs.go:37","kind":"type","lidx_kind":"class","line":37,"name":"cmdDoc","qualname":"doc/yaml_docs.cmdDoc","reason":"not_a_function","subkind":"struct"},
-{"confidence":"high","file":"command_test.go","key":"command_test.go:2604","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
 {"confidence":"high","file":"command_test.go","key":"command_test.go:2629","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
 {"confidence":"high","file":"command_test.go","key":"command_test.go:2655","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
-{"confidence":"high","file":"command_test.go","key":"command_test.go:2676","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
-{"confidence":"high","file":"command_win.go","key":"command_win.go:30","lidx_kind":"function","name":"preExecHook","qualname":"command_win.preExecHook","reason":"file_not_in_program"}
+{"confidence":"high","file":"command_test.go","key":"command_test.go:2676","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"}
 ]
