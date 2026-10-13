@@ -1,0 +1,742 @@
+{
+ "cell": "rust/fd/path_tests_excluded",
+ "repo": "fd",
+ "repo_sha": "4f81778774463bf414a184cbe6d5219ad2229646",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 205,
+  "stratum_pool": {
+   "0": 71,
+   "1-3": 120,
+   "4-10": 13,
+   ">10": 1
+  },
+  "stratum_drawn": {
+   "0": 43,
+   "1-3": 43,
+   "4-10": 13,
+   ">10": 1
+  }
+ },
+ "seeds": [
+  {
+   "file": "src/cli.rs",
+   "line": 723,
+   "name": "normalize_path",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cli.rs",
+   "line": 751,
+   "name": "min_depth",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cli.rs",
+   "line": 755,
+   "name": "threads",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cli.rs",
+   "line": 759,
+   "name": "max_results",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cli.rs",
+   "line": 789,
+   "name": "default_num_threads",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/cli.rs",
+   "line": 954,
+   "name": "[Args]augment_args_for_update",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 34,
+   "name": "broken_symlink",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 42,
+   "name": "path",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 49,
+   "name": "into_path",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 59,
+   "name": "stripped_path",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 118,
+   "name": "[`PartialEq<Self>`]eq",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 127,
+   "name": "[`PartialOrd<Self>`]partial_cmp",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 134,
+   "name": "[Ord]cmp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 175,
+   "name": "dash_prefixed_paths_detected",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/dir_entry.rs",
+   "line": 182,
+   "name": "safe_paths_not_flagged",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/error.rs",
+   "line": 5,
+   "name": "print_error",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/exec/command.rs",
+   "line": 19,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exec/command.rs",
+   "line": 30,
+   "name": "write",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exec/job.rs",
+   "line": 11,
+   "name": "job",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 36,
+   "name": "new",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 51,
+   "name": "new_batch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 90,
+   "name": "execute_batch",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 136,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 220,
+   "name": "new",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 258,
+   "name": "number_of_tokens",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 279,
+   "name": "generate_str",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 321,
+   "name": "tokens_with_basename",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 353,
+   "name": "tokens_with_basename_no_extension",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 379,
+   "name": "tokens_with_literal_braces_and_placeholder",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 422,
+   "name": "tokens_multiple_batch",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 434,
+   "name": "command_set_no_args",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exec/mod.rs",
+   "line": 446,
+   "name": "generate_custom_path_separator",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exit_codes.rs",
+   "line": 26,
+   "name": "is_error",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exit_codes.rs",
+   "line": 31,
+   "name": "exit",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/exit_codes.rs",
+   "line": 46,
+   "name": "merge_exitcodes",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/exit_codes.rs",
+   "line": 58,
+   "name": "success_when_no_results",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exit_codes.rs",
+   "line": 63,
+   "name": "general_error_if_at_least_one_error",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/exit_codes.rs",
+   "line": 87,
+   "name": "success_if_no_error",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/filesystem.rs",
+   "line": 14,
+   "name": "path_absolute_form",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filesystem.rs",
+   "line": 38,
+   "name": "is_existing_directory",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filesystem.rs",
+   "line": 44,
+   "name": "is_empty",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filesystem.rs",
+   "line": 73,
+   "name": "is_char_device",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filter/owner.rs",
+   "line": 27,
+   "name": "from_string",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/filter/owner.rs",
+   "line": 61,
+   "name": "filter_ignore",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/filter/owner.rs",
+   "line": 69,
+   "name": "matches",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filter/owner.rs",
+   "line": 77,
+   "name": "check",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filter/owner.rs",
+   "line": 85,
+   "name": "parse",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filter/size.rs",
+   "line": 28,
+   "name": "from_string",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/filter/size.rs",
+   "line": 68,
+   "name": "is_within",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/filter/size.rs",
+   "line": 197,
+   "name": "is_within_less_than",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/filter/size.rs",
+   "line": 203,
+   "name": "is_within_less_than_equal",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/filter/size.rs",
+   "line": 209,
+   "name": "is_within_greater_than",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/filter/time.rs",
+   "line": 29,
+   "name": "from_str",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filter/time.rs",
+   "line": 78,
+   "name": "set",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/filter/time.rs",
+   "line": 89,
+   "name": "[Drop]drop",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/filter/time.rs",
+   "line": 204,
+   "name": "out_of_range_unix_timestamp_is_rejected",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/fmt/input.rs",
+   "line": 7,
+   "name": "basename",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/fmt/input.rs",
+   "line": 12,
+   "name": "remove_extension",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/fmt/mod.rs",
+   "line": 58,
+   "name": "parse",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/fmt/mod.rs",
+   "line": 112,
+   "name": "generate",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/fmt/mod.rs",
+   "line": 228,
+   "name": "parse_only_brace_escapes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/fmt/mod.rs",
+   "line": 237,
+   "name": "all_placeholders",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/hyperlink.rs",
+   "line": 8,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/hyperlink.rs",
+   "line": 14,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/hyperlink.rs",
+   "line": 24,
+   "name": "encode",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/hyperlink.rs",
+   "line": 44,
+   "name": "host",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/hyperlink.rs",
+   "line": 72,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 62,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 131,
+   "name": "set_working_dir",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 169,
+   "name": "ensure_search_pattern_is_not_a_path",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 185,
+   "name": "ensure_single_search_pattern_is_not_a_path",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 218,
+   "name": "build_pattern_regex",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 248,
+   "name": "construct_config",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/regex_helper.rs",
+   "line": 15,
+   "name": "hir_has_uppercase_char",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/regex_helper.rs",
+   "line": 40,
+   "name": "pattern_matches_strings_with_leading_dot",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/regex_helper.rs",
+   "line": 82,
+   "name": "pattern_has_uppercase_char_simple",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/regex_helper.rs",
+   "line": 91,
+   "name": "pattern_has_uppercase_char_advanced",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 9,
+   "name": "needs_escape",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 28,
+   "name": "sanitize_for_terminal",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 49,
+   "name": "maybe_sanitize",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 80,
+   "name": "strips_osc52_clipboard_payload",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 93,
+   "name": "strips_osc8_hyperlink_injection",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 99,
+   "name": "strips_del",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 115,
+   "name": "escape_preserves_information",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 121,
+   "name": "strips_c1_csi_and_osc_initiators",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 131,
+   "name": "strips_bidi_overrides_and_zero_width",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/sanitize.rs",
+   "line": 143,
+   "name": "keeps_legitimate_unicode_features",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 69,
+   "name": "[IntoIterator]into_iter",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 82,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 174,
+   "name": "process",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 252,
+   "name": "print",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 270,
+   "name": "stream",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 318,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 330,
+   "name": "build_overrides",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 656,
+   "name": "search_str_for_entry",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 704,
+   "name": "search_str_for_entry_strips_dot_prefix",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 713,
+   "name": "search_str_for_entry_with_absolute_path",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 722,
+   "name": "search_str_no_base_dir",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 730,
+   "name": "search_str_no_base_dir_with_plain_relative_path",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/walk.rs",
+   "line": 738,
+   "name": "search_str_no_base_dir_with_file_in_current_dir",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

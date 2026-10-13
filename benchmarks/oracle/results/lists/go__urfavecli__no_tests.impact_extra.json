@@ -1,0 +1,14 @@
+[
+{"k":"3","member":"app.go:165 Setup","node":"app.go|app.App.Setup","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"3","member":"category.go:101 newFlagCategoriesFromFlags","node":"category.go|category.newFlagCategoriesFromFlags","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"3","member":"command.go:382 VisibleFlagCategories","node":"command.go|command.Command.VisibleFlagCategories","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"app.go:165 Setup","node":"app.go|app.App.Setup","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"app.go:306 Run","node":"app.go|app.App.Run","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"app.go:313 RunContext","node":"app.go|app.App.RunContext","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"app.go:338 RunAsSubcommand","node":"app.go|app.App.RunAsSubcommand","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"app.go:383 RunAndExitOnError","node":"app.go|app.App.RunAndExitOnError","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"category.go:101 newFlagCategoriesFromFlags","node":"category.go|category.newFlagCategoriesFromFlags","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"command.go:382 VisibleFlagCategories","node":"command.go|command.Command.VisibleFlagCategories","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"internal/build/build.go:43 main","node":"internal/build/build.go|internal/build/build.main","seed":"flag_ext.go:26","seed_name":"IsVisible"},
+{"k":"inf","member":"internal/example-cli/example-cli.go:9 main","node":"internal/example-cli/example-cli.go|internal/example-cli/example-cli.main","seed":"flag_ext.go:26","seed_name":"IsVisible"}
+]

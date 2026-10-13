@@ -1,0 +1,1164 @@
+{
+ "seed": 451,
+ "cells": [
+  "go/bubbletea/no_tests",
+  "go/bubbletea/tests",
+  "go/chi/no_tests",
+  "go/chi/tests",
+  "go/cobra/no_tests",
+  "go/cobra/tests",
+  "go/gitleaks/no_tests",
+  "go/gitleaks/tests",
+  "go/syft/no_tests",
+  "go/syft/tests",
+  "go/urfavecli/no_tests",
+  "go/urfavecli/tests",
+  "go/viper/no_tests",
+  "go/viper/tests",
+  "rust/bat/path_tests_excluded",
+  "rust/fd/no_tests",
+  "rust/fd/path_tests_excluded",
+  "rust/fd/tests",
+  "rust/just/path_tests_excluded",
+  "rust/lidx/path_tests_excluded",
+  "rust/nextest/path_tests_excluded",
+  "rust/ripgrep/no_tests",
+  "rust/ripgrep/path_tests_excluded",
+  "rust/ripgrep/tests",
+  "rust/tokei/path_tests_excluded",
+  "rust/xsv/path_tests_excluded",
+  "ts/h3",
+  "ts/hono",
+  "ts/immer",
+  "ts/ky",
+  "ts/trpc",
+  "ts/zod"
+ ],
+ "languages": {
+  "go": {
+   "extra": [
+    {
+     "id": "68b7aa87",
+     "seed": "internal/task/relationship_tasks.go:22 ID",
+     "k": "3",
+     "member": "examples/select_catalogers/main.go:55 getSBOM",
+     "verdict": "lidx_error",
+     "note": "`src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge."
+    },
+    {
+     "id": "dcfd730d",
+     "seed": "syft/file/location.go:173 NewVirtualLocationFromDirectory",
+     "k": "3",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:604 Test_UnindexedDirectoryResolver_FilesByPath_absoluteRoot",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "9eb77a4d",
+     "seed": "syft/file/location.go:173 NewVirtualLocationFromDirectory",
+     "k": "3",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:532 Test_UnindexedDirectoryResolver_Basic",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "9f949cb0",
+     "seed": "flag_ext.go:26 IsVisible",
+     "k": "3",
+     "member": "category.go:101 newFlagCategoriesFromFlags",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`."
+    },
+    {
+     "id": "81bcd14a",
+     "seed": "syft/file/location.go:173 NewVirtualLocationFromDirectory",
+     "k": "3",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:51 Test_UnindexDirectoryResolver_FilesByPath_request_response",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "6ef42224",
+     "seed": "internal/task/relationship_tasks.go:22 ID",
+     "k": "3",
+     "member": "examples/create_custom_sbom/main.go:57 getSBOM",
+     "verdict": "lidx_error",
+     "note": "`src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge."
+    },
+    {
+     "id": "4199878b",
+     "seed": "syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath",
+     "k": "3",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:659 Test_UnindexedDirectoryResolver_FilesByPath",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "859897a6",
+     "seed": "internal/task/relationship_tasks.go:22 ID",
+     "k": "3",
+     "member": "syft/create_sbom_config.go:474 Create",
+     "verdict": "lidx_error",
+     "note": "`src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge."
+    },
+    {
+     "id": "9ba14b55",
+     "seed": "flag_ext.go:26 IsVisible",
+     "k": "3",
+     "member": "app.go:165 Setup",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`."
+    },
+    {
+     "id": "d5c3223f",
+     "seed": "flag_ext.go:26 IsVisible",
+     "k": "3",
+     "member": "command.go:382 VisibleFlagCategories",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`."
+    },
+    {
+     "id": "e0b66126",
+     "seed": "syft/internal/fileresolver/excluding_file_test.go:155 HasPath",
+     "k": "3",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:659 Test_UnindexedDirectoryResolver_FilesByPath",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "75e95c22",
+     "seed": "syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath",
+     "k": "inf",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:26 Test_UnindexDirectoryResolver_RequestRelativePathWithinSymlink",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "3f20fe30",
+     "seed": "syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath",
+     "k": "inf",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:778 Test_UnindexedDirectoryResolver_FilesByGlobSingle",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "ee09a241",
+     "seed": "syft/internal/fileresolver/unindexed_directory.go:99 HasPath",
+     "k": "inf",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:771 Test_UnindexedDirectoryResolver_FilesByGlobRecursive",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "51894fec",
+     "seed": "syft/internal/fileresolver/excluding_file_test.go:155 HasPath",
+     "k": "inf",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:771 Test_UnindexedDirectoryResolver_FilesByGlobRecursive",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "a8c2d0a7",
+     "seed": "syft/internal/fileresolver/excluding_file_test.go:155 HasPath",
+     "k": "inf",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:825 Test_UnindexedDirectoryResolverDoesNotIgnoreRelativeSystemPaths",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "772ad6a7",
+     "seed": "syft/internal/fileresolver/unindexed_directory.go:99 HasPath",
+     "k": "inf",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:763 Test_UnindexedDirectoryResolver_FilesByGlobMultiple",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    },
+    {
+     "id": "e4565da7",
+     "seed": "syft/internal/fileresolver/unindexed_directory.go:99 HasPath",
+     "k": "inf",
+     "member": "syft/internal/fileresolver/unindexed_directory_test.go:825 Test_UnindexedDirectoryResolverDoesNotIgnoreRelativeSystemPaths",
+     "verdict": "lidx_error",
+     "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+    }
+   ],
+   "missing": [
+    {
+     "id": "284c30c5",
+     "seed": "options.go:177 WithoutRenderer",
+     "k": "3",
+     "member": "screen_test.go:8 TestClearMsg",
+     "verdict": "oracle_artefact",
+     "note": "`opt(p)` calls the functional options the caller passed (WithInput, WithOutput); RTA resolves a call of a function value to every address-taken function of the signature, so WithoutRenderer is not reachable from this test."
+    },
+    {
+     "id": "2a079e99",
+     "seed": "command.go:1541 Name",
+     "k": "3",
+     "member": "command.go:478 Usage",
+     "verdict": "lidx_error",
+     "note": "`c.UsageFunc()(c)` runs the closure UsageFunc returns, which calls `fn := c.getUsageTemplateFunc(); fn(...)` where fn is `defaultUsageFunc`: the chain is real; lidx does not follow a function value returned by a function."
+    },
+    {
+     "id": "8460cca2",
+     "seed": "cmd/syft/internal/options/writer.go:226 Close",
+     "k": "3",
+     "member": "cmd/syft/internal/commands/cataloger_list_test.go:76 Test_catalogerListReport",
+     "verdict": "oracle_artefact",
+     "note": "`tt.wantErr(t, err)` is a field of type assert.ErrorAssertionFunc; the oracle resolves it to an unrelated test that happens to be address-taken. No such flow exists."
+    },
+    {
+     "id": "4966378a",
+     "seed": "standard_renderer.go:127 execute",
+     "k": "3",
+     "member": "tea.go:852 recoverFromGoPanic",
+     "verdict": "oracle_artefact",
+     "note": "`p.cancel()` is a context.CancelFunc; RTA resolves the func() call to an unrelated closure in `kill`/`execBatchMsg`. The chain does not exist at run time."
+    },
+    {
+     "id": "e682ca72",
+     "seed": "tea_test.go:323 TestTeaContextBatchDeadlock",
+     "k": "3",
+     "member": "commands_test.go:29 TestSequentially",
+     "verdict": "oracle_artefact",
+     "note": "`Sequentially(cmds...)()` calls the closure Sequentially returns; the oracle resolves the Cmd call to a closure inside an unrelated test."
+    },
+    {
+     "id": "84a6bc71",
+     "seed": "app.go:391 Command",
+     "k": "3",
+     "member": "help_test.go:201 Test_helpSubcommand_Action_ErrorIfNoTopic",
+     "verdict": "oracle_artefact",
+     "note": "`helpCommand.Action(c)` is a function-valued field; the oracle resolves it to a closure inside TestApp_VisibleCommands, which cannot flow there."
+    },
+    {
+     "id": "701d594e",
+     "seed": "middleware/content_charset.go:12 ContentCharset",
+     "k": "3",
+     "member": "middleware/logger_test.go:38 TestRequestLoggerReadFrom",
+     "verdict": "oracle_artefact",
+     "note": "`DefaultLogger(testHandler)` calls a func(http.Handler) http.Handler value built by RequestLogger; ContentCharset has the same signature but is not that value."
+    },
+    {
+     "id": "60bc832c",
+     "seed": "syft/internal/fileresolver/filetree_resolver_test.go:700 TestDirectoryResolver_MultipleFilesByPath",
+     "k": "3",
+     "member": "cmd/syft/internal/options/cache_test.go:76 Test_cacheOptions",
+     "verdict": "oracle_artefact",
+     "note": "`test.test(t)` is a table field; the oracle resolves it to a test of another package that cannot be in this table."
+    },
+    {
+     "id": "22d1c362",
+     "seed": "zz_generated.flags.go:238 Names",
+     "k": "3",
+     "member": "docs.go:68 prepareCommands",
+     "verdict": "lidx_error",
+     "note": "`prepareFlags` calls `flag.Names()` on a `DocGenerationFlag` obtained by a type assertion; PathFlag implements it. The call is real and lidx records no dispatch from a variable typed by a comma-ok assertion."
+    },
+    {
+     "id": "aaca4db9",
+     "seed": "syft/pkg/cataloger/golang/billy_adapter.go:56 Read",
+     "k": "3",
+     "member": "internal/buffered_seek_reader.go:29 Read",
+     "verdict": "lidx_error",
+     "note": "`bs.r.Read(tmp)` is an interface call on an `io.Reader` field; billyFile implements io.Reader and is allocated, so RTA lists it. lidx does not dispatch through the standard-library interface."
+    },
+    {
+     "id": "d38aea14",
+     "seed": "commands.go:218 WindowSize",
+     "k": "3",
+     "member": "tea.go:852 recoverFromGoPanic",
+     "verdict": "oracle_artefact",
+     "note": "`p.cancel()` again resolved to an unrelated closure (`execBatchMsg`'s `cmd()`); not a real flow."
+    },
+    {
+     "id": "df0e3e1d",
+     "seed": "syft/pkg/cataloger/javascript/cataloger_test.go:141 Test_PackageCataloger_Globs",
+     "k": "3",
+     "member": "cmd/syft/internal/commands/update.go:92 fetchLatestApplicationVersion",
+     "verdict": "oracle_artefact",
+     "note": "`resp.Body.Close()` resolved to an unrelated Close that calls `t.cleanup()`, then to `testWithTimeout`'s `test(t)`: three function-value conflations, not a real chain."
+    },
+    {
+     "id": "91af5e80",
+     "seed": "options.go:38 WithInput",
+     "k": "3",
+     "member": "commands_test.go:84 TestBatch",
+     "verdict": "oracle_artefact",
+     "note": "`createFn(...)()` calls a generic function value; the oracle resolves it to TestClearMsg (an unrelated test)."
+    },
+    {
+     "id": "46aaa9c5",
+     "seed": "middleware/strip.go:73 StripPrefix",
+     "k": "3",
+     "member": "middleware/logger_test.go:21 TestRequestLogger",
+     "verdict": "oracle_artefact",
+     "note": "`DefaultLogger(testHandler)` resolved to StripPrefix, which has the signature but is not the logger."
+    },
+    {
+     "id": "92679c04",
+     "seed": "middleware/request_id.go:83 GetReqID",
+     "k": "3",
+     "member": "middleware/maybe.go:8 Maybe",
+     "verdict": "oracle_artefact",
+     "note": "`mw(next)` is the middleware the caller passes to Maybe; the oracle picks RequestLogger, which Maybe never receives in this repository."
+    },
+    {
+     "id": "97bf4f99",
+     "seed": "command.go:1907 updateParentsPflags",
+     "k": "3",
+     "member": "command.go:884 VisitParents",
+     "verdict": "lidx_error",
+     "note": "`VisitParents(fn)` calls `fn`, which is the closure literal updateParentsPflags passes it: the closure is part of updateParentsPflags, so VisitParents does execute it. lidx does not link a function-valued argument to the callee that invokes it."
+    },
+    {
+     "id": "2f189a70",
+     "seed": "flag_ext.go:30 TakesValue",
+     "k": "3",
+     "member": "zz_generated.flags.go:687 String",
+     "verdict": "lidx_error",
+     "note": "`FlagStringer(f)` is the package variable defaulting to `stringifyFlag`, which calls `df.TakesValue()` on a DocGenerationFlag (a type-assertion variable). Both hops are calls lidx records no edge for (function-valued variable, dispatch through an asserted interface)."
+    },
+    {
+     "id": "708cd662",
+     "seed": "syft/internal/fileresolver/container_image_model.go:101 FilesByPath",
+     "k": "3",
+     "member": "cmd/syft/internal/options/writer.go:226 Close",
+     "verdict": "oracle_artefact",
+     "note": "`closer.Close()` resolved to an unrelated Close which calls `t.cleanup()` (a function value); no real chain to Catalog."
+    },
+    {
+     "id": "fdcc7bd3",
+     "seed": "mux.go:63 ServeHTTP",
+     "k": "3",
+     "member": "middleware/client_ip.go:121 ClientIPFromXFF",
+     "verdict": "lidx_error",
+     "note": "`h.ServeHTTP(w, r)` on an `http.Handler` parameter; `Mux` implements http.Handler and is allocated, so RTA lists it. lidx does not dispatch through the standard-library interface."
+    },
+    {
+     "id": "370c1854",
+     "seed": "middleware/strip_test.go:56 TestStripSlashesInRoute",
+     "k": "3",
+     "member": "middleware/get_head_test.go:11 TestGetHead",
+     "verdict": "oracle_artefact",
+     "note": "`fn(subRouter)` calls the closure passed to `Route`; the oracle resolves it to another test's closure."
+    }
+   ],
+   "missing_alt": [
+    {
+     "id": "f8ab0560",
+     "seed": "flag_uint64.go:91 Uint64",
+     "k": "3",
+     "member": "command.go:147 Run",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "67e3dcf4",
+     "seed": "sources/file.go:90 extractorFragments",
+     "k": "3",
+     "member": "cmd/git.go:29 runGit",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "5d83e9b2",
+     "seed": "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:240 fetchPkgs",
+     "k": "3",
+     "member": "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:550 Catalog",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "c895b93c",
+     "seed": "context.go:11 URLParam",
+     "k": "3",
+     "member": "middleware/strip_test.go:241 TestStripPrefix",
+     "verdict": "lidx_error",
+     "note": "`chi.URLParam(r, \"accountID\")` is called inside a function literal passed to `r.Get`; lidx records no edge for it (no CALLS row at that line)."
+    },
+    {
+     "id": "6e5a54fc",
+     "seed": "zz_generated.flags.go:536 IsSet",
+     "k": "3",
+     "member": "altsrc/json_command_test.go:285 TestCommandJSONFileFlagHasDefaultGlobalEnvJSONSetGlobalEnvWinsNested",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "ae99f1a8",
+     "seed": "syft/pkg/cataloger/binary/classifier_cataloger_test.go:3257 RelativeFileByPath",
+     "k": "3",
+     "member": "syft/pkg/cataloger/gentoo/license_test.go:17 Test_extractLicenses",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "e593a976",
+     "seed": "syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath",
+     "k": "3",
+     "member": "syft/file/cataloger/executable/cataloger.go:55 CatalogCtx",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "254c29d7",
+     "seed": "internal/task/relationship_tasks.go:22 ID",
+     "k": "3",
+     "member": "syft/create_sbom_config.go:408 scopeTasks",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "9282117e",
+     "seed": "syft/source/filesource/file_source.go:136 FileResolver",
+     "k": "3",
+     "member": "cmd/syft/internal/test/integration/utils_test.go:19 catalogFixtureImage",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "8eb1180b",
+     "seed": "standard_renderer.go:103 stop",
+     "k": "3",
+     "member": "exec_test.go:50 TestTeaExec",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "6cf42b9c",
+     "seed": "internal/task/relationship_tasks.go:22 ID",
+     "k": "3",
+     "member": "internal/relationship/index.go:157 Coordinates",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "c5933fc4",
+     "seed": "zz_generated.flags.go:35 IsSet",
+     "k": "3",
+     "member": "altsrc/json_command_test.go:187 TestCommandJSONFileTestDefaultValueFileWins",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "e22b4cf2",
+     "seed": "syft/source/filesource/file_source.go:136 FileResolver",
+     "k": "3",
+     "member": "syft/pkg/cataloger/dotnet/cataloger_test.go:1384 TestParseDotnetDeps",
+     "verdict": "lidx_error",
+     "note": "The first hop `pkgtest.TestCataloger(t, ...)` has no lidx edge, and the later `s.FileResolver` call is an interface dispatch that costs an extra depth level, so the member is out of reach at max_depth 3."
+    },
+    {
+     "id": "c9f1605e",
+     "seed": "syft/source/stereoscopesource/image_source.go:45 ID",
+     "k": "3",
+     "member": "cmd/syft/internal/test/integration/files_test.go:36 TestFileCataloging_AllFiles",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "0b356718",
+     "seed": "altsrc/flag.go:343 ApplyInputSourceValue",
+     "k": "3",
+     "member": "altsrc/json_command_test.go:88 TestCommandJSONFileTestGlobalEnvVarWinsNested",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "371d3b52",
+     "seed": "internal/encoding/json/codec.go:15 Decode",
+     "k": "3",
+     "member": "viper.go:318 WatchConfig",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "3e1d90f6",
+     "seed": "syft/source/stereoscopesource/image_source.go:45 ID",
+     "k": "3",
+     "member": "cmd/syft/internal/commands/scan.go:173 runScan",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "a3c867dd",
+     "seed": "config/allowlist.go:117 CommitAllowed",
+     "k": "3",
+     "member": "detect/detect_test.go:1529 TestDetectWithArchives",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "002f84d7",
+     "seed": "cmd/syft/internal/options/writer.go:226 Close",
+     "k": "3",
+     "member": "cmd/syft/internal/commands/packages.go:11 Packages",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    },
+    {
+     "id": "5a925031",
+     "seed": "zz_generated.flags.go:437 Names",
+     "k": "3",
+     "member": "altsrc/json_command_test.go:251 TestCommandJSONFileFlagHasDefaultGlobalEnvJSONSetGlobalEnvWins",
+     "verdict": "lidx_error",
+     "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+    }
+   ]
+  },
+  "rust": {
+   "extra": [
+    {
+     "id": "cc3f3702",
+     "seed": "src/controller.rs:38 run",
+     "k": "3",
+     "member": "src/bin/bat/main.rs:281 invoke_bugreport",
+     "verdict": "lidx_error",
+     "note": "`report.print::<Markdown>()` is the bugreport crate's Report::print; the bare_name tier resolves it to `PrettyPrinter::print`."
+    },
+    {
+     "id": "fc7ca0b2",
+     "seed": "src/language/language_type.rs:124 parse_lines",
+     "k": "3",
+     "member": "src/language/language_type.rs:201 parse_jupyter",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "f366da69",
+     "seed": "src/language/syntax.rs:205 perform_multi_line_analysis",
+     "k": "3",
+     "member": "src/language/language_type.rs:28 parse",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "3c992ed4",
+     "seed": "src/language/syntax.rs:127 new",
+     "k": "3",
+     "member": "src/language/syntax.rs:345 parse_context",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "13e24c82",
+     "seed": "src/dir_entry.rs:42 path",
+     "k": "3",
+     "member": "tests/tests.rs:49 get_test_env_with_abs_path",
+     "verdict": "lidx_error",
+     "note": "`create_working_directory` calls std/tempfile `.path()`; bare_name resolves it to `DirEntry::path`."
+    },
+    {
+     "id": "c339628b",
+     "seed": "src/language/syntax.rs:285 line_is_comment",
+     "k": "3",
+     "member": "src/language/language_type.rs:56 parse_from_slice",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "14f81439",
+     "seed": "src/list.rs:9 or",
+     "k": "3",
+     "member": "src/parser.rs:1254 parse_recipe",
+     "verdict": "lidx_error",
+     "note": "`max.or(min)` is Option::or; bare_name resolves it to `List::or`."
+    },
+    {
+     "id": "bbf5fd1d",
+     "seed": "src/language/syntax.rs:590 parse_end_of_quote",
+     "k": "3",
+     "member": "src/language/language_type.rs:56 parse_from_slice",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "4df0909c",
+     "seed": "src/language/syntax.rs:645 parse_end_of_multi_line",
+     "k": "3",
+     "member": "src/language/language_type.rs:56 parse_from_slice",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "6d74d7c5",
+     "seed": "src/language/syntax.rs:542 parse_quote",
+     "k": "3",
+     "member": "src/language/language_type.rs:56 parse_from_slice",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "4b968229",
+     "seed": "nextest-runner/src/errors.rs:78 provided_by_tool",
+     "k": "3",
+     "member": "cargo-nextest/src/main.rs:8 main",
+     "verdict": "oracle_artefact",
+     "note": "`error.display_to_stderr(...)` on the `ExpectedError` returned by `opts.exec(...)` is a real call in `main`; the SCIP oracle has no edge for it (no resolved call occurrence from the binary's main)."
+    },
+    {
+     "id": "cadd641b",
+     "seed": "src/list.rs:9 or",
+     "k": "3",
+     "member": "src/config.rs:458 test",
+     "verdict": "lidx_error",
+     "note": "`.or(arguments.subcommand.usage.as_deref())` is Option::or; bare_name resolves it to `List::or`."
+    },
+    {
+     "id": "8426d309",
+     "seed": "src/language/language_type.rs:56 parse_from_slice",
+     "k": "3",
+     "member": "src/language/language_type.rs:201 parse_jupyter",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "7532048c",
+     "seed": "src/list.rs:9 or",
+     "k": "3",
+     "member": "src/config.rs:1329 default_config_matches_parsed_config",
+     "verdict": "lidx_error",
+     "note": "`.or(arguments.subcommand.usage.as_deref())` is Option::or; bare_name resolves it to `List::or`."
+    },
+    {
+     "id": "2c0051a9",
+     "seed": "src/language/language_type.rs:56 parse_from_slice",
+     "k": "3",
+     "member": "src/language/syntax.rs:205 perform_multi_line_analysis",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "349a01c4",
+     "seed": "crates/ignore/src/walk.rs:2143 mkdirp",
+     "k": "3",
+     "member": "crates/ignore/src/walk.rs:1095 skip_entry",
+     "verdict": "lidx_error",
+     "note": "`filter(ent)` in `Walk::skip_entry` calls a local closure/variable named filter; bare_name resolves it to the test function `walk::tests::filter`."
+    },
+    {
+     "id": "9061cf08",
+     "seed": "nextest-runner/src/errors.rs:72 kind",
+     "k": "3",
+     "member": "integration-tests/test-helpers/cargo-nextest-dup.rs:11 main",
+     "verdict": "oracle_artefact",
+     "note": "`error.process_exit_code()` is a real call in the binary's `main` and `process_exit_code` calls `err.kind()`; the SCIP oracle has no edge from `main`."
+    },
+    {
+     "id": "530b808a",
+     "seed": "src/language/mod.rs:148 sort_by",
+     "k": "3",
+     "member": "src/main.rs:14 main",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    },
+    {
+     "id": "45a576fe",
+     "seed": "src/pretty_printer.rs:283 print",
+     "k": "3",
+     "member": "src/bin/bat/main.rs:339 run",
+     "verdict": "lidx_error",
+     "note": "`report.print::<Markdown>()` is the bugreport crate's Report::print; bare_name resolves it to `PrettyPrinter::print`."
+    },
+    {
+     "id": "20e2d964",
+     "seed": "src/language/language_type.rs:124 parse_lines",
+     "k": "3",
+     "member": "src/language/syntax.rs:345 parse_context",
+     "verdict": "oracle_artefact",
+     "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+    }
+   ],
+   "missing": [
+    {
+     "id": "71ffb583",
+     "seed": "src/printer.rs:92 print_footer",
+     "k": "3",
+     "member": "src/controller.rs:199 print_file",
+     "verdict": "lidx_error",
+     "note": "`printer.print_footer(writer, input)` is a call on a trait object; lidx records no dispatch for Rust traits."
+    },
+    {
+     "id": "2541e667",
+     "seed": "crates/matcher/src/lib.rs:94 start",
+     "k": "3",
+     "member": "crates/searcher/src/searcher/core.rs:276 after_context_by_line",
+     "verdict": "lidx_error",
+     "note": "`range.start()` with `type Range = Match` is `Match::start`; lidx does not resolve through the type alias."
+    },
+    {
+     "id": "d285bb72",
+     "seed": "crates/core/flags/defs.rs:7415 [Flag]name_long",
+     "k": "3",
+     "member": "crates/core/flags/complete/fish.rs:13 generate",
+     "verdict": "lidx_error",
+     "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "f295180b",
+     "seed": "src/indexer/csharp.rs:416 [LanguageExtractor]extract",
+     "k": "3",
+     "member": "src/indexer/mod.rs:541 reindex_locked",
+     "verdict": "lidx_error",
+     "note": "`.extract(source, &module_name)` is a call on a `dyn LanguageExtractor`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "65ea4096",
+     "seed": "crates/core/flags/defs.rs:820 [Flag]name_long",
+     "k": "3",
+     "member": "crates/core/flags/defs.rs:561 test_block_buffered",
+     "verdict": "lidx_error",
+     "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "ee1f272c",
+     "seed": "src/theme.rs:312 [ColorSchemeDetector]detect",
+     "k": "3",
+     "member": "src/theme.rs:328 not_called_for_dark_or_light",
+     "verdict": "lidx_error",
+     "note": "`detector.detect()` is a call on a `&dyn ColorSchemeDetector`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "4b374a5e",
+     "seed": "crates/core/flags/defs.rs:347 [Flag]name_short",
+     "k": "3",
+     "member": "crates/core/flags/defs.rs:561 test_block_buffered",
+     "verdict": "lidx_error",
+     "note": "`flag.name_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "bd407c4c",
+     "seed": "crates/core/flags/defs.rs:820 [Flag]name_long",
+     "k": "3",
+     "member": "crates/core/flags/defs.rs:619 test_byte_offset",
+     "verdict": "lidx_error",
+     "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "bcc8ccbd",
+     "seed": "crates/core/flags/defs.rs:4336 [Flag]doc_short",
+     "k": "3",
+     "member": "crates/core/main.rs:383 special",
+     "verdict": "lidx_error",
+     "note": "`flag.doc_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "a1447788",
+     "seed": "src/input.rs:156 from_reader",
+     "k": "3",
+     "member": "src/pretty_printer.rs:101 input_from_bytes",
+     "verdict": "lidx_error",
+     "note": "`Input::from_reader(reader)` in pretty_printer.rs is PrettyPrinter's own wrapper `from_reader`; lidx has no edge to it."
+    },
+    {
+     "id": "1ec3247b",
+     "seed": "src/indexer/python.rs:3260 [DeclarationIndex]declarations",
+     "k": "3",
+     "member": "src/indexer/python.rs:1144 deferred_class",
+     "verdict": "lidx_error",
+     "note": "`index.declarations(...)` is a call on `&dyn DeclarationIndex`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "4df4a773",
+     "seed": "crates/core/flags/defs.rs:7415 [Flag]name_long",
+     "k": "3",
+     "member": "crates/core/flags/complete/bash.rs:63 generate",
+     "verdict": "lidx_error",
+     "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "374cc69b",
+     "seed": "crates/core/flags/defs.rs:3439 [Flag]is_switch",
+     "k": "3",
+     "member": "crates/core/flags/defs.rs:493 test_binary",
+     "verdict": "lidx_error",
+     "note": "`flag.is_switch()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "1cc91dd4",
+     "seed": "crates/core/flags/defs.rs:5773 [Flag]doc_variable",
+     "k": "3",
+     "member": "crates/core/flags/doc/man.rs:46 generate_flag",
+     "verdict": "lidx_error",
+     "note": "`flag.doc_variable()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "c7af339f",
+     "seed": "crates/core/flags/defs.rs:4740 [Flag]is_switch",
+     "k": "3",
+     "member": "crates/core/main.rs:77 run",
+     "verdict": "lidx_error",
+     "note": "`flag.is_switch()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "53041a5f",
+     "seed": "crates/core/flags/defs.rs:6777 [Flag]name_long",
+     "k": "3",
+     "member": "crates/core/flags/defs.rs:493 test_binary",
+     "verdict": "lidx_error",
+     "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "7851921a",
+     "seed": "src/name.rs:32 [`Keyed<'src>`]key",
+     "k": "3",
+     "member": "src/recipe_resolver.rs:16 resolve_recipes",
+     "verdict": "lidx_error",
+     "note": "`value.key()` is a call on a generic `T: Keyed`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "f79d5c79",
+     "seed": "crates/core/flags/mod.rs:89 name_long",
+     "k": "3",
+     "member": "crates/core/flags/parse.rs:176 new",
+     "verdict": "lidx_error",
+     "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "2a3ae478",
+     "seed": "crates/core/flags/defs.rs:7099 [Flag]doc_variable",
+     "k": "3",
+     "member": "crates/core/main.rs:383 special",
+     "verdict": "lidx_error",
+     "note": "`flag.doc_variable()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+    },
+    {
+     "id": "345cd32c",
+     "seed": "crates/core/flags/defs.rs:6637 [Flag]name_short",
+     "k": "3",
+     "member": "crates/core/flags/defs.rs:493 test_binary",
+     "verdict": "lidx_error",
+     "note": "`flag.name_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+    }
+   ]
+  },
+  "ts": {
+   "extra": [
+    {
+     "id": "92b7efc8",
+     "seed": "packages/server/src/vendor/unpromise/unpromise.ts:199 catch",
+     "k": "3",
+     "member": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts:216 encodeAsync",
+     "verdict": "lidx_error",
+     "note": "`promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`."
+    },
+    {
+     "id": "f0cf0dc8",
+     "seed": "packages/server/src/vendor/unpromise/unpromise.ts:199 catch",
+     "k": "3",
+     "member": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts:234 encode",
+     "verdict": "lidx_error",
+     "note": "`promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`."
+    },
+    {
+     "id": "997a811d",
+     "seed": "src/jsx/children.ts:3 toArray",
+     "k": "3",
+     "member": "src/middleware/combine/index.ts:141 except",
+     "verdict": "lidx_error",
+     "note": "`middleware.map(...)` is Array.prototype.map; the bare_name tier resolves it to `Children.map`."
+    },
+    {
+     "id": "339dc462",
+     "seed": "packages/server/src/vendor/unpromise/unpromise.ts:199 catch",
+     "k": "3",
+     "member": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts:155 encodePromise",
+     "verdict": "lidx_error",
+     "note": "`promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`."
+    },
+    {
+     "id": "2d74b4b9",
+     "seed": "packages/zod/src/v3/types.ts:170 _parse",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:215 ZodType",
+     "verdict": "lidx_error",
+     "note": "v4 `ZodType` has no call to the v3 `ZodType.safeParse`; the bare_name tier joins `inst.safeParse` (a property assignment in v4) to the v3 class method of the same name."
+    },
+    {
+     "id": "d62785ce",
+     "seed": "packages/zod/src/v3/helpers/parseUtil.ts:174 isValid",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:215 ZodType",
+     "verdict": "lidx_error",
+     "note": "v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4."
+    },
+    {
+     "id": "623b13ef",
+     "seed": "packages/zod/src/v4/core/registries.ts:60 get",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:1063 ZodNumber",
+     "verdict": "lidx_error",
+     "note": "`_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`."
+    },
+    {
+     "id": "da0f8d80",
+     "seed": "packages/zod/src/v3/types.ts:229 safeParse",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:215 ZodType",
+     "verdict": "lidx_error",
+     "note": "v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4."
+    },
+    {
+     "id": "51918517",
+     "seed": "src/jsx/context.ts:69 getCurrentStore",
+     "k": "3",
+     "member": "src/client/client.ts:133 hc",
+     "verdict": "lidx_error",
+     "note": "`proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`."
+    },
+    {
+     "id": "af85142c",
+     "seed": "src/jsx/children.ts:3 toArray",
+     "k": "3",
+     "member": "src/middleware/combine/index.ts:99 every",
+     "verdict": "lidx_error",
+     "note": "`middleware.map(...)` is Array.prototype.map; the bare_name tier resolves it to `Children.map`."
+    },
+    {
+     "id": "ce233445",
+     "seed": "packages/server/src/vendor/unpromise/unpromise.ts:244 getSubscribablePromise",
+     "k": "3",
+     "member": "packages/server/src/unstable-core-do-not-import/stream/utils/mergeAsyncIterables.ts:100 initIterable",
+     "verdict": "lidx_error",
+     "note": "`flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name."
+    },
+    {
+     "id": "4338dbce",
+     "seed": "packages/zod/src/v3/helpers/util.ts:175 getParsedType",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:215 ZodType",
+     "verdict": "lidx_error",
+     "note": "v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4."
+    },
+    {
+     "id": "7c54a8cd",
+     "seed": "packages/zod/src/v4/core/registries.ts:60 get",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:33 _installLazyMethods",
+     "verdict": "lidx_error",
+     "note": "`_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`."
+    },
+    {
+     "id": "7e026b82",
+     "seed": "src/jsx/context.ts:69 getCurrentStore",
+     "k": "3",
+     "member": "src/middleware/cors/index.ts:63 cors",
+     "verdict": "lidx_error",
+     "note": "`proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`."
+    },
+    {
+     "id": "04990b23",
+     "seed": "packages/zod/src/v4/core/registries.ts:60 get",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:395 _ZodString",
+     "verdict": "lidx_error",
+     "note": "`_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`."
+    },
+    {
+     "id": "f8983d0b",
+     "seed": "src/context.ts:546 set",
+     "k": "3",
+     "member": "src/middleware/cors/index.ts:63 cors",
+     "verdict": "lidx_error",
+     "note": "`c.res.headers.set(key, value)` is Headers.set; bare_name resolves it to `Context.set`."
+    },
+    {
+     "id": "f70ebd3a",
+     "seed": "src/context.ts:546 set",
+     "k": "3",
+     "member": "src/middleware/cors/index.ts:97 set",
+     "verdict": "lidx_error",
+     "note": "`c.res.headers.set(key, value)` is Headers.set; bare_name resolves it to `Context.set`."
+    },
+    {
+     "id": "8bc58a61",
+     "seed": "packages/server/src/vendor/unpromise/unpromise.ts:244 getSubscribablePromise",
+     "k": "inf",
+     "member": "packages/server/src/adapters/fastify/fastifyRequestHandler.ts:43 fastifyRequestHandler",
+     "verdict": "lidx_error",
+     "note": "`flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name."
+    },
+    {
+     "id": "8d4da084",
+     "seed": "packages/server/src/vendor/unpromise/unpromise.ts:244 getSubscribablePromise",
+     "k": "inf",
+     "member": "packages/server/src/adapters/standalone.ts:94 createHTTPHandler",
+     "verdict": "lidx_error",
+     "note": "`flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name."
+    },
+    {
+     "id": "38c31994",
+     "seed": "src/jsx/context.ts:69 getCurrentStore",
+     "k": "inf",
+     "member": "src/helper/testing/index.ts:16 testClient",
+     "verdict": "lidx_error",
+     "note": "`proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`."
+    }
+   ],
+   "missing": [
+    {
+     "id": "d82bc390",
+     "seed": "packages/zod/src/v3/helpers/util.ts:175 getParsedType",
+     "k": "3",
+     "member": "packages/zod/src/v3/types.ts:2321 min",
+     "verdict": "lidx_error",
+     "note": "`new ZodArray(...)` reaches the inherited ZodType constructor, whose `validate: (data) => this[\"~validate\"](data)` calls getParsedType; lidx links neither the inherited constructor nor the element-access call."
+    },
+    {
+     "id": "0600e3a8",
+     "seed": "packages/zod/src/v3/types.ts:1455 create",
+     "k": "3",
+     "member": "packages/zod/src/v3/benchmarks/object.ts:13 long",
+     "verdict": "lidx_error",
+     "note": "`z.number()` is `ZodNumber.create` re-exported under another name; lidx does not follow the alias."
+    },
+    {
+     "id": "cf7657e8",
+     "seed": "packages/zod/src/v4/core/util.ts:259 defineLazy",
+     "k": "3",
+     "member": "packages/zod/src/v4/mini/schemas.ts:882 looseObject",
+     "verdict": "lidx_error",
+     "note": "`new ZodMiniObject({...})` (a `core.$constructor` const) is recorded as USES, not CALLS, so the chain to the constructor body (`util.defineLazy`) is missing from the call graph."
+    },
+    {
+     "id": "4d328717",
+     "seed": "packages/zod/src/v3/types.ts:172 _getType",
+     "k": "3",
+     "member": "packages/zod/src/v3/types.ts:2241 _parse",
+     "verdict": "lidx_error",
+     "note": "`def.type._parseAsync(...)` and `this._parse(input)` are calls on typed members; lidx has no edge for the first and no dispatch for the second, so ZodArray._parse never reaches ZodString._parse's `_getType`."
+    },
+    {
+     "id": "0b4209bf",
+     "seed": "src/utils/internal/dispose.ts:18 observe",
+     "k": "3",
+     "member": "src/h3.ts:73 \"~request\"",
+     "verdict": "lidx_error",
+     "note": "`((event as any)[kEventDispose] as DisposeState | undefined)?.observe(...)` is a call on a type-asserted receiver; lidx records no edge."
+    },
+    {
+     "id": "b010a093",
+     "seed": "src/jsx/context.ts:69 getCurrentStore",
+     "k": "3",
+     "member": "src/jsx/streaming.ts:30 StreamingContext",
+     "verdict": "lidx_error",
+     "note": "the call `createContext(...)` is in the initialiser of the const `StreamingContext`; lidx attributes module-level initialiser calls to the module symbol, which impact answers drop."
+    },
+    {
+     "id": "0b8a4621",
+     "seed": "packages/zod/src/v3/types.ts:2376 shape",
+     "k": "3",
+     "member": "packages/zod/src/v3/types.ts:4748 _parse",
+     "verdict": "lidx_error",
+     "note": "`this._def.type._parse(...)` and `this._def.shape()` are calls through typed fields (`_def.type`, a function-valued `shape`); lidx records no edge for either."
+    },
+    {
+     "id": "fa799dbd",
+     "seed": "packages/zod/src/v3/types.ts:3979 _parse",
+     "k": "3",
+     "member": "packages/zod/src/v3/types.ts:3120 _parse",
+     "verdict": "lidx_error",
+     "note": "`option._parseAsync(...)` then `this._parse(input)`: calls on typed members and a dispatch to the override; lidx records neither."
+    },
+    {
+     "id": "01ba2fd0",
+     "seed": "packages/server/src/unstable-core-do-not-import/http/types.ts:71 result",
+     "k": "3",
+     "member": "packages/server/src/adapters/express.ts:25 createExpressMiddleware",
+     "verdict": "lidx_error",
+     "note": "`call.result()` calls a function-typed member of an interface; lidx records no edge."
+    },
+    {
+     "id": "513695df",
+     "seed": "packages/zod/src/v4/classic/schemas.ts:1387 max",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/from-json-schema.ts:533 convertSchema",
+     "verdict": "lidx_error",
+     "note": "`arraySchema.max(schema.maxItems)` is a call on a `let` variable holding a ZodArray; lidx does not resolve the receiver."
+    },
+    {
+     "id": "7cac828e",
+     "seed": "packages/zod/src/v3/helpers/util.ts:175 getParsedType",
+     "k": "3",
+     "member": "packages/zod/src/v3/types.ts:2335 length",
+     "verdict": "lidx_error",
+     "note": "`new ZodArray(...)` reaches the inherited constructor whose arrow calls `this[\"~validate\"]`; lidx links neither."
+    },
+    {
+     "id": "6390606b",
+     "seed": "packages/zod/src/v4/core/core.ts:150 config",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/parse.ts:66 safeDecode",
+     "verdict": "lidx_error",
+     "note": "`const safeDecode = core._safeDecode(ZodRealError)` is a module-level initialiser call returning the function that later calls `_safeParse(...)` and `core.config()`; lidx attributes the initialiser to the module."
+    },
+    {
+     "id": "7673bede",
+     "seed": "packages/zod/src/v3/helpers/parseUtil.ts:72 addIssueToContext",
+     "k": "3",
+     "member": "packages/zod/src/v3/types.ts:4569 _parse",
+     "verdict": "lidx_error",
+     "note": "`this._def.innerType._parse({...})` is a call through a typed field to an override; lidx records no edge."
+    },
+    {
+     "id": "9357db44",
+     "seed": "packages/zod/src/v4/core/to-json-schema.ts:139 process",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:2220 _default",
+     "verdict": "lidx_error",
+     "note": "`new ZodDefault({...})` (a `core.$constructor` const) is recorded as USES, not CALLS."
+    },
+    {
+     "id": "01b33a71",
+     "seed": "source/index.ts:33 createInstance",
+     "k": "3",
+     "member": "source/index.ts:58 ky",
+     "verdict": "lidx_error",
+     "note": "`const ky = createInstance();` is a module-level initialiser call; lidx attributes it to the module symbol."
+    },
+    {
+     "id": "1d37e1bc",
+     "seed": "src/rules/cache.ts:257 variableHeaderNames",
+     "k": "3",
+     "member": "src/rules/cache.ts:353 cache",
+     "verdict": "lidx_error",
+     "note": "`export const cache = createOcacheRuleHandler();` is a module-level initialiser call; lidx attributes it to the module symbol."
+    },
+    {
+     "id": "ad772c0a",
+     "seed": "src/utils/internal/dispose.ts:18 observe",
+     "k": "3",
+     "member": "src/rules/cache.ts:353 cache",
+     "verdict": "lidx_error",
+     "note": "module-level initialiser call (`export const cache = createOcacheRuleHandler()`) and a `?.observe(...)` call on a type-asserted receiver; lidx records neither."
+    },
+    {
+     "id": "221e74fe",
+     "seed": "packages/zod/src/v4/core/to-json-schema.ts:139 process",
+     "k": "3",
+     "member": "packages/zod/src/v4/classic/schemas.ts:1716 intersection",
+     "verdict": "lidx_error",
+     "note": "`new ZodIntersection({...})` (a `core.$constructor` const) is recorded as USES, not CALLS."
+    },
+    {
+     "id": "bfafa216",
+     "seed": "src/core/immerClass.ts:201 shouldUseStrictIteration",
+     "k": "3",
+     "member": "src/core/current.ts:21 currentImpl",
+     "verdict": "lidx_error",
+     "note": "`state.scope_.immer_.shouldUseStrictIteration()` is a call along a typed property chain; lidx records no edge."
+    },
+    {
+     "id": "fcfd1162",
+     "seed": "src/router/smart-router/router.ts:21 match",
+     "k": "3",
+     "member": "src/adapter/aws-lambda/handler.ts:138 streamHandle",
+     "verdict": "lidx_error",
+     "note": "`this.router.match(method, path)` is a call on a field typed by the `Router` interface; SmartRouter is the default router, so the chain is real, and lidx has no dispatch for a field-typed receiver."
+    }
+   ]
+  }
+ },
+ "summary": "Artefact rates: TypeScript 0/40 (0.0%), Rust 13/40 (32.5%; extra 13/20, 11 of them tokei, whose build.rs-generated `LanguageType` rust-analyzer cannot resolve with build scripts off, and 2 in nextest; missing 0/20), Go 17/58 (29.3%; extra 3/18, missing 14/20 on the full closure, 0/20 on the closure without function-value edges). The wrong extra pairs that were lidx errors: TypeScript 20/20 `bare_name` joins of a standard-library method to an in-repo method of the same name; Go 15/18 interface-dispatch fan-out to implementers that cannot be the receiver's dynamic type; Rust 7/20 `bare_name`. Every sampled missing pair of TypeScript, Rust and the Go diagnostic closure was a real chain lidx lacks (calls through typed members, trait dispatch, function values, an interface hop that costs a depth level)."
+}

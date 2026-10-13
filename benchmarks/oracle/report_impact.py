@@ -212,37 +212,42 @@ def section(results_dir):
     return "\n".join(L)
 
 
+KIND_LABEL = {"extra": "extra (precision)", "missing": "missing (recall)", "missing_alt": "missing, Go closure without function-value edges (recall, diagnostic)"}
+
+
 def spot_section(sc):
     L = []
     w = L.append
     w("### Spot-check of impact pairs")
     w("")
-    w("20 extra pairs (a lidx member the oracle closure lacks) and 20 missing pairs (an oracle caller lidx lacks) per language, drawn with seed %s from the "
-      "committed lists of the cells %s, each read against the source along the whole chain. Verdicts: `lidx_error` (lidx is wrong or misses a real call "
-      "chain), `oracle_artefact` (the compiler closure is not the right judge: RTA/type-allocation limits, build tags, generated code, closure keying), "
-      "`matching_artefact` (our matching or closure keying mis-states the pair)." % (sc["seed"], ", ".join(sc["cells"])))
+    w("Every pair below was read against the source along the whole chain (seed %s; cells %s). An *extra* pair is a lidx member the oracle closure lacks, an *missing* "
+      "pair an oracle caller lidx lacks, both from the committed lists (`results/lists/<cell>.impact_{extra,missing,missing_alt}.json`), k = 3 pairs first, at most 3 per seed, "
+      "20 per language and kind (Go has only 18 extra pairs). Verdicts: `lidx_error` (lidx is wrong or misses a real chain), `oracle_artefact` (the compiler closure is not "
+      "the right judge: the chain is real and the oracle cannot show it, or the oracle's chain is not real), `matching_artefact` (our matching or keying mis-states the pair). "
+      "A number is quoted in `README.md` only for a language and kind whose artefact rate is under 10%%." % (sc["seed"], ", ".join(sc["cells"])))
     w("")
-    w("| Language | Sample | lidx_error | oracle_artefact | matching_artefact | artefact rate [95% Wilson CI] |")
-    w("|---|---|---:|---:|---:|---|")
-    tot_a = tot_n = 0
+    w("| Language | Sample | lidx_error | oracle_artefact | matching_artefact | artefact rate [95% Wilson CI] | quoted |")
+    w("|---|---|---:|---:|---:|---|---|")
     for lang, kinds in sc["languages"].items():
-        for kind in ("extra", "missing"):
-            items = kinds[kind]
+        for kind in ("extra", "missing", "missing_alt"):
+            items = kinds.get(kind)
+            if not items:
+                continue
             c = {k: sum(1 for i in items if i["verdict"] == k) for k in ("lidx_error", "oracle_artefact", "matching_artefact")}
             n = len(items)
             a = c["oracle_artefact"] + c["matching_artefact"]
-            tot_a += a
-            tot_n += n
-            w("| %s | %s (n=%d) | %d | %d | %d | %d/%d = %.1f%% %s |" % (lang, kind, n, c["lidx_error"], c["oracle_artefact"], c["matching_artefact"], a, n,
-                                                                       100 * a / max(n, 1), report.ci_pct(a, n)))
+            w("| %s | %s (n=%d) | %d | %d | %d | %d/%d = %.1f%% %s | %s |" % (lang, KIND_LABEL[kind], n, c["lidx_error"], c["oracle_artefact"], c["matching_artefact"], a, n,
+                                                                         100 * a / max(n, 1), report.ci_pct(a, n), "yes" if a / max(n, 1) < 0.10 else "no"))
     w("")
-    w("Pooled: %d/%d = %.1f%% %s artefact or mis-bucket rate. %s" % (tot_a, tot_n, 100 * tot_a / max(tot_n, 1), report.ci_pct(tot_a, tot_n), sc.get("summary", "")))
+    w(sc.get("summary", ""))
     w("")
     for lang, kinds in sc["languages"].items():
         w("#### %s impact samples" % lang)
         w("")
-        for kind in ("extra", "missing"):
-            w("**%s**" % kind)
+        for kind in ("extra", "missing", "missing_alt"):
+            if not kinds.get(kind):
+                continue
+            w("**%s**" % KIND_LABEL[kind])
             w("")
             for i in kinds[kind]:
                 w("- `%s` seed `%s` k=%s, `%s`: **%s**, %s" % (i["id"], i["seed"], i["k"], i["member"], i["verdict"], i["note"]))

@@ -1,0 +1,742 @@
+{
+ "cell": "rust/lidx/path_tests_excluded",
+ "repo": "lidx",
+ "repo_sha": "ccc405a5876837e27609bf13a09db7c9f42dc445",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 2843,
+  "stratum_pool": {
+   "0": 843,
+   "1-3": 1639,
+   "4-10": 277,
+   ">10": 84
+  },
+  "stratum_drawn": {
+   "0": 25,
+   "1-3": 25,
+   "4-10": 25,
+   ">10": 25
+  }
+ },
+ "seeds": [
+  {
+   "file": "benches/impact.rs",
+   "line": 15,
+   "name": "setup_test_repo",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 39,
+   "name": "from_env",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 90,
+   "name": "get",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/db/co_change.rs",
+   "line": 155,
+   "name": "coupling_hotspots",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/db/graph_query.rs",
+   "line": 249,
+   "name": "ctes",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/db/migrations.rs",
+   "line": 2050,
+   "name": "unresolved_references_fk_lookups_use_an_index_not_a_scan",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/db/mod.rs",
+   "line": 1989,
+   "name": "get_symbols_for_file",
+   "indegree": 24,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/mod.rs",
+   "line": 2431,
+   "name": "append_path_filters",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/mod.rs",
+   "line": 2671,
+   "name": "create_test_db",
+   "indegree": 84,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/mod.rs",
+   "line": 3600,
+   "name": "test_update_file_symbols_preserves_integer_ids",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/db/mod.rs",
+   "line": 3921,
+   "name": "test_co_changes_for_file_respects_min_confidence",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/db/mod.rs",
+   "line": 4599,
+   "name": "test_find_symbols_whitespace_query_returns_empty",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/db/mod.rs",
+   "line": 5029,
+   "name": "test_rpc_widening_impl_side_finds_proto_route",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/db/overview.rs",
+   "line": 16,
+   "name": "repo_overview",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/db/overview.rs",
+   "line": 817,
+   "name": "list_symbol_refs_excludes_external_stubs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 205,
+   "name": "drop_references_shadowed_by_calls",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 1179,
+   "name": "resolve",
+   "indegree": 24,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 3315,
+   "name": "top_level_chars",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 4641,
+   "name": "qualname_trailing_name",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 5052,
+   "name": "test_conn",
+   "indegree": 23,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 5058,
+   "name": "insert_file",
+   "indegree": 22,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 5067,
+   "name": "insert_symbol",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 5086,
+   "name": "reference",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/db/resolver.rs",
+   "line": 5465,
+   "name": "rust_variant_constructor_never_binds_by_bare_name",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/edge_views.rs",
+   "line": 258,
+   "name": "sql_list",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/gather_context/collect.rs",
+   "line": 30,
+   "name": "mark_if_new",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/gather_context/resolve.rs",
+   "line": 180,
+   "name": "resolve_file_region",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/git_mining.rs",
+   "line": 255,
+   "name": "test_parse_git_log_basic",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/impact/confidence.rs",
+   "line": 98,
+   "name": "confidence_from_source",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/impact/confidence.rs",
+   "line": 250,
+   "name": "fuse_mixed_evidence",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/impact/config.rs",
+   "line": 10,
+   "name": "builder",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/impact/config.rs",
+   "line": 91,
+   "name": "include_paths",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/impact/layers/direct.rs",
+   "line": 34,
+   "name": "[`From<TraversalDirection>`]from",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/impact/layers/direct.rs",
+   "line": 844,
+   "name": "symbol",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/impact/layers/historical.rs",
+   "line": 305,
+   "name": "get_files_for_stable_ids",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/batch.rs",
+   "line": 495,
+   "name": "test_edge_case_batch_all_inserts",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/indexer/bicep.rs",
+   "line": 764,
+   "name": "decl_kind_and_qualname",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/bicep.rs",
+   "line": 945,
+   "name": "parse_resource_line",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/indexer/channel.rs",
+   "line": 91,
+   "name": "normalize_channel_name",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/config.rs",
+   "line": 16,
+   "name": "normalize_env_var_name",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/config.rs",
+   "line": 69,
+   "name": "build_config_read_detail",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/config.rs",
+   "line": 775,
+   "name": "normalize_env_var_whitespace",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/indexer/csharp.rs",
+   "line": 416,
+   "name": "[LanguageExtractor]extract",
+   "indegree": 24,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/csharp.rs",
+   "line": 3114,
+   "name": "collect_grpc_clients_from_declaration",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/csharp.rs",
+   "line": 5691,
+   "name": "type_at",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/csharp.rs",
+   "line": 6015,
+   "name": "call_return_type",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/differ.rs",
+   "line": 52,
+   "name": "compute_symbol_diff",
+   "indegree": 35,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/differ.rs",
+   "line": 218,
+   "name": "touches",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/http.rs",
+   "line": 32,
+   "name": "normalize_path",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 206,
+   "name": "[LanguageExtractor]extract",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 279,
+   "name": "module_name_from_rel_path",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 3416,
+   "name": "unnamed_receiver_target",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 3547,
+   "name": "collect_return_types",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 4220,
+   "name": "grpc_service_from_raw_path",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 4339,
+   "name": "is_grpc_root_segment",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 6678,
+   "name": "extract_signature",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 6707,
+   "name": "is_function_value",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 7831,
+   "name": "call",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 8099,
+   "name": "grpc_service_from_path_collapses_interior_whitespace",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/indexer/javascript.rs",
+   "line": 8804,
+   "name": "object_literal_namespace_member_that_cannot_resolve_never_binds_the_container",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/indexer/py_layout.rs",
+   "line": 51,
+   "name": "clear",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/python.rs",
+   "line": 1734,
+   "name": "last_type_arg",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/python.rs",
+   "line": 3260,
+   "name": "[DeclarationIndex]declarations",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/rust.rs",
+   "line": 216,
+   "name": "new",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/rust.rs",
+   "line": 1220,
+   "name": "value_reference_edge",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/rust.rs",
+   "line": 3267,
+   "name": "call_target_parts",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/scan.rs",
+   "line": 481,
+   "name": "hash_bytes",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/sql_extractor.rs",
+   "line": 845,
+   "name": "extract_tsql_fallback",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/stable_id.rs",
+   "line": 43,
+   "name": "compute_stable_symbol_id",
+   "indegree": 24,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/indexer/stable_id.rs",
+   "line": 307,
+   "name": "test_stable_id_format",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/indexer/stable_id.rs",
+   "line": 339,
+   "name": "test_stable_id_deterministic",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/indexer/test_detection.rs",
+   "line": 11,
+   "name": "is_js_ts_source",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/test_detection.rs",
+   "line": 51,
+   "name": "is_test_symbol",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/indexer/xref.rs",
+   "line": 160,
+   "name": "is_python_docstring",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/xref.rs",
+   "line": 377,
+   "name": "resolve_token",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/xref.rs",
+   "line": 870,
+   "name": "scan_literals",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/indexer/yaml.rs",
+   "line": 758,
+   "name": "span_of_range",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/mcp.rs",
+   "line": 651,
+   "name": "repo_and_db",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/metrics.rs",
+   "line": 178,
+   "name": "count_operator_hits",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/model.rs",
+   "line": 606,
+   "name": "xref_is_traversable",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/model.rs",
+   "line": 892,
+   "name": "is_valid",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/repo_map.rs",
+   "line": 510,
+   "name": "dependencies_omit_edges_wholly_outside_path_filter",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/resolve.rs",
+   "line": 800,
+   "name": "expand_seeds",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/resolve.rs",
+   "line": 1370,
+   "name": "resolve_nonexistent_config_uri_returns_suggestions",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/rpc/format.rs",
+   "line": 260,
+   "name": "filter_fields",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/rpc/handlers.rs",
+   "line": 2446,
+   "name": "empty_test_layer_note",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rpc/mod.rs",
+   "line": 786,
+   "name": "parse_params",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/rpc/mod.rs",
+   "line": 1221,
+   "name": "infer_language",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rpc/mod.rs",
+   "line": 1351,
+   "name": "explain_symbol_schema_documents_sections_and_max_refs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/rpc/validate.rs",
+   "line": 246,
+   "name": "validate_gather_context_params",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/rpc/validate.rs",
+   "line": 465,
+   "name": "validate_file_seed_start_after_end",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/rpc/validate.rs",
+   "line": 475,
+   "name": "validate_file_seed_start_zero",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/search.rs",
+   "line": 818,
+   "name": "scope_allows",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/traversal.rs",
+   "line": 47,
+   "name": "[Default]default",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/traversal.rs",
+   "line": 324,
+   "name": "trace_flow",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/traversal.rs",
+   "line": 1376,
+   "name": "estimate_hop_size",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/traversal.rs",
+   "line": 1724,
+   "name": "test_extract_protocol_context_config",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/traversal.rs",
+   "line": 2257,
+   "name": "downstream_and_upstream_on_leaf_node",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 175,
+   "name": "normalize_search_paths",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/watch.rs",
+   "line": 216,
+   "name": "compute_debounce",
+   "indegree": 5,
+   "stratum": "4-10"
+  }
+ ]
+}

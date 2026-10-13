@@ -1,0 +1,742 @@
+{
+ "cell": "rust/xsv/path_tests_excluded",
+ "repo": "xsv",
+ "repo_sha": "0803f06a00e9e0cb66e2b8c26a921af404439748",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 173,
+  "stratum_pool": {
+   "0": 20,
+   "1-3": 135,
+   "4-10": 12,
+   ">10": 6
+  },
+  "stratum_drawn": {
+   "0": 20,
+   "1-3": 62,
+   "4-10": 12,
+   ">10": 6
+  }
+ },
+ "seeds": [
+  {
+   "file": "src/cmd/cat.rs",
+   "line": 52,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/cat.rs",
+   "line": 71,
+   "name": "cat_rows",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/cat.rs",
+   "line": 86,
+   "name": "cat_columns",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/count.rs",
+   "line": 31,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/fixlengths.rs",
+   "line": 44,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/flatten.rs",
+   "line": 50,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/frequency.rs",
+   "line": 76,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/frequency.rs",
+   "line": 108,
+   "name": "rconfig",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/cmd/frequency.rs",
+   "line": 115,
+   "name": "counts",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/frequency.rs",
+   "line": 166,
+   "name": "ftables",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/frequency.rs",
+   "line": 195,
+   "name": "njobs",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/input.rs",
+   "line": 41,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/join.rs",
+   "line": 138,
+   "name": "write_headers",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/join.rs",
+   "line": 147,
+   "name": "inner_join",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/join.rs",
+   "line": 170,
+   "name": "outer_join",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/join.rs",
+   "line": 307,
+   "name": "get_selections",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/join.rs",
+   "line": 399,
+   "name": "[Debug]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/cmd/partition.rs",
+   "line": 55,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/partition.rs",
+   "line": 137,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/sample.rs",
+   "line": 99,
+   "name": "sample_reservoir",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/select.rs",
+   "line": 59,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/slice.rs",
+   "line": 65,
+   "name": "no_index",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/slice.rs",
+   "line": 107,
+   "name": "wconfig",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/sort.rs",
+   "line": 98,
+   "name": "iter_cmp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/sort.rs",
+   "line": 114,
+   "name": "iter_cmp_num",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/sort.rs",
+   "line": 144,
+   "name": "compare_float",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/sort.rs",
+   "line": 150,
+   "name": "next_num",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/split.rs",
+   "line": 60,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/split.rs",
+   "line": 94,
+   "name": "parallel_split",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/split.rs",
+   "line": 127,
+   "name": "new_writer",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/split.rs",
+   "line": 142,
+   "name": "rconfig",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 85,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 125,
+   "name": "parallel_stats",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 173,
+   "name": "compute",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 185,
+   "name": "sel_headers",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 194,
+   "name": "rconfig",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 217,
+   "name": "stat_headers",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 259,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 373,
+   "name": "[Commute]merge",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 407,
+   "name": "is_number",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 411,
+   "name": "is_null",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 417,
+   "name": "[Commute]merge",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 443,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 491,
+   "name": "show",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 501,
+   "name": "[Commute]merge",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 549,
+   "name": "len_range",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 601,
+   "name": "[Commute]merge",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/cmd/stats.rs",
+   "line": 609,
+   "name": "from_bytes",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/cmd/table.rs",
+   "line": 49,
+   "name": "run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 34,
+   "name": "[`Deserialize<'de>`]deserialize",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 74,
+   "name": "new",
+   "indegree": 25,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 105,
+   "name": "delimiter",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 112,
+   "name": "no_headers",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 120,
+   "name": "flexible",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 164,
+   "name": "select",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 169,
+   "name": "is_std",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 173,
+   "name": "selection",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 184,
+   "name": "write_headers",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 196,
+   "name": "writer",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 201,
+   "name": "reader",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 206,
+   "name": "reader_file",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 255,
+   "name": "indexed",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 282,
+   "name": "from_reader",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 300,
+   "name": "from_writer",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/index.rs",
+   "line": 17,
+   "name": "[Deref]deref",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/index.rs",
+   "line": 21,
+   "name": "[DerefMut]deref_mut",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/index.rs",
+   "line": 38,
+   "name": "count",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/index.rs",
+   "line": 47,
+   "name": "seek",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 94,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 203,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/main.rs",
+   "line": 214,
+   "name": "[`From<docopt::Error>`]from",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 33,
+   "name": "selection",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 67,
+   "name": "[Debug]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 80,
+   "name": "[`Deserialize<'de>`]deserialize",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 94,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 135,
+   "name": "parse_one",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 166,
+   "name": "parse_quoted_name",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 189,
+   "name": "parse_index",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 209,
+   "name": "cur",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 221,
+   "name": "bump",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 272,
+   "name": "index",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 325,
+   "name": "[Debug]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 335,
+   "name": "[Debug]fmt",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 353,
+   "name": "select",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 360,
+   "name": "get_field",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 368,
+   "name": "normal",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 393,
+   "name": "[Deref]deref",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 416,
+   "name": "select",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 418,
+   "name": "filmap",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 419,
+   "name": "get_field",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 429,
+   "name": "len",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/select.rs",
+   "line": 437,
+   "name": "[Deref]deref",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 17,
+   "name": "num_cpus",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 34,
+   "name": "get_args",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 43,
+   "name": "many_configs",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 85,
+   "name": "last_modified",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 124,
+   "name": "range",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 151,
+   "name": "create_dir_all_threadsafe",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 189,
+   "name": "writer",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/util.rs",
+   "line": 207,
+   "name": "[`Deserialize<'de>`]deserialize",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

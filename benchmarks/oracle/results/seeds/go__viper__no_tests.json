@@ -1,0 +1,742 @@
+{
+ "cell": "go/viper/no_tests",
+ "repo": "viper",
+ "repo_sha": "394040caccbdf5821fa6839386a35f0fb1b1ee9e",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 249,
+  "stratum_pool": {
+   "0": 86,
+   "1-3": 146,
+   "4-10": 16,
+   ">10": 1
+  },
+  "stratum_drawn": {
+   "0": 41,
+   "1-3": 42,
+   "4-10": 16,
+   ">10": 1
+  }
+ },
+ "seeds": [
+  {
+   "file": "encoding.go",
+   "line": 81,
+   "name": "WithCodecRegistry",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "encoding.go",
+   "line": 101,
+   "name": "NewCodecRegistry",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "encoding.go",
+   "line": 153,
+   "name": "codec",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "file.go",
+   "line": 63,
+   "name": "findConfigFileOld",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "file.go",
+   "line": 75,
+   "name": "searchInPath",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "finder.go",
+   "line": 10,
+   "name": "WithFinder",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "finder.go",
+   "line": 26,
+   "name": "Finders",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "finder.go",
+   "line": 36,
+   "name": "Find",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flags.go",
+   "line": 55,
+   "name": "ValueType",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/encoding/dotenv/map_utils.go",
+   "line": 12,
+   "name": "flattenAndMergeMap",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/encoding/toml/codec.go",
+   "line": 14,
+   "name": "Decode",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/encoding/yaml/codec.go",
+   "line": 8,
+   "name": "Encode",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/testutil/filepath.go",
+   "line": 9,
+   "name": "AbsFilePath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "logger.go",
+   "line": 9,
+   "name": "WithLogger",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "logger.go",
+   "line": 21,
+   "name": "Handle",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "logger.go",
+   "line": 25,
+   "name": "WithAttrs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "logger.go",
+   "line": 29,
+   "name": "WithGroup",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "remote.go",
+   "line": 37,
+   "name": "Error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "remote.go",
+   "line": 46,
+   "name": "Error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "remote.go",
+   "line": 61,
+   "name": "Endpoint",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "remote.go",
+   "line": 65,
+   "name": "Path",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "remote.go",
+   "line": 160,
+   "name": "ReadRemoteConfig",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "remote.go",
+   "line": 166,
+   "name": "WatchRemoteConfig",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "remote.go",
+   "line": 200,
+   "name": "getRemoteConfig",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "remote.go",
+   "line": 210,
+   "name": "watchKeyValueConfigOnChannel",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "remote.go",
+   "line": 252,
+   "name": "watchRemoteConfig",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "util.go",
+   "line": 31,
+   "name": "Error",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "util.go",
+   "line": 42,
+   "name": "toCaseInsensitiveValue",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "util.go",
+   "line": 55,
+   "name": "copyAndInsensitiviseMap",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "util.go",
+   "line": 89,
+   "name": "insensitiviseMap",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "util.go",
+   "line": 142,
+   "name": "safeMul",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 53,
+   "name": "Error",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 59,
+   "name": "init#1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 68,
+   "name": "Error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 78,
+   "name": "Error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 86,
+   "name": "Error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 101,
+   "name": "DecodeHook",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 194,
+   "name": "New",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 232,
+   "name": "apply",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 251,
+   "name": "EnvKeyReplacer",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 262,
+   "name": "WithDecodeHook",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 287,
+   "name": "SetOptions",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 393,
+   "name": "SetConfigFile",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 406,
+   "name": "SetEnvPrefix",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 412,
+   "name": "GetEnvPrefix",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 429,
+   "name": "AllowEmptyEnv",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 453,
+   "name": "ConfigFileUsed",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 458,
+   "name": "AddConfigPath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 460,
+   "name": "AddConfigPath",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 517,
+   "name": "searchIndexableWithPathPrefixes",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 582,
+   "name": "searchMapWithPathPrefixes",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 617,
+   "name": "isPathShadowedInDeepMap",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 671,
+   "name": "isPathShadowedInAutoEnv",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 714,
+   "name": "Get",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 716,
+   "name": "Get",
+   "indegree": 23,
+   "stratum": ">10"
+  },
+  {
+   "file": "viper.go",
+   "line": 797,
+   "name": "GetBool",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 804,
+   "name": "GetInt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 813,
+   "name": "GetInt32",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 825,
+   "name": "GetUint8",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 834,
+   "name": "GetUint",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 841,
+   "name": "GetUint16",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 846,
+   "name": "GetUint32",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 860,
+   "name": "GetFloat64",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 867,
+   "name": "GetTime",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 874,
+   "name": "GetDuration",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 895,
+   "name": "GetStringMap",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 902,
+   "name": "GetStringMapString",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 904,
+   "name": "GetStringMapString",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 939,
+   "name": "Unmarshal",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 976,
+   "name": "defaultDecoderConfig",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 1025,
+   "name": "decode",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 1035,
+   "name": "UnmarshalExact",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1083,
+   "name": "BindFlagValues",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1111,
+   "name": "BindEnv",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1113,
+   "name": "BindEnv",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 1341,
+   "name": "stringToStringConv",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 1399,
+   "name": "AutomaticEnv",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1408,
+   "name": "SetEnvKeyReplacer",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1416,
+   "name": "RegisterAlias",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1418,
+   "name": "RegisterAlias",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 1454,
+   "name": "realKey",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 1465,
+   "name": "InConfig",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1499,
+   "name": "Set",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1547,
+   "name": "MergeInConfig",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1549,
+   "name": "MergeInConfig",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 1572,
+   "name": "ReadConfig",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 1623,
+   "name": "SafeWriteConfig",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1653,
+   "name": "SafeWriteConfigAs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1701,
+   "name": "unmarshalReader",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 1777,
+   "name": "castMapStringSliceToMapInterface",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 1886,
+   "name": "AllKeys",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1888,
+   "name": "AllKeys",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 1994,
+   "name": "SetFs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 1996,
+   "name": "SetFs",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 2002,
+   "name": "SetConfigName",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 2017,
+   "name": "SetConfigType",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "viper.go",
+   "line": 2028,
+   "name": "SetConfigPermissions",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "viper.go",
+   "line": 2032,
+   "name": "getConfigType",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 2051,
+   "name": "getConfigFile",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "viper.go",
+   "line": 2069,
+   "name": "DebugTo",
+   "indegree": 2,
+   "stratum": "1-3"
+  }
+ ]
+}

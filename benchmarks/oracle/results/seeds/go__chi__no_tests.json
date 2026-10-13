@@ -1,0 +1,742 @@
+{
+ "cell": "go/chi/no_tests",
+ "repo": "chi",
+ "repo_sha": "7f9b7448f51d28804fac98c0a17bc2a7cec1079f",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 188,
+  "stratum_pool": {
+   "0": 49,
+   "1-3": 106,
+   "4-10": 30,
+   ">10": 3
+  },
+  "stratum_drawn": {
+   "0": 33,
+   "1-3": 34,
+   "4-10": 30,
+   ">10": 3
+  }
+ },
+ "seeds": [
+  {
+   "file": "chain.go",
+   "line": 30,
+   "name": "ServeHTTP",
+   "indegree": 35,
+   "stratum": ">10"
+  },
+  {
+   "file": "context.go",
+   "line": 11,
+   "name": "URLParam",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 16,
+   "name": "URLParamFromCtx",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "context.go",
+   "line": 25,
+   "name": "RouteContext",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "context.go",
+   "line": 31,
+   "name": "NewRouteContext",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "context.go",
+   "line": 104,
+   "name": "Clone",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 176,
+   "name": "Add",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 188,
+   "name": "String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/basic_auth.go",
+   "line": 10,
+   "name": "BasicAuth",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/clean_path.go",
+   "line": 12,
+   "name": "CleanPath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 60,
+   "name": "ClientIPFromHeader",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 121,
+   "name": "ClientIPFromXFF",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 182,
+   "name": "ClientIPFromXFFTrustedProxies",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 257,
+   "name": "walkXFF",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 304,
+   "name": "parseRemoteAddr",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 72,
+   "name": "NewCompressor",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 167,
+   "name": "SetEncoder",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 207,
+   "name": "Handler",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 231,
+   "name": "selectEncoder",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 310,
+   "name": "WriteHeader",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 338,
+   "name": "Write",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 346,
+   "name": "writer",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/content_charset.go",
+   "line": 12,
+   "name": "ContentCharset",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/content_charset.go",
+   "line": 35,
+   "name": "contentEncoding",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/content_encoding.go",
+   "line": 10,
+   "name": "AllowContentEncoding",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/content_type.go",
+   "line": 9,
+   "name": "SetHeader",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/content_type.go",
+   "line": 20,
+   "name": "AllowContentType",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/get_head.go",
+   "line": 10,
+   "name": "GetHead",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/heartbeat.go",
+   "line": 12,
+   "name": "Heartbeat",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/logger.go",
+   "line": 39,
+   "name": "Logger",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/logger.go",
+   "line": 44,
+   "name": "RequestLogger",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/logger.go",
+   "line": 81,
+   "name": "WithLogEntry",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/logger.go",
+   "line": 98,
+   "name": "NewLogEntry",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/logger.go",
+   "line": 140,
+   "name": "Write",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/middleware.go",
+   "line": 6,
+   "name": "New",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/middleware.go",
+   "line": 21,
+   "name": "String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/nocache.go",
+   "line": 40,
+   "name": "NoCache",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/page_route.go",
+   "line": 10,
+   "name": "PageRoute",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/path_rewrite.go",
+   "line": 9,
+   "name": "PathRewrite",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/profiler.go",
+   "line": 22,
+   "name": "Profiler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/recoverer.go",
+   "line": 22,
+   "name": "Recoverer",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/recoverer.go",
+   "line": 172,
+   "name": "decorateSourceLine",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/request_id.go",
+   "line": 67,
+   "name": "RequestID",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/request_id.go",
+   "line": 83,
+   "name": "GetReqID",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/request_id.go",
+   "line": 94,
+   "name": "NextRequestID",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/request_size.go",
+   "line": 9,
+   "name": "RequestSize",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/route_headers.go",
+   "line": 58,
+   "name": "RouteAny",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/route_headers.go",
+   "line": 77,
+   "name": "Handler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/route_headers.go",
+   "line": 135,
+   "name": "NewPattern",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/route_headers.go",
+   "line": 141,
+   "name": "Match",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/strip.go",
+   "line": 14,
+   "name": "StripSlashes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/strip.go",
+   "line": 41,
+   "name": "RedirectSlashes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/strip.go",
+   "line": 73,
+   "name": "StripPrefix",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/sunset.go",
+   "line": 11,
+   "name": "Sunset",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/supress_notfound.go",
+   "line": 15,
+   "name": "SupressNotFound",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/terminal.go",
+   "line": 37,
+   "name": "init#3",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/terminal.go",
+   "line": 55,
+   "name": "cW",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/throttle.go",
+   "line": 32,
+   "name": "Throttle",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/throttle.go",
+   "line": 44,
+   "name": "ThrottleWithOpts",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/timeout.go",
+   "line": 32,
+   "name": "Timeout",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/url_format.go",
+   "line": 46,
+   "name": "URLFormat",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/value.go",
+   "line": 9,
+   "name": "WithValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 15,
+   "name": "NewWrapResponseWriter",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 83,
+   "name": "WriteHeader",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 97,
+   "name": "Write",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 123,
+   "name": "flush",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 130,
+   "name": "Status",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 138,
+   "name": "Tee",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 146,
+   "name": "Discard",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 182,
+   "name": "Hijack",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 198,
+   "name": "Flush",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 207,
+   "name": "Push",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mux.go",
+   "line": 63,
+   "name": "ServeHTTP",
+   "indegree": 35,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 121,
+   "name": "HandleFunc",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mux.go",
+   "line": 137,
+   "name": "MethodFunc",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 143,
+   "name": "Connect",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 161,
+   "name": "Head",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 167,
+   "name": "Options",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 173,
+   "name": "Patch",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 179,
+   "name": "Post",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 185,
+   "name": "Put",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 191,
+   "name": "Query",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 197,
+   "name": "Trace",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 223,
+   "name": "MethodNotAllowed",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mux.go",
+   "line": 278,
+   "name": "Route",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 295,
+   "name": "Mount",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mux.go",
+   "line": 363,
+   "name": "Middlewares",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mux.go",
+   "line": 430,
+   "name": "handle",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 455,
+   "name": "routeHTTP",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 511,
+   "name": "updateSubRoutes",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 139,
+   "name": "Value",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 148,
+   "name": "InsertRoute",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 340,
+   "name": "getEdge",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 587,
+   "name": "isLeaf",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 696,
+   "name": "equalHandlers",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 803,
+   "name": "patParamKeys",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 822,
+   "name": "longestPrefix",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 834,
+   "name": "Sort",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 835,
+   "name": "Len",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tree.go",
+   "line": 882,
+   "name": "Walk",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

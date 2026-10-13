@@ -1,0 +1,15 @@
+[
+{"k":"3","member":"src/client/client.ts:133 hc","node":"src/client/client.ts|src/client/client.hc","seed":"src/jsx/context.ts:69","seed_name":"getCurrentStore"},
+{"k":"3","member":"src/middleware/combine/index.ts:141 except","node":"src/middleware/combine/index.ts|src/middleware/combine.except","seed":"src/jsx/children.ts:3","seed_name":"toArray"},
+{"k":"3","member":"src/middleware/combine/index.ts:99 every","node":"src/middleware/combine/index.ts|src/middleware/combine.every","seed":"src/jsx/children.ts:3","seed_name":"toArray"},
+{"k":"3","member":"src/middleware/cors/index.ts:63 cors","node":"src/middleware/cors/index.ts|src/middleware/cors.cors","seed":"src/context.ts:546","seed_name":"set"},
+{"k":"3","member":"src/middleware/cors/index.ts:63 cors","node":"src/middleware/cors/index.ts|src/middleware/cors.cors","seed":"src/jsx/context.ts:69","seed_name":"getCurrentStore"},
+{"k":"3","member":"src/middleware/cors/index.ts:97 set","node":"src/middleware/cors/index.ts|src/middleware/cors.cors.set","seed":"src/context.ts:546","seed_name":"set"},
+{"k":"inf","member":"src/client/client.ts:133 hc","node":"src/client/client.ts|src/client/client.hc","seed":"src/jsx/context.ts:69","seed_name":"getCurrentStore"},
+{"k":"inf","member":"src/helper/testing/index.ts:16 testClient","node":"src/helper/testing/index.ts|src/helper/testing.testClient","seed":"src/jsx/context.ts:69","seed_name":"getCurrentStore"},
+{"k":"inf","member":"src/middleware/combine/index.ts:141 except","node":"src/middleware/combine/index.ts|src/middleware/combine.except","seed":"src/jsx/children.ts:3","seed_name":"toArray"},
+{"k":"inf","member":"src/middleware/combine/index.ts:99 every","node":"src/middleware/combine/index.ts|src/middleware/combine.every","seed":"src/jsx/children.ts:3","seed_name":"toArray"},
+{"k":"inf","member":"src/middleware/cors/index.ts:63 cors","node":"src/middleware/cors/index.ts|src/middleware/cors.cors","seed":"src/context.ts:546","seed_name":"set"},
+{"k":"inf","member":"src/middleware/cors/index.ts:63 cors","node":"src/middleware/cors/index.ts|src/middleware/cors.cors","seed":"src/jsx/context.ts:69","seed_name":"getCurrentStore"},
+{"k":"inf","member":"src/middleware/cors/index.ts:97 set","node":"src/middleware/cors/index.ts|src/middleware/cors.cors.set","seed":"src/context.ts:546","seed_name":"set"}
+]

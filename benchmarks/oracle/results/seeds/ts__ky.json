@@ -1,0 +1,742 @@
+{
+ "cell": "ts/ky",
+ "repo": "ky",
+ "repo_sha": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 117,
+  "stratum_pool": {
+   "0": 11,
+   "1-3": 89,
+   "4-10": 17,
+   ">10": 0
+  },
+  "stratum_drawn": {
+   "0": 11,
+   "1-3": 72,
+   "4-10": 17,
+   ">10": 0
+  }
+ },
+ "seeds": [
+  {
+   "file": "source/core/Ky.ts",
+   "line": 66,
+   "name": "getCurrentTime",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 70,
+   "name": "raceWithTimeout",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 83,
+   "name": "cancelReturnedBody",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 90,
+   "name": "releaseWhenSettled",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 113,
+   "name": "isJsonContentType",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 136,
+   "name": "readResponseText",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 202,
+   "name": "validateTimeoutOption",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 221,
+   "name": "validateCallbackOptions",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 239,
+   "name": "isAbsoluteInput",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 242,
+   "name": "normalizeInputForProtocolCheck",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 246,
+   "name": "resolveInput",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 280,
+   "name": "applySearchParameters",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 312,
+   "name": "cloneInitHookOptions",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 329,
+   "name": "validateJsonWithSchema",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 349,
+   "name": "create",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 590,
+   "name": "#run",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 665,
+   "name": "#calculateDelay",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 688,
+   "name": "#calculateRetryDelay",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 783,
+   "name": "#throwProcessedError",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 819,
+   "name": "throwIfTotalTimeoutReached",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 855,
+   "name": "#getErrorDataTimeout",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 869,
+   "name": "#getEffectiveTimeout",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 931,
+   "name": "#raceWithTotalTimeout",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1013,
+   "name": "#createManagedSignal",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1020,
+   "name": "#shouldThrowHttpErrors",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1031,
+   "name": "#sentRequest",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1035,
+   "name": "#throwIfTotalTimeoutExhausted",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1041,
+   "name": "#runBeforeRequestHooks",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1065,
+   "name": "#runAfterResponseHooks",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1117,
+   "name": "#retry",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1125,
+   "name": "#retryFromError",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1218,
+   "name": "#fetch",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1277,
+   "name": "#throwIfAbortedByUser",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1282,
+   "name": "#getRemainingTotalTimeout",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1287,
+   "name": "#applyBeforeRetryOptions",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1307,
+   "name": "#getNormalizedOptions",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1330,
+   "name": "#assignRequest",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1342,
+   "name": "#withManagedSignal",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1355,
+   "name": "#getResponseRequest",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1359,
+   "name": "#setResponseRequest",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1364,
+   "name": "#limitResponseSize",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/Ky.ts",
+   "line": 1369,
+   "name": "#wrapRequestWithUploadProgress",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/constants.ts",
+   "line": 40,
+   "name": "validate",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/core/constants.ts",
+   "line": 58,
+   "name": "getSupportedResponseTypes",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/constants.ts",
+   "line": 164,
+   "name": "isRetryMarker",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/core/constants.ts",
+   "line": 175,
+   "name": "isRetryMarker",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/constants.ts",
+   "line": 263,
+   "name": "retry",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/core/retry-timing.ts",
+   "line": 25,
+   "name": "getRetryTimingHeader",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/retry-timing.ts",
+   "line": 51,
+   "name": "createTimestamp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/retry-timing.ts",
+   "line": 88,
+   "name": "parseDate",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/core/retry-timing.ts",
+   "line": 151,
+   "name": "calculateRetryTimingDelay",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/errors/KyError.ts",
+   "line": 11,
+   "name": "isKyError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/errors/NonError.ts",
+   "line": 12,
+   "name": "wrap",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/index.ts",
+   "line": 17,
+   "name": "createRequest",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/index.ts",
+   "line": 33,
+   "name": "createInstance",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/index.ts",
+   "line": 35,
+   "name": "ky",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 15,
+   "name": "cancelBody",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 22,
+   "name": "getContentLength",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 25,
+   "name": "normalizeLineBreaks",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 26,
+   "name": "escapeFormDataName",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 29,
+   "name": "getBodySize",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 78,
+   "name": "withProgress",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 176,
+   "name": "limitResponseSize",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/body.ts",
+   "line": 217,
+   "name": "streamRequest",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/delay.ts",
+   "line": 9,
+   "name": "delay",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/delay.ts",
+   "line": 19,
+   "name": "abortHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/utils/is.ts",
+   "line": 2,
+   "name": "isObject",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/is.ts",
+   "line": 5,
+   "name": "isNonArrayObject",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/is.ts",
+   "line": 8,
+   "name": "isNonNegativeNumber",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/is.ts",
+   "line": 13,
+   "name": "isError",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/is.ts",
+   "line": 17,
+   "name": "isRequest",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/is.ts",
+   "line": 23,
+   "name": "isResponse",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 20,
+   "name": "getReplaceState",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 53,
+   "name": "replaceOption",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 63,
+   "name": "validateAndMerge",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 73,
+   "name": "mergeHeaders",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 88,
+   "name": "isPlainObject",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 98,
+   "name": "isMergeable",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 100,
+   "name": "cloneShallow",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 125,
+   "name": "cloneSearchParameters",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 129,
+   "name": "cloneDeep",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 170,
+   "name": "toHeaderObject",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 188,
+   "name": "mergeHeaderContainers",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 198,
+   "name": "newHookValue",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 218,
+   "name": "mergeHooks",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 256,
+   "name": "resolveReplaceMarkers",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 266,
+   "name": "resolveItem",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 340,
+   "name": "deepMergeInternal",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/merge.ts",
+   "line": 500,
+   "name": "deepMerge",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/normalize.ts",
+   "line": 14,
+   "name": "normalizeRetryMethod",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/normalize.ts",
+   "line": 32,
+   "name": "delay",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/utils/normalize.ts",
+   "line": 37,
+   "name": "normalizeRetryOptions",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/options.ts",
+   "line": 32,
+   "name": "hasSearchParameters",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/timeout.ts",
+   "line": 11,
+   "name": "timeout",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/type-guards.ts",
+   "line": 9,
+   "name": "isErrorType",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "source/utils/type-guards.ts",
+   "line": 36,
+   "name": "isKyError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "source/utils/type-guards.ts",
+   "line": 59,
+   "name": "isHTTPError",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/type-guards.ts",
+   "line": 81,
+   "name": "isNetworkError",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/type-guards.ts",
+   "line": 130,
+   "name": "isForceRetryError",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "source/utils/type-guards.ts",
+   "line": 153,
+   "name": "isResponseSizeError",
+   "indegree": 1,
+   "stratum": "1-3"
+  }
+ ]
+}

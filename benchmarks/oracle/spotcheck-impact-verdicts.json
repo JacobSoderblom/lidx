@@ -1,0 +1,557 @@
+{
+ "68b7aa87": {
+  "verdict": "lidx_error",
+  "note": "`src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge."
+ },
+ "dcfd730d": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "9eb77a4d": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "9f949cb0": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`."
+ },
+ "81bcd14a": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "6ef42224": {
+  "verdict": "lidx_error",
+  "note": "`src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge."
+ },
+ "4199878b": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "859897a6": {
+  "verdict": "lidx_error",
+  "note": "`src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge."
+ },
+ "9ba14b55": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`."
+ },
+ "d5c3223f": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`."
+ },
+ "e0b66126": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "75e95c22": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "3f20fe30": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "ee09a241": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "51894fec": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "a8c2d0a7": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "772ad6a7": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "e4565da7": {
+  "verdict": "lidx_error",
+  "note": "The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge."
+ },
+ "284c30c5": {
+  "verdict": "oracle_artefact",
+  "note": "`opt(p)` calls the functional options the caller passed (WithInput, WithOutput); RTA resolves a call of a function value to every address-taken function of the signature, so WithoutRenderer is not reachable from this test."
+ },
+ "2a079e99": {
+  "verdict": "lidx_error",
+  "note": "`c.UsageFunc()(c)` runs the closure UsageFunc returns, which calls `fn := c.getUsageTemplateFunc(); fn(...)` where fn is `defaultUsageFunc`: the chain is real; lidx does not follow a function value returned by a function."
+ },
+ "8460cca2": {
+  "verdict": "oracle_artefact",
+  "note": "`tt.wantErr(t, err)` is a field of type assert.ErrorAssertionFunc; the oracle resolves it to an unrelated test that happens to be address-taken. No such flow exists."
+ },
+ "4966378a": {
+  "verdict": "oracle_artefact",
+  "note": "`p.cancel()` is a context.CancelFunc; RTA resolves the func() call to an unrelated closure in `kill`/`execBatchMsg`. The chain does not exist at run time."
+ },
+ "e682ca72": {
+  "verdict": "oracle_artefact",
+  "note": "`Sequentially(cmds...)()` calls the closure Sequentially returns; the oracle resolves the Cmd call to a closure inside an unrelated test."
+ },
+ "84a6bc71": {
+  "verdict": "oracle_artefact",
+  "note": "`helpCommand.Action(c)` is a function-valued field; the oracle resolves it to a closure inside TestApp_VisibleCommands, which cannot flow there."
+ },
+ "701d594e": {
+  "verdict": "oracle_artefact",
+  "note": "`DefaultLogger(testHandler)` calls a func(http.Handler) http.Handler value built by RequestLogger; ContentCharset has the same signature but is not that value."
+ },
+ "60bc832c": {
+  "verdict": "oracle_artefact",
+  "note": "`test.test(t)` is a table field; the oracle resolves it to a test of another package that cannot be in this table."
+ },
+ "22d1c362": {
+  "verdict": "lidx_error",
+  "note": "`prepareFlags` calls `flag.Names()` on a `DocGenerationFlag` obtained by a type assertion; PathFlag implements it. The call is real and lidx records no dispatch from a variable typed by a comma-ok assertion."
+ },
+ "aaca4db9": {
+  "verdict": "lidx_error",
+  "note": "`bs.r.Read(tmp)` is an interface call on an `io.Reader` field; billyFile implements io.Reader and is allocated, so RTA lists it. lidx does not dispatch through the standard-library interface."
+ },
+ "d38aea14": {
+  "verdict": "oracle_artefact",
+  "note": "`p.cancel()` again resolved to an unrelated closure (`execBatchMsg`'s `cmd()`); not a real flow."
+ },
+ "df0e3e1d": {
+  "verdict": "oracle_artefact",
+  "note": "`resp.Body.Close()` resolved to an unrelated Close that calls `t.cleanup()`, then to `testWithTimeout`'s `test(t)`: three function-value conflations, not a real chain."
+ },
+ "91af5e80": {
+  "verdict": "oracle_artefact",
+  "note": "`createFn(...)()` calls a generic function value; the oracle resolves it to TestClearMsg (an unrelated test)."
+ },
+ "46aaa9c5": {
+  "verdict": "oracle_artefact",
+  "note": "`DefaultLogger(testHandler)` resolved to StripPrefix, which has the signature but is not the logger."
+ },
+ "92679c04": {
+  "verdict": "oracle_artefact",
+  "note": "`mw(next)` is the middleware the caller passes to Maybe; the oracle picks RequestLogger, which Maybe never receives in this repository."
+ },
+ "97bf4f99": {
+  "verdict": "lidx_error",
+  "note": "`VisitParents(fn)` calls `fn`, which is the closure literal updateParentsPflags passes it: the closure is part of updateParentsPflags, so VisitParents does execute it. lidx does not link a function-valued argument to the callee that invokes it."
+ },
+ "2f189a70": {
+  "verdict": "lidx_error",
+  "note": "`FlagStringer(f)` is the package variable defaulting to `stringifyFlag`, which calls `df.TakesValue()` on a DocGenerationFlag (a type-assertion variable). Both hops are calls lidx records no edge for (function-valued variable, dispatch through an asserted interface)."
+ },
+ "708cd662": {
+  "verdict": "oracle_artefact",
+  "note": "`closer.Close()` resolved to an unrelated Close which calls `t.cleanup()` (a function value); no real chain to Catalog."
+ },
+ "fdcc7bd3": {
+  "verdict": "lidx_error",
+  "note": "`h.ServeHTTP(w, r)` on an `http.Handler` parameter; `Mux` implements http.Handler and is allocated, so RTA lists it. lidx does not dispatch through the standard-library interface."
+ },
+ "370c1854": {
+  "verdict": "oracle_artefact",
+  "note": "`fn(subRouter)` calls the closure passed to `Route`; the oracle resolves it to another test's closure."
+ },
+ "f8ab0560": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "67e3dcf4": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "5d83e9b2": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "c895b93c": {
+  "verdict": "lidx_error",
+  "note": "`chi.URLParam(r, \"accountID\")` is called inside a function literal passed to `r.Get`; lidx records no edge for it (no CALLS row at that line)."
+ },
+ "6e5a54fc": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "ae99f1a8": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "e593a976": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "254c29d7": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "9282117e": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "8eb1180b": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "6cf42b9c": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "c5933fc4": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "e22b4cf2": {
+  "verdict": "lidx_error",
+  "note": "The first hop `pkgtest.TestCataloger(t, ...)` has no lidx edge, and the later `s.FileResolver` call is an interface dispatch that costs an extra depth level, so the member is out of reach at max_depth 3."
+ },
+ "c9f1605e": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "0b356718": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "371d3b52": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "3e1d90f6": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "a3c867dd": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "002f84d7": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "5a925031": {
+  "verdict": "lidx_error",
+  "note": "The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away."
+ },
+ "92b7efc8": {
+  "verdict": "lidx_error",
+  "note": "`promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`."
+ },
+ "f0cf0dc8": {
+  "verdict": "lidx_error",
+  "note": "`promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`."
+ },
+ "997a811d": {
+  "verdict": "lidx_error",
+  "note": "`middleware.map(...)` is Array.prototype.map; the bare_name tier resolves it to `Children.map`."
+ },
+ "339dc462": {
+  "verdict": "lidx_error",
+  "note": "`promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`."
+ },
+ "2d74b4b9": {
+  "verdict": "lidx_error",
+  "note": "v4 `ZodType` has no call to the v3 `ZodType.safeParse`; the bare_name tier joins `inst.safeParse` (a property assignment in v4) to the v3 class method of the same name."
+ },
+ "d62785ce": {
+  "verdict": "lidx_error",
+  "note": "v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4."
+ },
+ "623b13ef": {
+  "verdict": "lidx_error",
+  "note": "`_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`."
+ },
+ "da0f8d80": {
+  "verdict": "lidx_error",
+  "note": "v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4."
+ },
+ "51918517": {
+  "verdict": "lidx_error",
+  "note": "`proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`."
+ },
+ "af85142c": {
+  "verdict": "lidx_error",
+  "note": "`middleware.map(...)` is Array.prototype.map; the bare_name tier resolves it to `Children.map`."
+ },
+ "ce233445": {
+  "verdict": "lidx_error",
+  "note": "`flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name."
+ },
+ "4338dbce": {
+  "verdict": "lidx_error",
+  "note": "v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4."
+ },
+ "7c54a8cd": {
+  "verdict": "lidx_error",
+  "note": "`_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`."
+ },
+ "7e026b82": {
+  "verdict": "lidx_error",
+  "note": "`proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`."
+ },
+ "04990b23": {
+  "verdict": "lidx_error",
+  "note": "`_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`."
+ },
+ "f8983d0b": {
+  "verdict": "lidx_error",
+  "note": "`c.res.headers.set(key, value)` is Headers.set; bare_name resolves it to `Context.set`."
+ },
+ "f70ebd3a": {
+  "verdict": "lidx_error",
+  "note": "`c.res.headers.set(key, value)` is Headers.set; bare_name resolves it to `Context.set`."
+ },
+ "8bc58a61": {
+  "verdict": "lidx_error",
+  "note": "`flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name."
+ },
+ "8d4da084": {
+  "verdict": "lidx_error",
+  "note": "`flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name."
+ },
+ "38c31994": {
+  "verdict": "lidx_error",
+  "note": "`proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`."
+ },
+ "d82bc390": {
+  "verdict": "lidx_error",
+  "note": "`new ZodArray(...)` reaches the inherited ZodType constructor, whose `validate: (data) => this[\"~validate\"](data)` calls getParsedType; lidx links neither the inherited constructor nor the element-access call."
+ },
+ "0600e3a8": {
+  "verdict": "lidx_error",
+  "note": "`z.number()` is `ZodNumber.create` re-exported under another name; lidx does not follow the alias."
+ },
+ "cf7657e8": {
+  "verdict": "lidx_error",
+  "note": "`new ZodMiniObject({...})` (a `core.$constructor` const) is recorded as USES, not CALLS, so the chain to the constructor body (`util.defineLazy`) is missing from the call graph."
+ },
+ "4d328717": {
+  "verdict": "lidx_error",
+  "note": "`def.type._parseAsync(...)` and `this._parse(input)` are calls on typed members; lidx has no edge for the first and no dispatch for the second, so ZodArray._parse never reaches ZodString._parse's `_getType`."
+ },
+ "0b4209bf": {
+  "verdict": "lidx_error",
+  "note": "`((event as any)[kEventDispose] as DisposeState | undefined)?.observe(...)` is a call on a type-asserted receiver; lidx records no edge."
+ },
+ "b010a093": {
+  "verdict": "lidx_error",
+  "note": "the call `createContext(...)` is in the initialiser of the const `StreamingContext`; lidx attributes module-level initialiser calls to the module symbol, which impact answers drop."
+ },
+ "0b8a4621": {
+  "verdict": "lidx_error",
+  "note": "`this._def.type._parse(...)` and `this._def.shape()` are calls through typed fields (`_def.type`, a function-valued `shape`); lidx records no edge for either."
+ },
+ "fa799dbd": {
+  "verdict": "lidx_error",
+  "note": "`option._parseAsync(...)` then `this._parse(input)`: calls on typed members and a dispatch to the override; lidx records neither."
+ },
+ "01ba2fd0": {
+  "verdict": "lidx_error",
+  "note": "`call.result()` calls a function-typed member of an interface; lidx records no edge."
+ },
+ "513695df": {
+  "verdict": "lidx_error",
+  "note": "`arraySchema.max(schema.maxItems)` is a call on a `let` variable holding a ZodArray; lidx does not resolve the receiver."
+ },
+ "7cac828e": {
+  "verdict": "lidx_error",
+  "note": "`new ZodArray(...)` reaches the inherited constructor whose arrow calls `this[\"~validate\"]`; lidx links neither."
+ },
+ "6390606b": {
+  "verdict": "lidx_error",
+  "note": "`const safeDecode = core._safeDecode(ZodRealError)` is a module-level initialiser call returning the function that later calls `_safeParse(...)` and `core.config()`; lidx attributes the initialiser to the module."
+ },
+ "7673bede": {
+  "verdict": "lidx_error",
+  "note": "`this._def.innerType._parse({...})` is a call through a typed field to an override; lidx records no edge."
+ },
+ "9357db44": {
+  "verdict": "lidx_error",
+  "note": "`new ZodDefault({...})` (a `core.$constructor` const) is recorded as USES, not CALLS."
+ },
+ "01b33a71": {
+  "verdict": "lidx_error",
+  "note": "`const ky = createInstance();` is a module-level initialiser call; lidx attributes it to the module symbol."
+ },
+ "1d37e1bc": {
+  "verdict": "lidx_error",
+  "note": "`export const cache = createOcacheRuleHandler();` is a module-level initialiser call; lidx attributes it to the module symbol."
+ },
+ "ad772c0a": {
+  "verdict": "lidx_error",
+  "note": "module-level initialiser call (`export const cache = createOcacheRuleHandler()`) and a `?.observe(...)` call on a type-asserted receiver; lidx records neither."
+ },
+ "221e74fe": {
+  "verdict": "lidx_error",
+  "note": "`new ZodIntersection({...})` (a `core.$constructor` const) is recorded as USES, not CALLS."
+ },
+ "bfafa216": {
+  "verdict": "lidx_error",
+  "note": "`state.scope_.immer_.shouldUseStrictIteration()` is a call along a typed property chain; lidx records no edge."
+ },
+ "fcfd1162": {
+  "verdict": "lidx_error",
+  "note": "`this.router.match(method, path)` is a call on a field typed by the `Router` interface; SmartRouter is the default router, so the chain is real, and lidx has no dispatch for a field-typed receiver."
+ },
+ "cc3f3702": {
+  "verdict": "lidx_error",
+  "note": "`report.print::<Markdown>()` is the bugreport crate's Report::print; the bare_name tier resolves it to `PrettyPrinter::print`."
+ },
+ "fc7ca0b2": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "f366da69": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "3c992ed4": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "13e24c82": {
+  "verdict": "lidx_error",
+  "note": "`create_working_directory` calls std/tempfile `.path()`; bare_name resolves it to `DirEntry::path`."
+ },
+ "c339628b": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "14f81439": {
+  "verdict": "lidx_error",
+  "note": "`max.or(min)` is Option::or; bare_name resolves it to `List::or`."
+ },
+ "bbf5fd1d": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "4df0909c": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "6d74d7c5": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "4b968229": {
+  "verdict": "oracle_artefact",
+  "note": "`error.display_to_stderr(...)` on the `ExpectedError` returned by `opts.exec(...)` is a real call in `main`; the SCIP oracle has no edge for it (no resolved call occurrence from the binary's main)."
+ },
+ "cadd641b": {
+  "verdict": "lidx_error",
+  "note": "`.or(arguments.subcommand.usage.as_deref())` is Option::or; bare_name resolves it to `List::or`."
+ },
+ "8426d309": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "7532048c": {
+  "verdict": "lidx_error",
+  "note": "`.or(arguments.subcommand.usage.as_deref())` is Option::or; bare_name resolves it to `List::or`."
+ },
+ "2c0051a9": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "349a01c4": {
+  "verdict": "lidx_error",
+  "note": "`filter(ent)` in `Walk::skip_entry` calls a local closure/variable named filter; bare_name resolves it to the test function `walk::tests::filter`."
+ },
+ "9061cf08": {
+  "verdict": "oracle_artefact",
+  "note": "`error.process_exit_code()` is a real call in the binary's `main` and `process_exit_code` calls `err.kind()`; the SCIP oracle has no edge from `main`."
+ },
+ "530b808a": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "45a576fe": {
+  "verdict": "lidx_error",
+  "note": "`report.print::<Markdown>()` is the bugreport crate's Report::print; bare_name resolves it to `PrettyPrinter::print`."
+ },
+ "20e2d964": {
+  "verdict": "oracle_artefact",
+  "note": "The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right."
+ },
+ "71ffb583": {
+  "verdict": "lidx_error",
+  "note": "`printer.print_footer(writer, input)` is a call on a trait object; lidx records no dispatch for Rust traits."
+ },
+ "2541e667": {
+  "verdict": "lidx_error",
+  "note": "`range.start()` with `type Range = Match` is `Match::start`; lidx does not resolve through the type alias."
+ },
+ "d285bb72": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+ },
+ "f295180b": {
+  "verdict": "lidx_error",
+  "note": "`.extract(source, &module_name)` is a call on a `dyn LanguageExtractor`; lidx has no trait dispatch for Rust."
+ },
+ "65ea4096": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+ },
+ "ee1f272c": {
+  "verdict": "lidx_error",
+  "note": "`detector.detect()` is a call on a `&dyn ColorSchemeDetector`; lidx has no trait dispatch for Rust."
+ },
+ "4b374a5e": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+ },
+ "bd407c4c": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+ },
+ "bcc8ccbd": {
+  "verdict": "lidx_error",
+  "note": "`flag.doc_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+ },
+ "a1447788": {
+  "verdict": "lidx_error",
+  "note": "`Input::from_reader(reader)` in pretty_printer.rs is PrettyPrinter's own wrapper `from_reader`; lidx has no edge to it."
+ },
+ "1ec3247b": {
+  "verdict": "lidx_error",
+  "note": "`index.declarations(...)` is a call on `&dyn DeclarationIndex`; lidx has no trait dispatch for Rust."
+ },
+ "4df4a773": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+ },
+ "374cc69b": {
+  "verdict": "lidx_error",
+  "note": "`flag.is_switch()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+ },
+ "1cc91dd4": {
+  "verdict": "lidx_error",
+  "note": "`flag.doc_variable()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+ },
+ "c7af339f": {
+  "verdict": "lidx_error",
+  "note": "`flag.is_switch()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+ },
+ "53041a5f": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+ },
+ "7851921a": {
+  "verdict": "lidx_error",
+  "note": "`value.key()` is a call on a generic `T: Keyed`; lidx has no trait dispatch for Rust."
+ },
+ "f79d5c79": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust."
+ },
+ "2a3ae478": {
+  "verdict": "lidx_error",
+  "note": "`flag.doc_variable()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+ },
+ "345cd32c": {
+  "verdict": "lidx_error",
+  "note": "`flag.name_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust."
+ },
+ "_summary": {
+  "note": "Artefact rates: TypeScript 0/40 (0.0%), Rust 13/40 (32.5%; extra 13/20, 11 of them tokei, whose build.rs-generated `LanguageType` rust-analyzer cannot resolve with build scripts off, and 2 in nextest; missing 0/20), Go 17/58 (29.3%; extra 3/18, missing 14/20 on the full closure, 0/20 on the closure without function-value edges). The wrong extra pairs that were lidx errors: TypeScript 20/20 `bare_name` joins of a standard-library method to an in-repo method of the same name; Go 15/18 interface-dispatch fan-out to implementers that cannot be the receiver's dynamic type; Rust 7/20 `bare_name`. Every sampled missing pair of TypeScript, Rust and the Go diagnostic closure was a real chain lidx lacks (calls through typed members, trait dispatch, function values, an interface hop that costs a depth level)."
+ }
+}

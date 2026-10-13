@@ -1,0 +1,742 @@
+{
+ "cell": "go/bubbletea/tests",
+ "repo": "bubbletea",
+ "repo_sha": "9edf69c677c7353eca5fae6d3ea3986af39717b7",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 209,
+  "stratum_pool": {
+   "0": 22,
+   "1-3": 130,
+   "4-10": 43,
+   ">10": 14
+  },
+  "stratum_drawn": {
+   "0": 22,
+   "1-3": 32,
+   "4-10": 32,
+   ">10": 14
+  }
+ },
+ "seeds": [
+  {
+   "file": "commands.go",
+   "line": 36,
+   "name": "compactCmds",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "commands.go",
+   "line": 154,
+   "name": "Tick",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "commands.go",
+   "line": 180,
+   "name": "Sequentially",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "commands_test.go",
+   "line": 29,
+   "name": "TestSequentially",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "commands_test.go",
+   "line": 84,
+   "name": "TestBatch",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "commands_test.go",
+   "line": 88,
+   "name": "TestSequence",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "commands_test.go",
+   "line": 92,
+   "name": "testMultipleCommands",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "exec.go",
+   "line": 69,
+   "name": "wrapExecCommand",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "exec.go",
+   "line": 94,
+   "name": "SetStderr",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "exec.go",
+   "line": 102,
+   "name": "exec",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "exec_test.go",
+   "line": 50,
+   "name": "TestTeaExec",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "inputreader_other.go",
+   "line": 13,
+   "name": "newInputReader",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "key.go",
+   "line": 67,
+   "name": "String",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "key.go",
+   "line": 540,
+   "name": "String",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "key_test.go",
+   "line": 20,
+   "name": "TestKeyString",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 48,
+   "name": "TestKeyTypeString",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 114,
+   "name": "TestDetectSequence",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 132,
+   "name": "TestDetectOneMsg",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 228,
+   "name": "TestReadLongInput",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 247,
+   "name": "TestReadInput",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 551,
+   "name": "testReadInputs",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "key_test.go",
+   "line": 681,
+   "name": "TestDetectRandomSequencesLex",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 685,
+   "name": "runTestDetectSequence",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "key_test.go",
+   "line": 722,
+   "name": "TestDetectRandomSequencesMap",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "key_test.go",
+   "line": 728,
+   "name": "BenchmarkDetectSequenceMap",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "logging_test.go",
+   "line": 10,
+   "name": "TestLogToFile",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mouse.go",
+   "line": 11,
+   "name": "String",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mouse.go",
+   "line": 172,
+   "name": "parseSGRMouseEvent",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mouse.go",
+   "line": 214,
+   "name": "parseX10MouseEvent",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mouse_test.go",
+   "line": 8,
+   "name": "TestMouseEvent_String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mouse_test.go",
+   "line": 216,
+   "name": "TestParseX10MouseEvent",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mouse_test.go",
+   "line": 610,
+   "name": "TestParseSGRMouseEvent",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nil_renderer.go",
+   "line": 9,
+   "name": "repaint",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nil_renderer.go",
+   "line": 12,
+   "name": "enterAltScreen",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nil_renderer.go",
+   "line": 17,
+   "name": "disableMouseCellMotion",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nil_renderer.go",
+   "line": 19,
+   "name": "disableMouseAllMotion",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nil_renderer.go",
+   "line": 24,
+   "name": "bracketedPasteActive",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nil_renderer.go",
+   "line": 25,
+   "name": "setWindowTitle",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nil_renderer_test.go",
+   "line": 5,
+   "name": "TestNilRenderer",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "options.go",
+   "line": 20,
+   "name": "WithContext",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "options.go",
+   "line": 28,
+   "name": "WithOutput",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "options.go",
+   "line": 38,
+   "name": "WithInput",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "options.go",
+   "line": 137,
+   "name": "WithMouseCellMotion",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "options.go",
+   "line": 177,
+   "name": "WithoutRenderer",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "options.go",
+   "line": 226,
+   "name": "WithFilter",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "screen.go",
+   "line": 18,
+   "name": "ClearScreen",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "screen.go",
+   "line": 32,
+   "name": "EnterAltScreen",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "screen.go",
+   "line": 47,
+   "name": "ExitAltScreen",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "screen.go",
+   "line": 61,
+   "name": "EnableMouseCellMotion",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "screen.go",
+   "line": 79,
+   "name": "EnableMouseAllMotion",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "screen.go",
+   "line": 101,
+   "name": "HideCursor",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "screen.go",
+   "line": 124,
+   "name": "EnableBracketedPaste",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "screen.go",
+   "line": 138,
+   "name": "DisableBracketedPaste",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "signals_unix.go",
+   "line": 15,
+   "name": "listenForResize",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 103,
+   "name": "stop",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 127,
+   "name": "execute",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 132,
+   "name": "kill",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 294,
+   "name": "lastLinesRendered",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 319,
+   "name": "repaint",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 415,
+   "name": "enableMouseCellMotion",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 422,
+   "name": "disableMouseCellMotion",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 436,
+   "name": "disableMouseAllMotion",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 465,
+   "name": "disableBracketedPaste",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 473,
+   "name": "bracketedPasteActive",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 480,
+   "name": "enableReportFocus",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 496,
+   "name": "reportFocus",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "standard_renderer.go",
+   "line": 603,
+   "name": "insertBottom",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tea.go",
+   "line": 91,
+   "name": "has",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea.go",
+   "line": 117,
+   "name": "add",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tea.go",
+   "line": 122,
+   "name": "shutdown",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tea.go",
+   "line": 201,
+   "name": "Quit",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea.go",
+   "line": 241,
+   "name": "NewProgram",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea.go",
+   "line": 507,
+   "name": "execSequenceMsg",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea.go",
+   "line": 533,
+   "name": "execBatchMsg",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea.go",
+   "line": 578,
+   "name": "Run",
+   "indegree": 24,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea.go",
+   "line": 762,
+   "name": "Start",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tea.go",
+   "line": 774,
+   "name": "Send",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea.go",
+   "line": 788,
+   "name": "Quit",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_init.go",
+   "line": 7,
+   "name": "init#1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 21,
+   "name": "panicCmd",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 58,
+   "name": "View",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 63,
+   "name": "TestTeaModel",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 81,
+   "name": "TestTeaQuit",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 102,
+   "name": "TestTeaWaitQuit",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 152,
+   "name": "TestTeaWaitKill",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 202,
+   "name": "TestTeaWithFilter",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 208,
+   "name": "testTeaWithFilter",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 243,
+   "name": "TestTeaKill",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 272,
+   "name": "TestTeaContext",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 301,
+   "name": "TestTeaContextImplodeDeadlock",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 323,
+   "name": "TestTeaContextBatchDeadlock",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 354,
+   "name": "TestTeaBatchMsg",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 386,
+   "name": "TestTeaSequenceMsg",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 452,
+   "name": "TestTeaSend",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 470,
+   "name": "TestTeaNoRun",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 478,
+   "name": "TestTeaPanic",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tea_test.go",
+   "line": 505,
+   "name": "TestTeaGoroutinePanic",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tty.go",
+   "line": 25,
+   "name": "initTerminal",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tty.go",
+   "line": 121,
+   "name": "checkResize",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tty_unix.go",
+   "line": 32,
+   "name": "openInputTTY",
+   "indegree": 1,
+   "stratum": "1-3"
+  }
+ ]
+}

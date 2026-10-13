@@ -1,0 +1,742 @@
+{
+ "cell": "rust/bat/path_tests_excluded",
+ "repo": "bat",
+ "repo_sha": "dab96bf0bcff07104db976325997bd2479e0c13a",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 458,
+  "stratum_pool": {
+   "0": 149,
+   "1-3": 271,
+   "4-10": 34,
+   ">10": 4
+  },
+  "stratum_drawn": {
+   "0": 32,
+   "1-3": 32,
+   "4-10": 32,
+   ">10": 4
+  }
+ },
+ "seeds": [
+  {
+   "file": "build/syntax_mapping.rs",
+   "line": 160,
+   "name": "env",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "build/syntax_mapping.rs",
+   "line": 218,
+   "name": "get_def_paths",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "examples/buffer.rs",
+   "line": 3,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "examples/list_syntaxes_and_themes.rs",
+   "line": 4,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "examples/simple.rs",
+   "line": 4,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 87,
+   "name": "set_fallback_theme",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 92,
+   "name": "get_syntax_set",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 109,
+   "name": "get_theme_set",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 210,
+   "name": "get_syntax",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 262,
+   "name": "get_syntax_for_file_name",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 321,
+   "name": "from_binary",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 374,
+   "name": "new",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 382,
+   "name": "get_syntax_name",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 427,
+   "name": "syntax_for_file_with_content",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 431,
+   "name": "syntax_for_file",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/assets.rs",
+   "line": 548,
+   "name": "syntax_detection_with_extension_mapping_to_unknown",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/assets/assets_metadata.rs",
+   "line": 35,
+   "name": "try_load_from_folder",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/assets/build_assets/acknowledgements.rs",
+   "line": 47,
+   "name": "to_path_and_stem",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/assets/serialized_syntax_set.rs",
+   "line": 19,
+   "name": "deserialize",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/bin/bat/app.rs",
+   "line": 441,
+   "name": "theme_options",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/bin/bat/clap_app.rs",
+   "line": 727,
+   "name": "verify_app",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/bin/bat/config.rs",
+   "line": 25,
+   "name": "config_file",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/bin/bat/config.rs",
+   "line": 124,
+   "name": "get_args_from_str",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/bin/bat/config.rs",
+   "line": 167,
+   "name": "single",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/bin/bat/input.rs",
+   "line": 12,
+   "name": "named",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/bin/bat/main.rs",
+   "line": 260,
+   "name": "get_new_terminal_title",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/controller.rs",
+   "line": 29,
+   "name": "new",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/controller.rs",
+   "line": 38,
+   "name": "run",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/input.rs",
+   "line": 129,
+   "name": "ordinary_file",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/input.rs",
+   "line": 156,
+   "name": "from_reader",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/input.rs",
+   "line": 165,
+   "name": "is_stdin",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/input.rs",
+   "line": 169,
+   "name": "with_name",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/input.rs",
+   "line": 173,
+   "name": "_with_name",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/less.rs",
+   "line": 33,
+   "name": "parse_less_version_busybox",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/less.rs",
+   "line": 80,
+   "name": "test_parse_less_version_581_2",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/line_range.rs",
+   "line": 26,
+   "name": "from",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/line_range.rs",
+   "line": 115,
+   "name": "test_parse_fail",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/line_range.rs",
+   "line": 205,
+   "name": "from",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/line_range.rs",
+   "line": 217,
+   "name": "check",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/line_range.rs",
+   "line": 244,
+   "name": "ranges",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/output.rs",
+   "line": 145,
+   "name": "handle",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 48,
+   "name": "new",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 73,
+   "name": "inputs",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 118,
+   "name": "term_width",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 142,
+   "name": "header",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 148,
+   "name": "line_numbers",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 154,
+   "name": "grid",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 160,
+   "name": "rule",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 168,
+   "name": "vcs_modification_markers",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 174,
+   "name": "show_nonprintable",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 180,
+   "name": "snip",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 201,
+   "name": "use_italics",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 237,
+   "name": "highlight_range",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 251,
+   "name": "theme",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 257,
+   "name": "syntax_mapping",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 283,
+   "name": "print",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/pretty_printer.rs",
+   "line": 336,
+   "name": "[Default]default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/printer.rs",
+   "line": 86,
+   "name": "print_header",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/printer.rs",
+   "line": 92,
+   "name": "print_footer",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/printer.rs",
+   "line": 96,
+   "name": "print_line",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/printer.rs",
+   "line": 452,
+   "name": "[Printer]print_header",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 25,
+   "name": "components",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 97,
+   "name": "changes",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 101,
+   "name": "grid",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 150,
+   "name": "extract_from_str",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 195,
+   "name": "to_components",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 217,
+   "name": "[Default]default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 225,
+   "name": "[FromStr]from_str",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 279,
+   "name": "style_component_list_to_components_removes_negated",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 292,
+   "name": "style_component_list_to_components_expands_subcomponents",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/style.rs",
+   "line": 348,
+   "name": "style_component_list_default_builds_on_auto",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/syntax_mapping.rs",
+   "line": 72,
+   "name": "new",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/syntax_mapping.rs",
+   "line": 82,
+   "name": "start_offload_build_all",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/syntax_mapping.rs",
+   "line": 99,
+   "name": "insert",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/syntax_mapping.rs",
+   "line": 148,
+   "name": "get_syntax_for",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/syntax_mapping/ignored_suffixes.rs",
+   "line": 13,
+   "name": "[Default]default",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/syntax_mapping/ignored_suffixes.rs",
+   "line": 56,
+   "name": "try_with_stripped_suffix",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/syntax_mapping/ignored_suffixes.rs",
+   "line": 70,
+   "name": "internal_suffixes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/syntax_mapping/ignored_suffixes.rs",
+   "line": 90,
+   "name": "external_suffixes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 30,
+   "name": "default_theme",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 80,
+   "name": "[Default]default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 104,
+   "name": "[FromStr]from_str",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 204,
+   "name": "theme_impl",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 218,
+   "name": "choose_theme_opt",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 255,
+   "name": "[ColorSchemeDetector]should_detect",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 308,
+   "name": "[ColorSchemeDetector]should_detect",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 312,
+   "name": "[ColorSchemeDetector]detect",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 364,
+   "name": "not_called_for_auto_if_not_should_detect",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 475,
+   "name": "chooses_dark_theme_if_dark_or_unknown",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 524,
+   "name": "should_detect",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 555,
+   "name": "[ColorSchemeDetector]should_detect",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/theme.rs",
+   "line": 568,
+   "name": "color_schemes",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 362,
+   "name": "new",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 371,
+   "name": "chars_take_while",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 544,
+   "name": "[Iterator]next",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 661,
+   "name": "test_escape_sequence_offsets_iterator_parses_text",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 721,
+   "name": "test_escape_sequence_offsets_iterator_parses_csi",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 751,
+   "name": "test_escape_sequence_offsets_iterator_parses_csi_with_intermediates",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 820,
+   "name": "test_escape_sequence_offsets_iterator_parses_nf",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/vscreen.rs",
+   "line": 883,
+   "name": "test_escape_sequence_iterator_iterates",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

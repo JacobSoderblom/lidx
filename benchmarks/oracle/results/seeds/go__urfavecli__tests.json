@@ -1,0 +1,742 @@
+{
+ "cell": "go/urfavecli/tests",
+ "repo": "urfavecli",
+ "repo_sha": "19b951ab78929023a9a670722b26ffb1d67c733a",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 1224,
+  "stratum_pool": {
+   "0": 365,
+   "1-3": 536,
+   "4-10": 121,
+   ">10": 202
+  },
+  "stratum_drawn": {
+   "0": 25,
+   "1-3": 25,
+   "4-10": 25,
+   ">10": 25
+  }
+ },
+ "seeds": [
+  {
+   "file": "altsrc/default_input_source.go",
+   "line": 4,
+   "name": "defaultInputSource",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "altsrc/flag.go",
+   "line": 23,
+   "name": "ApplyInputSourceValues",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "altsrc/flag.go",
+   "line": 301,
+   "name": "ApplyInputSourceValue",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "altsrc/flag.go",
+   "line": 343,
+   "name": "ApplyInputSourceValue",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "altsrc/flag_generated.go",
+   "line": 25,
+   "name": "Apply",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "altsrc/flag_generated.go",
+   "line": 120,
+   "name": "Apply",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "altsrc/flag_generated.go",
+   "line": 177,
+   "name": "Apply",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "altsrc/flag_test.go",
+   "line": 68,
+   "name": "TestGenericApplyInputSourceValueError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "altsrc/flag_test.go",
+   "line": 564,
+   "name": "TestIntApplyInputSourceMethodSet",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "altsrc/flag_test.go",
+   "line": 704,
+   "name": "TestInt64ApplyInputSourceMethodContextSetInvalidType",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "altsrc/flag_test.go",
+   "line": 969,
+   "name": "runTest",
+   "indegree": 61,
+   "stratum": ">10"
+  },
+  {
+   "file": "altsrc/helpers_test.go",
+   "line": 15,
+   "name": "expect",
+   "indegree": 92,
+   "stratum": ">10"
+  },
+  {
+   "file": "altsrc/helpers_test.go",
+   "line": 24,
+   "name": "refute",
+   "indegree": 53,
+   "stratum": ">10"
+  },
+  {
+   "file": "altsrc/json_command_test.go",
+   "line": 88,
+   "name": "TestCommandJSONFileTestGlobalEnvVarWinsNested",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "altsrc/json_command_test.go",
+   "line": 319,
+   "name": "writeTempFile",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "altsrc/json_source_context.go",
+   "line": 17,
+   "name": "NewJSONSourceFromFlagFunc",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "altsrc/toml_file_loader.go",
+   "line": 88,
+   "name": "NewTomlSourceFromFlagFunc",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "altsrc/yaml_file_loader_test.go",
+   "line": 15,
+   "name": "ExampleApp_Run_yamlFileLoaderDuration",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "app.go",
+   "line": 391,
+   "name": "Command",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "app.go",
+   "line": 403,
+   "name": "VisibleCategories",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "app_test.go",
+   "line": 269,
+   "name": "ExampleApp_Run_bashComplete_withLongFlag",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "app_test.go",
+   "line": 298,
+   "name": "ExampleApp_Run_bashComplete_withMultipleLongFlag",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "app_test.go",
+   "line": 470,
+   "name": "TestApp_Command",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "app_test.go",
+   "line": 652,
+   "name": "TestApp_FlagsFromExtPackage",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "app_test.go",
+   "line": 711,
+   "name": "TestApp_Setup_defaultsReader",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "app_test.go",
+   "line": 1685,
+   "name": "TestApp_CommandNotFound",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "app_test.go",
+   "line": 3142,
+   "name": "TestDuplicateSubcommand",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command.go",
+   "line": 410,
+   "name": "checkDuplicatedCmds",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command_test.go",
+   "line": 53,
+   "name": "TestParseAndRunShortOpts",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command_test.go",
+   "line": 428,
+   "name": "TestCommand_VisibleSubcCommands",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 58,
+   "name": "IsSet",
+   "indegree": 24,
+   "stratum": ">10"
+  },
+  {
+   "file": "context.go",
+   "line": 217,
+   "name": "checkRequiredFlags",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "context_test.go",
+   "line": 153,
+   "name": "TestContext_Value_InvalidFlagAccessHandler",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "docs_test.go",
+   "line": 49,
+   "name": "TestToMarkdownNoAuthors",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "errors.go",
+   "line": 141,
+   "name": "HandleExitCoder",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag.go",
+   "line": 378,
+   "name": "flagFromEnvOrFile",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 62,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 168,
+   "name": "lookupBool",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_ext.go",
+   "line": 22,
+   "name": "String",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_ext.go",
+   "line": 30,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_float64.go",
+   "line": 31,
+   "name": "GetDefaultText",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_float64.go",
+   "line": 97,
+   "name": "lookupFloat64",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_int.go",
+   "line": 77,
+   "name": "Get",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_int64_slice.go",
+   "line": 19,
+   "name": "NewInt64Slice",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_int64_slice.go",
+   "line": 85,
+   "name": "Get",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_int64_slice.go",
+   "line": 101,
+   "name": "GetUsage",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_int64_slice.go",
+   "line": 141,
+   "name": "Apply",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_int_slice.go",
+   "line": 49,
+   "name": "Set",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_int_slice.go",
+   "line": 75,
+   "name": "String",
+   "indegree": 30,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_int_slice.go",
+   "line": 107,
+   "name": "TakesValue",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_path.go",
+   "line": 52,
+   "name": "Apply",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_path.go",
+   "line": 89,
+   "name": "Path",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_string.go",
+   "line": 46,
+   "name": "GetEnvVars",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_string.go",
+   "line": 78,
+   "name": "RunAction",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 74,
+   "name": "Value",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 95,
+   "name": "GetUsage",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 137,
+   "name": "Apply",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 208,
+   "name": "lookupStringSlice",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 41,
+   "name": "TestBoolFlagApply_SetsAllNames",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 951,
+   "name": "TestIntFlagValueFromContext",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 1037,
+   "name": "TestUintFlagWithEnvVarHelpOutput",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 1069,
+   "name": "TestUint64FlagHelpOutput",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 1523,
+   "name": "TestUintSliceFlagApply_SetsAllNames",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 2030,
+   "name": "TestGenericFlagValueFromContext",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 2518,
+   "name": "TestParseMultiIntSlice",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 2787,
+   "name": "TestParseMultiFloat64SliceFromEnvCascade",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_test.go",
+   "line": 3269,
+   "name": "TestTimestampFlagApply_Fail_Parse_Wrong_Time",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_timestamp.go",
+   "line": 18,
+   "name": "NewTimestamp",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_timestamp.go",
+   "line": 95,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_timestamp.go",
+   "line": 100,
+   "name": "GetUsage",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_uint.go",
+   "line": 98,
+   "name": "lookupUint",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_uint64.go",
+   "line": 20,
+   "name": "GetCategory",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_uint64.go",
+   "line": 91,
+   "name": "Uint64",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_uint64_slice.go",
+   "line": 19,
+   "name": "NewUint64Slice",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_uint64_slice.go",
+   "line": 34,
+   "name": "Set",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_uint64_slice.go",
+   "line": 84,
+   "name": "Value",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "help.go",
+   "line": 210,
+   "name": "DefaultCompleteWithFlags",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "help_test.go",
+   "line": 251,
+   "name": "TestShowCommandHelp_HelpPrinter",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "help_test.go",
+   "line": 712,
+   "name": "TestShowAppHelp_HelpPrinter",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "help_test.go",
+   "line": 945,
+   "name": "TestShowAppHelp_MultiLine_UsageText",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "help_test.go",
+   "line": 1078,
+   "name": "TestHideHelpCommand_RunAsSubcommand",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "help_test.go",
+   "line": 1352,
+   "name": "TestWrappedHelp",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/build/build.go",
+   "line": 242,
+   "name": "TestActionFunc",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/build/build.go",
+   "line": 617,
+   "name": "SetMkdocsRemoteActionFunc",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "sliceflag_test.go",
+   "line": 581,
+   "name": "TestSliceFlag_Apply_int64",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "suggestions_test.go",
+   "line": 44,
+   "name": "TestSuggestFlagFromError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "suggestions_test.go",
+   "line": 66,
+   "name": "TestSuggestFlagFromErrorWrongError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 35,
+   "name": "IsSet",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 149,
+   "name": "IsVisible",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 191,
+   "name": "IsRequired",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 196,
+   "name": "IsVisible",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 385,
+   "name": "IsSet",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 437,
+   "name": "Names",
+   "indegree": 34,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 442,
+   "name": "IsRequired",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 536,
+   "name": "IsSet",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags_test.go",
+   "line": 25,
+   "name": "TestFloat64SliceFlag_SatisfiesVisibleFlagInterface",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "zz_generated.flags_test.go",
+   "line": 31,
+   "name": "TestGenericFlag_SatisfiesFlagInterface",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "zz_generated.flags_test.go",
+   "line": 132,
+   "name": "TestStringSliceFlag_SatisfiesVisibleFlagInterface",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "zz_generated.flags_test.go",
+   "line": 301,
+   "name": "TestStringFlag_SatisfiesFlagInterface",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "zz_generated.flags_test.go",
+   "line": 314,
+   "name": "TestStringFlag_SatisfiesRequiredFlagInterface",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

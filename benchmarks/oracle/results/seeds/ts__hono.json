@@ -1,0 +1,742 @@
+{
+ "cell": "ts/hono",
+ "repo": "hono",
+ "repo_sha": "97c6fe1f12298c715eb7b2da65b4b6e0d81682bb",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 672,
+  "stratum_pool": {
+   "0": 254,
+   "1-3": 389,
+   "4-10": 26,
+   ">10": 3
+  },
+  "stratum_drawn": {
+   "0": 35,
+   "1-3": 36,
+   "4-10": 26,
+   ">10": 3
+  }
+ },
+ "seeds": [
+  {
+   "file": "src/adapter/aws-lambda/handler.ts",
+   "line": 470,
+   "name": "getCookies",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/adapter/aws-lambda/handler.ts",
+   "line": 474,
+   "name": "getHeaders",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/aws-lambda/handler.ts",
+   "line": 526,
+   "name": "getPath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/aws-lambda/handler.ts",
+   "line": 534,
+   "name": "getQueryString",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/aws-lambda/handler.ts",
+   "line": 593,
+   "name": "getQueryString",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/bun/websocket.ts",
+   "line": 93,
+   "name": "message",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/bun/websocket.ts",
+   "line": 108,
+   "name": "createBunWebSocket",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/cloudflare-workers/utils.ts",
+   "line": 11,
+   "name": "getContentFromKVAsset",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/adapter/deno/conninfo.ts",
+   "line": 8,
+   "name": "getConnInfo",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/deno/serve-static.ts",
+   "line": 12,
+   "name": "getContent",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/lambda-edge/handler.ts",
+   "line": 116,
+   "name": "handle",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapter/lambda-edge/handler.ts",
+   "line": 152,
+   "name": "createRequest",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/adapter/netlify/handler.ts",
+   "line": 4,
+   "name": "handle",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/client/client.ts",
+   "line": 15,
+   "name": "createProxy",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/client/client.ts",
+   "line": 133,
+   "name": "hc",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/client/utils.ts",
+   "line": 46,
+   "name": "replaceUrlProtocol",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 288,
+   "name": "createResponseInstance",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 515,
+   "name": "header",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 546,
+   "name": "set",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 571,
+   "name": "get",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 604,
+   "name": "#newResponse",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 641,
+   "name": "newResponse",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 682,
+   "name": "text",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 708,
+   "name": "json",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/context.ts",
+   "line": 776,
+   "name": "notFound",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/helper/cookie/index.ts",
+   "line": 27,
+   "name": "getCookie",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/helper/cookie/index.ts",
+   "line": 99,
+   "name": "setCookie",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/helper/css/index.ts",
+   "line": 72,
+   "name": "createCssContext",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/helper/css/index.ts",
+   "line": 180,
+   "name": "keyframes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/helper/route/index.ts",
+   "line": 107,
+   "name": "basePath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/helper/websocket/index.ts",
+   "line": 78,
+   "name": "send",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/helper/websocket/index.ts",
+   "line": 95,
+   "name": "createWSMessageEvent",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/helper/websocket/index.ts",
+   "line": 111,
+   "name": "defineWebSocketHelper",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/hono-base.ts",
+   "line": 35,
+   "name": "errorHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/hono-base.ts",
+   "line": 175,
+   "name": "#clone",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/hono-base.ts",
+   "line": 291,
+   "name": "notFound",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/hono-base.ts",
+   "line": 328,
+   "name": "mount",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/hono-base.ts",
+   "line": 479,
+   "name": "fetch",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/hono-base.ts",
+   "line": 499,
+   "name": "request",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/children.ts",
+   "line": 3,
+   "name": "toArray",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/components.ts",
+   "line": 76,
+   "name": "resolveFallbackStr",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/components.ts",
+   "line": 94,
+   "name": "renderFallback",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/context.ts",
+   "line": 69,
+   "name": "getCurrentStore",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/context.ts",
+   "line": 73,
+   "name": "warnIfStorelessAccess",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/context.ts",
+   "line": 84,
+   "name": "getContextValuesIn",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/context.ts",
+   "line": 196,
+   "name": "captureRenderContext",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/context.ts",
+   "line": 259,
+   "name": "useContext",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/dom/intrinsic-element/components.ts",
+   "line": 58,
+   "name": "documentMetadataTag",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/dom/intrinsic-element/components.ts",
+   "line": 82,
+   "name": "isDeDupeCandidateLink",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/dom/render.ts",
+   "line": 113,
+   "name": "isNodeString",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/dom/render.ts",
+   "line": 274,
+   "name": "invokeTag",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/dom/render.ts",
+   "line": 497,
+   "name": "build",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/jsx/hooks/index.ts",
+   "line": 119,
+   "name": "startTransition",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/jsx/hooks/index.ts",
+   "line": 158,
+   "name": "useDeferredValue",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/jsx/hooks/index.ts",
+   "line": 182,
+   "name": "useState",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/hooks/index.ts",
+   "line": 299,
+   "name": "useCallback",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/hooks/index.ts",
+   "line": 366,
+   "name": "useId",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/jsx/hooks/index.ts",
+   "line": 369,
+   "name": "useDebugValue",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/jsx/intrinsic-element/components.ts",
+   "line": 93,
+   "name": "returnWithoutSpecialBehavior",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/intrinsic-element/components.ts",
+   "line": 96,
+   "name": "documentMetadataTag",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/jsx/streaming.ts",
+   "line": 42,
+   "name": "Suspense",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/jsx/streaming.ts",
+   "line": 146,
+   "name": "renderToReadableStream",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/middleware/compress/index.ts",
+   "line": 70,
+   "name": "compress",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/middleware/language/language.ts",
+   "line": 74,
+   "name": "parseAcceptLanguage",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/middleware/language/language.ts",
+   "line": 84,
+   "name": "normalizeLanguage",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/middleware/language/language.ts",
+   "line": 136,
+   "name": "detectFromCookie",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/middleware/logger/index.ts",
+   "line": 23,
+   "name": "time",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/middleware/secure-headers/secure-headers.ts",
+   "line": 290,
+   "name": "getPermissionsPolicyDirectives",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/middleware/timeout/index.ts",
+   "line": 38,
+   "name": "timeout",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/middleware/timing/timing.ts",
+   "line": 76,
+   "name": "timing",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/request.ts",
+   "line": 188,
+   "name": "header",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/request.ts",
+   "line": 220,
+   "name": "#cachedBody",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/request.ts",
+   "line": 385,
+   "name": "method",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/request.ts",
+   "line": 420,
+   "name": "matchedRoutes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/request.ts",
+   "line": 440,
+   "name": "routePath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/router/reg-exp-router/node.ts",
+   "line": 20,
+   "name": "compareKey",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/router/reg-exp-router/prepared-router.ts",
+   "line": 19,
+   "name": "#addWildcard",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/router/reg-exp-router/prepared-router.ts",
+   "line": 156,
+   "name": "serializeInitParams",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/router/reg-exp-router/router.ts",
+   "line": 132,
+   "name": "add",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/router/smart-router/router.ts",
+   "line": 21,
+   "name": "match",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/router/trie-router/node.ts",
+   "line": 87,
+   "name": "#pushHandlerSets",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/types.ts",
+   "line": 114,
+   "name": "getResponse",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/color.ts",
+   "line": 14,
+   "name": "getColorEnabled",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/concurrent.ts",
+   "line": 29,
+   "name": "run",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/cookie.ts",
+   "line": 255,
+   "name": "serialize",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/crypto.ts",
+   "line": 21,
+   "name": "sha1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/encode.ts",
+   "line": 6,
+   "name": "decodeBase64Url",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/encode.ts",
+   "line": 15,
+   "name": "encodeBase64",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/encode.ts",
+   "line": 25,
+   "name": "decodeBase64",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/filepath.ts",
+   "line": 32,
+   "name": "getFilePathWithoutDefaultDocument",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/html.ts",
+   "line": 40,
+   "name": "raw",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/utils/html.ts",
+   "line": 90,
+   "name": "escapeToBuffer",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/html.ts",
+   "line": 142,
+   "name": "resolveCallback",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/ipaddr.ts",
+   "line": 13,
+   "name": "expandIPv6",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/ipaddr.ts",
+   "line": 148,
+   "name": "convertIPv4ToBinary",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/jwt/jws.ts",
+   "line": 54,
+   "name": "importPrivateKey",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/stream.ts",
+   "line": 48,
+   "name": "write",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/url.ts",
+   "line": 35,
+   "name": "replaceGroupMarks",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/url.ts",
+   "line": 81,
+   "name": "tryDecode",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/url.ts",
+   "line": 158,
+   "name": "mergePath",
+   "indegree": 4,
+   "stratum": "4-10"
+  }
+ ]
+}
