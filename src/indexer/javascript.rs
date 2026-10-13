@@ -3880,6 +3880,10 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         // A parameter or declaration inside the local function itself
         // (`let isDir` in `const isDir = () => { .. return isDir }`).
         enclosing_function_binds_from(node, &name, source, local.start_byte)
+    } else if !ctx.declared_names.contains(&name) && !ctx.import_bindings.contains_key(&name) {
+        // Nothing of this file or its imports to point at; skips the
+        // syntactic shadow scan for the common local or global identifier.
+        return None;
     } else {
         value_root_is_shadowed(node, &name, source)
     };
@@ -4002,7 +4006,13 @@ fn member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
             return None;
         }
     } else if let Some(name) = &root_name {
-        if ctx.local_fns.contains_key(name) || value_root_is_shadowed(root, name, source) {
+        let names_file = ctx.declared_names.contains(name)
+            || ctx.declared_types.contains(name)
+            || ctx.import_bindings.contains_key(name);
+        if !names_file
+            || ctx.local_fns.contains_key(name)
+            || value_root_is_shadowed(root, name, source)
+        {
             return None;
         }
     } else {
