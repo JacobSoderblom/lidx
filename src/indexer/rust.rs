@@ -1872,7 +1872,11 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             .map(|parts| parts.name)
             .filter(|name| !name.is_empty())
     });
-    let detail = if target.is_some() { None } else { Some(raw) };
+    let detail = if target.is_some() {
+        None
+    } else {
+        Some(raw.clone())
+    };
     let field = method_name_node(function_node);
     let mut receiver_type = infer_receiver_type(function_node, source, ctx);
     if receiver_type == ReceiverType::NotTracked
@@ -1885,17 +1889,21 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     }
     let (mut start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     // `filter(ent)` with `filter` bound by a pattern, a parameter or a `let`
-    // of this function calls that value (a closure, a function pointer).
-    if receiver_type == ReceiverType::NotTracked
-        && function_node.kind() == "identifier"
+    // of this function calls that value (a closure, a function pointer),
+    // never an item of the same name, whatever tier would bind it: the edge
+    // is kept under the plain name (no repo qualname is that text) with no
+    // import candidates and an unresolved receiver.
+    let (target, import_candidates, detail) = if function_node.kind() == "identifier"
         && is_bound_local(
             &ctx.local_types,
             &node_text(function_node, source),
             node.start_byte(),
-        )
-    {
+        ) {
         receiver_type = ReceiverType::Unresolved;
-    }
+        (Some(collapsed.clone()), Vec::new(), None)
+    } else {
+        (target, import_candidates, detail)
+    };
     // A chained call's evidence starts at its method-name token, not at the
     // head of the chain several lines above.
     if let Some(field) = field {
