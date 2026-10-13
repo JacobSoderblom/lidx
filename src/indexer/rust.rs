@@ -5111,8 +5111,9 @@ fn qualify_type_name(module: &str, type_name: &str) -> String {
 /// doesn't model crate boundaries, so the distinction between them doesn't
 /// change which calls should be allowed to bind.
 /// Whether `node` is declared with an unrestricted `pub` (not `pub(crate)`,
-/// `pub(super)`, `pub(in ..)`): visible outside the crate when every module
-/// on the path is too. Recorded as the `public` modifier for `dead_symbols`.
+/// `pub(super)`, `pub(in ..)`). Recorded as the `public` modifier for
+/// `dead_symbols`. The module path is not checked: a `pub` item in a private
+/// module counts as public API (an over-approximation, like the oracle's).
 fn has_plain_pub(node: Node<'_>, source: &str) -> bool {
     let mut cursor = node.walk();
     node.children(&mut cursor)

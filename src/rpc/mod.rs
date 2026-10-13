@@ -92,7 +92,7 @@ struct DeadSymbolsParams {
     limit: Option<usize>,
     /// Also return declarations that are public API (an exported Go
     /// identifier of an importable package, a `pub` item of a Rust library
-    /// crate, what a TypeScript package entry exports) in a separate
+    /// crate (module path not checked), what a TypeScript package entry exports) in a separate
     /// `public_api` group, each with confidence `low`. Default false: such
     /// declarations may be used from outside the repository, so they are
     /// left out of `dead_symbols` and only counted in `counts.public_api`.

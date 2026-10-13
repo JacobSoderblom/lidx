@@ -641,21 +641,7 @@ impl Db {
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id,
-                          f.language, s.visibility,
-                          CASE WHEN s.kind = 'method' THEN (
-                            SELECT group_concat(COALESCE(p.visibility, ''), ' ') FROM symbols p
-                            WHERE p.graph_version = s.graph_version
-                              AND p.qualname IN (
-                                substr(s.qualname, 1, length(s.qualname) - length(s.name) - 2),
-                                substr(s.qualname, 1, length(s.qualname) - length(s.name) - 1))
-                          ) END,
-                          EXISTS (
-                            SELECT 1 FROM unresolved_references ur
-                            WHERE ur.name_tail = s.name
-                              AND ur.graph_version = {gv}
-                              AND ur.edge_kind IN ({reachability})
-                              AND (ur.source_symbol_id IS NULL OR ur.source_symbol_id != s.id)
-                          )
+                          f.language, s.visibility
                    FROM symbols s
                    JOIN files f ON s.file_id = f.id
                    WHERE s.graph_version = ?
@@ -786,8 +772,6 @@ impl Db {
                 row.get::<_, Option<String>>(11)?.unwrap_or_default(),
                 row.get::<_, String>(16)?,
                 row.get::<_, Option<String>>(17)?,
-                row.get::<_, Option<String>>(18)?,
-                row.get::<_, bool>(19)?,
             ))
         })?;
         let mut candidates = Vec::new();
@@ -822,10 +806,26 @@ impl Db {
                    AND (deleted_version IS NULL OR deleted_version > ?1)",
             )?;
         }
+        // Names some unresolved reference points at, with the lowest and
+        // highest id of the symbols making them (-1: none), computed once.
+        let unresolved_names: HashMap<String, (i64, i64)> = {
+            let sql = format!(
+                "SELECT name_tail, MIN(COALESCE(source_symbol_id, -1)),
+                        MAX(COALESCE(source_symbol_id, -1))
+                 FROM unresolved_references
+                 WHERE graph_version = ?1 AND edge_kind IN ({reachability})
+                 GROUP BY name_tail"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([graph_version], |r| {
+                Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
         let mut api = PublicApi::new(repo_root, js_files, rust_libs);
 
         let mut out = DeadSymbols::default();
-        for (symbol, signature, language, visibility, parent_visibility, unresolved) in candidates {
+        for (symbol, signature, language, visibility) in candidates {
             let profile = profile_for(&language);
             if let Some(is_root) = profile.implicit_root
                 && is_root(&ImplicitRootFacts {
@@ -838,6 +838,15 @@ impl Db {
             {
                 continue;
             }
+            // A reference the symbol makes to itself does not count.
+            let unresolved = unresolved_names
+                .get(&symbol.name)
+                .is_some_and(|&(lo, hi)| !(lo == symbol.id && hi == symbol.id));
+            let parent_visibility = if symbol.kind == "method" {
+                parent_visibility_of(&conn, &symbol, graph_version)?
+            } else {
+                None
+            };
             let exposure = api.classify(&Candidate {
                 language: &language,
                 path: &symbol.file_path,
@@ -1365,6 +1374,31 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
     signature
         .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .any(|token| token == alias)
+}
+
+/// The `visibility` modifiers of the symbol(s) a method's qualname hangs
+/// under (`Type::method` or `pkg.Type.method`), joined by spaces.
+fn parent_visibility_of(
+    conn: &rusqlite::Connection,
+    method: &Symbol,
+    graph_version: i64,
+) -> Result<Option<String>> {
+    let Some(stem) = method.qualname.strip_suffix(method.name.as_str()) else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare_cached(
+        "SELECT group_concat(COALESCE(visibility, ''), ' ') FROM symbols
+         WHERE graph_version = ?1 AND qualname IN (?2, ?3)",
+    )?;
+    let parent: Option<String> = stmt.query_row(
+        rusqlite::params![
+            graph_version,
+            stem.strip_suffix("::").unwrap_or(""),
+            stem.strip_suffix('.').unwrap_or("")
+        ],
+        |r| r.get(0),
+    )?;
+    Ok(parent)
 }
 
 #[cfg(test)]

@@ -100,9 +100,6 @@ impl<'a> PublicApi<'a> {
         if !exported_name(c.name) {
             return Exposure::Internal("unexported".into());
         }
-        // An exported method of an unexported type is API too: it satisfies
-        // interfaces (`sort.Interface`, `error`, `fmt.Stringer`) callers
-        // outside the package hold.
         if has_modifier(c.visibility, GO_PACKAGE_MAIN) {
             return Exposure::ExportedUnimportable("exported, but in package main".into());
         }
@@ -113,6 +110,9 @@ impl<'a> PublicApi<'a> {
         if dir.split('/').any(|seg| seg == "internal") {
             return Exposure::ExportedUnimportable("exported, but in an internal package".into());
         }
+        // Any exported method counts, whatever its receiver type: it may
+        // satisfy an interface (`sort.Interface`, `error`, `fmt.Stringer`)
+        // that callers outside the package hold.
         Exposure::PublicApi("exported identifier of an importable Go package".into())
     }
 

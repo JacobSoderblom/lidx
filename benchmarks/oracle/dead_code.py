@@ -24,7 +24,7 @@ SRC = {"go": ["go_oracle/dead/main.go", "go_oracle/go.mod", "go_oracle/go.sum"],
 REACHABILITY = ("CALLS", "DISPATCH", "IMPORTS", "RPC_IMPL", "IMPLEMENTS", "EXTENDS", "INHERITS", "USES", "CONFIG_BIND", "REFERENCES")
 # the `lidx request` params that raise the per-category limit above any repository and lift the response byte cap
 # The graded list is the DEFAULT `dead_symbols` output (what a user gets). `include_public_api` is sent on a second request only to size the
-# opt-in `public_api` group and to check that it holds no oracle-dead declaration; a binary without the parameter rejects the request, which is read as no group.
+# opt-in `public_api` group and to check that it holds no oracle-dead declaration; a binary without the parameter rejects the request ("unknown param"), which is read as no group.
 DEAD_SYMBOLS_PARAMS = {"limit": 10_000_000, "include_unused_imports": False, "include_orphan_tests": False, "max_response_bytes": 2_000_000_000}
 
 
@@ -192,7 +192,10 @@ def lidx_claims(binary, repo_dir, db, syms):
     res = request_dead_symbols(binary, repo_dir, db)
     try:
         api = request_dead_symbols(binary, repo_dir, db, {"include_public_api": True})
-    except subprocess.CalledProcessError:  # a binary that predates the parameter rejects it: no group to size
+    except subprocess.CalledProcessError as e:
+        # a binary that predates the parameter rejects it ("unknown param(s) ..."): no group to size; any other failure is real
+        if "unknown param" not in (e.stderr or ""):
+            raise
         api = {}
     group = match_dead.lidx_claims(api.get("public_api", []), syms)
     return match_dead.lidx_claims(res["dead_symbols"], syms), res["counts"]["dead_symbols"], group, res["counts"].get("public_api", 0)

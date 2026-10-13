@@ -471,3 +471,40 @@ fn rust_bench_targets_are_roots() {
         "{all:?}"
     );
 }
+
+#[test]
+fn rust_pub_item_in_a_private_module_counts_as_public_api() {
+    // Documented over-approximation: the module path is not checked.
+    let (_tmp, _root, mut ix) = common::live_indexer(
+        "lidx-dead-rs-",
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"c\"\nversion = \"0.1.0\"\n",
+            ),
+            ("src/lib.rs", "mod inner;\n"),
+            ("src/inner.rs", "pub fn deep() {}\nfn shallow() {}\n"),
+        ],
+    );
+    let r = call(&mut ix, true);
+    assert!(has(&names(&r, "public_api"), "inner::deep"), "{r}");
+    assert!(has(&names(&r, "dead_symbols"), "inner::shallow"), "{r}");
+}
+
+#[test]
+fn editing_package_json_changes_the_public_set_after_sync() {
+    let (_tmp, root, mut ix) = common::live_indexer("lidx-dead-ts-", &ts_package());
+    let r = call(&mut ix, true);
+    assert!(has(&names(&r, "dead_symbols"), "lib.deepOnly"));
+    assert!(!has(&names(&r, "public_api"), "lib.deepOnly"));
+    // point the entry at lib.ts directly: its exports become the API
+    std::fs::write(
+        root.join("package.json"),
+        "{\"name\":\"p\",\"main\":\"dist/lib.js\"}",
+    )
+    .unwrap();
+    ix.sync_rel_paths(&["package.json".to_string()]).unwrap();
+    let r = call(&mut ix, true);
+    assert!(has(&names(&r, "public_api"), "lib.deepOnly"), "{r}");
+    assert!(!has(&names(&r, "public_api"), "star.fromStar"), "{r}");
+}
