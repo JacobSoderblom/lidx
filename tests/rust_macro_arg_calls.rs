@@ -1,6 +1,7 @@
 //! Calls written inside the arguments of known std macros (`format!`,
 //! `println!`, ...) are opaque `token_tree`s to tree-sitter; the extractor
-//! re-parses them so those calls still get CALLS edges (issue #362).
+//! re-parses them so those calls still get CALLS edges (issue #362; any macro
+//! but the declarative item-defining ones, issue #463).
 
 mod common;
 
@@ -111,11 +112,13 @@ fn macro_names_yield_no_edges() {
 }
 
 #[test]
-fn unknown_macro_arguments_are_skipped() {
+fn unknown_macro_arguments_are_read_as_expressions() {
+    // A repository's own macros (`rgtest!`, `custom!`) take expressions too:
+    // calls in them are real, and tests that only run through them are used.
     let edges = call_edges();
     assert!(
-        !edges.iter().any(|(t, _)| t == "crate::in_custom"),
-        "unknown macro args must be skipped: {edges:?}"
+        edges.iter().any(|(t, _)| t == "crate::in_custom"),
+        "custom macro args hold calls: {edges:?}"
     );
 }
 

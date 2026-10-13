@@ -151,8 +151,12 @@ fn struct_field_values() {
         ref_targets(FILES, "crate::field_value"),
         ["crate::handler", "crate::second"]
     );
-    // `on_done` is a local holding the fn; `fallback` is a local too.
-    assert!(ref_targets(FILES, "crate::field_shorthand").is_empty());
+    // `on_done` is a local holding the fn (`let on_done = handler` is the
+    // use); `fallback` is a local too.
+    assert_eq!(
+        ref_targets(FILES, "crate::field_shorthand"),
+        ["crate::handler"]
+    );
     assert_eq!(
         ref_targets(FILES, "crate::shorthand_item"),
         ["crate::handler"]

@@ -575,6 +575,11 @@ pub struct CallShape {
     /// edge. Persisted as `"ref"`. The resolver binds such a reference only
     /// to something callable (`Resolver::filter_value_reference`).
     pub is_ref: bool,
+    /// A `ref` that names a *type* (Go `var x pkg.T`, `T{}`, `(*T)(nil)`): not
+    /// a function used as a value but a type mentioned. The resolver binds it
+    /// only to a type and stores it as `USES`. Persisted as `"ref:type"`.
+    /// Only meaningful together with `is_ref`.
+    pub is_type: bool,
 }
 
 impl CallShape {
@@ -583,6 +588,8 @@ impl CallShape {
     /// `call_shape` column text of a value reference with an implicit
     /// receiver (C# `Select(Parse)` inside a type body).
     pub const REF_THIS_ENCODING: &'static str = "ref:this";
+    /// `call_shape` column text of a type mention (see `is_type`).
+    pub const REF_TYPE_ENCODING: &'static str = "ref:type";
 
     /// The shape of a value reference (a function used as a value, not
     /// called): see `is_ref`.
@@ -592,12 +599,24 @@ impl CallShape {
             is_new: false,
             implicit_this: false,
             is_ref: true,
+            is_type: false,
+        }
+    }
+
+    /// The shape of a type mention: see `is_type`.
+    pub fn type_reference() -> Self {
+        Self {
+            is_type: true,
+            ..Self::value_reference()
         }
     }
 
     /// The `call_shape` column text: `"<n>"` or `"new:<n>"`.
     pub fn encode(self) -> String {
         if self.is_ref {
+            if self.is_type {
+                return Self::REF_TYPE_ENCODING.to_string();
+            }
             // A value reference keeps its implicit receiver (C# `Select(Parse)`
             // inside a type body) across a re-resolution from the stored row.
             if self.implicit_this {
@@ -617,12 +636,16 @@ impl CallShape {
 
     /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
+        if raw == Self::REF_TYPE_ENCODING {
+            return Some(Self::type_reference());
+        }
         if raw == Self::REF_ENCODING || raw == Self::REF_THIS_ENCODING {
             return Some(Self {
                 arg_count: 0,
                 is_new: false,
                 implicit_this: raw == Self::REF_THIS_ENCODING,
                 is_ref: true,
+                is_type: false,
             });
         }
         let (is_new, implicit_this, count) =
@@ -636,6 +659,7 @@ impl CallShape {
             is_new,
             implicit_this,
             is_ref: false,
+            is_type: false,
         })
     }
 }

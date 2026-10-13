@@ -15,9 +15,10 @@
 # to).
 #
 # The shadowing cases pin UNRESOLVED even where real Rust binds to
-# `b::helper` (f2, shadow_block_use, shadow_closure_use) or `a::helper`
-# (uses_helper_as_value): the shadow rule deliberately over-suppresses, and
-# the pin makes any bind to the wrong `a::helper` fail loudly.
+# `b::helper` (f2, shadow_block_use, shadow_closure_use): the shadow rule
+# deliberately over-suppresses, and the pin makes any bind to the wrong
+# `a::helper` fail loudly. uses_helper_as_value binds to `a::helper`: its
+# `let _ = helper;` is a recorded value use of the file-scope import.
 
 # Plain call to a private same-module fn. other_module::local_util is a
 # same-named decoy.
@@ -146,7 +147,7 @@ crate::shadowing::shadow_closure_use CALLS UNRESOLVED
 # A plain value reference (`let _ = helper;`, not a call or any pattern) is
 # a non-callee occurrence too, so the later call is suppressed as well —
 # documents the accepted over-suppression trade-off.
-crate::shadowing::uses_helper_as_value CALLS UNRESOLVED
+crate::shadowing::uses_helper_as_value CALLS crate::shadowing::a::helper import
 
 # `use log::info` names an external crate, not this file's own
 # `util::log` submodule. The import tier must miss outright rather than
