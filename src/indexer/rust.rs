@@ -1,6 +1,6 @@
 use crate::db::resolver::{
     DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_CRATE_PIN,
-    SameFileTwins, TwinTraits, VisibilityRule, rust_crate_pin,
+    RUST_CRATE_ROOT, RUST_STD_RECEIVER, SameFileTwins, TwinTraits, VisibilityRule, rust_crate_pin,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -670,10 +670,13 @@ fn handle_named_item(
         end_col,
         start_byte,
         end_byte,
-        signature: if matches!(kind, "struct" | "enum") {
-            adt_signature(node, source)
-        } else {
-            None
+        signature: match kind {
+            "struct" | "enum" => adt_signature(node, source),
+            // `type Range = Match;`: the resolver follows the alias.
+            "type" => node
+                .child_by_field_name("type")
+                .map(|aliased| format!("type {name} = {}", node_text(aliased, source))),
+            _ => None,
         },
         docstring: None,
         identity: ctx.identity(),
@@ -1398,6 +1401,16 @@ pub(crate) fn is_std_method_name(name: &str) -> bool {
     STD_METHOD_NAMES.contains(&name)
 }
 
+/// The callee of a turbofished call (`x.parse::<T>()`, `foo::<T>(..)`): the
+/// `generic_function` node's own `function`; any other callee as it is.
+fn unwrap_turbofish(function: Node<'_>) -> Node<'_> {
+    if function.kind() == "generic_function" {
+        function.child_by_field_name("function").unwrap_or(function)
+    } else {
+        function
+    }
+}
+
 /// The method-name token of `recv.name(..)`.
 fn method_name_node(function_node: Node<'_>) -> Option<Node<'_>> {
     (function_node.kind() == "field_expression")
@@ -1509,6 +1522,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let Some(function_node) = node.child_by_field_name("function") else {
         return;
     };
+    // `x.parse::<T>()`, `make::<T>()`: the turbofish changes neither the
+    // receiver nor the callee.
+    let function_node = unwrap_turbofish(function_node);
     let raw = node_text(function_node, source);
     if raw.is_empty() {
         return;
@@ -1534,7 +1550,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let field = method_name_node(function_node);
     let mut receiver_type = infer_receiver_type(function_node, source, ctx);
     if receiver_type == ReceiverType::NotTracked
-        && field.is_some_and(|field| refuses_std_method(function_node, field, source))
+        && (field.is_some_and(|field| refuses_std_method(function_node, field, source))
+            // `<_>::deserialize(..)`, `<T as Trait>::f(..)`: the type is
+            // inferred or generic, so the name alone says nothing.
+            || collapsed.starts_with('<'))
     {
         receiver_type = ReceiverType::Unresolved;
     }
@@ -1736,7 +1755,16 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     match env.expr_ty(value, &ctx.local_types) {
         Ty::Named(ty) => ReceiverType::Known(pin_imported_type(ty, ctx)),
         Ty::Pending(p) => ReceiverType::RustDeferred(p),
-        _ => ReceiverType::NotTracked,
+        // A value of a std shape (`Vec<_>`, `Option<_>`, an iterator, a
+        // tuple, a map) takes std's methods: a repo type's method sharing
+        // a name is not what runs.
+        Ty::Option(_)
+        | Ty::Result(..)
+        | Ty::Tuple(_)
+        | Ty::Seq(_)
+        | Ty::Iter(_)
+        | Ty::Future(_) => ReceiverType::Known(RUST_STD_RECEIVER.to_string()),
+        Ty::Unknown => ReceiverType::NotTracked,
     }
 }
 
@@ -1816,6 +1844,12 @@ fn project(ty: Ty, step: Step) -> Ty {
         (ty, Step::Method(m)) => method_ty(ty, &m),
         _ => Ty::Unknown,
     }
+}
+
+/// An element of a tuple pattern: a named node or the anonymous `_`, which
+/// keeps its position (`(_, stats)` binds `stats` to the second element).
+fn is_pattern_element(node: &Node<'_>) -> bool {
+    node.is_named() || node.kind() == "_"
 }
 
 /// Every tuple/`..`-free element list must line up positionally.
@@ -1974,6 +2008,10 @@ impl TypeEnv<'_> {
                     (Some("Result"), 1) => Ty::Result(Box::new(arg(0)), Box::new(Ty::Unknown)),
                     (Some("Result"), 2) => Ty::Result(Box::new(arg(0)), Box::new(arg(1))),
                     (Some("Vec" | "VecDeque"), 1) => Ty::Seq(Box::new(arg(0))),
+                    // A map iterates as its `(key, value)` pairs.
+                    (Some("HashMap" | "BTreeMap" | "IndexMap"), 2..=3) => {
+                        Ty::Seq(Box::new(Ty::Tuple(vec![arg(0), arg(1)])))
+                    }
                     (Some("IntoIter" | "Iter" | "IterMut" | "Drain"), 1) => {
                         Ty::Iter(Box::new(arg(0)))
                     }
@@ -2044,6 +2082,20 @@ impl TypeEnv<'_> {
                 let field = node_text(value.child_by_field_name("field")?, source);
                 Some(self.field_ty(base, &field))
             }
+            // `Enum::Variant`: a value of the enum (a constant `Type::MAX`
+            // has the constant's own type, so an all-capitals name is not
+            // read).
+            "scoped_identifier" => {
+                let name = node_text(value.child_by_field_name("name")?, source);
+                let is_variant =
+                    name.starts_with(char::is_uppercase) && name.chars().any(char::is_lowercase);
+                let owner = node_text(value.child_by_field_name("path")?, source);
+                let owner = owner.rsplit("::").next()?;
+                if !is_variant {
+                    return None;
+                }
+                self.usable(owner.to_string()).map(Ty::Named)
+            }
             "tuple_expression" => {
                 let mut cursor = value.walk();
                 Some(Ty::Tuple(
@@ -2058,7 +2110,7 @@ impl TypeEnv<'_> {
                 Some(Ty::Named(name))
             }
             "call_expression" => {
-                let function = value.child_by_field_name("function")?;
+                let function = unwrap_turbofish(value.child_by_field_name("function")?);
                 match function.kind() {
                     "field_expression" => {
                         let recv =
@@ -2087,7 +2139,7 @@ impl TypeEnv<'_> {
             {
                 return entry.clone().unwrap_or(Ty::Unknown);
             }
-            if matches!(method, "unwrap" | "expect") {
+            if STD_PASSTHROUGH_METHODS.contains(&method) {
                 return recv;
             }
             return self.pending(
@@ -2172,6 +2224,25 @@ impl TypeEnv<'_> {
                     _ => {}
                 }
             }
+        }
+        // `Arc::new(x)` / `Rc::new(x)` / `Box::new(x)`: method lookup derefs
+        // to `x`'s type.
+        if matches!(
+            raw.rsplit("::").take(2).collect::<Vec<_>>().as_slice(),
+            ["new", "Arc" | "Rc" | "Box"]
+        ) {
+            return call_arguments(call)
+                .first()
+                .map(|inner| self.expr_ty(*inner, locals));
+        }
+        // `mem::replace(&mut x, new)` / `mem::take(&mut x)` return `x`'s type.
+        if matches!(
+            raw.as_str(),
+            "std::mem::replace" | "mem::replace" | "std::mem::take" | "mem::take"
+        ) {
+            return call_arguments(call)
+                .first()
+                .map(|place| self.expr_ty(*place, locals));
         }
         let heuristic = self.ctor_type(function);
         let Some(ctx) = self.ctx else {
@@ -2307,7 +2378,10 @@ impl TypeEnv<'_> {
             }
             "tuple_pattern" => {
                 let mut cursor = pat.walk();
-                let elems: Vec<_> = pat.named_children(&mut cursor).collect();
+                let elems: Vec<_> = pat
+                    .children(&mut cursor)
+                    .filter(is_pattern_element)
+                    .collect();
                 match ty {
                     Ty::Tuple(tys) if !has_rest(&elems) && tys.len() == elems.len() => {
                         for (e, t) in elems.iter().zip(tys) {
@@ -2326,8 +2400,8 @@ impl TypeEnv<'_> {
                 let type_node = pat.child_by_field_name("type");
                 let mut cursor = pat.walk();
                 let elems: Vec<_> = pat
-                    .named_children(&mut cursor)
-                    .filter(|c| Some(*c) != type_node)
+                    .children(&mut cursor)
+                    .filter(|c| is_pattern_element(c) && Some(*c) != type_node)
                     .collect();
                 let step = match type_node.map(|t| node_text(t, source)).as_deref() {
                     Some("Some") => Some(Step::OptionSome),
@@ -2434,11 +2508,20 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         (Ty::Result(t, _), "ok") => Ty::Option(t),
         (Ty::Result(_, e), "err") => Ty::Option(e),
         (t @ (Ty::Option(_) | Ty::Result(..)), "as_ref" | "as_mut" | "clone") => t,
+        (t @ (Ty::Seq(_) | Ty::Tuple(_)), "clone") => t,
         (t @ Ty::Option(_), "take" | "cloned" | "copied") => t,
         (Ty::Seq(t), "iter" | "into_iter" | "iter_mut" | "drain") => Ty::Iter(t),
         (t @ Ty::Iter(_), "into_iter" | "by_ref") => t,
         (Ty::Iter(t), "next" | "next_back" | "last") => Ty::Option(t),
         (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last") => Ty::Option(t),
+        (Ty::Seq(t), "values" | "values_mut" | "into_values") => match *t {
+            Ty::Tuple(mut kv) if kv.len() == 2 => Ty::Iter(Box::new(kv.remove(1))),
+            _ => Ty::Unknown,
+        },
+        (Ty::Seq(t), "keys" | "into_keys") => match *t {
+            Ty::Tuple(mut kv) if kv.len() == 2 => Ty::Iter(Box::new(kv.remove(0))),
+            _ => Ty::Unknown,
+        },
         _ => Ty::Unknown,
     }
 }
@@ -2559,6 +2642,28 @@ fn resolve_deferred(
         DeferredSource::Field { owner, .. } => index.declarations(DeclarationQuery::Type(owner))?,
     };
     if declarations.is_empty() {
+        // A callee imported from a crate outside the repository (`use
+        // ignore::WalkBuilder;`) has no declaration here: the receiver is
+        // that crate's, whatever a repo method of the same name is called.
+        if let (DeferredSource::Call { candidates }, None) = (&deferred.source, &deferred.fallback)
+            && !candidates.is_empty()
+            && candidates.iter().all(|c| {
+                !c.starts_with(RUST_CRATE_ROOT)
+                    && !c.starts_with(RUST_CRATE_PIN)
+                    && !c.starts_with("self::")
+                    && !c.starts_with("super::")
+            })
+        {
+            // ... unless the root is a module of this repo (`use util::Thing;`
+            // with a sibling `mod util;`).
+            let mut local = false;
+            for candidate in candidates {
+                local |= index.is_repo_module(candidate.split("::").next().unwrap_or(candidate))?;
+            }
+            if !local {
+                return Ok(Some(Some(String::new())));
+            }
+        }
         return Ok(Some(deferred.fallback.clone()));
     }
     // The type and the package whose declaration last contributed to it.
@@ -4160,18 +4265,26 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     {
         return Some(target);
     }
-    if let Some((first, _)) = raw.split_once("::")
-        && !ctx.imports.contains_key(first)
-        && ctx.local_mods.contains(first)
-    {
-        // `mod regex;` ... `regex::f()`: the module, not a crate of that name.
-        return Some(format!("{}::{raw}", ctx.module));
+    // `Enum::Variant.method()`: a method call on a path's value, named by
+    // its method alone (the receiver's type decides which one).
+    if raw.contains('.') {
+        return None;
+    }
+    if let Some((first, rest)) = raw.split_once("::") {
+        match ctx.imports.get(first).map(Vec::as_slice) {
+            // `use crate::rpc;` ... `rpc::f()`: the path as the module it names.
+            Some([target]) if target.starts_with(RUST_CRATE_ROOT) => {
+                return Some(format!("{target}::{rest}"));
+            }
+            // `mod regex;` ... `regex::f()`: the module, not a crate of that name.
+            None if ctx.local_mods.contains(first) => {
+                return Some(format!("{}::{raw}", ctx.module));
+            }
+            _ => {}
+        }
     }
     if raw.contains("::") {
         return Some(raw.to_string());
-    }
-    if raw.contains('.') {
-        return None;
     }
     // A bare `f()` names a free function in scope -- the module's -- never
     // an associated function of the enclosing impl (those need `Self::f`).
