@@ -2057,6 +2057,8 @@ fn extract_with_parser(
     module_name: &str,
     patch_ts_signatures: bool,
 ) -> Result<ExtractedFile> {
+    BODY_BINDINGS.with(|c| c.borrow_mut().clear());
+    LOCAL_NAMES.with(|c| *c.borrow_mut() = None);
     let mut output = ExtractedFile::default();
     let tree = match parser.parse(source, None) {
         Some(tree) => tree,
@@ -3786,9 +3788,76 @@ fn enclosing_function_binds_from(
     source: &str,
     min_start: usize,
 ) -> bool {
-    // Bindings of this function's own scope: nested functions have their own
-    // (only their declared names bind here).
-    fn body_binds(node: Node<'_>, name: &str, source: &str) -> bool {
+    // A name no function of the file binds (the common module-level or
+    // imported one) is shadowed by none: skip the walk up the ancestors.
+    if !locally_bound_names(node, source).contains(name) {
+        return false;
+    }
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if is_function_like(n.kind()) && n.start_byte() >= min_start {
+            let mut params = Vec::new();
+            collect_lambda_parameter_bindings(n, source, &mut params);
+            let body_binds_name = n
+                .child_by_field_name("body")
+                .is_some_and(|b| body_bound_names(b, source).contains(name));
+            if params.iter().any(|(p, _)| p == name) || body_binds_name {
+                return true;
+            }
+        }
+        cur = n.parent();
+    }
+    false
+}
+
+thread_local! {
+    /// Every name some function of the file binds (a parameter or a body
+    /// declaration), computed on first use.
+    static LOCAL_NAMES: std::cell::RefCell<Option<std::rc::Rc<HashSet<String>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Union of the names any function of `node`'s file binds.
+fn locally_bound_names(node: Node<'_>, source: &str) -> std::rc::Rc<HashSet<String>> {
+    if let Some(found) = LOCAL_NAMES.with(|c| c.borrow().clone()) {
+        return found;
+    }
+    let mut root = node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let mut names = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if is_function_like(n.kind()) {
+            let mut params = Vec::new();
+            collect_lambda_parameter_bindings(n, source, &mut params);
+            names.extend(params.into_iter().map(|(p, _)| p));
+            if let Some(body) = n.child_by_field_name("body") {
+                names.extend(body_bound_names(body, source).iter().cloned());
+            }
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    let names = std::rc::Rc::new(names);
+    LOCAL_NAMES.with(|c| *c.borrow_mut() = Some(names.clone()));
+    names
+}
+
+type NameSet = std::rc::Rc<HashSet<String>>;
+
+thread_local! {
+    /// Names bound by each function body of the file being extracted, by
+    /// body span: one walk per body instead of one per queried identifier.
+    static BODY_BINDINGS: std::cell::RefCell<HashMap<(usize, usize), NameSet>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Bindings of a function body's own scope: nested functions have their own
+/// (only their declared names bind here).
+fn body_bound_names(body: Node<'_>, source: &str) -> std::rc::Rc<HashSet<String>> {
+    fn collect(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
         let mut names = Vec::new();
         match node.kind() {
             "variable_declarator" => {
@@ -3808,36 +3877,30 @@ fn enclosing_function_binds_from(
             }
             _ => {}
         }
-        if names.iter().any(|n| n == name) {
-            return true;
-        }
+        out.extend(names);
         let mut cursor = node.walk();
-        node.named_children(&mut cursor).any(|c| {
+        for c in node.named_children(&mut cursor) {
             if is_function_like(c.kind()) {
                 // A nested declaration binds its name here, nothing else.
-                c.child_by_field_name("name").is_some_and(|n| {
-                    c.kind().ends_with("declaration") && node_text(n, source) == name
-                })
+                if c.kind().ends_with("declaration")
+                    && let Some(n) = c.child_by_field_name("name")
+                {
+                    out.insert(node_text(n, source));
+                }
             } else {
-                body_binds(c, name, source)
-            }
-        })
-    }
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if is_function_like(n.kind()) && n.start_byte() >= min_start {
-            let mut params = Vec::new();
-            collect_lambda_parameter_bindings(n, source, &mut params);
-            let body_binds_name = n
-                .child_by_field_name("body")
-                .is_some_and(|b| body_binds(b, name, source));
-            if params.iter().any(|(p, _)| p == name) || body_binds_name {
-                return true;
+                collect(c, source, out);
             }
         }
-        cur = n.parent();
     }
-    false
+    let key = (body.start_byte(), body.end_byte());
+    if let Some(found) = BODY_BINDINGS.with(|c| c.borrow().get(&key).cloned()) {
+        return found;
+    }
+    let mut names = HashSet::new();
+    collect(body, source, &mut names);
+    let names = std::rc::Rc::new(names);
+    BODY_BINDINGS.with(|c| c.borrow_mut().insert(key, names.clone()));
+    names
 }
 
 fn is_function_like(kind: &str) -> bool {
@@ -4083,7 +4146,18 @@ fn member_access_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edg
         return None;
     }
     let (root, hops) = member_chain_root(node);
-    let receiver_type = pin_receiver_type(infer_receiver_type(node, source, ctx), ctx);
+    // Only a receiver the file can type: `x.p` of a typed local, `this.a.p`
+    // of a typed field. Deeper chains have no known type, skip the inference.
+    let typable = match root.kind() {
+        "this" => hops <= 2,
+        "identifier" => hops == 1,
+        _ => return None,
+    };
+    let receiver_type = if typable {
+        pin_receiver_type(infer_receiver_type(node, source, ctx), ctx)
+    } else {
+        ReceiverType::NotTracked
+    };
     member_access_site(
         node,
         &node_text(node, source),

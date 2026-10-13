@@ -425,6 +425,10 @@ pub(crate) enum UnresolvedReason {
     /// is a `Resolved` outcome (issue #80's import-known-external case),
     /// not an `Unresolved` reason.
     External,
+    /// A JS/TS property access (`CallShape::is_member`) resolved to a symbol
+    /// that is no accessor: nothing to record, so no row is stored. An
+    /// importer is re-extracted when an exporter's accessors change.
+    NotAnAccessor,
 }
 
 impl UnresolvedReason {
@@ -435,6 +439,7 @@ impl UnresolvedReason {
             Self::Ambiguous => "ambiguous",
             Self::Private => "private",
             Self::External => "external",
+            Self::NotAnAccessor => "not_accessor",
         }
     }
 }
@@ -1900,9 +1905,11 @@ impl<'c> Resolver<'c> {
         if matches!(
             kind,
             ResolutionKind::TwoSegment | ResolutionKind::BareName | ResolutionKind::External { .. }
-        ) || !self.has_symbol_modifier(target_id, ACCESSOR_MODIFIER)?
-        {
+        ) {
             return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        }
+        if !self.has_symbol_modifier(target_id, ACCESSOR_MODIFIER)? {
+            return Ok(Resolution::Unresolved(UnresolvedReason::NotAnAccessor));
         }
         Ok(resolution)
     }

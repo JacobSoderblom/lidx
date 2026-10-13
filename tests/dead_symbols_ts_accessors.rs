@@ -113,6 +113,35 @@ fn an_accessor_only_an_unresolved_receiver_may_read_is_demoted_not_hidden() {
     assert_eq!(tier("src/inner.Inner.opaque"), "medium", "{dead:?}");
 }
 
+/// The fallback reads the indexed files as they are on disk now. A file that
+/// is no longer valid UTF-8 is still scanned (bytes); a file that vanished
+/// after indexing may read anything, so every accessor is `medium`. Neither
+/// panics.
+#[test]
+fn the_unresolved_receiver_fallback_survives_files_changed_after_indexing() {
+    let (_tmp, root, mut indexer) = common::live_indexer("lidx-ts-dead-accessor-", &files());
+    let tier = |dead: &[(String, String)], q: &str| {
+        dead.iter()
+            .find(|(name, _)| name == q)
+            .unwrap_or_else(|| panic!("{q} hidden: {dead:?}"))
+            .1
+            .clone()
+    };
+
+    std::fs::write(
+        root.join("src/use.ts"),
+        b"export const x = \xff\xfe; // .nothing\n",
+    )
+    .unwrap();
+    let dead = reported(&mut indexer);
+    assert_eq!(tier(&dead, "src/inner.Inner.hidden"), "high", "{dead:?}");
+    assert_eq!(tier(&dead, "src/inner.Inner.opaque"), "medium", "{dead:?}");
+
+    std::fs::remove_file(root.join("src/use.ts")).unwrap();
+    let dead = reported(&mut indexer);
+    assert_eq!(tier(&dead, "src/inner.Inner.hidden"), "medium", "{dead:?}");
+}
+
 #[test]
 fn accessor_liveness_survives_incremental_sync() {
     let (_tmp, root, mut indexer) = common::live_indexer("lidx-ts-dead-accessor-", &files());
@@ -158,4 +187,66 @@ fn accessor_liveness_survives_incremental_sync() {
     let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
     let (_fresh_tmp, fresh) = common::index_files(&files());
     common::assert_matches_fresh(&snapshot, &fresh);
+
+    // A field an importer writes through a typed receiver becomes an accessor
+    // in the exporter alone: the importer is re-extracted, and the write
+    // (dropped while `level` was a field) reaches the accessor.
+    let field_level = MODEL
+        .replace("  get level() { return 3; }\n", "  level = 3;\n")
+        .replace("  set level(v: number) {}\n", "");
+    common::write_files(&root, &[("src/model.ts", &field_level)]);
+    indexer
+        .sync_rel_paths(&["src/model.ts".to_string()])
+        .unwrap();
+    common::write_files(&root, &[("src/model.ts", MODEL)]);
+    indexer
+        .sync_rel_paths(&["src/model.ts".to_string()])
+        .unwrap();
+    assert!(!names(&reported(&mut indexer)).contains(&"src/model.Model.level"));
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&files());
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// A property access the index could not bind (`this.foo` where the base class
+/// is not in the repository) is stored for retry but is no unresolved call:
+/// the unresolved summary leaves it out, like an unresolved value reference.
+#[test]
+fn unresolved_property_accesses_are_not_counted_as_unresolved_references() {
+    let files = [(
+        "src/child.ts",
+        "import { Missing } from 'elsewhere';\nexport class Child extends Missing {\n  f() { return this.foo; }\n}\n",
+    )];
+    let (_tmp, _root, indexer) = common::live_indexer("lidx-ts-member-rows-", &files);
+    let db = indexer.db();
+    let gv = db.current_graph_version().unwrap();
+    let conn = db.read_conn().unwrap();
+    let stored = |filter: &str| -> i64 {
+        conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = {gv} {filter}"
+            ),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        stored("AND call_shape = 'member'"),
+        1,
+        "the access is stored"
+    );
+    let counted: i64 = db
+        .unresolved_reference_summary(gv)
+        .unwrap()
+        .iter()
+        .map(|r| r.count)
+        .sum();
+    assert_eq!(
+        counted,
+        stored(
+            "AND COALESCE(call_shape, '') != 'member' AND NOT (edge_kind IN ('REFERENCES', 'USES') AND call_shape LIKE 'ref%')"
+        )
+    );
 }

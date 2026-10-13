@@ -1732,7 +1732,9 @@ impl Db {
                     None
                 };
 
-                if let Some(reason) = resolution.unresolved_reason()
+                if let Some(reason) = resolution
+                    .unresolved_reason()
+                    .filter(|r| *r != resolver::UnresolvedReason::NotAnAccessor)
                     && let Some((reference_name, name_tail)) =
                         resolver::store_reference_name_and_tail(
                             edge.target_qualname.as_deref(),

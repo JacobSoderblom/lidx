@@ -855,7 +855,7 @@ impl Db {
         // accessor candidate needs them: the receivers the index could not
         // resolve leave no edge, so an accessor no edge reaches but some
         // `.name` read mentions is not provably dead.
-        let member_names: std::cell::OnceCell<HashSet<String>> = std::cell::OnceCell::new();
+        let member_names: std::cell::OnceCell<Option<HashSet<String>>> = std::cell::OnceCell::new();
         let mut api = PublicApi::new(repo_root, js_files.clone(), rust_libs);
 
         let mut out = DeadSymbols::default();
@@ -881,7 +881,9 @@ impl Db {
                 super::graph_query::ACCESSOR_MODIFIER,
             ) && member_names
                 .get_or_init(|| member_names_read(repo_root, &js_files))
-                .contains(&symbol.name);
+                .as_ref()
+                // An unreadable indexed file may read anything.
+                .is_none_or(|names| names.contains(&symbol.name));
             unresolved |= mentioned;
             let parent_visibility = if symbol.kind == "method" {
                 parent_visibility_of(&conn, &symbol, graph_version)?
@@ -1445,14 +1447,14 @@ fn parent_visibility_of(
 }
 
 /// Every `name` that follows a `.` (or `?.`) in the JS/TS `files` under
-/// `repo_root`: the property reads and writes, whatever their receiver.
-fn member_names_read(repo_root: &Path, files: &HashSet<String>) -> HashSet<String> {
+/// `repo_root`: the property reads and writes, whatever their receiver. Files
+/// are read as bytes (a non-UTF-8 file is still scanned). `None` when an
+/// indexed file cannot be read (deleted or unreadable since indexing): what
+/// it reads is unknown, so the caller must assume any name is read.
+fn member_names_read(repo_root: &Path, files: &HashSet<String>) -> Option<HashSet<String>> {
     let mut names = HashSet::new();
     for rel in files {
-        let Ok(text) = std::fs::read_to_string(repo_root.join(rel)) else {
-            continue;
-        };
-        let bytes = text.as_bytes();
+        let bytes = std::fs::read(repo_root.join(rel)).ok()?;
         let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
         let mut i = 0;
         while i < bytes.len() {
@@ -1465,14 +1467,14 @@ fn member_names_read(repo_root: &Path, files: &HashSet<String>) -> HashSet<Strin
                     .iter()
                     .position(|&b| !is_ident(b))
                     .map_or(bytes.len(), |n| i + 1 + n);
-                names.insert(text[i + 1..end].to_string());
+                names.insert(String::from_utf8_lossy(&bytes[i + 1..end]).into_owned());
                 i = end;
             } else {
                 i += 1;
             }
         }
     }
-    names
+    Some(names)
 }
 
 #[cfg(test)]
