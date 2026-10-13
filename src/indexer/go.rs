@@ -56,14 +56,79 @@ fn go_implicit_root(f: &crate::db::resolver::ImplicitRootFacts<'_>) -> bool {
             .visibility
             .is_some_and(|v| v.split_whitespace().any(|w| w == GO_PACKAGE_MAIN));
     }
-    f.path.ends_with("_test.go")
-        && ["Test", "Benchmark", "Fuzz", "Example"]
-            .iter()
-            .any(|prefix| {
-                f.name
-                    .strip_prefix(prefix)
-                    .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
-            })
+    if !f.path.ends_with("_test.go") {
+        return false;
+    }
+    let entry = |prefix: &str| {
+        f.name
+            .strip_prefix(prefix)
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
+    };
+    // `go test` runs an example only when its body ends in an `// Output:`
+    // (or `// Unordered output:`) comment; any other is compiled, never run.
+    if entry("Example") {
+        return f
+            .visibility
+            .is_some_and(|v| v.split_whitespace().any(|w| w == "example_output"));
+    }
+    entry("Test") || entry("Benchmark") || entry("Fuzz")
+}
+
+/// Records the `Example*` functions whose body ends in an `// Output:` (or
+/// `// Unordered output:`) comment group: `go test` runs only those.
+fn mark_output_examples(
+    root: Node<'_>,
+    source: &str,
+    module_name: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut cursor = root.walk();
+    for decl in root.named_children(&mut cursor) {
+        if decl.kind() != "function_declaration" {
+            continue;
+        }
+        let (Some(name), Some(body)) = (
+            decl.child_by_field_name("name"),
+            decl.child_by_field_name("body"),
+        ) else {
+            continue;
+        };
+        let name = &source[name.byte_range()];
+        if !name.starts_with("Example") {
+            continue;
+        }
+        let mut comments = Vec::new();
+        let mut stack = vec![body];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "comment" {
+                comments.push(node);
+            }
+            let mut c = node.walk();
+            stack.extend(node.children(&mut c));
+        }
+        comments.sort_by_key(|n| n.start_byte());
+        let Some(mut first) = comments.pop() else {
+            continue;
+        };
+        // The group is the run of comments on consecutive lines.
+        while let Some(prev) = comments.pop() {
+            if prev.end_position().row + 1 == first.start_position().row {
+                first = prev;
+            } else {
+                break;
+            }
+        }
+        let text = source[first.byte_range()]
+            .trim_start_matches("//")
+            .trim_start_matches("/*")
+            .trim()
+            .to_lowercase();
+        if text.starts_with("output:") || text.starts_with("unordered output:") {
+            output
+                .example_output_qualnames
+                .push(format!("{module_name}.{name}"));
+        }
+    }
 }
 
 /// The `symbols.visibility` word carried by every symbol of a `package main`
@@ -206,6 +271,7 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
         if let Some(constraint) = crate::indexer::go_build::file_constraint(module_name, source) {
             output.file_modifiers = constraint.modifiers();
         }
+        mark_output_examples(root, source, module_name, &mut output);
         if package_name(root, source).as_deref() == Some("main") {
             output.file_modifiers.push(GO_PACKAGE_MAIN.to_string());
         }

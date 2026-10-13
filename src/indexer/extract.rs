@@ -747,6 +747,9 @@ pub struct ExtractedFile {
     /// `pub(crate)` / `pub(super)`): recorded as the `public` modifier, which
     /// `dead_symbols` reads to tell a library's public API from its internals.
     pub public_qualnames: Vec<String>,
+    /// Go `Example*` functions whose body ends in an `// Output:` comment:
+    /// the only examples `go test` runs. Recorded as `example_output`.
+    pub example_output_qualnames: Vec<String>,
 }
 
 /// The declaration modifiers one file's extraction recorded, written to
@@ -762,6 +765,8 @@ pub struct SymbolModifiers<'a> {
     pub file_wide: &'a [String],
     /// Declared with an unrestricted `pub` (Rust).
     pub public: &'a [String],
+    /// Go examples with an `// Output:` comment.
+    pub example_output: &'a [String],
 }
 
 impl ExtractedFile {
@@ -774,6 +779,7 @@ impl ExtractedFile {
             overrides: &self.override_symbols,
             file_wide: &self.file_modifiers,
             public: &self.public_qualnames,
+            example_output: &self.example_output_qualnames,
         }
     }
 }

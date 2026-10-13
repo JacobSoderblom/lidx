@@ -143,8 +143,8 @@ fn go_test_entry_points_init_and_main_are_roots() {
             (
                 "pkg/a_test.go",
                 "package pkg\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n\
-func BenchmarkA(b *testing.B) {}\nfunc FuzzA(f *testing.F) {}\nfunc ExampleA() {}\n\
-func TestMain(m *testing.M) {}\nfunc Testify() {}\nfunc testlower() {}\nfunc helperInTest() {}\n",
+func BenchmarkA(b *testing.B) {}\nfunc FuzzA(f *testing.F) {}\nfunc ExampleA() {\n\t// Output:\n\t// hi\n}\n\
+func TestMain(m *testing.M) {}\nfunc Testify() {}\nfunc ExampleNoOutput() {\n\t_ = 1\n}\nfunc ExampleUnordered() {\n\t// Unordered output:\n\t// b\n}\nfunc testlower() {}\nfunc helperInTest() {}\n",
             ),
             (
                 "cmd/x/main.go",
@@ -174,6 +174,9 @@ func TestMain(m *testing.M) {}\nfunc Testify() {}\nfunc testlower() {}\nfunc hel
     // lowercase after the prefix is not a test entry point; ordinary helpers still count
     let dead = names(&r, "dead_symbols");
     assert!(has(&dead, "a_test.Testify"), "{dead:?}");
+    // an example with no Output comment is never run: judged like any function
+    assert!(has(&dead, "a_test.ExampleNoOutput"), "{dead:?}");
+    assert!(!has(&dead, "a_test.ExampleUnordered"), "{dead:?}");
     assert!(has(&dead, "a_test.testlower"), "{dead:?}");
     assert!(has(&dead, "a_test.helperInTest"), "{dead:?}");
     assert!(has(&dead, "a.helper"), "{dead:?}");

@@ -1787,9 +1787,11 @@ impl Db {
             overrides,
             file_wide,
             public,
+            example_output,
         } = modifiers;
         if private.is_empty()
             && public.is_empty()
+            && example_output.is_empty()
             && statics.is_empty()
             && local.is_empty()
             && overrides.is_empty()
@@ -1809,6 +1811,7 @@ impl Db {
         let static_ph = placeholders(statics.len());
         let local_ph = placeholders(local.len());
         let public_ph = placeholders(public.len());
+        let example_ph = placeholders(example_output.len());
         // Overloads share a qualname, so an override is keyed by its line too.
         let override_test = if overrides.is_empty() {
             "0".to_string()
@@ -1825,6 +1828,7 @@ impl Db {
                     || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
                     || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
                     || CASE WHEN qualname IN ({public_ph}) THEN ' public' ELSE '' END
+                    || CASE WHEN qualname IN ({example_ph}) THEN ' example_output' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END
                     || ?), '')
              WHERE file_id = ? AND graph_version = ?",
@@ -1835,6 +1839,7 @@ impl Db {
             .chain(statics)
             .chain(local)
             .chain(public)
+            .chain(example_output)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
         for (qualname, line) in overrides {
