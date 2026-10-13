@@ -1624,4 +1624,10 @@ pub struct DeadSymbols {
     pub public_api: Vec<DeadSymbol>,
     /// How many such public-API declarations exist (whether or not returned).
     pub public_api_total: usize,
+    /// Methods left out because they implement an external interface or trait
+    /// of a live type (`implements_external_interface`), at most medium; only
+    /// returned on request, like `public_api`.
+    pub external_interface: Vec<DeadSymbol>,
+    /// How many such methods exist (whether or not returned).
+    pub external_interface_total: usize,
 }

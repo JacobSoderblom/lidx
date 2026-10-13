@@ -1,3 +1,3 @@
 [
-{"callee":{"file":"middleware/compress.go","line":207,"name":"Handler"},"caller":{"file":"middleware/compress.go","line":45,"name":"Compress"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["method_value"],"module_level":false,"sites":["middleware/compress.go:47"]}
+
 ]

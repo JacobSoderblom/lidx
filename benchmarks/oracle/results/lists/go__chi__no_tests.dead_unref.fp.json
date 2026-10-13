@@ -1,9 +1,3 @@
 [
-{"category":"referenced_type","confidence":"high","exported":false,"file":"context.go","key":"context.go:184","kind":"type","lidx_kind":"class","line":184,"name":"contextKey","policy":false,"qualname":"context.contextKey","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"middleware/throttle.go","key":"middleware/throttle.go:134","kind":"type","lidx_kind":"class","line":134,"name":"token","policy":false,"qualname":"middleware/throttle.token","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"middleware/wrap_writer.go","key":"middleware/wrap_writer.go:151","kind":"type","lidx_kind":"class","line":151,"name":"flushWriter","policy":false,"qualname":"middleware/wrap_writer.flushWriter","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"middleware/wrap_writer.go","key":"middleware/wrap_writer.go:162","kind":"type","lidx_kind":"class","line":162,"name":"hijackWriter","policy":false,"qualname":"middleware/wrap_writer.hijackWriter","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"middleware/wrap_writer.go","key":"middleware/wrap_writer.go:174","kind":"type","lidx_kind":"class","line":174,"name":"flushHijackWriter","policy":false,"qualname":"middleware/wrap_writer.flushHijackWriter","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"middleware/wrap_writer.go","key":"middleware/wrap_writer.go:237","kind":"type","lidx_kind":"class","line":237,"name":"http2FancyWriter","policy":false,"qualname":"middleware/wrap_writer.http2FancyWriter","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"tree.go","key":"tree.go:128","kind":"type","lidx_kind":"class","line":128,"name":"endpoint","policy":false,"qualname":"tree.endpoint","subkind":"struct"}
+
 ]

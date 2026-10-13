@@ -105,6 +105,13 @@ struct DeadSymbolsParams {
     /// Roots are never reported: Go Test*/Benchmark*/Fuzz*/Example* in
     /// _test.go, `init`, `main`; Rust #[test]/#[bench]/main.
     include_public_api: Option<bool>,
+    /// Also list, in `implements_external_interface`, the methods that are
+    /// not claims because they implement an interface or trait of the standard
+    /// library or a dependency (`io.Reader`, `fmt.Stringer`, `Display`,
+    /// `Disposable`, `tea.Model`, ...) on a type that is itself live; each is
+    /// at most `medium`. The same method on a dead type stays a claim.
+    /// Default false: only counted in `counts.implements_external_interface`.
+    include_external_interface: Option<bool>,
     /// Include unused imports (default: true)
     include_unused_imports: Option<bool>,
     /// Include orphan tests (default: true)

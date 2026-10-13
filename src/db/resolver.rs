@@ -59,7 +59,7 @@
 
 #[path = "resolver_go.rs"]
 mod resolver_go;
-pub(crate) use resolver_go::go_deferred_candidate;
+pub(crate) use resolver_go::{go_deferred_candidate, go_external_interface};
 
 use super::Db;
 use super::graph_query::{

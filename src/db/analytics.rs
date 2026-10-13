@@ -643,7 +643,14 @@ impl Db {
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id,
-                          f.language, s.visibility
+                          f.language, s.visibility,
+                          (SELECT pc.source_symbol_id FROM edges pc
+                           WHERE pc.target_symbol_id = s.id AND pc.kind = 'CONTAINS'
+                             AND pc.graph_version = {gv} LIMIT 1),
+                          s.kind = 'method' AND f.language = 'rust' AND EXISTS (
+                            SELECT 1 FROM edges xe JOIN symbols xs ON xs.id = xe.target_symbol_id
+                            WHERE xe.source_symbol_id = s.id AND xe.kind = 'IMPLEMENTS'
+                              AND xe.graph_version = {gv} AND xs.kind = 'external')
                    FROM symbols s
                    JOIN files f ON s.file_id = f.id
                    WHERE s.graph_version = ?
@@ -723,11 +730,15 @@ impl Db {
                          )
                      )
                      AND NOT (s.kind IN ('method', 'function') AND (
+                       -- A Rust impl method of an external trait is judged
+                       -- afterwards: live only with its type (#472).
                        EXISTS (
                          SELECT 1 FROM edges e
+                         LEFT JOIN symbols et ON et.id = e.target_symbol_id
                          WHERE e.source_symbol_id = s.id
                            AND e.kind = 'IMPLEMENTS'
                            AND e.graph_version = ?
+                           AND NOT (f.language = 'rust' AND et.kind = 'external')
                        )
                        OR EXISTS (
                          SELECT 1 FROM unresolved_references ur
@@ -787,6 +798,8 @@ impl Db {
                 row.get::<_, Option<String>>(11)?.unwrap_or_default(),
                 row.get::<_, String>(16)?,
                 row.get::<_, Option<String>>(17)?,
+                row.get::<_, Option<i64>>(18)?,
+                row.get::<_, bool>(19)?,
             ))
         })?;
         let mut candidates = Vec::new();
@@ -839,8 +852,11 @@ impl Db {
         };
         let mut api = PublicApi::new(repo_root, js_files, rust_libs);
 
-        let mut out = DeadSymbols::default();
-        for (symbol, signature, language, visibility) in candidates {
+        // Judged in two passes: a method is live through an external
+        // interface only when its type is not itself a claim (#472).
+        let mut judged: Vec<Judged> = Vec::new();
+        for (symbol, signature, language, visibility, parent_id, external_trait_impl) in candidates
+        {
             let profile = profile_for(&language);
             if let Some(is_root) = profile.implicit_root
                 && is_root(&ImplicitRootFacts {
@@ -901,21 +917,138 @@ impl Db {
                     false,
                 ),
             };
-            let claim = DeadSymbol {
-                symbol,
-                confidence,
-                reason,
-            };
-            if public {
+            judged.push(Judged {
+                claim: DeadSymbol {
+                    symbol,
+                    confidence,
+                    reason,
+                },
+                signature,
+                language,
+                public,
+                named_by_unresolved: unresolved,
+                parent_id,
+                external_trait_impl,
+            });
+        }
+
+        // A type an unresolved reference names is not proven dead (a
+        // function-local `struct V;` passed as a value, say): its methods
+        // keep the benefit of the doubt.
+        let claimed: HashSet<i64> = judged
+            .iter()
+            .filter(|j| !j.public && !j.named_by_unresolved)
+            .map(|j| j.claim.symbol.id)
+            .collect();
+        let mut implemented: HashMap<i64, Vec<String>> = HashMap::new();
+        let mut siblings: HashMap<i64, Vec<(String, Option<String>)>> = HashMap::new();
+        let mut out = DeadSymbols::default();
+        for mut j in judged {
+            if j.claim.symbol.kind == "method"
+                && let Some(iface) = self.external_interface_of(
+                    &conn,
+                    &j,
+                    graph_version,
+                    &claimed,
+                    &mut implemented,
+                    &mut siblings,
+                )?
+            {
+                // Live through its type: not a claim. Listed on request only,
+                // never above medium.
+                out.external_interface_total += 1;
+                if out.external_interface.len() < limit {
+                    j.claim.confidence = DeadConfidence::Medium;
+                    j.claim.reason = format!(
+                        "{}: implements {iface} on a live type",
+                        super::external_ifaces::REASON
+                    );
+                    out.external_interface.push(j.claim);
+                }
+                continue;
+            }
+            if j.public {
                 out.public_api_total += 1;
                 if include_public_api && out.public_api.len() < limit {
-                    out.public_api.push(claim);
+                    out.public_api.push(j.claim);
                 }
             } else if out.dead.len() < limit {
-                out.dead.push(claim);
+                out.dead.push(j.claim);
             }
         }
         Ok(out)
+    }
+
+    /// The external interface that makes method `j` live through its type
+    /// (`external_ifaces`), or `None` when it implements none or its type is
+    /// itself claimed dead. A method whose type cannot be found is given the
+    /// benefit of the doubt.
+    fn external_interface_of(
+        &self,
+        conn: &rusqlite::Connection,
+        j: &Judged,
+        graph_version: i64,
+        claimed: &HashSet<i64>,
+        implemented: &mut HashMap<i64, Vec<String>>,
+        siblings: &mut HashMap<i64, Vec<(String, Option<String>)>>,
+    ) -> Result<Option<String>> {
+        if j.parent_id.is_some_and(|p| claimed.contains(&p)) {
+            return Ok(None);
+        }
+        let method = &j.claim.symbol;
+        let found = match j.language.as_str() {
+            "rust" => j.external_trait_impl.then(|| "external trait".to_string()),
+            "go" => {
+                let Some(parent) = j.parent_id else {
+                    return Ok(None);
+                };
+                if let std::collections::hash_map::Entry::Vacant(slot) = siblings.entry(parent) {
+                    let mut stmt = conn.prepare_cached(
+                        "SELECT m.name, m.signature FROM edges c
+                         JOIN symbols m ON m.id = c.target_symbol_id
+                         WHERE c.source_symbol_id = ?1 AND c.kind = 'CONTAINS'
+                           AND c.graph_version = ?2 AND m.kind = 'method'",
+                    )?;
+                    let rows = stmt
+                        .query_map(rusqlite::params![parent, graph_version], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    slot.insert(rows);
+                }
+                super::resolver::go_external_interface(
+                    &method.name,
+                    Some(j.signature.as_str()),
+                    &siblings[&parent],
+                )
+            }
+            "typescript" | "tsx" | "javascript" => {
+                let names: &[String] = match j.parent_id {
+                    Some(parent) => {
+                        if let std::collections::hash_map::Entry::Vacant(slot) =
+                            implemented.entry(parent)
+                        {
+                            let mut stmt = conn.prepare_cached(
+                                "SELECT reference_name FROM unresolved_references
+                                 WHERE source_symbol_id = ?1 AND edge_kind = 'IMPLEMENTS'
+                                   AND graph_version = ?2 AND reference_name IS NOT NULL",
+                            )?;
+                            let rows = stmt
+                                .query_map(rusqlite::params![parent, graph_version], |r| {
+                                    r.get::<_, String>(0)
+                                })?
+                                .collect::<rusqlite::Result<Vec<_>>>()?;
+                            slot.insert(rows);
+                        }
+                        &implemented[&parent]
+                    }
+                    None => &[],
+                };
+                super::external_ifaces::ts_external_interface(&method.name, names)
+            }
+            _ => None,
+        };
+        Ok(found)
     }
 
     /// Issue #79: an IMPORTS reference the write path never resolved (an
@@ -1393,6 +1526,20 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
 
 /// The `visibility` modifiers of the symbol(s) a method's qualname hangs
 /// under (`Type::method` or `pkg.Type.method`), joined by spaces.
+/// One candidate once classified, before external-interface liveness.
+struct Judged {
+    claim: DeadSymbol,
+    signature: String,
+    language: String,
+    public: bool,
+    /// An unresolved reference names it: it may be used after all.
+    named_by_unresolved: bool,
+    /// The declaration containing it (a method's type).
+    parent_id: Option<i64>,
+    /// A Rust method implementing a trait of a dependency or `std`.
+    external_trait_impl: bool,
+}
+
 fn parent_visibility_of(
     conn: &rusqlite::Connection,
     method: &Symbol,

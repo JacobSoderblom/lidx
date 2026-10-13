@@ -1,5 +1,3 @@
 [
-{"callee":{"file":"command.go","line":1974,"name":"defaultUsageFunc"},"caller":{"file":"command.go","line":464,"name":"getUsageTemplateFunc"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["ident"],"module_level":false,"sites":["command.go:472"]},
-{"callee":{"file":"command.go","line":2047,"name":"defaultHelpFunc"},"caller":{"file":"command.go","line":505,"name":"getHelpTemplateFunc"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["ident"],"module_level":false,"sites":["command.go:514"]},
-{"callee":{"file":"command.go","line":2068,"name":"defaultVersionFunc"},"caller":{"file":"command.go","line":631,"name":"getVersionTemplateFunc"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["ident"],"module_level":false,"sites":["command.go:639"]}
+
 ]

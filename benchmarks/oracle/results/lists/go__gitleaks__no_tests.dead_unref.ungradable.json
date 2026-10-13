@@ -1,7 +1,3 @@
 [
-{"confidence":"high","file":"config/config_test.go","key":"config/config_test.go:25","lidx_kind":"class","name":"translateCase","qualname":"config/config_test.translateCase","reason":"test_file_outside_cell"},
-{"confidence":"high","file":"detect/reader_test.go","key":"detect/reader_test.go:18","lidx_kind":"class","name":"mockReader","qualname":"detect/reader_test.mockReader","reason":"test_file_outside_cell"},
-{"confidence":"high","file":"report/report_test.go","key":"report/report_test.go:36","lidx_kind":"class","name":"testWriter","qualname":"report/report_test.testWriter","reason":"test_file_outside_cell"},
-{"confidence":"medium","file":"detect/reader_test.go","key":"detect/reader_test.go:25","lidx_kind":"method","name":"Read","qualname":"detect/reader_test.mockReader.Read","reason":"test_file_outside_cell"},
-{"confidence":"medium","file":"report/report_test.go","key":"report/report_test.go:40","lidx_kind":"method","name":"Close","qualname":"report/report_test.testWriter.Close","reason":"test_file_outside_cell"}
+
 ]

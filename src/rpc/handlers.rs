@@ -1654,10 +1654,16 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
             // Public-API declarations with no incoming reference: left out of
             // `dead_symbols` unless `include_public_api` asks for them.
             "public_api": dead.public_api_total,
+            // Methods of live types that implement an external interface or
+            // trait: reached through the type, so not claims.
+            "implements_external_interface": dead.external_interface_total,
         }
     });
     if include_public_api {
         result["public_api"] = json!(dead.public_api);
+    }
+    if params.include_external_interface.unwrap_or(false) {
+        result["implements_external_interface"] = json!(dead.external_interface);
     }
     Ok(result)
 }
