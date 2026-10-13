@@ -78,6 +78,8 @@ type Output struct {
 	// function, whatever RTA found behind it (nothing in the repository, or only types outside it). The type
 	// checker resolves the call to the interface method; a graph edge to it is a true call.
 	IfaceCalls []IfaceCall `json:"iface_calls"`
+	// Hierarchy is the type hierarchy graded by go/types (hierarchy.go).
+	Hierarchy *Hierarchy `json:"hierarchy"`
 }
 
 type IfaceCall struct {
@@ -119,6 +121,8 @@ func main() {
 			out.Errors = append(out.Errors, p.ID+": "+e.Error())
 		}
 	}
+
+	out.Hierarchy = computeHierarchy(pkgs, root)
 
 	prog, ssapkgs := ssautil.AllPackages(pkgs, ssa.InstantiateGenerics)
 	prog.Build()

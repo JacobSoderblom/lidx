@@ -126,6 +126,7 @@ fn every_subcommand_rejects_missing_repo_without_creating_directories() {
         ("reindex", &[]),
         ("changed-files", &[]),
         ("overview", &[]),
+        ("dispatch-pairs", &[]),
         ("request", &["--method", "orient"]),
         ("mcp-serve", &[]),
         ("context", &["src/x.py"]),

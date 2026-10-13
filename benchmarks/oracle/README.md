@@ -177,6 +177,54 @@ all-edges grading stays in the report as a diagnostic row.
 `no_edge_at_site`, `other_call_on_line_missed`, `wrong_target`, `marked_external`, `recorded_as_uses`,
 `attributed_to_other_caller`, `unresolved`.
 
+### Type hierarchy
+
+The call-edge grading above says nothing about the edges that make dispatch work. A second grading, in its own section of
+`results/report.md` ("Type hierarchy"), checks `EXTENDS`, `IMPLEMENTS` and the method-level pairing (implementing method ->
+interface, trait or base method) against the same compilers. **The call-edge tables and their numbers are untouched**; this is a new
+`hierarchy` object in each oracle's JSON and a new `hierarchy` key per cell in `cells.json`. Nothing in an oracle pair is derived from
+lidx. Pairs are keyed `file:line` of the declaration's name identifier, like the call edges (a method by its own name token), and a
+declaration is compared by (file, qualname) so merged interface declarations are one.
+
+| Language | `implements` | `extends` | `embeds` (Go) | `overrides` |
+|---|---|---|---|---|
+| Go (`go_oracle/hierarchy.go`, `go/types`) | every in-repo named non-interface type `T` and in-repo interface `I` with at least one method (embedded methods included): `types.Implements(T, I)` or `types.Implements(*T, I)` (`ptr` marks the pointer-only case). Local types, aliases and empty or constraint-only interfaces are not candidates. | interface embedding: `Interface.EmbeddedType(i)` of an in-repo interface that is itself an in-repo named interface | struct embedding: `Struct.Field(i).Embedded()` whose type is an in-repo named type (pointer and generic instantiation collapse to the origin) | for each implements pair, `MethodSet(T or *T).Lookup(I.Method(j))`: the implementing method (possibly promoted from an embedded type; `promoted`) against the interface method, where both are declared in the repository |
+| TypeScript (`ts_oracle/hierarchy.mjs`, checker) | the resolved `implements` heritage nodes of every class (declared clauses only) | `checker.getBaseTypes` of every class and interface | - | for every instance member of a class, `checker.getPropertyOfType(ancestorType, name)` over the class's `extends` and `implements` ancestors, transitively; the pair is (member, ancestor's member), `depth` and `via` say how far and through which clause |
+| Rust (`rust_oracle/scip_hierarchy.py`, rust-analyzer SCIP) | `impl Trait for Type`: `Type` and `Trait` are the declarations of the reference occurrences on the impl header (first top-level occurrence before and after `for`), never found by name | supertraits: the top-level reference occurrences after the `:` of a `trait A: B + C` header | - | an item of the impl whose name the trait declares (`impl#[T][Trait]m()` against `Trait#m()`) |
+
+Why the Rust oracle reads impl symbols: rust-analyzer's SCIP carries no implementation relationships (the `is_implementation` flag is
+never set), so the impl symbols (`impl#[Type][Trait]item`) are the source. The bracket text is only a name, so the declarations come from
+the occurrences on the header line(s). `where Self: X` bounds on a trait are not read as supertraits.
+
+**Exclusions, each a named bucket in the report and sampled by hand:**
+
+| Bucket | Definition |
+|---|---|
+| external base | the base is declared outside the repository (`impl Display for X`, `class E extends Error`, an embedded `sync.Mutex`, `interface R extends io.Reader`). Judged for **existence only**: the oracle pair is found when lidx has an EXTENDS / IMPLEMENTS row from the same declaration naming the same base (the last one or two name segments). No precision. Go has no `implements` clause, so its external bucket holds embedded external types only. |
+| blanket impl (Rust) | `impl<T> Trait for T`: no in-repo type |
+| foreign self type (Rust) | `impl Trait for Vec<Foo>`, `for &str`: the Self type is not declared in the repository |
+| type-alias self type (Rust) | `impl Trait for Alias` |
+| marker impl (Rust) | an impl with no item (`impl Marker for X {}`): rust-analyzer emits no symbol for it |
+| generic declaration (Go) | a generic type or interface: `types.Implements` on an uninstantiated declaration compares unrelated type parameters, so lidx pairs touching it are ungradable |
+| interface method outside the repository (Go) | an `overrides` pair whose interface method comes from an embedded stdlib interface |
+| override base outside scope or external (TS) | the member's base is declared in a `.d.ts`, `lib`, or outside the cell's `--subdir` |
+| ungradable lidx pair | an end in a file the oracle did not analyse, a declaration the oracle did not judge (not a candidate type or interface), or a generic Go declaration |
+
+**lidx side** (`hierarchy.py`): its own `EXTENDS`/`IMPLEMENTS`/`INHERITS` rows with both ends in-repo symbols, relation chosen by kind
+and by the source's symbol kind (Go: an EXTENDS row from an interface is `extends`, from anything else `embeds`; Rust: an IMPLEMENTS row from
+a method is `overrides`, from a trait `extends`, otherwise `implements`). Go and TypeScript `overrides` read the pairs of lidx's dispatch
+query, dumped by `lidx dispatch-pairs --repo R [--db D]` (a small subcommand that prints `Db::all_dispatch_pairs`, the rows behind `explain_symbol`, `analyze_impact` and
+`dead_symbols`); the harness does not substitute a pairing of its own. A lidx pair is **correct** when the oracle has it, **wrong** when both of
+its ends are declarations the oracle judged for that relation and it does not, **ungradable** otherwise. Recall = oracle pairs lidx has / all
+oracle pairs, with pairs lidx has no symbol for kept in the denominator (`capture_gap`). TypeScript also reports `structural_implements`
+(`checker.isTypeAssignableTo`, interfaces with at least one required member and at least one member the class has) as a diagnostic column: it
+never changes the headline numbers.
+
+FN categories: `no_edge`, `not_indexed` (a declaration of the pair has no lidx symbol), `other_kind_of_edge`, and for `overrides`
+`type_edge_missing` (lidx lacks the type-level pair), `method_pairing_missing` (it has the type-level pair but the dispatch query does not pair the
+methods) and `promoted_method` (Go: the method is promoted from an embedded type). FP categories: `reverse_direction`, `structural_only` (TS),
+`other_relation_in_oracle`, `no_such_override`, `types_unrelated_in_compiler`, `other`.
+
 ## Oracle artefacts
 
 The PR #445 spot-check found oracle artefacts concentrated in two places. Each change below removes an **oracle blind spot**, never a lidx
@@ -245,3 +293,44 @@ gradings of the same repositories (TypeScript with every edge, Rust without `#[c
 | rust/fd/path_tests_excluded | 0.996 [0.978, 0.999] | 0.899 [0.838, 0.939] | **ahead** | 0.984 [0.961, 0.994] | 0.619 [0.555, 0.679] | **ahead** | 256 / 231 |
 
 Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests, and the held-out cells (`results/report.md`).
+
+## Type hierarchy results
+
+`EXTENDS`, `IMPLEMENTS` and method-override pairs against the compiler (README "Method / Type hierarchy"; full per-cell tables for all 40 cells, the
+`embeds` relation for Go, the external-base and structural-implements diagnostics and the Go dispatch-credited tie-in are in `results/report.md`).
+P = correct / (correct + wrong) over the lidx pairs the oracle can judge, R = oracle pairs lidx has / all oracle pairs, 95% Wilson intervals, n in
+brackets. Go `overrides` and TypeScript `overrides` are lidx's dispatch pairs (`lidx dispatch-pairs`); Rust `overrides` are method-level IMPLEMENTS rows. Quoted only
+after the hand spot-check came in under the 10% bar: 235 sampled items (20 FP + 20 FN + 20 correct pairs per language where that many exist, plus up to 10 per exclusion bucket and up to 20 of
+`end_not_judged`, the one bucket that could hide a wrong pair), 0 oracle or matching artefacts, all 60 sampled correct pairs confirmed in the source, and 1 mis-bucketed exclusion (pooled 0.4%, [0.1%, 2.4%]).
+`end_not_judged`: Go 13 of 13 read, all true relations on generic receivers; Rust 20 of 85 read, 19 true (impls on foreign or blanket types) and 1 real lidx error (a name collision, #457). The first TypeScript sample was 12 of 61 artefacts (aliases named in `extends` and merged
+interfaces keyed at the wrong declaration); the oracle was fixed and the sample redrawn.
+
+| Cell | implements | extends | overrides |
+|---|---|---|---|
+| go/cobra/tests | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | n/a (0 pairs) | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) |
+| go/gitleaks/tests | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | n/a (0 pairs) | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) |
+| go/syft/tests | P 1.00 [0.98, 1.00] (n=212); R 0.95 [0.91, 0.97] (n=223) | P 1.00 [0.57, 1.00] (n=5); R 0.83 [0.44, 0.97] (n=6) | P 1.00 [0.99, 1.00] (n=308); R 0.99 [0.98, 1.00] (n=310) |
+| go/chi/tests | P 1.00 [0.61, 1.00] (n=6); R 0.50 [0.25, 0.75] (n=12) | P - (n=0); R 0.00 [0.00, 0.79] (n=1) | P 1.00 [0.88, 1.00] (n=29); R 0.85 [0.70, 0.94] (n=34) |
+| go/urfavecli/tests | P 1.00 [0.99, 1.00] (n=270); R 1.00 [0.99, 1.00] (n=270) | P 1.00 [0.76, 1.00] (n=12); R 1.00 [0.76, 1.00] (n=12) | P 1.00 [0.98, 1.00] (n=189); R 0.54 [0.49, 0.59] (n=351) |
+| go/viper/tests | P 1.00 [0.86, 1.00] (n=23); R 0.96 [0.80, 0.99] (n=24) | P 1.00 [0.34, 1.00] (n=2); R 0.50 [0.15, 0.85] (n=4) | P 1.00 [0.86, 1.00] (n=23); R 0.96 [0.80, 0.99] (n=24) |
+| go/bubbletea/tests | P 1.00 [0.57, 1.00] (n=5); R 0.83 [0.44, 0.97] (n=6) | n/a (0 pairs) | P 1.00 [0.94, 1.00] (n=57); R 0.95 [0.86, 0.98] (n=60) |
+| ts/zod | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.99, 1.00] (n=652); R 1.00 [0.99, 1.00] (n=652) | P - (n=0); R 0.00 [0.00, 0.09] (n=39) |
+| ts/hono | P 1.00 [0.65, 1.00] (n=7); R 1.00 [0.65, 1.00] (n=7) | P 0.99 [0.93, 1.00] (n=75); R 1.00 [0.95, 1.00] (n=74) | P - (n=0); R 0.00 [0.00, 0.08] (n=45) |
+| ts/trpc | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.90, 1.00] (n=33); R 1.00 [0.90, 1.00] (n=33) | P - (n=0); R 0.00 [0.00, 0.49] (n=4) |
+| ts/ky | n/a (0 pairs) | P 1.00 [0.65, 1.00] (n=7); R 1.00 [0.65, 1.00] (n=7) | P - (n=0); R 0.00 [0.00, 0.43] (n=5) |
+| ts/immer | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.57, 1.00] (n=5); R 1.00 [0.57, 1.00] (n=5) | P - (n=0); R 0.00 [0.00, 0.66] (n=2) |
+| ts/h3 | P 1.00 [0.44, 1.00] (n=3); R 1.00 [0.44, 1.00] (n=3) | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | P - (n=0); R 0.00 [0.00, 0.15] (n=21) |
+| rust/ripgrep/path_tests_excluded | P 1.00 [0.97, 1.00] (n=111); R 0.93 [0.87, 0.97] (n=119) | n/a (0 pairs) | P 1.00 [1.00, 1.00] (n=810); R 1.00 [1.00, 1.00] (n=810) |
+| rust/fd/path_tests_excluded | n/a (0 pairs) | n/a (0 pairs) | n/a (0 pairs) |
+| rust/bat/path_tests_excluded | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | P - (n=0); R - (n=0) | P 1.00 [0.84, 1.00] (n=20); R 1.00 [0.84, 1.00] (n=20) |
+| rust/tokei/path_tests_excluded | n/a (0 pairs) | n/a (0 pairs) | P - (n=0); R - (n=0) |
+| rust/xsv/path_tests_excluded | P - (n=0); R - (n=0) | n/a (0 pairs) | P - (n=0); R - (n=0) |
+| rust/lidx/path_tests_excluded | P 1.00 [0.78, 1.00] (n=14); R 0.93 [0.70, 0.99] (n=15) | P - (n=0); R - (n=0) | P 1.00 [0.92, 1.00] (n=46); R 1.00 [0.92, 1.00] (n=46) |
+| rust/just/path_tests_excluded | P 1.00 [0.85, 1.00] (n=21); R 0.66 [0.48, 0.80] (n=32) | n/a (0 pairs) | P 1.00 [0.90, 1.00] (n=36); R 1.00 [0.90, 1.00] (n=36) |
+| rust/nextest/path_tests_excluded | P 1.00 [0.70, 1.00] (n=9); R 0.90 [0.60, 0.98] (n=10) | n/a (0 pairs) | P 1.00 [0.86, 1.00] (n=24); R 1.00 [0.86, 1.00] (n=24) |
+
+What the numbers say: lidx's precision is 1.00 almost everywhere (one wrong TypeScript `extends`: an unimported global `Event` resolved to an unrelated alias). Recall is where the
+gaps are: Go struct embedding has no edge at all (0 of 94 `embeds` pairs), Go methods declared in another file than their receiver type never join it
+(163 of 788 override pairs, issue #455; embedding, #456), TypeScript has no override pairs (0 of 116; interface members are not symbols and base-class overrides need the
+`override` keyword, #458) and Rust loses the type-level IMPLEMENTS when the impl sits in another file than its type (#457). `extends` for TypeScript and `implements` for
+Go are good (779 of 779 and 525 of 544). Go `implements` recall caps the dispatch-credited call recall (see the report).

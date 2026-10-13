@@ -1,0 +1,8 @@
+[
+{"base":"src/core/immerClass.ts:40","evidence_file":"src/core/immerClass.ts","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"exact","sub":"src/core/immerClass.ts:47"},
+{"base":"src/core/proxy.ts:28","evidence_file":"src/core/proxy.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"src/core/proxy.ts:33"},
+{"base":"src/core/proxy.ts:28","evidence_file":"src/core/proxy.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"src/core/proxy.ts:40"},
+{"base":"src/types/types-internal.ts:27","evidence_file":"src/core/proxy.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"src/core/proxy.ts:28"},
+{"base":"src/types/types-internal.ts:27","evidence_file":"src/utils/plugins.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"src/utils/plugins.ts:80"},
+{"base":"src/types/types-internal.ts:27","evidence_file":"src/utils/plugins.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"src/utils/plugins.ts:88"}
+]

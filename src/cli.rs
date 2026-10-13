@@ -13,6 +13,7 @@ use std::path::PathBuf;
   lidx request --method search --params '{"query":"Indexer","limit":10}'
   lidx request --method trace_flow --params '{"start_qualname":"crate::indexer::Indexer::reindex","direction":"downstream","kinds":["CALLS"],"max_hops":1}'
   lidx request --method search --params '{"query":"def\\s+greet","context_lines":8}'
+  lidx dispatch-pairs --repo .
   lidx serve --repo . --watch auto
   lidx mcp-serve --repo .
 "#
@@ -71,6 +72,14 @@ pub enum Command {
     },
     /// Print a repository overview.
     Overview {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Print every (base member id, implementing member id) pair of the dispatch query as a JSON array.
+    /// The type-hierarchy benchmark (benchmarks/oracle) grades these against compiler output.
+    DispatchPairs {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
@@ -148,6 +157,7 @@ impl Command {
             | Command::Reindex { repo, .. }
             | Command::ChangedFiles { repo, .. }
             | Command::Overview { repo, .. }
+            | Command::DispatchPairs { repo, .. }
             | Command::Request { repo, .. }
             | Command::McpServe { repo, .. }
             | Command::Context { repo, .. }

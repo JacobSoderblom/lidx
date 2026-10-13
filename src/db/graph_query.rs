@@ -446,6 +446,20 @@ impl Db {
         Ok(pairs)
     }
 
+    /// Every `(base member id, implementing member id)` pair of the dispatch
+    /// query ([`DispatchSeed::All`]): the same rows `dead_symbols` uses to
+    /// keep implementations live. Dumped by `lidx dispatch-pairs` so the
+    /// oracle benchmark can grade the pairing against compiler output.
+    pub fn all_dispatch_pairs(&self, graph_version: i64) -> Result<Vec<(i64, i64)>> {
+        let from = dispatch_pairs_from(graph_version, &DispatchSeed::All);
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&format!("SELECT DISTINCT im.id, cm.id {from}"))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut pairs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        pairs.sort_unstable();
+        Ok(pairs)
+    }
+
     /// [`Db::dispatch_pairs`] for one method, split by side.
     pub fn dispatch_peers(&self, symbol_id: i64, graph_version: i64) -> Result<DispatchPeers> {
         let mut peers = DispatchPeers::default();
