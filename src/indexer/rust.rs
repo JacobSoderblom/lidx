@@ -1,7 +1,7 @@
 use crate::db::resolver::{
     DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_CRATE_PIN,
     RUST_CRATE_ROOT, RUST_EXTERNAL_CRATE, RUST_EXTERNAL_RECEIVER, RUST_STD_RECEIVER, SameFileTwins,
-    TwinTraits, VisibilityRule, rust_crate_pin,
+    TwinTraits, VisibilityRule, is_rust_std_root, rust_crate_pin,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -208,6 +208,16 @@ struct Context {
 }
 
 impl Context {
+    /// What a type path written here is read through.
+    fn path_scope(&self) -> PathScope<'_> {
+        PathScope {
+            imports: &self.imports,
+            local_mods: &self.local_mods,
+            crates: self.crates.as_deref(),
+            module: &self.module,
+        }
+    }
+
     /// `span(node)`, but starting at the item's first outer attribute when
     /// `walk_declaration_list` recorded one for exactly this node.
     fn item_span(&self, node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
@@ -371,8 +381,14 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             imports: &imports,
             local_mods: &local_mods,
             crates: self.file_crates.as_deref(),
+            module: module_name,
         };
-        let adts = Rc::new(collect_adts(root, source, Some(paths)));
+        // What the file's `use`s bind, for another file's path through here
+        // (`pub use walkdir::DirEntry;` read as `crate::walk::DirEntry`).
+        if let Some(module) = output.symbols.first_mut() {
+            module.signature = crate::model::rust_uses_marker(&paths.uses_entries());
+        }
+        let adts = Rc::new(collect_adts(root, source, Some(paths), None));
         let returns = Rc::new(collect_returns(root, source, paths));
         let ctx = Context {
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
@@ -681,11 +697,15 @@ fn handle_named_item(
         start_byte,
         end_byte,
         signature: match kind {
-            "struct" | "enum" => adt_signature(node, source),
+            "struct" | "enum" => adt_signature(node, source, ctx),
             // `type Range = Match;`: the resolver follows the alias.
-            "type" => node
-                .child_by_field_name("type")
-                .map(|aliased| format!("type {name} = {}", node_text(aliased, source))),
+            // An alias of a type from outside the repo says so
+            // (`type_origins_marker`).
+            "type" => node.child_by_field_name("type").map(|aliased| {
+                let origins =
+                    type_origins_marker(&[aliased], node, source, ctx).unwrap_or_default();
+                format!("{origins}type {name} = {}", node_text(aliased, source))
+            }),
             _ => None,
         },
         docstring: None,
@@ -803,6 +823,10 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     next_ctx.fn_self_ty = None;
     next_ctx.enclosing_fn = None;
     next_ctx.fn_generics = Rc::new(HashSet::new());
+    // What this module's `use`s bind, for another file's path through it.
+    if let Some(symbol) = output.symbols.last_mut() {
+        symbol.signature = crate::model::rust_uses_marker(&next_ctx.path_scope().uses_entries());
+    }
     walk_node(body, &next_ctx, source, output);
 }
 
@@ -986,6 +1010,7 @@ fn handle_function(
             adts: &ctx.adts,
             ctx: Some(&next_ctx),
             paths: None,
+            declared: None,
         };
         collect_local_types(node, &env, &mut local_types);
         next_ctx.local_types = Rc::new(local_types);
@@ -1763,9 +1788,22 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         adts: &ctx.adts,
         ctx: Some(ctx),
         paths: None,
+        declared: None,
     };
     match env.expr_ty(value, &ctx.local_types) {
-        Ty::Named(ty) => ReceiverType::Known(pin_imported_type(ty, ctx)),
+        // Imported from another module of the repo, which may re-export a
+        // foreign type: the resolver reads that module.
+        Ty::Named(ty) => match ctx.path_scope().bare_via(&ty) {
+            Some(path) => ReceiverType::RustDeferred(RustDeferred {
+                source: DeferredSource::Path {
+                    package: ctx.path_scope().package().to_string(),
+                    path,
+                },
+                steps: Vec::new(),
+                fallback: Some(ty),
+            }),
+            None => ReceiverType::Known(pin_imported_type(ty, ctx)),
+        },
         Ty::Pending(p) => ReceiverType::RustDeferred(p),
         // A value of a std shape (`Vec<_>`, `Option<_>`, an iterator, a
         // tuple, a map) takes std's methods: a repo type's method sharing
@@ -1928,6 +1966,9 @@ struct TypeEnv<'a> {
     /// `ctx` (`collect_adts`, `collect_returns`); absent for a signature
     /// parsed away from its file.
     paths: Option<PathScope<'a>>,
+    /// What the extractor recorded in the signature being parsed away from its
+    /// file (`#[rust_types(..)]`): where each type it names points.
+    declared: Option<&'a DeclaredOrigins>,
 }
 
 /// The names a type path written in one scope is read through.
@@ -1936,49 +1977,142 @@ struct PathScope<'a> {
     imports: &'a HashMap<String, Vec<String>>,
     local_mods: &'a HashSet<String>,
     crates: Option<&'a PackageView>,
+    /// Qualname of the module the path is written in.
+    module: &'a str,
 }
 
-/// Where a module-qualified type path (`fs::DirEntry`) points.
-#[derive(PartialEq)]
-enum PathOrigin {
+/// Where a type path (`fs::DirEntry`, `crate::walk::DirEntry`, `DirEntry`)
+/// points.
+#[derive(Clone, Debug, PartialEq)]
+enum TypeOrigin {
     /// A type of this repository (or not provably anything else).
     Repo,
     /// std or a dependency from outside the repository.
     External,
+    /// The type at this absolute `crate::` path, in another module than the one
+    /// the path is written in: that module may declare it or re-export a
+    /// foreign type, which only the resolver can read (`DeferredSource::Path`).
+    Via(String),
 }
 
-impl TypeEnv<'_> {
-    fn path_scope(&self) -> Option<PathScope<'_>> {
-        match self.ctx {
-            Some(ctx) => Some(PathScope {
-                imports: &ctx.imports,
-                local_mods: &ctx.local_mods,
-                crates: ctx.crates.as_deref(),
-            }),
-            None => self.paths,
+/// What a stored signature says about where its types point.
+struct DeclaredOrigins {
+    origins: HashMap<String, TypeOrigin>,
+    /// The Cargo package dir of the declaring file.
+    package: String,
+}
+
+impl DeclaredOrigins {
+    fn of_signature(signature: &str, package: &str) -> Self {
+        let origins = crate::model::rust_types_data(signature)
+            .into_iter()
+            .flat_map(|data| data.split(';'))
+            .filter_map(|entry| entry.split_once('='))
+            .map(|(written, origin)| {
+                let origin = if origin == RUST_EXTERNAL_MARK {
+                    TypeOrigin::External
+                } else {
+                    TypeOrigin::Via(origin.to_string())
+                };
+                (written.to_string(), origin)
+            })
+            .collect();
+        Self {
+            origins,
+            package: package.to_string(),
+        }
+    }
+}
+
+/// A recorded origin (`#[rust_types(..)]`, `#[rust_uses(..)]`) outside the repo.
+const RUST_EXTERNAL_MARK: &str = "~";
+
+/// A type path without its whitespace: the key `#[rust_types(..)]` stores it by.
+fn written_type_key(path: Option<&str>, name: &str) -> String {
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    match path {
+        Some(path) => format!("{}::{}", squash(path), squash(name)),
+        None => squash(name),
+    }
+}
+
+impl PathScope<'_> {
+    fn package(&self) -> &str {
+        self.crates.map_or("", PackageView::package)
+    }
+
+    /// Whether the absolute path `full` (a `use` target, first segment already
+    /// read through the scope) names std or a dependency from outside the repo.
+    fn is_external(&self, full: &str) -> bool {
+        let root = full.split("::").next().unwrap_or(full);
+        if matches!(root, "crate" | "self" | "super") {
+            return false;
+        }
+        if is_rust_std_root(root) {
+            return true;
+        }
+        // Only a dependency the manifests declare is provably outside the repo:
+        // an unknown first segment may be a module of the crate root (an
+        // edition-2015 `use config::Config;`).
+        self.crates.is_some_and(|crates| {
+            crates
+                .markers(std::slice::from_ref(&full.to_string()))
+                .iter()
+                .any(|m| m == RUST_EXTERNAL_CRATE)
+        })
+    }
+
+    /// A bare type name: external when the scope imports it from outside the
+    /// repo (`use walkdir::DirEntry;`).
+    fn bare_origin(&self, name: &str) -> TypeOrigin {
+        match self.imports.get(name) {
+            Some(targets) if !targets.is_empty() && targets.iter().all(|t| self.is_external(t)) => {
+                TypeOrigin::External
+            }
+            _ => TypeOrigin::Repo,
         }
     }
 
-    /// Whether the type `name` in the module path `path` (`fs`, `crate::walk`,
-    /// `walkdir`) names a place outside the repository. The first segment is read
-    /// through the scope's `use`s; a module declared in the scope or a
-    /// package of the workspace is the repo's, std and every other crate are
-    /// not. Without a scope only the std roots are known.
-    fn path_origin(&self, path: &str, name: &str) -> PathOrigin {
+    /// The absolute path a bare type name is imported from when that is
+    /// another module of the repo (`use crate::walk::DirEntry;`), which may
+    /// itself re-export a foreign type.
+    fn bare_via(&self, name: &str) -> Option<String> {
+        match self.imports.get(name)?.as_slice() {
+            [target]
+                if target.starts_with(RUST_CRATE_ROOT)
+                    && target.rsplit_once("::").map(|(m, _)| m) != Some(self.module) =>
+            {
+                Some(target.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// The type `name` in the module path `path` (`fs`, `crate::walk`,
+    /// `walkdir`). The first segment is read through the scope's `use`s; a
+    /// module declared in the scope or a package of the workspace is the
+    /// repo's, std and every other crate are not. A `crate::`/`self::`/`super::`
+    /// path names a module of the repo whose own `use`s may bring the type in
+    /// from outside.
+    fn path_origin(&self, path: &str, name: &str) -> TypeOrigin {
         let first = path.split("::").next().unwrap_or(path);
         let path = format!("{path}::{name}");
         if matches!(first, "crate" | "self" | "super") {
-            return PathOrigin::Repo;
-        }
-        let std_root = |s: &str| matches!(s, "std" | "core" | "alloc");
-        let Some(scope) = self.path_scope() else {
-            return if std_root(first) {
-                PathOrigin::External
-            } else {
-                PathOrigin::Repo
+            let abs = normalized_import_target(path, self.module);
+            let Some((module, _)) = abs.rsplit_once("::") else {
+                return TypeOrigin::Repo;
             };
-        };
-        let expanded: Vec<String> = match scope.imports.get(first) {
+            if !abs.starts_with(RUST_CRATE_ROOT) {
+                return TypeOrigin::Repo;
+            }
+            // Written here: declared in this module or imported by it.
+            return if module == self.module {
+                self.bare_origin(name)
+            } else {
+                TypeOrigin::Via(abs)
+            };
+        }
+        let expanded: Vec<String> = match self.imports.get(first) {
             Some(targets) if !targets.is_empty() => targets
                 .iter()
                 .map(|t| match path.split_once("::") {
@@ -1987,34 +2121,147 @@ impl TypeEnv<'_> {
                 })
                 .collect(),
             _ => {
-                if scope.local_mods.contains(first) {
-                    return PathOrigin::Repo;
+                if self.local_mods.contains(first) {
+                    return TypeOrigin::Repo;
                 }
                 vec![path.clone()]
             }
         };
-        let external = |full: &str| {
-            let root = full.split("::").next().unwrap_or(full);
-            if matches!(root, "crate" | "self" | "super") {
-                return false;
-            }
-            if std_root(root) {
-                return true;
-            }
-            match scope.crates {
-                Some(crates) => {
-                    let markers = crates.markers(std::slice::from_ref(&full.to_string()));
-                    // A workspace package's path is pinned; a dependency's is not.
-                    markers.is_empty() && !scope.local_mods.contains(root)
-                        || markers.iter().any(|m| m == RUST_EXTERNAL_CRATE)
+        if expanded.iter().all(|full| self.is_external(full)) {
+            TypeOrigin::External
+        } else {
+            TypeOrigin::Repo
+        }
+    }
+
+    /// What the module's `use`s bind, as `#[rust_uses(..)]` entries: a bare
+    /// name imported from outside the repo, `name=<crate:: path>` for one
+    /// imported from another module of it (which may itself re-export).
+    fn uses_entries(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .imports
+            .iter()
+            .filter(|(name, targets)| {
+                name.starts_with(char::is_uppercase) && !targets.is_empty() && name.as_str() != "*"
+            })
+            .filter_map(|(name, targets)| {
+                if targets.iter().all(|t| self.is_external(t)) {
+                    return Some(name.clone());
                 }
-                None => !scope.local_mods.contains(root),
+                match targets.as_slice() {
+                    [target] if target.starts_with(RUST_CRATE_ROOT) => {
+                        Some(format!("{name}={target}"))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        out.sort();
+        out
+    }
+}
+
+impl TypeEnv<'_> {
+    fn path_scope(&self) -> Option<PathScope<'_>> {
+        match self.ctx {
+            Some(ctx) => Some(ctx.path_scope()),
+            None => self.paths,
+        }
+    }
+
+    /// Where the type `name` written as `path::name` (or bare, `path` `None`)
+    /// points: by what the signature recorded when it is read away from its
+    /// file, else by the scope's `use`s. Without either only the std roots are
+    /// known.
+    fn origin_of(&self, path: Option<&str>, name: &str) -> TypeOrigin {
+        let std_path = path.is_some_and(|p| is_rust_std_root(p.split("::").next().unwrap_or(p)));
+        if let Some(declared) = self.declared {
+            return match declared.origins.get(&written_type_key(path, name)) {
+                Some(origin) => origin.clone(),
+                None if std_path => TypeOrigin::External,
+                None => TypeOrigin::Repo,
+            };
+        }
+        match (self.path_scope(), path) {
+            (Some(scope), Some(path)) => scope.path_origin(path, name),
+            (Some(scope), None) => scope.bare_origin(name),
+            (None, _) if std_path => TypeOrigin::External,
+            (None, _) => TypeOrigin::Repo,
+        }
+    }
+
+    /// `written=origin` entries for every type under `node` that points outside
+    /// the repo or through a module path (`#[rust_types(..)]`).
+    fn origin_entries(&self, node: Node<'_>, out: &mut Vec<String>) {
+        let (path, name) = match node.kind() {
+            "scoped_type_identifier" => {
+                let (Some(path), Some(name)) = (
+                    node.child_by_field_name("path"),
+                    node.child_by_field_name("name"),
+                ) else {
+                    return;
+                };
+                let path = node_text(path, self.source);
+                if path
+                    .split("::")
+                    .any(|seg| seg.starts_with(char::is_uppercase))
+                {
+                    return;
+                }
+                (Some(path), node_text(name, self.source))
+            }
+            "type_identifier" => (None, node_text(node, self.source)),
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    self.origin_entries(child, out);
+                }
+                return;
             }
         };
-        if expanded.iter().all(|full| external(full)) {
-            PathOrigin::External
-        } else {
-            PathOrigin::Repo
+        if name == "Self" || self.usable(name.clone()).is_none() {
+            return;
+        }
+        let origin = match (self.origin_of(path.as_deref(), &name), &path) {
+            (TypeOrigin::Repo, None) => self
+                .path_scope()
+                .and_then(|scope| scope.bare_via(&name))
+                .map_or(TypeOrigin::Repo, TypeOrigin::Via),
+            (origin, _) => origin,
+        };
+        let value = match origin {
+            TypeOrigin::Repo => return,
+            TypeOrigin::External => RUST_EXTERNAL_MARK.to_string(),
+            TypeOrigin::Via(abs) => abs,
+        };
+        let entry = format!("{}={value}", written_type_key(path.as_deref(), &name));
+        if !out.contains(&entry) {
+            out.push(entry);
+        }
+    }
+
+    /// The type `tail` reached through `abs` (see [`TypeOrigin::Via`]): left to
+    /// the resolver wherever it can finish a type, else the bare name.
+    fn via_ty(&self, tail: String, abs: String) -> Ty {
+        let package = match (self.declared, self.path_scope()) {
+            (Some(declared), _) => declared.package.clone(),
+            (None, Some(scope)) => scope.package().to_string(),
+            (None, None) => return Ty::Named(tail),
+        };
+        Ty::Pending(RustDeferred {
+            source: DeferredSource::Path { package, path: abs },
+            steps: Vec::new(),
+            fallback: Some(tail),
+        })
+    }
+
+    /// The type a type node names, with where it points.
+    fn named_ty(&self, node: Node<'_>) -> Ty {
+        match self.type_named(node) {
+            None => Ty::Unknown,
+            Some((name, TypeOrigin::Repo)) => Ty::Named(name),
+            Some((_, TypeOrigin::External)) => Ty::Named(RUST_EXTERNAL_RECEIVER.to_string()),
+            Some((name, TypeOrigin::Via(abs))) => self.via_ty(name, abs),
         }
     }
 
@@ -2033,8 +2280,20 @@ impl TypeEnv<'_> {
     }
 
     /// Bare type name of a type node: peels `&`/`&mut`, generics and paths
-    /// (`&mut crate::a::Resolver<'_>` -> `Resolver`).
+    /// (`&mut crate::a::Resolver<'_>` -> `Resolver`). A type from outside the
+    /// repo (`fs::DirEntry`, `walkdir::DirEntry`, an imported `DirEntry`) is
+    /// [`RUST_EXTERNAL_RECEIVER`]: a receiver of it takes only its own methods,
+    /// never the repo's same-named type's.
     fn type_name(&self, node: Node<'_>) -> Option<String> {
+        let (name, origin) = self.type_named(node)?;
+        Some(match origin {
+            TypeOrigin::External => RUST_EXTERNAL_RECEIVER.to_string(),
+            _ => name,
+        })
+    }
+
+    /// [`Self::type_name`]'s bare name and where it points.
+    fn type_named(&self, node: Node<'_>) -> Option<(String, TypeOrigin)> {
         let mut current = node;
         loop {
             match current.kind() {
@@ -2053,20 +2312,23 @@ impl TypeEnv<'_> {
                         return None;
                     }
                     let name = current.child_by_field_name("name")?;
-                    // `fs::DirEntry` / `walkdir::DirEntry` is not the repo's
-                    // `DirEntry`: a receiver of it takes only its own methods.
                     let tail = self.usable(node_text(name, self.source))?;
-                    return Some(if self.path_origin(&path, &tail) == PathOrigin::External {
-                        RUST_EXTERNAL_RECEIVER.to_string()
-                    } else {
-                        tail
-                    });
+                    let origin = self.origin_of(Some(&path), &tail);
+                    return Some((tail, origin));
                 }
                 "type_identifier" => break,
                 _ => return None,
             }
         }
-        self.usable(node_text(current, self.source))
+        let written = node_text(current, self.source);
+        let name = self.usable(written.clone())?;
+        // `Self` is the impl's own type: the repo's.
+        let origin = if written == "Self" {
+            TypeOrigin::Repo
+        } else {
+            self.origin_of(None, &name)
+        };
+        Some((name, origin))
     }
 
     /// Structured type of a type node (`Option<T>`, `Result<T, E>`, tuples,
@@ -2126,10 +2388,10 @@ impl TypeEnv<'_> {
                     (Some("IntoIter" | "Iter" | "IterMut" | "Drain"), 1) => {
                         Ty::Iter(Box::new(arg(0)))
                     }
-                    _ => self.type_name(node).map_or(Ty::Unknown, Ty::Named),
+                    _ => self.named_ty(node),
                 }
             }
-            _ => self.type_name(node).map_or(Ty::Unknown, Ty::Named),
+            _ => self.named_ty(node),
         }
     }
 
@@ -2283,6 +2545,12 @@ impl TypeEnv<'_> {
             Ty::Tuple(_) | Ty::Pending(_) if is_index => {
                 project(base, Step::Tuple(field.parse().unwrap_or(usize::MAX)))
             }
+            // A value typed by a `crate::` path: its struct is found once the
+            // path resolves.
+            Ty::Pending(RustDeferred {
+                source: DeferredSource::Path { .. },
+                ..
+            }) => project(base, Step::Field(field.to_string())),
             _ => Ty::Unknown,
         }
     }
@@ -2651,6 +2919,7 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
                     adts: &Adts::new(),
                     ctx: None,
                     paths: None,
+                    declared: None,
                 };
                 Some(Some(env.type_name(impl_node.child_by_field_name("type")?)?))
             }
@@ -2673,6 +2942,7 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
                     adts: &empty,
                     ctx: None,
                     paths: Some(paths),
+                    declared: None,
                 };
                 let mut ty = node
                     .child_by_field_name("return_type")
@@ -2753,6 +3023,9 @@ fn resolve_deferred(
             "{receiver_type}::{method}"
         )))?,
         DeferredSource::Field { owner, .. } => index.declarations(DeclarationQuery::Type(owner))?,
+        DeferredSource::Path { package, path } => {
+            return resolve_path_deferred(deferred, package, path, index);
+        }
     };
     if declarations.is_empty() {
         // A callee imported from a crate outside the repository (`use
@@ -2803,6 +3076,17 @@ fn resolve_deferred(
     let Some((ty, dir)) = found else {
         return Ok(Some(None));
     };
+    repo_receiver(ty, &dir, index)
+}
+
+/// The receiver type `ty` (reached through the declaration of `dir`'s package)
+/// as the resolver binds it: a type from outside the repo stays so, anything
+/// else must be a type the repo declares.
+fn repo_receiver(
+    ty: String,
+    dir: &str,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<Option<String>>> {
     // Declared with a path into std or a dependency: not the repo's type, and
     // no repo method is one of its methods.
     if ty == RUST_EXTERNAL_RECEIVER {
@@ -2813,7 +3097,137 @@ fn resolve_deferred(
     }
     // Two packages declaring a type of this name: keep the one the
     // declaration came from, so its methods are not looked up by name alone.
-    Ok(Some(Some(ty_in_package(index, ty, &dir)?)))
+    Ok(Some(Some(ty_in_package(index, ty, dir)?)))
+}
+
+/// Re-exports followed from a `crate::` path to the module that declares the
+/// type (or imports it from outside the repo).
+const MAX_REEXPORT_HOPS: usize = 4;
+
+/// What a module's `use`s say about the name `name` (`#[rust_uses(..)]`).
+#[derive(PartialEq)]
+enum ModuleUse {
+    /// Not bound by a `use`: declared there, or not at all.
+    Absent,
+    /// Imported from std or a dependency.
+    External,
+    /// Imported from this absolute `crate::` path.
+    From(String),
+}
+
+fn module_use(signature: Option<&str>, name: &str) -> ModuleUse {
+    let Some(data) = signature.and_then(crate::model::rust_uses_data) else {
+        return ModuleUse::Absent;
+    };
+    for entry in data.split(';') {
+        match entry.split_once('=') {
+            Some((bound, path)) if bound == name => return ModuleUse::From(path.to_string()),
+            None if entry == name => return ModuleUse::External,
+            _ => {}
+        }
+    }
+    ModuleUse::Absent
+}
+
+/// The type a `crate::`-rooted path names, as the receiver type it is.
+enum PathType {
+    /// Imported from std or a dependency somewhere along the re-exports.
+    External,
+    /// The repo's type of this name (the re-export's original name, when the
+    /// path went through `use .. as ..`).
+    Repo(String),
+}
+
+impl PathType {
+    fn receiver(self) -> String {
+        match self {
+            Self::External => RUST_EXTERNAL_RECEIVER.to_string(),
+            Self::Repo(name) => name,
+        }
+    }
+}
+
+/// The type at the absolute path `path` (`crate::walk::DirEntry`), written in
+/// the Cargo package at `package`: external when the module it names imports it
+/// from std or a dependency (`pub use walkdir::DirEntry;`), possibly through
+/// other modules' re-exports.
+fn resolve_path_type(
+    index: &dyn DeclarationIndex,
+    package: &str,
+    path: &str,
+) -> anyhow::Result<PathType> {
+    let mut path = path.to_string();
+    for _ in 0..MAX_REEXPORT_HOPS {
+        let repo =
+            |path: &str| PathType::Repo(path.rsplit("::").next().unwrap_or(path).to_string());
+        let Some((module, name)) = path.rsplit_once("::") else {
+            return Ok(repo(&path));
+        };
+        let uses: Vec<ModuleUse> = index
+            .declarations(DeclarationQuery::Module(module))?
+            .iter()
+            .filter(|d| cargo_package_dir(&d.path) == package)
+            .map(|d| module_use(d.signature.as_deref(), name))
+            .collect();
+        // Twins (`cfg` variants of a module) must agree.
+        let Some(first) = uses.first() else {
+            return Ok(repo(&path));
+        };
+        if uses.iter().any(|u| u != first) {
+            return Ok(repo(&path));
+        }
+        match first {
+            ModuleUse::Absent => return Ok(repo(&path)),
+            ModuleUse::External => return Ok(PathType::External),
+            ModuleUse::From(next) => path = next.clone(),
+        }
+    }
+    Ok(PathType::Repo(
+        path.rsplit("::").next().unwrap_or(&path).to_string(),
+    ))
+}
+
+/// A type written as a `crate::` path (`DeferredSource::Path`): the repo's
+/// type, unless the module it names imports it from outside.
+fn resolve_path_deferred(
+    deferred: &RustDeferred,
+    package: &str,
+    path: &str,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<Option<String>>> {
+    let start = resolve_path_type(index, package, path)?.receiver();
+    if deferred.steps.is_empty() {
+        return Ok(Some(Some(start)));
+    }
+    let Some((ty, dir)) = receiver_after_steps(Ty::Named(start), &deferred.steps, package, index)?
+    else {
+        return Ok(Some(None));
+    };
+    repo_receiver(ty, &dir, index)
+}
+
+/// `ty` with every `crate::` path in it (`DeferredSource::Path`) settled: the
+/// repo's type of that name, or [`RUST_EXTERNAL_RECEIVER`].
+fn settle_paths(ty: Ty, index: &dyn DeclarationIndex) -> anyhow::Result<Ty> {
+    let settle = |t: Box<Ty>| -> anyhow::Result<Box<Ty>> { Ok(Box::new(settle_paths(*t, index)?)) };
+    Ok(match ty {
+        Ty::Pending(RustDeferred {
+            source: DeferredSource::Path { package, path },
+            steps,
+            ..
+        }) if steps.is_empty() => Ty::Named(resolve_path_type(index, &package, &path)?.receiver()),
+        Ty::Option(t) => Ty::Option(settle(t)?),
+        Ty::Result(t, e) => Ty::Result(settle(t)?, settle(e)?),
+        Ty::Seq(t) => Ty::Seq(settle(t)?),
+        Ty::Iter(t) => Ty::Iter(settle(t)?),
+        Ty::Future(t) => Ty::Future(settle(t)?),
+        Ty::Tuple(ts) => Ty::Tuple(
+            ts.into_iter()
+                .map(|t| settle_paths(t, index))
+                .collect::<anyhow::Result<_>>()?,
+        ),
+        other => other,
+    })
 }
 
 /// `ty` pinned to the package `dir` (`@dir|ty`) when other packages declare a
@@ -2844,12 +3258,32 @@ fn declared_receiver_type(
     declared_in: &str,
     index: &dyn DeclarationIndex,
 ) -> anyhow::Result<Option<(String, String)>> {
-    let Some(ty) = declared_source_ty(&deferred.source, qualname, signature) else {
+    let Some(ty) = declared_source_ty(&deferred.source, qualname, signature, declared_in) else {
         return Ok(None);
     };
+    receiver_after_steps(
+        settle_paths(ty, index)?,
+        &deferred.steps,
+        declared_in,
+        index,
+    )
+}
+
+/// `ty` after `steps`, as a type name, with the package of the declaration that
+/// last contributed to it: `declared_in`, then each user method the steps pass.
+fn receiver_after_steps(
+    ty: Ty,
+    steps: &[Step],
+    declared_in: &str,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<(String, String)>> {
     let package = RefCell::new(declared_in.to_string());
-    let ty = receiver_through_steps(ty, &deferred.steps, |owner, method| {
-        let (ty, dir) = user_method_ty(owner, method, index, &package.borrow())?;
+    let ty = receiver_through_steps(ty, steps, |owner, step| {
+        let (ty, dir) = match step {
+            Step::Field(field) => user_field_ty(owner, field, index, &package.borrow())?,
+            Step::Method(method) => user_method_ty(owner, method, index, &package.borrow())?,
+            _ => (Ty::Unknown, None),
+        };
         if let Some(dir) = dir {
             *package.borrow_mut() = dir;
         }
@@ -2858,21 +3292,22 @@ fn declared_receiver_type(
     Ok(ty.map(|ty| (ty, package.into_inner())))
 }
 
-/// `ty` after `steps`, as a repo type name. `user_method` gives the return
-/// type of a method declared by the repo type `owner`; every std projection
+/// `ty` after `steps`, as a repo type name. `user_step` gives the return
+/// type of a method (or the type of a field) declared by the repo type `owner`; every std projection
 /// goes through `project`.
 fn receiver_through_steps(
     mut ty: Ty,
     steps: &[Step],
-    mut user_method: impl FnMut(&str, &str) -> anyhow::Result<Ty>,
+    mut user_step: impl FnMut(&str, &Step) -> anyhow::Result<Ty>,
 ) -> anyhow::Result<Option<String>> {
     for step in steps {
         ty = match (&ty, step) {
             (Ty::Named(owner), Step::Method(m))
                 if !STD_PASSTHROUGH_METHODS.contains(&m.as_str()) =>
             {
-                user_method(owner, m)?
+                user_step(owner, step)?
             }
+            (Ty::Named(owner), Step::Field(_)) => user_step(owner, step)?,
             _ => project(ty, step.clone()),
         };
     }
@@ -2909,9 +3344,55 @@ fn user_method_ty(
         let Some(signature) = &declaration.signature else {
             return Ok((Ty::Unknown, None));
         };
-        let Some(ty) = callable_return_ty(&declaration.qualname, signature) else {
+        let Some(ty) = callable_return_ty(
+            &declaration.qualname,
+            signature,
+            cargo_package_dir(&declaration.path),
+        ) else {
             return Ok((Ty::Unknown, None));
         };
+        let ty = settle_paths(ty, index)?;
+        match &found {
+            Some(prev) if *prev != ty => return Ok((Ty::Unknown, None)),
+            _ => found = Some(ty),
+        }
+    }
+    let dir = declarations
+        .first()
+        .map(|d| cargo_package_dir(&d.path).to_string());
+    Ok((found.unwrap_or(Ty::Unknown), dir))
+}
+
+/// Type of the field `field` of the struct `owner`, from its declaration in the
+/// index; `Unknown` when there is none or the declarations disagree.
+fn user_field_ty(
+    owner: &str,
+    field: &str,
+    index: &dyn DeclarationIndex,
+    package: &str,
+) -> anyhow::Result<(Ty, Option<String>)> {
+    let mut declarations = index.declarations(DeclarationQuery::Type(owner))?;
+    if declarations
+        .iter()
+        .any(|d| cargo_package_dir(&d.path) == package)
+    {
+        declarations.retain(|d| cargo_package_dir(&d.path) == package);
+    }
+    let source = DeferredSource::Field {
+        owner: owner.to_string(),
+        field: field.to_string(),
+    };
+    let mut found: Option<Ty> = None;
+    for declaration in &declarations {
+        let dir = cargo_package_dir(&declaration.path);
+        let ty = declaration
+            .signature
+            .as_deref()
+            .and_then(|sig| declared_source_ty(&source, &declaration.qualname, sig, dir));
+        let Some(ty) = ty else {
+            return Ok((Ty::Unknown, None));
+        };
+        let ty = settle_paths(ty, index)?;
         match &found {
             Some(prev) if *prev != ty => return Ok((Ty::Unknown, None)),
             _ => found = Some(ty),
@@ -2925,7 +3406,8 @@ fn user_method_ty(
 
 /// A callable's declared return type, `Self` read as its owner (the
 /// qualname's second-to-last segment when that is a type).
-fn callable_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
+fn callable_return_ty(qualname: &str, signature: &str, package: &str) -> Option<Ty> {
+    let declared = DeclaredOrigins::of_signature(signature, package);
     let (is_async, signature) = split_callable_signature(signature);
     let src = format!("fn __f{signature} {{}}");
     let tree = parse_declaration(&src)?;
@@ -2945,6 +3427,7 @@ fn callable_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
         adts: &Adts::new(),
         ctx: None,
         paths: None,
+        declared: Some(&declared),
     };
     let ret = env.ty(func.child_by_field_name("return_type")?);
     Some(if is_async {
@@ -2955,7 +3438,12 @@ fn callable_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
 }
 
 /// The type a marker's source names, before any steps.
-fn declared_source_ty(source: &DeferredSource, qualname: &str, signature: &str) -> Option<Ty> {
+fn declared_source_ty(
+    source: &DeferredSource,
+    qualname: &str,
+    signature: &str,
+    package: &str,
+) -> Option<Ty> {
     let name = qualname.rsplit("::").next()?;
     match source {
         DeferredSource::Field { field, .. } => {
@@ -2966,7 +3454,8 @@ fn declared_source_ty(source: &DeferredSource, qualname: &str, signature: &str) 
                 format!("{signature};")
             };
             let tree = parse_declaration(&src)?;
-            let adts = collect_adts(tree.root_node(), &src, None);
+            let declared = DeclaredOrigins::of_signature(signature, package);
+            let adts = collect_adts(tree.root_node(), &src, None, Some(&declared));
             let (variant, field) = match field.split_once("::") {
                 Some((v, f)) => (Some(v), f),
                 None => (None, field.as_str()),
@@ -2982,8 +3471,10 @@ fn declared_source_ty(source: &DeferredSource, qualname: &str, signature: &str) 
             )
         }
         DeferredSource::Call { .. } | DeferredSource::Method { .. } => {
-            callable_return_ty(qualname, signature)
+            callable_return_ty(qualname, signature, package)
         }
+        // Read by `resolve_path_deferred`, never through a declaration.
+        DeferredSource::Path { .. } => None,
     }
 }
 
@@ -3003,7 +3494,7 @@ fn split_callable_signature(signature: &str) -> (bool, &str) {
 /// `struct Name<G> { a: T }` / `struct Name(A, B)` / `enum Name { V(A) }`:
 /// the declaration's field types, kept in the symbol's signature so other
 /// files' extractors can defer to it (`project_deferred`).
-fn adt_signature(node: Node<'_>, source: &str) -> Option<String> {
+fn adt_signature(node: Node<'_>, source: &str, ctx: &Context) -> Option<String> {
     let flat = |n: Node<'_>| {
         node_text(n, source)
             .split_whitespace()
@@ -3043,10 +3534,14 @@ fn adt_signature(node: Node<'_>, source: &str) -> Option<String> {
         .map(flat)
         .unwrap_or_default();
     let body = node.child_by_field_name("body");
+    // Where the field types point (`type_origins_marker`).
+    let origins = body
+        .and_then(|b| type_origins_marker(&[b], node, source, ctx))
+        .unwrap_or_default();
     if node.kind() == "struct_item" {
         let body = body.map(fields).unwrap_or_default();
         let sep = if body.starts_with('{') { " " } else { "" };
-        return Some(format!("struct {name}{generics}{sep}{body}"));
+        return Some(format!("{origins}struct {name}{generics}{sep}{body}"));
     }
     let mut cursor = body?.walk();
     let variants: Vec<String> = body?
@@ -3063,13 +3558,18 @@ fn adt_signature(node: Node<'_>, source: &str) -> Option<String> {
         })
         .collect();
     Some(format!(
-        "enum {name}{generics} {{ {} }}",
+        "{origins}enum {name}{generics} {{ {} }}",
         variants.join(", ")
     ))
 }
 
 /// Struct and enum-variant field types declared in this file.
-fn collect_adts(root: Node<'_>, source: &str, paths: Option<PathScope<'_>>) -> Adts {
+fn collect_adts(
+    root: Node<'_>,
+    source: &str,
+    paths: Option<PathScope<'_>>,
+    declared: Option<&DeclaredOrigins>,
+) -> Adts {
     fn fields_of(env: &TypeEnv<'_>, body: Option<Node<'_>>) -> Vec<(String, Ty)> {
         let Some(body) = body else {
             return Vec::new();
@@ -3095,10 +3595,11 @@ fn collect_adts(root: Node<'_>, source: &str, paths: Option<PathScope<'_>>) -> A
     fn walk(
         node: Node<'_>,
         source: &str,
-        paths: Option<PathScope<'_>>,
+        origins: (Option<PathScope<'_>>, Option<&DeclaredOrigins>),
         empty: &Adts,
         out: &mut Adts,
     ) {
+        let (paths, declared) = origins;
         let kind = node.kind();
         if matches!(kind, "struct_item" | "enum_item")
             && let Some(name) = node.child_by_field_name("name")
@@ -3111,6 +3612,7 @@ fn collect_adts(root: Node<'_>, source: &str, paths: Option<PathScope<'_>>) -> A
                 adts: empty,
                 ctx: None,
                 paths,
+                declared,
             };
             let mut entries = Vec::new();
             if kind == "struct_item" {
@@ -3136,12 +3638,12 @@ fn collect_adts(root: Node<'_>, source: &str, paths: Option<PathScope<'_>>) -> A
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk(child, source, paths, empty, out);
+            walk(child, source, origins, empty, out);
         }
     }
     let empty = Adts::new();
     let mut out = Adts::new();
-    walk(root, source, paths, &empty, &mut out);
+    walk(root, source, (paths, declared), &empty, &mut out);
     out
 }
 
@@ -4751,11 +5253,42 @@ fn extract_signature(
         prefix.push('\n');
     }
     prefix.extend(test_attribute_prefix(attributes, source));
+    // Where the types in the return type point, read here with this file's
+    // `use`s so a caller in another file need not.
+    if let Some(return_node) = node.child_by_field_name("return_type") {
+        prefix.extend(type_origins_marker(&[return_node], node, source, ctx));
+    }
     match (prefix.is_empty(), base) {
         (true, base) => base,
         (false, Some(base)) => Some(format!("{prefix}{base}")),
         (false, None) => Some(prefix),
     }
+}
+
+/// The `#[rust_types(..)]` line (with its newline) for the types under `nodes`
+/// of the item `item`, read in `ctx`'s scope; `None` when they all point at
+/// the repo's own types.
+fn type_origins_marker(
+    nodes: &[Node<'_>],
+    item: Node<'_>,
+    source: &str,
+    ctx: &Context,
+) -> Option<String> {
+    let adts = Adts::new();
+    let env = TypeEnv {
+        source,
+        self_ty: None,
+        generics: Rc::new(collect_generic_names(item, source)),
+        adts: &adts,
+        ctx: Some(ctx),
+        paths: None,
+        declared: None,
+    };
+    let mut entries = Vec::new();
+    for node in nodes {
+        env.origin_entries(*node, &mut entries);
+    }
+    crate::model::rust_types_marker(&entries).map(|line| format!("{line}\n"))
 }
 
 /// `<Item, T: Bound>`: the generic parameters of `node` and of the impl/trait
@@ -5052,7 +5585,7 @@ fn tc() {}
         qualname: &str,
         signature: &str,
     ) -> Option<String> {
-        let ty = super::declared_source_ty(&deferred.source, qualname, signature)?;
+        let ty = super::declared_source_ty(&deferred.source, qualname, signature, "")?;
         super::receiver_through_steps(ty, &deferred.steps, |_, _| Ok(super::Ty::Unknown)).unwrap()
     }
 
