@@ -2790,15 +2790,27 @@ impl<'c> Resolver<'c> {
                     return Ok(None);
                 }
                 // ... and a method calling itself through its own type
-                // (`lhs.tree()` inside `Expression::tree`): the candidate the
-                // lookup skipped is the caller, whose own impl Rust picks over
-                // the trait's declaration.
+                // (`lhs.tree()` inside `Expression::tree`, `lhs` typed
+                // `Box<Expression>`): the candidate the lookup skipped is the
+                // caller, and Rust runs it -- genuine recursion, not the
+                // trait's declaration.
                 if source_lang == "rust"
-                    && caller
-                        .qualname
-                        .is_some_and(|q| q.ends_with(&format!("::{known_type}::{method}")))
+                    && let (Some(qualname), Some(id)) = (caller.qualname, caller.symbol_id)
+                    && qualname.ends_with(&format!("::{known_type}::{method}"))
                 {
-                    return Ok(None);
+                    // An implementation of a std or dependency trait is
+                    // ambiguous: `errs.clone()` on a `Vec<Error>` or
+                    // `contents.serialize()` on a `Box<Expression>` run the
+                    // container's impl, not the method calling them.
+                    let external: bool = self
+                        .conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+                             WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPLEMENTS' AND t.kind = 'external')",
+                            [id],
+                            |row| row.get(0),
+                        )?;
+                    return Ok((!external).then_some((id, ResolutionKind::ReceiverType)));
                 }
                 // The receiver's own type declares no matching method (or
                 // the match there was itself ambiguous) — walk its ancestors.

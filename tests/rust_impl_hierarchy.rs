@@ -606,7 +606,7 @@ fn a_binary_crate_is_never_read_as_the_library() {
 // ---- a method calling itself through its own type ----
 
 #[test]
-fn a_recursive_trait_method_call_is_not_bound_to_the_trait_declaration() {
+fn a_recursive_trait_method_call_binds_the_callers_own_impl() {
     let files = vec![
         ("Cargo.toml", MANIFEST),
         ("src/lib.rs", "mod node;\nmod expr;\n"),
@@ -619,6 +619,10 @@ fn a_recursive_trait_method_call_is_not_bound_to_the_trait_declaration() {
     let got = common::call_targets(&files, "crate::expr::Expression::tree");
     assert!(
         !got.iter().any(|t| t == "crate::node::Node::tree"),
+        "{got:#?}"
+    );
+    assert!(
+        got.iter().any(|t| t == "crate::expr::Expression::tree"),
         "{got:#?}"
     );
 }
