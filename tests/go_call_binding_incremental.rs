@@ -216,3 +216,44 @@ fn a_nested_module_importing_the_root_binds_once_the_package_exists() {
     files.push(("lib/lib.go", LIB));
     assert_incremental_equals_fresh(&indexer, &files);
 }
+
+fn references_from(indexer: &Indexer, source: &str) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.qualname FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'REFERENCES' AND e.graph_version = ? AND s.qualname = ?
+             ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![gv, source], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+#[test]
+fn value_references_to_late_members_and_same_named_methods_match_a_fresh_index() {
+    let user = "package main\n\nimport \"example.com/m/lib\"\n\ntype P func() bool\n\nvar _ P = late\n\nfunc apply(f P) {}\n\nfunc Run() {\n\tapply(lib.Less)\n}\n";
+    let lib = "package lib\n\nfunc Less() bool { return false }\n";
+    let method = "package lib\n\ntype L []int\n\nfunc (l L) Less() bool { return false }\n";
+    let late = "package main\n\nfunc late() bool { return true }\n";
+    let base = [("go.mod", GO_MOD), ("main.go", user), ("lib/lib.go", lib)];
+    let (_tmp, root, mut indexer) = indexed(&base);
+    assert_eq!(references_from(&indexer, "main.Run"), ["lib/lib.Less"]);
+    assert!(references_from(&indexer, "main").is_empty());
+    assert_incremental_equals_fresh(&indexer, &base);
+
+    common::write_files(&root, &[("lib/l.go", method), ("late.go", late)]);
+    indexer
+        .sync_rel_paths(&["lib/l.go".to_string(), "late.go".to_string()])
+        .unwrap();
+    assert_eq!(references_from(&indexer, "main.Run"), ["lib/lib.Less"]);
+    assert_eq!(references_from(&indexer, "main"), ["late.late"]);
+    let mut files = base.to_vec();
+    files.extend([("lib/l.go", method), ("late.go", late)]);
+    assert_incremental_equals_fresh(&indexer, &files);
+}
