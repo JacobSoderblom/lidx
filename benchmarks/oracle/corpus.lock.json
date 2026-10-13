@@ -170,6 +170,22 @@
       "ref": "main ccc405a (held-out)",
       "sha": "ccc405a5876837e27609bf13a09db7c9f42dc445",
       "held_out": true
+    },
+    {
+      "name": "just",
+      "lang": "rust",
+      "url": "https://github.com/casey/just",
+      "ref": "commit 7f4ef81b (held-out)",
+      "sha": "7f4ef81bd6a93faa2b28430912c8e9ab0e3dd29a",
+      "held_out": true
+    },
+    {
+      "name": "nextest",
+      "lang": "rust",
+      "url": "https://github.com/nextest-rs/nextest",
+      "ref": "commit c8d5aac0 (held-out)",
+      "sha": "c8d5aac098b5c0cd2bb74820409466922891a762",
+      "held_out": true
     }
   ],
   "toolchains": {
