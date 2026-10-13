@@ -52,6 +52,10 @@ struct Package {
     workspace_root: Option<String>,
     /// `pub use <crate> as <alias>;` in the library root.
     aliases: BTreeMap<String, String>,
+    /// The edition is 2021 or later (`edition = "2021"`, or inherited from
+    /// `[workspace.package]`), whose prelude adds `FromIterator`, `TryFrom`
+    /// and `TryInto`.
+    edition_2021: bool,
 }
 
 /// What a path's first segment names.
@@ -168,9 +172,26 @@ impl RustWorkspace {
                 .and_then(|path| std::fs::read_to_string(repo_root.join(path)).ok())
                 .map(|text| crate::indexer::rust::reexported_crate_aliases(&text))
                 .unwrap_or_default();
+            let inherited = package
+                .get("edition")
+                .and_then(|v| v.as_table())
+                .is_some_and(|t| t.get("workspace").and_then(|w| w.as_bool()) == Some(true));
+            let edition = if inherited {
+                workspace_root.as_ref().and_then(|root| {
+                    manifests
+                        .iter()
+                        .find(|w| w.dir == *root)
+                        .and_then(|w| w.table.get("workspace")?.get("package")?.get("edition"))
+                        .and_then(|e| e.as_str())
+                })
+            } else {
+                package.get("edition").and_then(|e| e.as_str())
+            };
+            let edition_2021 = edition.and_then(|e| e.parse::<u32>().ok()).unwrap_or(2015) >= 2021;
             workspace.packages.insert(
                 m.dir.clone(),
                 Package {
+                    edition_2021,
                     lib_name,
                     deps,
                     workspace_root,
@@ -290,6 +311,14 @@ impl PackageView {
     /// repo root).
     pub(crate) fn package(&self) -> &str {
         &self.package
+    }
+
+    /// Whether the package is edition 2021 or later.
+    pub(crate) fn edition_2021(&self) -> bool {
+        self.workspace
+            .packages
+            .get(&self.package)
+            .is_some_and(|p| p.edition_2021)
     }
 
     /// The view of the file at `rel_path`; `None` when no `Cargo.toml` above

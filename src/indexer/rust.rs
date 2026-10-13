@@ -1,7 +1,7 @@
 use crate::db::resolver::{
     DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_CRATE_PIN,
-    RUST_CRATE_ROOT, RUST_EXTERNAL_CRATE, RUST_EXTERNAL_RECEIVER, RUST_STD_RECEIVER, SameFileTwins,
-    TwinTraits, VisibilityRule, is_rust_std_root, rust_crate_pin,
+    RUST_CRATE_ROOT, RUST_EXTERNAL_CRATE, RUST_EXTERNAL_RECEIVER, RUST_IMPL_SELF,
+    RUST_STD_RECEIVER, SameFileTwins, TwinTraits, VisibilityRule, is_rust_std_root, rust_crate_pin,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -156,6 +156,10 @@ struct Context {
     /// root or the current `mod` body), so `impl Local for T` resolves to
     /// the same-module declaration. Recomputed per scope like `imports`.
     local_traits: Rc<HashSet<String>>,
+    /// Names of the types declared directly in this scope (struct, enum,
+    /// union, type alias), so `impl Trait for Local` is known to be about
+    /// this module's own type and `impl Trait for Imported` is not.
+    local_types_declared: Rc<HashSet<String>>,
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
@@ -181,6 +185,9 @@ struct Context {
     in_trait_scope: bool,
     /// Set only inside an `impl Trait for Type` body (not a trait declaration).
     in_trait_impl: Option<String>,
+    /// The trait of that `impl` is std's or a dependency's (a `~` marker among
+    /// its candidates), so no repo item can be the method it implements.
+    in_trait_impl_external: bool,
     /// Current function's locals/params whose type is locally knowable
     /// (`collect_local_types`), scoped to the block/arm that binds them.
     /// Empty outside a function body.
@@ -415,6 +422,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             imports,
             local_mods,
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
+            local_types_declared: Rc::new(collect_declared_type_names(root, source)),
             shadowed_names: Rc::new(HashSet::new()),
             bound_names: Rc::new(HashSet::new()),
             nested_fns: Rc::new(HashSet::new()),
@@ -426,6 +434,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             returns,
             in_trait_scope: false,
             in_trait_impl: None,
+            in_trait_impl_external: false,
             cfg_chain: Vec::new(),
             impl_identity: None,
             macro_parser: Rc::new(RefCell::new(macro_parser)),
@@ -831,6 +840,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // parent's `use` bindings (see `Context::imports`).
     next_ctx.imports = Rc::new(collect_use_bindings(body, source, &next_ctx.module));
     next_ctx.local_mods = Rc::new(collect_mod_names(body, source));
+    next_ctx.local_types_declared = Rc::new(collect_declared_type_names(body, source));
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
@@ -991,6 +1001,11 @@ fn handle_function(
             kind: "IMPLEMENTS".to_string(),
             source_qualname: Some(qualname.clone()),
             target_qualname: Some(format!("{trait_qualname}::{name}")),
+            import_candidates: if ctx.in_trait_impl_external {
+                vec![RUST_EXTERNAL_CRATE.to_string()]
+            } else {
+                Vec::new()
+            },
             ..Default::default()
         });
     }
@@ -1119,18 +1134,44 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // say which arm this impl belongs to), and an impl block is not itself
     // a symbol. It keeps resolving by qualname; the methods inside, which
     // are symbols, are pinned per item by `walk_declaration_list`.
+    //
+    // A type this module does not declare (imported, or reached by a glob)
+    // has no symbol under the impl's module: its edge carries the paths it
+    // may be declared at instead (`impl_self_candidates`), settled by the
+    // resolver.
+    let self_candidates =
+        impl_self_candidates(ctx, &type_name, &collect_generic_names(node, source));
 
     let mut grpc_service = None;
     let mut trait_qualname = None;
+    let mut trait_external = false;
     if let Some(trait_node) = node.child_by_field_name("trait") {
         let trait_name = normalize_type_path(&node_text(trait_node, source));
         if !trait_name.is_empty() {
             let qualname = qualify_trait_name(ctx, &trait_name);
             trait_qualname = Some(qualname.clone());
+            let mut import_candidates = trait_candidates(ctx, &trait_name, &qualname);
+            // Only when every path says so: a glob may bring the same name
+            // from a dependency and from the repo.
+            trait_external = import_candidates.iter().any(|c| c == RUST_EXTERNAL_CRATE)
+                && !import_candidates
+                    .iter()
+                    .any(|c| c.starts_with(RUST_CRATE_ROOT) || c.starts_with(RUST_CRATE_PIN));
+            let source_qualname = if self_candidates.is_empty() {
+                Some(type_qualname.clone())
+            } else {
+                import_candidates.extend(
+                    self_candidates
+                        .iter()
+                        .map(|c| format!("{RUST_IMPL_SELF}{c}")),
+                );
+                None
+            };
             output.edges.push(EdgeInput {
                 kind: "IMPLEMENTS".to_string(),
-                source_qualname: Some(type_qualname.clone()),
+                source_qualname,
                 target_qualname: Some(qualname),
+                import_candidates,
                 detail: None,
                 evidence_snippet: None,
                 ..Default::default()
@@ -1152,6 +1193,7 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // private status as normal. See `Context::in_trait_scope`.
     next_ctx.in_trait_scope = is_trait_impl;
     next_ctx.in_trait_impl = trait_qualname;
+    next_ctx.in_trait_impl_external = trait_external;
     next_ctx.impl_identity = impl_identity(node, source);
     walk_node(body, &next_ctx, source, output);
 }
@@ -1181,6 +1223,135 @@ fn impl_identity(node: Node<'_>, source: &str) -> Option<ImplIdentity> {
         generics,
         where_clause,
     })
+}
+
+/// Names of the types declared directly in `scope` (a file root or `mod`
+/// body): struct, enum, union and type alias items.
+fn collect_declared_type_names(scope: Node<'_>, source: &str) -> HashSet<String> {
+    let mut cursor = scope.walk();
+    scope
+        .named_children(&mut cursor)
+        .filter(|child| {
+            matches!(
+                child.kind(),
+                "struct_item" | "enum_item" | "union_item" | "type_item"
+            )
+        })
+        .filter_map(|child| child.child_by_field_name("name"))
+        .map(|name| node_text(name, source))
+        .collect()
+}
+
+/// Whether `text` is a path of identifiers (`Name`, `a::b::Name`) naming a
+/// type by convention (a capitalised last segment), not a tuple, slice,
+/// reference to one, primitive or `dyn` type.
+fn is_named_type_path(text: &str) -> bool {
+    let mut segments = text.trim_start_matches("::").split("::").peekable();
+    let mut last = "";
+    for segment in segments.by_ref() {
+        if segment.is_empty() || !segment.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return false;
+        }
+        last = segment;
+    }
+    last.starts_with(char::is_uppercase)
+}
+
+/// Absolute paths the self type of `impl .. for <type_name>` may be declared
+/// at when this module does not declare it itself, most likely first: the
+/// module's own item of that name (a type the extractor cannot see, a
+/// generated one), then what its `use`s and globs bring in. Empty when the
+/// type is this module's own or nothing says where else it could be.
+fn impl_self_candidates(ctx: &Context, type_name: &str, generics: &HashSet<String>) -> Vec<String> {
+    if !is_named_type_path(type_name) {
+        return Vec::new();
+    }
+    let (first, rest) = match type_name.split_once("::") {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (type_name, None),
+    };
+    if rest.is_none() && (generics.contains(first) || ctx.local_types_declared.contains(first)) {
+        return Vec::new();
+    }
+    let own = qualify_type_name(&ctx.module, type_name);
+    let mut out: Vec<String> = Vec::new();
+    match rest {
+        None => {
+            let named = absolute_import_candidates(first, ctx);
+            if named.is_empty() {
+                return Vec::new();
+            }
+            out.push(own);
+            out.extend(named);
+        }
+        Some(rest) => {
+            if matches!(first, "crate" | "self" | "super") {
+                // Already absolute after `qualify_type_name` (a `super::` path
+                // is rewritten against this module).
+                let abs = normalized_import_target(type_name.to_string(), &ctx.module);
+                out.push(abs);
+            } else if let Some(targets) = ctx.imports.get(first) {
+                out.extend(targets.iter().map(|t| format!("{t}::{rest}")));
+            } else if ctx.local_mods.contains(first) {
+                out.push(format!("{}::{type_name}", ctx.module));
+            } else {
+                return Vec::new();
+            }
+        }
+    }
+    // Only paths into this repository name a type to link: std and
+    // dependencies' types have no symbol here.
+    out.retain(|c| c.starts_with(RUST_CRATE_ROOT));
+    out.dedup();
+    // A bare name left with only the module's own guess says nothing new.
+    if rest.is_none() && out.len() <= 1 {
+        return Vec::new();
+    }
+    out
+}
+
+/// `import_candidates` of the trait named in `impl <trait_name> for ..`
+/// (`qualname` is [`qualify_trait_name`]'s answer): the absolute paths its
+/// name may stand for, then the markers of paths that leave the module's
+/// crate (`@dir|path` for a package of this repo, `~` for std and
+/// dependencies). Empty when the trait is this module's own.
+fn trait_candidates(ctx: &Context, trait_name: &str, qualname: &str) -> Vec<String> {
+    let (first, rest) = match trait_name.split_once("::") {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (trait_name, None),
+    };
+    let mut out: Vec<String> = Vec::new();
+    if matches!(first, "crate" | "self" | "super") {
+        out.push(qualname.to_string());
+    } else if let Some(rest) = rest {
+        match ctx.imports.get(first) {
+            Some(targets) => out.extend(targets.iter().map(|t| format!("{t}::{rest}"))),
+            None if ctx.local_mods.contains(first) => {
+                out.push(format!("{}::{trait_name}", ctx.module));
+            }
+            None => out.push(trait_name.to_string()),
+        }
+    } else {
+        if ctx
+            .local_traits
+            .contains(&format!("{}::{trait_name}", ctx.module))
+        {
+            return Vec::new();
+        }
+        out = absolute_import_candidates(trait_name, ctx);
+        if out.is_empty() && qualname != trait_name {
+            out.push(qualname.to_string());
+        }
+    }
+    add_crate_markers(trait_name, &mut out, ctx);
+    if out
+        .iter()
+        .any(|c| is_rust_std_root(c.split("::").next().unwrap_or(c)))
+        && !out.iter().any(|c| c == RUST_EXTERNAL_CRATE)
+    {
+        out.push(RUST_EXTERNAL_CRATE.to_string());
+    }
+    out
 }
 
 fn handle_use(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -1500,7 +1671,11 @@ fn handle_macro_invocation(
     };
     let path = node_text(name_node, source);
     let name = path.rsplit("::").next().unwrap_or(&path);
-    if !EXPR_ARG_MACROS.contains(&name) {
+    let item_macro = ITEM_MACROS.contains(&name)
+        && node
+            .parent()
+            .is_some_and(|p| matches!(p.kind(), "source_file" | "declaration_list"));
+    if !item_macro && !EXPR_ARG_MACROS.contains(&name) {
         return;
     }
     let mut cursor = node.walk();
@@ -1510,6 +1685,10 @@ fn handle_macro_invocation(
     else {
         return;
     };
+    if item_macro {
+        walk_item_macro(tokens, ctx, source, output);
+        return;
+    }
     let range = tree_sitter::Range {
         start_byte: tokens.start_byte(),
         end_byte: tokens.end_byte(),
@@ -1534,6 +1713,42 @@ fn handle_macro_invocation(
         }
     }
     walk_macro_exprs(root, ctx, source, output);
+}
+
+/// Macros whose braces hold ordinary items (`pin_project! { struct S { .. } }`):
+/// the items are declared in the module the macro is invoked in.
+const ITEM_MACROS: &[&str] = &["pin_project"];
+
+/// Re-parse the items between the braces of an item macro's `token_tree`
+/// (the included range keeps byte and line offsets those of the real file)
+/// and extract them as if written beside the invocation.
+fn walk_item_macro(tokens: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let (start, end) = (tokens.start_position(), tokens.end_position());
+    if tokens.end_byte() < tokens.start_byte() + 2 || end.column == 0 {
+        return;
+    }
+    let range = tree_sitter::Range {
+        start_byte: tokens.start_byte() + 1,
+        end_byte: tokens.end_byte() - 1,
+        start_point: tree_sitter::Point {
+            row: start.row,
+            column: start.column + 1,
+        },
+        end_point: tree_sitter::Point {
+            row: end.row,
+            column: end.column - 1,
+        },
+    };
+    let tree = {
+        let mut parser = ctx.macro_parser.borrow_mut();
+        if parser.set_included_ranges(&[range]).is_err() {
+            return;
+        }
+        parser.parse(source, None)
+    };
+    if let Some(tree) = tree {
+        walk_declaration_list(tree.root_node(), ctx, source, output);
+    }
 }
 
 /// `matches!(scrutinee, pattern)` re-parses as a tuple expression; only its
@@ -2084,6 +2299,18 @@ impl PathScope<'_> {
         })
     }
 
+    /// `target` (a `use` target) as an absolute path when its first segment
+    /// is a module declared in this scope (`use ast::Ast;` next to `mod ast;`
+    /// names `<this module>::ast::Ast`); anything else as it is.
+    fn absolute(&self, target: &str) -> String {
+        let first = target.split("::").next().unwrap_or(target);
+        if self.local_mods.contains(first) {
+            format!("{}::{target}", self.module)
+        } else {
+            target.to_string()
+        }
+    }
+
     /// A bare type name: external when the scope imports it from outside the
     /// repo (`use walkdir::DirEntry;`).
     fn bare_origin(&self, name: &str) -> TypeOrigin {
@@ -2167,6 +2394,7 @@ impl PathScope<'_> {
                 name.starts_with(char::is_uppercase) && !targets.is_empty() && name.as_str() != "*"
             })
             .filter_map(|(name, targets)| {
+                let targets: Vec<String> = targets.iter().map(|t| self.absolute(t)).collect();
                 if targets.iter().all(|t| self.is_external(t)) {
                     return Some(name.clone());
                 }
@@ -2178,7 +2406,21 @@ impl PathScope<'_> {
                 }
             })
             .collect();
+        // Globs re-export every name of their source: `*` from outside the
+        // repo, `*=<crate:: module>` from a module of it.
+        for target in self.imports.get("*").into_iter().flatten() {
+            let Some(module) = target.strip_suffix("::*") else {
+                continue;
+            };
+            let module = &self.absolute(module);
+            if self.is_external(module) {
+                out.push(RUST_GLOB_ENTRY.to_string());
+            } else if module == "crate" || module.starts_with(RUST_CRATE_ROOT) {
+                out.push(format!("{RUST_GLOB_ENTRY}={module}"));
+            }
+        }
         out.sort();
+        out.dedup();
         out
     }
 }
@@ -3122,9 +3364,12 @@ fn repo_receiver(
     Ok(Some(Some(ty_in_package(index, ty, dir)?)))
 }
 
-/// Re-exports followed from a `crate::` path to the module that declares the
-/// type (or imports it from outside the repo).
-const MAX_REEXPORT_HOPS: usize = 4;
+/// What a module's `use`s say about one name, and the globs it re-exports
+/// from (`#[rust_uses(..)]`).
+struct ModuleUses {
+    name: ModuleUse,
+    globs: Vec<Glob>,
+}
 
 /// What a module's `use`s say about the name `name` (`#[rust_uses(..)]`).
 #[derive(PartialEq)]
@@ -3137,21 +3382,244 @@ enum ModuleUse {
     From(String),
 }
 
-fn module_use(signature: Option<&str>, name: &str) -> ModuleUse {
+/// A glob import (`pub use walkdir::*;`): every public name of its source.
+#[derive(PartialEq, Clone)]
+enum Glob {
+    /// From std or a dependency outside the repo: it may hold any name.
+    External,
+    /// From this module of the repo (`crate::` path).
+    Repo(String),
+}
+
+fn module_uses(signature: Option<&str>, name: &str) -> ModuleUses {
+    let mut uses = ModuleUses {
+        name: ModuleUse::Absent,
+        globs: Vec::new(),
+    };
     let Some(data) = signature.and_then(crate::model::rust_uses_data) else {
-        return ModuleUse::Absent;
+        return uses;
     };
     for entry in data.split(';') {
         match entry.split_once('=') {
-            Some((bound, path)) if bound == name => return ModuleUse::From(path.to_string()),
-            None if entry == name => return ModuleUse::External,
+            Some((RUST_GLOB_ENTRY, module)) => uses.globs.push(Glob::Repo(module.to_string())),
+            None if entry == RUST_GLOB_ENTRY => uses.globs.push(Glob::External),
+            Some((bound, path)) if bound == name => uses.name = ModuleUse::From(path.to_string()),
+            None if entry == name => uses.name = ModuleUse::External,
             _ => {}
         }
     }
-    ModuleUse::Absent
+    uses
 }
 
-/// The type a `crate::`-rooted path names, as the receiver type it is.
+/// The `#[rust_uses(..)]` entry name of a glob import.
+const RUST_GLOB_ENTRY: &str = "*";
+
+/// The type at the absolute path `path` as it is, once the re-exports on the
+/// way are followed.
+pub(crate) enum Followed {
+    /// Imported from std or a dependency somewhere along the re-exports.
+    External,
+    /// The item at this absolute path of the repo. `declared` is set when a
+    /// module of the repo is known to declare it there; unset, the path is the
+    /// best guess where the chain ended (a module the index lacks, a glob
+    /// that names nothing, a cycle).
+    Repo { path: String, declared: bool },
+    /// The path is read from a crate no indexed module stands for (a binary,
+    /// a test): it names nothing the index can find.
+    Unknown,
+}
+
+/// The type at the absolute path `path` (`crate::walk::DirEntry`), written in
+/// the Cargo package at `package` (in the file `from`, when known): external
+/// when the module it names imports it from std or a dependency (`pub use
+/// walkdir::DirEntry;`, `pub use walkdir::*;`), possibly through any number
+/// of other modules' re-exports.
+pub(crate) fn follow_path(
+    index: &dyn DeclarationIndex,
+    package: &str,
+    from: Option<&str>,
+    path: &str,
+) -> anyhow::Result<Followed> {
+    follow_path_in(index, package, from, path, false, &mut HashSet::new())
+}
+
+/// The crate roots among `roots` (declarations of the module `crate`, with
+/// their file) that a file `from` of the package resolves `crate::` against:
+/// the root of a file that is one (`src/main.rs`), else the library root,
+/// else the package's `main.rs`; none for a binary under `src/bin/`, a test,
+/// example or bench, which are crates no indexed `crate` module stands for.
+/// All of them when `from` is unknown.
+fn crate_roots_for<T>(roots: Vec<(&str, T)>, from: Option<&str>) -> Vec<T> {
+    let Some(from) = from else {
+        return roots.into_iter().map(|(_, t)| t).collect();
+    };
+    let inside = from
+        .strip_prefix(cargo_package_dir(from))
+        .unwrap_or(from)
+        .trim_start_matches('/');
+    if ["src/bin/", "tests/", "benches/", "examples/"]
+        .iter()
+        .any(|dir| inside.starts_with(dir))
+        || inside == "build.rs"
+    {
+        return Vec::new();
+    }
+    let at = roots
+        .iter()
+        .position(|(path, _)| *path == from)
+        .or_else(|| roots.iter().position(|(p, _)| p.ends_with("src/lib.rs")))
+        .or_else(|| roots.iter().position(|(p, _)| p.ends_with("src/main.rs")));
+    match at {
+        Some(i) => roots
+            .into_iter()
+            .nth(i)
+            .map(|(_, t)| vec![t])
+            .unwrap_or_default(),
+        None => roots.into_iter().map(|(_, t)| t).collect(),
+    }
+}
+
+/// [`follow_path`], with `verify` asking the repo outcome to be a declaration
+/// found rather than a guess (globs are searched for the name, not assumed to
+/// hold it), and `seen` the paths being followed now, guarding against a
+/// cycle of re-exports (a diamond of globs reaches its far end twice).
+fn follow_path_in(
+    index: &dyn DeclarationIndex,
+    package: &str,
+    from: Option<&str>,
+    path: &str,
+    verify: bool,
+    seen: &mut HashSet<String>,
+) -> anyhow::Result<Followed> {
+    if !seen.insert(path.to_string()) {
+        return Ok(Followed::Repo {
+            path: path.to_string(),
+            declared: false,
+        });
+    }
+    let followed = follow_step(index, package, from, path, verify, seen);
+    seen.remove(path);
+    followed
+}
+
+fn follow_step(
+    index: &dyn DeclarationIndex,
+    package: &str,
+    from: Option<&str>,
+    path: &str,
+    verify: bool,
+    seen: &mut HashSet<String>,
+) -> anyhow::Result<Followed> {
+    let guess = || Followed::Repo {
+        path: path.to_string(),
+        declared: false,
+    };
+    let Some((module, name)) = path.rsplit_once("::") else {
+        return Ok(guess());
+    };
+    let declared_here = |index: &dyn DeclarationIndex| -> anyhow::Result<bool> {
+        Ok(index
+            .declarations(DeclarationQuery::Item(path))?
+            .iter()
+            .any(|d| cargo_package_dir(&d.path) == package))
+    };
+    let decls: Vec<_> = index
+        .declarations(DeclarationQuery::Module(module))?
+        .into_iter()
+        .filter(|d| cargo_package_dir(&d.path) == package)
+        .collect();
+    // The crate root of a package with a library and a binaries is several
+    // modules of one name: `crate::` means the root of the file's own crate.
+    let uses: Vec<ModuleUses> = if module == "crate" {
+        let roots = decls
+            .iter()
+            .map(|d| (d.path.as_str(), module_uses(d.signature.as_deref(), name)))
+            .collect();
+        let uses = crate_roots_for(roots, from);
+        if uses.is_empty() && from.is_some() && !decls.is_empty() {
+            return Ok(Followed::Unknown);
+        }
+        // Without a root to read it from, a declaration found in the package
+        // beats an import of the name by one of several roots.
+        if uses.len() > 1 && declared_here(index)? {
+            return Ok(Followed::Repo {
+                path: path.to_string(),
+                declared: true,
+            });
+        }
+        uses
+    } else {
+        decls
+            .iter()
+            .map(|d| module_uses(d.signature.as_deref(), name))
+            .collect()
+    };
+    // Twins (`cfg` variants of a module) must agree.
+    let Some(first) = uses.first() else {
+        return Ok(guess());
+    };
+    if uses.iter().any(|u| u.name != first.name) {
+        return Ok(guess());
+    }
+    match &first.name {
+        ModuleUse::External => return Ok(Followed::External),
+        ModuleUse::From(next) => return follow_path_in(index, package, from, next, verify, seen),
+        ModuleUse::Absent => {}
+    }
+    let mut globs: Vec<Glob> = Vec::new();
+    for glob in uses.iter().flat_map(|u| u.globs.iter()) {
+        if !globs.contains(glob) {
+            globs.push(glob.clone());
+        }
+    }
+    if !verify && globs.is_empty() {
+        return Ok(guess());
+    }
+    // Declared in the module itself: wins over every glob.
+    if declared_here(index)? {
+        return Ok(Followed::Repo {
+            path: path.to_string(),
+            declared: true,
+        });
+    }
+    let mut external = false;
+    let mut found: Option<String> = None;
+    for glob in &globs {
+        match glob {
+            Glob::External => external = true,
+            Glob::Repo(source) => {
+                match follow_path_in(
+                    index,
+                    package,
+                    from,
+                    &format!("{source}::{name}"),
+                    true,
+                    seen,
+                )? {
+                    Followed::External => external = true,
+                    Followed::Repo {
+                        path,
+                        declared: true,
+                    } => match &found {
+                        Some(other) if *other != path => return Ok(guess()),
+                        _ => found = Some(path),
+                    },
+                    Followed::Repo { .. } | Followed::Unknown => {}
+                }
+            }
+        }
+    }
+    Ok(match found {
+        Some(path) => Followed::Repo {
+            path,
+            declared: true,
+        },
+        None if external => Followed::External,
+        None => guess(),
+    })
+}
+
+/// The type at an absolute path, as the receiver type it is.
 enum PathType {
     /// Imported from std or a dependency somewhere along the re-exports.
     External,
@@ -3169,44 +3637,20 @@ impl PathType {
     }
 }
 
-/// The type at the absolute path `path` (`crate::walk::DirEntry`), written in
-/// the Cargo package at `package`: external when the module it names imports it
-/// from std or a dependency (`pub use walkdir::DirEntry;`), possibly through
-/// other modules' re-exports.
+/// The type at the absolute path `path`, written in the Cargo package at
+/// `package` ([`follow_path`]).
 fn resolve_path_type(
     index: &dyn DeclarationIndex,
     package: &str,
     path: &str,
 ) -> anyhow::Result<PathType> {
-    let mut path = path.to_string();
-    for _ in 0..MAX_REEXPORT_HOPS {
-        let repo =
-            |path: &str| PathType::Repo(path.rsplit("::").next().unwrap_or(path).to_string());
-        let Some((module, name)) = path.rsplit_once("::") else {
-            return Ok(repo(&path));
-        };
-        let uses: Vec<ModuleUse> = index
-            .declarations(DeclarationQuery::Module(module))?
-            .iter()
-            .filter(|d| cargo_package_dir(&d.path) == package)
-            .map(|d| module_use(d.signature.as_deref(), name))
-            .collect();
-        // Twins (`cfg` variants of a module) must agree.
-        let Some(first) = uses.first() else {
-            return Ok(repo(&path));
-        };
-        if uses.iter().any(|u| u != first) {
-            return Ok(repo(&path));
+    Ok(match follow_path(index, package, None, path)? {
+        Followed::External => PathType::External,
+        Followed::Repo { path, .. } => {
+            PathType::Repo(path.rsplit("::").next().unwrap_or(&path).to_string())
         }
-        match first {
-            ModuleUse::Absent => return Ok(repo(&path)),
-            ModuleUse::External => return Ok(PathType::External),
-            ModuleUse::From(next) => path = next.clone(),
-        }
-    }
-    Ok(PathType::Repo(
-        path.rsplit("::").next().unwrap_or(&path).to_string(),
-    ))
+        Followed::Unknown => PathType::Repo(path.rsplit("::").next().unwrap_or(path).to_string()),
+    })
 }
 
 /// A type written as a `crate::` path (`DeferredSource::Path`): the repo's
@@ -4816,6 +5260,16 @@ fn add_crate_markers(path: &str, candidates: &mut Vec<String>, ctx: &Context) {
     candidates.extend(markers);
 }
 
+/// [`named_import_candidates`], each as an absolute path (`use ast::Ast;`
+/// beside `mod ast;` is `crate::ast::Ast`).
+fn absolute_import_candidates(name: &str, ctx: &Context) -> Vec<String> {
+    let scope = ctx.path_scope();
+    named_import_candidates(name, ctx)
+        .iter()
+        .map(|t| scope.absolute(t))
+        .collect()
+}
+
 /// The targets this scope's `use`s bind the bare name `name` to: its own
 /// `use` if it has one, else that name inside each glob-imported module
 /// (`use super::*` makes `super::name` a candidate). A glob never shadows an
@@ -5018,8 +5472,6 @@ const PRELUDE_TRAITS: &[(&str, &str)] = &[
     ("Drop", "std::ops::Drop"),
     ("From", "std::convert::From"),
     ("Into", "std::convert::Into"),
-    ("TryFrom", "std::convert::TryFrom"),
-    ("TryInto", "std::convert::TryInto"),
     ("AsRef", "std::convert::AsRef"),
     ("AsMut", "std::convert::AsMut"),
     ("Default", "std::default::Default"),
@@ -5039,6 +5491,13 @@ const PRELUDE_TRAITS: &[(&str, &str)] = &[
     ("Ord", "std::cmp::Ord"),
     ("ToOwned", "std::borrow::ToOwned"),
     ("ToString", "std::string::ToString"),
+];
+
+/// Traits only the 2021 edition's prelude has.
+const PRELUDE_TRAITS_2021: &[(&str, &str)] = &[
+    ("TryFrom", "std::convert::TryFrom"),
+    ("TryInto", "std::convert::TryInto"),
+    ("FromIterator", "std::iter::FromIterator"),
 ];
 
 /// Trait names declared directly in `scope` (a file root or `mod` body),
@@ -5081,7 +5540,12 @@ fn qualify_trait_name(ctx: &Context, trait_name: &str) -> String {
     if ctx.local_traits.contains(&local) {
         return local;
     }
-    match PRELUDE_TRAITS.iter().find(|(name, _)| *name == trait_name) {
+    // Without a manifest the edition is unknown: the current one.
+    let edition_2021 = ctx.crates.as_ref().is_none_or(|c| c.edition_2021());
+    let prelude = PRELUDE_TRAITS
+        .iter()
+        .chain(PRELUDE_TRAITS_2021.iter().filter(|_| edition_2021));
+    match prelude.clone().find(|(name, _)| *name == trait_name) {
         Some((_, path)) => (*path).to_string(),
         None => trait_name.to_string(),
     }
@@ -5629,6 +6093,83 @@ fn tc() {}
             steps,
             fallback: None,
         }
+    }
+
+    #[test]
+    fn a_modules_globs_are_recorded_as_uses_entries() {
+        let src = "pub use walkdir::*;\nmod hop;\npub use hop::*;\npub use crate::other::*;\npub use std::collections::HashMap;\n";
+        let file = RustExtractor::new()
+            .unwrap()
+            .extract(src, "crate::m")
+            .unwrap();
+        let sig = file.symbols[0].signature.clone().unwrap();
+        let data = crate::model::rust_uses_data(&sig).unwrap();
+        let entries: Vec<&str> = data.split(';').collect();
+        assert!(entries.contains(&"*=crate::m::hop"), "{data}");
+        assert!(entries.contains(&"*=crate::other"), "{data}");
+        assert!(entries.contains(&"HashMap"), "{data}");
+        // `walkdir` is only known to be a dependency from the manifests; with
+        // none read it is not claimed to be outside the repo.
+        assert!(!entries.contains(&"*"), "{data}");
+    }
+
+    /// `(source, candidates)` of the type-level `IMPLEMENTS` edge of `src`.
+    fn impl_edge(src: &str) -> (Option<String>, Vec<String>) {
+        let file = RustExtractor::new()
+            .unwrap()
+            .extract(src, "crate::m")
+            .unwrap();
+        let edge = file
+            .edges
+            .iter()
+            .find(|e| e.kind == "IMPLEMENTS")
+            .expect("an IMPLEMENTS edge");
+        (edge.source_qualname.clone(), edge.import_candidates.clone())
+    }
+
+    #[test]
+    fn an_impl_for_a_local_type_keeps_its_source() {
+        let (source, _) = impl_edge("pub struct S;\npub trait T {}\nimpl T for S {}\n");
+        assert_eq!(source.as_deref(), Some("crate::m::S"));
+    }
+
+    #[test]
+    fn an_impl_for_an_imported_or_globbed_type_lists_where_it_may_be_declared() {
+        let (source, cands) =
+            impl_edge("use crate::ast::Ast;\npub trait T {}\nimpl T for Ast {}\n");
+        assert_eq!(source, None);
+        assert!(cands.contains(&"^crate::m::Ast".to_string()), "{cands:?}");
+        assert!(cands.contains(&"^crate::ast::Ast".to_string()), "{cands:?}");
+        let (source, cands) = impl_edge("use super::*;\npub trait T {}\nimpl T for Ast<'_> {}\n");
+        assert_eq!(source, None);
+        assert!(cands.contains(&"^crate::Ast".to_string()), "{cands:?}");
+        // a generic parameter, a primitive and a std type are nobody's declaration
+        for ty in ["T2", "u8", "&str"] {
+            let src = format!("use super::*;\npub trait T {{}}\nimpl<T2> T for {ty} {{}}\n");
+            let (source, _) = impl_edge(&src);
+            assert_eq!(
+                source.as_deref(),
+                Some(format!("crate::m::{}", ty.trim_start_matches('&')).as_str()),
+                "{ty}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_traits_candidates_carry_the_std_marker() {
+        let (_, cands) = impl_edge("pub struct S;\nimpl std::error::Error for S {}\n");
+        assert!(
+            cands.contains(&"std::error::Error".to_string()),
+            "{cands:?}"
+        );
+        assert!(cands.contains(&"~".to_string()), "{cands:?}");
+        let (_, cands) = impl_edge("use std::fmt;\npub struct S;\nimpl fmt::Display for S {}\n");
+        assert!(
+            cands.contains(&"std::fmt::Display".to_string()),
+            "{cands:?}"
+        );
+        let (_, cands) = impl_edge("pub trait T {}\npub struct S;\nimpl T for S {}\n");
+        assert!(cands.is_empty(), "{cands:?}");
     }
 
     #[test]

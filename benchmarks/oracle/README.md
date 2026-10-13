@@ -341,7 +341,7 @@ P = correct / (correct + wrong) over the lidx pairs the oracle can judge, R = or
 brackets. Go `overrides` and TypeScript `overrides` are lidx's dispatch pairs (`lidx dispatch-pairs`); Rust `overrides` are method-level IMPLEMENTS rows. Quoted only
 after the hand spot-check came in under the 10% bar: 235 sampled items (20 FP + 20 FN + 20 correct pairs per language where that many exist, plus up to 10 per exclusion bucket and up to 20 of
 `end_not_judged`, the one bucket that could hide a wrong pair), 0 oracle or matching artefacts, all 60 sampled correct pairs confirmed in the source, and 1 mis-bucketed exclusion (pooled 0.4%, [0.1%, 2.4%]).
-`end_not_judged`: Go 13 of 13 read, all true relations on generic receivers; Rust 20 of 85 read, 19 true (impls on foreign or blanket types) and 1 real lidx error (a name collision, #457). The first TypeScript sample was 12 of 61 artefacts (aliases named in `extends` and merged
+`end_not_judged`: Go 13 of 13 read, all true relations on generic receivers; Rust 20 of 85 read, 19 true (impls on foreign or blanket types) and 1 real lidx error (a name collision, fixed by #457). The first TypeScript sample was 12 of 61 artefacts (aliases named in `extends` and merged
 interfaces keyed at the wrong declaration); the oracle was fixed and the sample redrawn.
 
 | Cell | implements | extends | overrides |
@@ -359,14 +359,14 @@ interfaces keyed at the wrong declaration); the oracle was fixed and the sample 
 | ts/ky | n/a (0 pairs) | P 1.00 [0.65, 1.00] (n=7); R 1.00 [0.65, 1.00] (n=7) | P 1.00 [0.57, 1.00] (n=5); R 1.00 [0.57, 1.00] (n=5) |
 | ts/immer | P 1.00 [0.21, 1.00] (n=1); R 1.00 [0.21, 1.00] (n=1) | P 1.00 [0.57, 1.00] (n=5); R 1.00 [0.57, 1.00] (n=5) | P 1.00 [0.34, 1.00] (n=2); R 1.00 [0.34, 1.00] (n=2) |
 | ts/h3 | P 1.00 [0.44, 1.00] (n=3); R 1.00 [0.44, 1.00] (n=3) | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | P 1.00 [0.85, 1.00] (n=21); R 1.00 [0.85, 1.00] (n=21) |
-| rust/ripgrep/path_tests_excluded | P 1.00 [0.97, 1.00] (n=111); R 0.93 [0.87, 0.97] (n=119) | n/a (0 pairs) | P 1.00 [1.00, 1.00] (n=810); R 1.00 [1.00, 1.00] (n=810) |
+| rust/ripgrep/path_tests_excluded | P 1.00 [0.97, 1.00] (n=119); R 1.00 [0.97, 1.00] (n=119) | n/a (0 pairs) | P 1.00 [1.00, 1.00] (n=810); R 1.00 [1.00, 1.00] (n=810) |
 | rust/fd/path_tests_excluded | n/a (0 pairs) | n/a (0 pairs) | n/a (0 pairs) |
 | rust/bat/path_tests_excluded | P 1.00 [0.68, 1.00] (n=8); R 1.00 [0.68, 1.00] (n=8) | P - (n=0); R - (n=0) | P 1.00 [0.84, 1.00] (n=20); R 1.00 [0.84, 1.00] (n=20) |
 | rust/tokei/path_tests_excluded | n/a (0 pairs) | n/a (0 pairs) | P - (n=0); R - (n=0) |
 | rust/xsv/path_tests_excluded | P - (n=0); R - (n=0) | n/a (0 pairs) | P - (n=0); R - (n=0) |
-| rust/lidx/path_tests_excluded | P 1.00 [0.78, 1.00] (n=14); R 0.93 [0.70, 0.99] (n=15) | P - (n=0); R - (n=0) | P 1.00 [0.92, 1.00] (n=46); R 1.00 [0.92, 1.00] (n=46) |
-| rust/just/path_tests_excluded | P 1.00 [0.85, 1.00] (n=21); R 0.66 [0.48, 0.80] (n=32) | n/a (0 pairs) | P 1.00 [0.90, 1.00] (n=36); R 1.00 [0.90, 1.00] (n=36) |
-| rust/nextest/path_tests_excluded | P 1.00 [0.70, 1.00] (n=9); R 0.90 [0.60, 0.98] (n=10) | n/a (0 pairs) | P 1.00 [0.86, 1.00] (n=24); R 1.00 [0.86, 1.00] (n=24) |
+| rust/lidx/path_tests_excluded | P 1.00 [0.80, 1.00] (n=15); R 1.00 [0.80, 1.00] (n=15) | P - (n=0); R - (n=0) | P 1.00 [0.92, 1.00] (n=46); R 1.00 [0.92, 1.00] (n=46) |
+| rust/just/path_tests_excluded | P 1.00 [0.89, 1.00] (n=32); R 1.00 [0.89, 1.00] (n=32) | n/a (0 pairs) | P 1.00 [0.90, 1.00] (n=36); R 1.00 [0.90, 1.00] (n=36) |
+| rust/nextest/path_tests_excluded | P 1.00 [0.72, 1.00] (n=10); R 1.00 [0.72, 1.00] (n=10) | n/a (0 pairs) | P 1.00 [0.86, 1.00] (n=24); R 1.00 [0.86, 1.00] (n=24) |
 
 What the numbers say: lidx's precision is 1.00 everywhere. Recall is where the
-gaps are: at the commit of the committed results, Go struct embedding had no edge and Go methods declared in another file than their receiver type never joined it (issues #455, #456, fixed since; regenerate the results to see the current figures), Rust loses the type-level IMPLEMENTS when the impl sits in another file than its type (#457). TypeScript is complete (`overrides` 116 of 116: interface and type-literal members are `decl` symbols and `override` is optional, #458) and Go `implements` is good (see the tables). Go `implements` recall caps the dispatch-credited call recall (see the report).
+gaps are: at the commit of the committed results, Go struct embedding had no edge and Go methods declared in another file than their receiver type never joined it (issues #455, #456, fixed since; regenerate the results to see the current figures), Rust's `implements` recall is 1.00 on every cell with pairs since #457. TypeScript is complete (`overrides` 116 of 116: interface and type-literal members are `decl` symbols and `override` is optional, #458) and Go `implements` is good (see the tables). Go `implements` recall caps the dispatch-credited call recall (see the report).
