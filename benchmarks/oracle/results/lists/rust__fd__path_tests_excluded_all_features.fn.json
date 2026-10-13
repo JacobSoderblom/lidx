@@ -1,4 +1,5 @@
 [
+{"callee":{"file":"src/dir_entry.rs","line":42,"name":"path"},"caller":{"file":"src/walk.rs","line":443,"name":"spawn_senders"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/walk.rs:515"]},
 {"callee":{"file":"src/dir_entry.rs","line":89,"name":"metadata"},"caller":{"file":"src/walk.rs","line":443,"name":"spawn_senders"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/walk.rs:547","src/walk.rs:560","src/walk.rs:580"]},
 {"callee":{"file":"src/exec/mod.rs","line":173,"name":"push"},"caller":{"file":"src/exec/mod.rs","line":90,"name":"execute_batch"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/exec/mod.rs:104"]},
 {"callee":{"file":"src/exec/mod.rs","line":266,"name":"generate"},"caller":{"file":"src/exec/mod.rs","line":76,"name":"execute"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/exec/mod.rs:86"]},

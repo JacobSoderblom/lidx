@@ -1,4 +1,3 @@
 [
-{"callee":{"file":"tea.go","line":201,"name":"Quit"},"caller":{"file":"exec_test.go","line":24,"name":"Update"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["ident"],"module_level":false,"sites":["exec_test.go:30"]},
-{"callee":{"file":"tea.go","line":201,"name":"Quit"},"caller":{"file":"tea_test.go","line":34,"name":"Update"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["ident"],"module_level":false,"sites":["tea_test.go:49"]}
+
 ]

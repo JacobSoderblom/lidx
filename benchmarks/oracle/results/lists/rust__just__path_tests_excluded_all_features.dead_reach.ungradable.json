@@ -1,4 +1,3 @@
 [
-{"confidence":"high","exported":false,"file":"crates/action-versions/src/main.rs","key":"crates/action-versions/src/main.rs:39","kind":"type","lidx_kind":"struct","line":39,"name":"Row","qualname":"crate::Row","reason":"not_a_function","subkind":"struct"},
-{"confidence":"medium","file":"tests/invocation_directory.rs","key":"tests/invocation_directory.rs:13","lidx_kind":"function","name":"convert_native_path","qualname":"crate::tests::invocation_directory::convert_native_path","reason":"test_file_outside_cell"}
+
 ]
