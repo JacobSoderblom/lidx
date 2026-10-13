@@ -20,6 +20,7 @@ mod graph_query;
 pub use graph_query::{DispatchPeers, EntryArgs, closed_impl_args, dispatch_compatible, type_args};
 mod migrations;
 mod overview;
+mod public_api;
 pub(crate) mod resolver;
 
 #[derive(Debug, Clone)]
@@ -1785,8 +1786,10 @@ impl Db {
             local,
             overrides,
             file_wide,
+            public,
         } = modifiers;
         if private.is_empty()
+            && public.is_empty()
             && statics.is_empty()
             && local.is_empty()
             && overrides.is_empty()
@@ -1805,6 +1808,7 @@ impl Db {
         let private_ph = placeholders(private.len());
         let static_ph = placeholders(statics.len());
         let local_ph = placeholders(local.len());
+        let public_ph = placeholders(public.len());
         // Overloads share a qualname, so an override is keyed by its line too.
         let override_test = if overrides.is_empty() {
             "0".to_string()
@@ -1820,6 +1824,7 @@ impl Db {
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
                     || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
                     || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
+                    || CASE WHEN qualname IN ({public_ph}) THEN ' public' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END
                     || ?), '')
              WHERE file_id = ? AND graph_version = ?",
@@ -1829,6 +1834,7 @@ impl Db {
             .iter()
             .chain(statics)
             .chain(local)
+            .chain(public)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
         for (qualname, line) in overrides {

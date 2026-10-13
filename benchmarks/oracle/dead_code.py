@@ -23,6 +23,8 @@ SRC = {"go": ["go_oracle/dead/main.go", "go_oracle/go.mod", "go_oracle/go.sum"],
        "rust": ["rust_oracle/scip_dead.py", "rust_oracle/scip_calls.py", "safety.py"]}
 REACHABILITY = ("CALLS", "DISPATCH", "IMPORTS", "RPC_IMPL", "IMPLEMENTS", "EXTENDS", "INHERITS", "USES", "CONFIG_BIND", "REFERENCES")
 # the `lidx request` params that raise the per-category limit above any repository and lift the response byte cap
+# The graded list is the DEFAULT `dead_symbols` output (what a user gets). `include_public_api` is sent on a second request only to size the
+# opt-in `public_api` group and to check that it holds no oracle-dead declaration; a binary without the parameter rejects the request, which is read as no group.
 DEAD_SYMBOLS_PARAMS = {"limit": 10_000_000, "include_unused_imports": False, "include_orphan_tests": False, "max_response_bytes": 2_000_000_000}
 
 
@@ -175,13 +177,25 @@ def get_dead_oracle(cell, repo, repo_dir, cache, force, helpers, call_meta=None)
 
 
 # ---------------------------------------------------------------- lidx
-def lidx_claims(binary, repo_dir, db, syms):
-    r = subprocess.run([binary, "request", "--repo", repo_dir, "--db", db, "--method", "dead_symbols", "--params", json.dumps(DEAD_SYMBOLS_PARAMS)],
+def request_dead_symbols(binary, repo_dir, db, extra=None):
+    params = dict(DEAD_SYMBOLS_PARAMS, **(extra or {}))
+    r = subprocess.run([binary, "request", "--repo", repo_dir, "--db", db, "--method", "dead_symbols", "--params", json.dumps(params)],
                        capture_output=True, text=True, check=True)
     res = json.loads(r.stdout.strip().splitlines()[-1])["result"]
     if res.get("truncated"):
         raise RuntimeError("dead_symbols response was truncated: raise the limit")
-    return match_dead.lidx_claims(res["dead_symbols"], syms), res["counts"]["dead_symbols"]
+    return res
+
+
+def lidx_claims(binary, repo_dir, db, syms):
+    """(claims of the default output, their count, the `public_api` group as claims (empty for a binary without the group), its size)."""
+    res = request_dead_symbols(binary, repo_dir, db)
+    try:
+        api = request_dead_symbols(binary, repo_dir, db, {"include_public_api": True})
+    except subprocess.CalledProcessError:  # a binary that predates the parameter rejects it: no group to size
+        api = {}
+    group = match_dead.lidx_claims(api.get("public_api", []), syms)
+    return match_dead.lidx_claims(res["dead_symbols"], syms), res["counts"]["dead_symbols"], group, res["counts"].get("public_api", 0)
 
 
 def incoming_edges(db, syms, keys, lang, dead_keys):
@@ -269,10 +283,10 @@ def run_cell(cell, repo, repo_dir, cache, binary, db, syms, force, results_dir, 
     """Run the dead-code oracle for one cell, grade lidx, write the lists. Returns the dict stored under cells.json[cell]['dead']."""
     lang = cell["lang"]
     oracle, cached = get_dead_oracle(cell, repo, repo_dir, cache, force, helpers, call_meta)
-    claims, n_claims = lidx_claims(binary, repo_dir, db, syms)
+    claims, n_claims, api_group, api_total = lidx_claims(binary, repo_dir, db, syms)
     fid = cell["id"].replace("/", "__")
     out = {"oracle_meta": oracle.get("_meta", {}), "library": bool(oracle.get("library")), "universe_note": universe_note(oracle, lang, cell),
-           "lidx_claims": n_claims, "load_errors": len(oracle.get("load_errors", []) or []), "oracle_stats": oracle.get("stats", {}),
+           "lidx_claims": n_claims, "public_api_group": api_total, "load_errors": len(oracle.get("load_errors", []) or []), "oracle_stats": oracle.get("stats", {}),
            "decls": len(oracle["decls"]), "columns": {}}
     if lang == "go":
         out["oracle_mode"] = oracle.get("mode")
@@ -284,6 +298,9 @@ def run_cell(cell, repo, repo_dir, cache, binary, db, syms, force, results_dir, 
         inc = incoming_edges(db, syms, keys, lang, keys)
         summ, fp, fn, ungr = match_dead.grade_column(oracle, claims, lang, col, match.is_test_file, incoming=inc)
         out["columns"][col] = summ
+        # oracle-dead declarations the policy withheld by putting them in the public_api group (recall the policy costs)
+        uni_dead = {k for k, d in match_dead.universe(oracle, col, lang).items() if d[col] == "dead"}
+        out["columns"][col]["public_api_oracle_dead"] = sorted(c["key"] for c in api_group if c["key"] in uni_dead)
         for suffix, data in (("fp", fp), ("fn", fn), ("ungradable", ungr)):
             dump_list(os.path.join(results_dir, "lists", "%s.dead_%s.%s.json" % (fid, col, suffix)), data)
     dump_list(os.path.join(results_dir, "lists", "%s.dead_oracle.json" % fid),

@@ -128,7 +128,7 @@ def grade_column(oracle, claims, lang, column, is_test_file, incoming=None):
             continue
         seen.add(k)
         d = decls.get(k)
-        rec = {"key": k, "file": c["file"], "name": c["name"], "qualname": c["qualname"], "lidx_kind": c["kind"]}
+        rec = {"key": k, "file": c["file"], "name": c["name"], "qualname": c["qualname"], "lidx_kind": c["kind"], "confidence": c.get("confidence", "untiered")}
         if d is None:
             ungr.append(dict(rec, reason=claim_file_reason(c, oracle, lang, is_test_file, ofiles)))
             continue
@@ -161,6 +161,12 @@ def grade_column(oracle, claims, lang, column, is_test_file, incoming=None):
     all_reading["recall_claimable_kinds"] = ratio(len({r["key"] for r in tp} & claimable_dead), len(claimable_dead))
     all_reading["dead_claimable_kinds"] = len(claimable_dead)
 
+    # precision per confidence tier of the claim (`dead_symbols` rows carry `confidence`; an older binary's rows are all "untiered")
+    by_tier = {}
+    for tier in sorted({r["confidence"] for r in tp + fp}):
+        n_tp, n_fp = sum(1 for r in tp if r["confidence"] == tier), sum(1 for r in fp if r["confidence"] == tier)
+        by_tier[tier] = {"graded": n_tp + n_fp, "tp": n_tp, "fp": n_fp, "precision": ratio(n_tp, n_tp + n_fp), "precision_ci": wilson(n_tp, n_tp + n_fp)}
+
     kinds = sorted({d["kind"] for d in uni.values()} | {r["kind"] for r in tp + fp})
     per_kind = {}
     for kd in kinds:
@@ -183,7 +189,7 @@ def grade_column(oracle, claims, lang, column, is_test_file, incoming=None):
         "dead": len(dead), "dead_by_kind": dict(by_kind_dead), "live": len(uni) - len(dead),
         "oracle_buckets": dict(bucket_counts.most_common()),
         "claims": len(seen), "claims_ungradable": dict(Counter(u["reason"] for u in ungr).most_common()),
-        "all": all_reading, "no_exported": no_export, "by_kind": per_kind,
+        "all": all_reading, "no_exported": no_export, "by_kind": per_kind, "by_tier": by_tier,
         "fp_categories": dict(Counter(f["category"] for f in fp).most_common()),
         "fp_categories_no_exported": dict(Counter(f["category"] for f in fp_u).most_common()),
         "fn_categories": dict(Counter(f["category"] for f in fn).most_common()),
@@ -239,5 +245,6 @@ def lidx_claims(rows, syms):
         s = syms.get(r["id"])
         if not s or "key" not in s:
             continue
-        out.append({"key": s["key"], "file": s["file"], "kind": r["kind"], "name": s["name"], "qualname": s["qualname"], "id": r["id"]})
+        out.append({"key": s["key"], "file": s["file"], "kind": r["kind"], "name": s["name"], "qualname": s["qualname"], "id": r["id"],
+                    "confidence": r.get("confidence", "untiered")})
     return out

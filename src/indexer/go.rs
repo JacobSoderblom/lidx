@@ -35,8 +35,53 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     two_segment: false,
     call_refused_kinds: &["class", "interface", "type", "variable"],
     deferred_candidate: Some(crate::db::resolver::go_deferred_candidate),
+    public_api: crate::db::resolver::PublicApiRule::GoExported,
+    implicit_root: Some(go_implicit_root),
     ..LanguageProfile::DEFAULT
 };
+
+/// `LanguageProfile::implicit_root` for Go: `init` anywhere, `main` in
+/// `package main`, and the `Test*` / `Benchmark*` / `Fuzz*` / `Example*`
+/// functions of a `_test.go` file (the `go` tool calls them; the name after
+/// the prefix must not start with a lowercase letter).
+fn go_implicit_root(f: &crate::db::resolver::ImplicitRootFacts<'_>) -> bool {
+    if f.kind != "function" {
+        return false;
+    }
+    if f.name == "init" {
+        return true;
+    }
+    if f.name == "main" {
+        return f
+            .visibility
+            .is_some_and(|v| v.split_whitespace().any(|w| w == GO_PACKAGE_MAIN));
+    }
+    f.path.ends_with("_test.go")
+        && ["Test", "Benchmark", "Fuzz", "Example"]
+            .iter()
+            .any(|prefix| {
+                f.name
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
+            })
+}
+
+/// The `symbols.visibility` word carried by every symbol of a `package main`
+/// file: its exported identifiers cannot be imported (`dead_symbols`).
+pub(crate) const GO_PACKAGE_MAIN: &str = "package_main";
+
+/// The name in the file's `package` clause.
+fn package_name(root: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = root.walk();
+    let clause = root
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "package_clause")?;
+    let mut inner = clause.walk();
+    let name = clause
+        .named_children(&mut inner)
+        .find(|c| c.kind() == "package_identifier")?;
+    Some(source[name.byte_range()].to_string())
+}
 
 /// A local variable declaration tagged with the byte range of the block that
 /// directly contains it, for scope-aware resolution.
@@ -160,6 +205,9 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
         walk_node(root, &ctx, source, &mut output);
         if let Some(constraint) = crate::indexer::go_build::file_constraint(module_name, source) {
             output.file_modifiers = constraint.modifiers();
+        }
+        if package_name(root, source).as_deref() == Some("main") {
+            output.file_modifiers.push(GO_PACKAGE_MAIN.to_string());
         }
         Ok(output)
     }
