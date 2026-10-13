@@ -1,0 +1,2058 @@
+{
+ "seed": 452,
+ "cells": [
+  "go/bubbletea/no_tests",
+  "go/bubbletea/tests",
+  "go/chi/no_tests",
+  "go/chi/tests",
+  "go/cobra/no_tests",
+  "go/cobra/tests",
+  "go/gitleaks/no_tests",
+  "go/gitleaks/tests",
+  "go/syft/no_tests",
+  "go/syft/tests",
+  "go/urfavecli/no_tests",
+  "go/urfavecli/tests",
+  "go/viper/no_tests",
+  "go/viper/tests",
+  "rust/bat/path_tests_excluded",
+  "rust/fd/no_tests",
+  "rust/fd/path_tests_excluded",
+  "rust/fd/tests",
+  "rust/just/path_tests_excluded",
+  "rust/lidx/path_tests_excluded",
+  "rust/nextest/path_tests_excluded",
+  "rust/ripgrep/no_tests",
+  "rust/ripgrep/path_tests_excluded",
+  "rust/ripgrep/tests",
+  "rust/tokei/path_tests_excluded",
+  "rust/xsv/path_tests_excluded",
+  "ts/h3",
+  "ts/hono",
+  "ts/immer",
+  "ts/ky",
+  "ts/trpc",
+  "ts/zod"
+ ],
+ "notes": "Read by one pass per language against the checked-out source (`git grep` for the other uses of a name where a call had to be confirmed). The sample was drawn several times: the first draws found harness bugs, each fixed before the numbers were quoted, and the draw reported here is the one taken from the final harness (it reuses the verdicts of the earlier draws wherever the same pair came up again). Found while sampling and fixed: (1) call wins treated a Go RTA edge for a call through a function value (`t.addEntryFunc(..)` makes RTA list every function stored in the field) as a call of the declaration that stores it, which removed real references and made lidx's matching REFERENCES rows ungradable: 20 of the 31 Go bucket items of the first draw were mis-bucketed (51 pairs of go/syft/tests); only static edges and the compiler's own callee positions count now. (2) TypeScript: the left side of an assignment (`isOldBunVersion = ...`) was counted as a reference (now `assignment_target`); `(Foo as any).prototype[..]` was dropped with the static-access exclusion although it uses the class as a value; a call in a nested arrow and a reference in the enclosing method are one pair after lifting (zod `strict` / `errToObj`). (3) Rust: overloaded operators, derefs and index expressions (`a += b` is `add_assign`) were read as references (now `implicit_call`); a reference in `#[cfg]`-disabled code resolved to a function because rust-analyzer does not see the local declared there (ripgrep `features.push(..)`; now `oracle_refs_cfg_gated`); SCIP columns are UTF-8 byte offsets, so on a line with non-ASCII text a call read as a reference (now `call_on_non_ascii_line`); `Trait::method` resolved by inference to one impl was a wrong pair for lidx's trait-declaration target (now `callee_alts`); references outside any function (`static` tables, closures in a `static`) had no caller and are now keyed at the module; lidx's module-level USES rows with no source line (what it records for `Type::f` in value position) were the whole `caller_not_judged` bucket and are now the named bucket `no_evidence_line` and the miss category `coarse_module_level`. The same byte-column misreading also affects the call oracle (a call after non-ASCII text on the same line is dropped from the call edges); it is left alone here so that the call tables stay as they were, and filed as #476. What remains in the bucket and category verdicts below: every sampled wrong pair is a real lidx error (a getter read, `typeof f`, a call through an `any` cast recorded as a reference, a local variable that shadows a function, a shorthand field bound to a function of the same name), every sampled missed pair is a real reference lidx has no edge for, every sampled correct pair is confirmed in the source, and every bucket exclusion is right. One consequence of call wins worth knowing: a lidx wrong reference that coincides with a real call of the same pair (TypeScript `ReturnType<typeof f>` in a function that also calls `f`) is dropped, not counted wrong.",
+ "languages": {
+  "go": {
+   "fp": [],
+   "fn": [
+    {
+     "id": "56b73919",
+     "decl": "init (suggestions.go:12) -> suggestFlag (suggestions.go:26)",
+     "cell": "go/urfavecli/no_tests",
+     "verdict": "lidx_error",
+     "note": "`SuggestFlag = suggestFlag` in init(): function assigned to a package variable; real value reference, lidx has no assignment-context edge",
+     "bucket_size": null
+    },
+    {
+     "id": "d0fa2633",
+     "decl": "TestParsePnpmLockV9 (syft/pkg/cataloger/javascript/parse_pnpm_lock_test.go:310) -> parsePnpmLock (syft/pkg/cataloger/javascript/parse_pnpm_lock.go:185)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "9418070d",
+     "decl": "NewArchiveCataloger (syft/pkg/cataloger/java/cataloger.go:12) -> parseZipWrappedJavaArchive (syft/pkg/cataloger/java/zip_wrapped_archive_parser.go:33)",
+     "cell": "go/syft/no_tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "79cb90bd",
+     "decl": "getVersionTemplateFunc (command.go:631) -> defaultVersionFunc (command.go:2068)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "lidx_error",
+     "note": "`return defaultVersionFunc`: a function returned as a value; real reference, lidx has no return-context edge",
+     "bucket_size": null
+    },
+    {
+     "id": "38e4b2d2",
+     "decl": "TestParseYarnLock (syft/pkg/cataloger/javascript/parse_yarn_lock_test.go:243) -> parseYarnLock (syft/pkg/cataloger/javascript/parse_yarn_lock.go:273)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "0399d310",
+     "decl": "<module> (syft/pkg/cataloger/dart/parse_pubspec_lock.go:0) -> parsePubspecLock (syft/pkg/cataloger/dart/parse_pubspec_lock.go:61)",
+     "cell": "go/syft/no_tests",
+     "verdict": "lidx_error",
+     "note": "package-level `var _ iface = fn` assertion: the function is used as a value; lidx emits nothing for a plain package-level var initialiser",
+     "bucket_size": null
+    },
+    {
+     "id": "5a2cb255",
+     "decl": "TestParsePipFileLock (syft/pkg/cataloger/python/parse_pipfile_lock_test.go:13) -> parsePipfileLock (syft/pkg/cataloger/python/parse_pipfile_lock.go:55)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "362b3ab6",
+     "decl": "Test_indexAllRoots (syft/internal/fileresolver/directory_indexer_test.go:33) -> indexer (syft/internal/fileresolver/directory_indexer_test.go:28)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "`test.mock.indexer` is a method value of indexerMock passed to indexAllRoots; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "1e6e80ce",
+     "decl": "TestParseYarnBerry (syft/pkg/cataloger/javascript/parse_yarn_lock_test.go:19) -> parseYarnLock (syft/pkg/cataloger/javascript/parse_yarn_lock.go:273)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "7d26d1ae",
+     "decl": "TestParseSetupFileWithLicenseEnrichment (syft/pkg/cataloger/python/parse_setup_test.go:170) -> parseSetupFile (syft/pkg/cataloger/python/parse_setup.go:36)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "f6dea668",
+     "decl": "<module> (syft/pkg/cataloger/alpine/dependency.go:0) -> dbEntryDependencySpecifier (syft/pkg/cataloger/alpine/dependency.go:14)",
+     "cell": "go/syft/no_tests",
+     "verdict": "lidx_error",
+     "note": "package-level `var _ iface = fn` assertion: the function is used as a value; lidx emits nothing for a plain package-level var initialiser",
+     "bucket_size": null
+    },
+    {
+     "id": "c95abc20",
+     "decl": "<module> (syft/pkg/cataloger/arch/parse_alpm_db.go:0) -> parseAlpmDB (syft/pkg/cataloger/arch/parse_alpm_db.go:44)",
+     "cell": "go/syft/no_tests",
+     "verdict": "lidx_error",
+     "note": "package-level `var _ iface = fn` assertion: the function is used as a value; lidx emits nothing for a plain package-level var initialiser",
+     "bucket_size": null
+    },
+    {
+     "id": "80cf3671",
+     "decl": "<module> (syft/pkg/cataloger/dotnet/parse_packages_lock.go:0) -> parseDotnetPackagesLock (syft/pkg/cataloger/dotnet/parse_packages_lock.go:34)",
+     "cell": "go/syft/no_tests",
+     "verdict": "lidx_error",
+     "note": "package-level `var _ iface = fn` assertion: the function is used as a value; lidx emits nothing for a plain package-level var initialiser",
+     "bucket_size": null
+    },
+    {
+     "id": "ad3d62c6",
+     "decl": "TestParsePackageLockV2 (syft/pkg/cataloger/javascript/parse_package_lock_test.go:114) -> parsePackageLock (syft/pkg/cataloger/javascript/parse_package_lock.go:60)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "768864d7",
+     "decl": "TestParsePnpmLockV9WithDependencies (syft/pkg/cataloger/javascript/parse_pnpm_lock_test.go:358) -> parsePnpmLock (syft/pkg/cataloger/javascript/parse_pnpm_lock.go:185)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "8a148889",
+     "decl": "Update (exec_test.go:24) -> Quit (tea.go:201)",
+     "cell": "go/bubbletea/tests",
+     "verdict": "lidx_error",
+     "note": "`return m, Quit`: a function returned as a value (tea.Cmd); real reference, lidx has no return-context edge",
+     "bucket_size": null
+    },
+    {
+     "id": "47ee93fd",
+     "decl": "TestParseUvLock (syft/pkg/cataloger/python/parse_uv_lock_test.go:13) -> parseUvLock (syft/pkg/cataloger/python/parse_uv_lock.go:85)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "d4e6284b",
+     "decl": "<module> (syft/pkg/cataloger/javascript/parse_package_json.go:0) -> parsePackageJSON (syft/pkg/cataloger/javascript/parse_package_json.go:62)",
+     "cell": "go/syft/no_tests",
+     "verdict": "lidx_error",
+     "note": "package-level `var _ iface = fn` assertion: the function is used as a value; lidx emits nothing for a plain package-level var initialiser",
+     "bucket_size": null
+    },
+    {
+     "id": "08076d1d",
+     "decl": "NewLockCataloger (syft/pkg/cataloger/javascript/cataloger.go:18) -> parsePnpmLock (syft/pkg/cataloger/javascript/parse_pnpm_lock.go:185)",
+     "cell": "go/syft/no_tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    },
+    {
+     "id": "5536f1bc",
+     "decl": "Test_corruptJarArchive (syft/pkg/cataloger/java/archive_parser_test.go:1699) -> parseJavaArchive (syft/pkg/cataloger/java/archive_parser.go:79)",
+     "cell": "go/syft/tests",
+     "verdict": "lidx_error",
+     "note": "method value passed as an argument (`x.m`): a real reference the source shows; lidx has no edge (Go method values are the top miss)",
+     "bucket_size": null
+    }
+   ],
+   "tp": [
+    {
+     "id": "5f1b0a3d",
+     "decl": "TestRootTakesNoArgs (args_test.go:421) -> emptyRun (command_test.go:30)",
+     "cell": "go/cobra/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "1fafbbe3",
+     "decl": "DefaultPackageTaskFactories (internal/task/package_tasks.go:62) -> NewActionUsageCataloger (syft/pkg/cataloger/githubactions/cataloger.go:12)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "e70efd27",
+     "decl": "Test_addEntryFuncs (syft/pkg/cataloger/internal/cpegenerate/dictionary/index-generator/generate_test.go:63) -> addEntryForGoModulePackage (syft/pkg/cataloger/internal/cpegenerate/dictionary/index-generator/generate.go:328)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "0d86fedd",
+     "decl": "TestPackagesCmdFlags (test/cli/scan_cmd_test.go:15) -> assertNoStderr (test/cli/trait_assertions_test.go:89)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "9b0ab1ef",
+     "decl": "newDirectoryIndexer (syft/internal/fileresolver/directory_indexer.go:32) -> disallowRevisitingVisitor (syft/internal/fileresolver/directory_indexer.go:458)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "6c0894f6",
+     "decl": "TestFlagShort (command_test.go:528) -> ArbitraryArgs (args.go:82)",
+     "cell": "go/cobra/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "5994b268",
+     "decl": "cobra (cobra.go:0) -> rpad (cobra.go:174)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "2e345af7",
+     "decl": "TestParsePackageResolved (syft/pkg/cataloger/swift/parse_package_resolved_test.go:16) -> parsePackageResolved (syft/pkg/cataloger/swift/parse_package_resolved.go:62)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "88b6ab4c",
+     "decl": "TestFlagCompletionInGo (completions_test.go:1624) -> emptyRun (command_test.go:30)",
+     "cell": "go/cobra/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "ad53dd6b",
+     "decl": "NewLockCataloger (syft/pkg/cataloger/terraform/cataloger.go:8) -> parseTerraformLock (syft/pkg/cataloger/terraform/parse_tf_lock.go:20)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "99423aa1",
+     "decl": "Test_corruptRebarLock (syft/pkg/cataloger/erlang/parse_rebar_lock_test.go:259) -> parseRebarLock (syft/pkg/cataloger/erlang/parse_rebar_lock.go:17)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "69a5591e",
+     "decl": "TestGetter_GetFile (internal/file/getter_test.go:21) -> assertUnknownAuthorityError (internal/file/getter_test.go:154)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "187c1089",
+     "decl": "TestParseOTPApplication (syft/pkg/cataloger/erlang/parse_otp_app_test.go:12) -> parseOTPApp (syft/pkg/cataloger/erlang/parse_otp_app.go:15)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "d0f781e0",
+     "decl": "TestGetter_GetToDir_FilterNonArchivesWired (internal/file/getter_test.go:62) -> assertErrNonArchiveSource (internal/file/getter_test.go:158)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "de5ee318",
+     "decl": "TestClientIPLastWriteWins (middleware/client_ip_test.go:336) -> ClientIPFromRemoteAddr (middleware/client_ip.go:220)",
+     "cell": "go/chi/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "1ae05655",
+     "decl": "GenReST (doc/rest_docs.go:57) -> defaultLinkHandler (doc/rest_docs.go:52)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "b0af7eae",
+     "decl": "Test_Unknowns (test/cli/unknowns_test.go:7) -> assertJsonReport (test/cli/trait_assertions_test.go:36)",
+     "cell": "go/syft/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "15a77804",
+     "decl": "DefaultPackageTaskFactories (internal/task/package_tasks.go:62) -> NewDBCataloger (syft/pkg/cataloger/redhat/cataloger.go:17)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "7905a08c",
+     "decl": "TestRedirectSlashes (middleware/strip_test.go:102) -> RedirectSlashes (middleware/strip.go:41)",
+     "cell": "go/chi/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "fa215e07",
+     "decl": "TestRootTakesArgs (args_test.go:438) -> ArbitraryArgs (args.go:82)",
+     "cell": "go/cobra/tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (argument / struct field / map value); confirmed in source",
+     "bucket_size": null
+    }
+   ],
+   "fp_population": 0,
+   "fn_population": 125,
+   "tp_population": 649
+  },
+  "rust": {
+   "fp": [
+    {
+     "id": "2058ecd2",
+     "decl": "version (cargo-nextest/src/version.rs:0) -> long (cargo-nextest/src/version.rs:10)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`VersionInfo { short, long }` inside the LazyLock closure uses the local variables `short` and `long` (`let short = inner.to_short();`); lidx bound the shorthand fields to the same-named functions",
+     "bucket_size": null
+    },
+    {
+     "id": "ec865a68",
+     "decl": "version (cargo-nextest/src/version.rs:0) -> short (cargo-nextest/src/version.rs:6)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`VersionInfo { short, long }` inside the LazyLock closure uses the local variables `short` and `long` (`let short = inner.to_short();`); lidx bound the shorthand fields to the same-named functions",
+     "bucket_size": null
+    }
+   ],
+   "fn": [
+    {
+     "id": "ea2c5243",
+     "decl": "parse_regex (nextest-filtering/src/parsing.rs:473) -> parse_regex_inner (nextest-filtering/src/parsing.rs:418)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "the fn item is the receiver of a combinator / trait method (`parse_f.parse_next(..)`, `parse_f.map(..)`): the function is used as a value; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "0a563960",
+     "decl": "construct_config (src/main.rs:248) -> filter_ignore (src/filter/owner.rs:61)",
+     "cell": "rust/fd/no_tests",
+     "verdict": "lidx_error",
+     "note": "lidx records this reference only as a module-level USES row with no line (a `Type::f` / `Trait::f` path in value position), not as a pair for the referencing function: a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    },
+    {
+     "id": "ee9e5304",
+     "decl": "parse_glob (nextest-filtering/src/parsing/glob.rs:61) -> parse_matcher_text (nextest-filtering/src/parsing.rs:366)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "the fn item is the receiver of a combinator / trait method (`parse_f.parse_next(..)`, `parse_f.map(..)`): the function is used as a value; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "d744472e",
+     "decl": "run_script (src/recipe.rs:464) -> is_shebang (src/line.rs:57)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "lidx records this reference only as a module-level USES row with no line (a `Type::f` / `Trait::f` path in value position), not as a pair for the referencing function: a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    },
+    {
+     "id": "d72f7ac4",
+     "decl": "compile (src/compiler.rs:6) -> [`From<&Namepath<'_>>`]from (src/modulepath.rs:52)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "lidx records this reference only as a module-level USES row with no line (a `Type::f` / `Trait::f` path in value position), not as a pair for the referencing function: a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    },
+    {
+     "id": "274a4261",
+     "decl": "fill_multi_line_buffer_from_file (crates/searcher/src/searcher/mod.rs:940) -> error_io (crates/searcher/src/sink.rs:27)",
+     "cell": "rust/ripgrep/no_tests",
+     "verdict": "lidx_error",
+     "note": "lidx records this reference only as a module-level USES row with no line (a `Type::f` / `Trait::f` path in value position), not as a pair for the referencing function: a real reference; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "ccfa6036",
+     "decl": "from_args (src/cli.rs:29) -> parse_or_exit (src/cli_utils.rs:51)",
+     "cell": "rust/tokei/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`.map(parse_or_exit::<usize>)`: generic function with a turbofish passed as a callback; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "2982ec88",
+     "decl": "run (src/run.rs:5) -> [`From<ConfigError>`]from (src/error.rs:492)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`Type::method` (or `Trait::method`) path used as a callback (`.map(Type::method)`, `.map_err(Error::f)`): a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    },
+    {
+     "id": "cda1ac7e",
+     "decl": "set_matcher (nextest-filtering/src/parsing.rs:528) -> parse_regex_matcher (nextest-filtering/src/parsing.rs:511)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "parser function named in a combinator argument list (`alt((a, b, c))`): the function item is used as a value; lidx has no edge for a bare name there",
+     "bucket_size": null
+    },
+    {
+     "id": "e86faa86",
+     "decl": "search_reader (crates/searcher/src/searcher/mod.rs:727) -> error_config (crates/searcher/src/sink.rs:35)",
+     "cell": "rust/ripgrep/no_tests",
+     "verdict": "lidx_error",
+     "note": "`S::Error::error_config` (associated-type path resolved through a trait bound) passed to map_err: a real reference; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "5cd6f7dd",
+     "decl": "analyze_parallel (src/impact/orchestrator.rs:48) -> [`From<Symbol>`]from (src/model.rs:137)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`Type::method` / `Trait::method` path used as a callback (`.map(Type::method)`, `.map_err(Error::f)`, `.and_then(T::f)`): a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    },
+    {
+     "id": "ca208a4a",
+     "decl": "parse_regex (nextest-filtering/src/parsing.rs:941) -> parse_regex_matcher (nextest-filtering/src/parsing.rs:511)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "the fn item is the receiver of a combinator / trait method (`parse_f.parse_next(..)`, `parse_f.map(..)`): the function is used as a value; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "403660e5",
+     "decl": "parse_fragment (nextest-filtering/src/parsing/unicode_string.rs:89) -> parse_escaped_char (nextest-filtering/src/parsing/unicode_string.rs:25)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "the fn item is the receiver of a combinator / trait method (`parse_f.parse_next(..)`, `parse_f.map(..)`): the function is used as a value; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "50a79707",
+     "decl": "parse_basic_expr (nextest-filtering/src/parsing.rs:696) -> parse_expr_not (nextest-filtering/src/parsing.rs:730)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "parser function named in a combinator argument list / match arm (`alt((a, b, c))`, `Self::X => parse_f`): the function item is used as a value; lidx has no edge for a bare name there",
+     "bucket_size": null
+    },
+    {
+     "id": "24f4a049",
+     "decl": "platform_def (nextest-filtering/src/parsing.rs:627) -> recover_unexpected_comma (nextest-filtering/src/parsing.rs:540)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "the fn item is the receiver of a combinator / trait method (`parse_f.parse_next(..)`, `parse_f.map(..)`): the function is used as a value; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "ef388620",
+     "decl": "evaluate_builtin_function (src/evaluator.rs:333) -> [`From<String>`]from (src/value.rs:126)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`Type::method` / `Trait::method` path used as a callback (`.map(Type::method)`, `.map_err(Error::f)`, `.and_then(T::f)`): a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    },
+    {
+     "id": "64a769a1",
+     "decl": "set_matcher (nextest-filtering/src/parsing.rs:528) -> parse_glob_matcher (nextest-filtering/src/parsing.rs:519)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "parser function named in a combinator argument list / match arm (`alt((a, b, c))`, `Self::X => parse_f`): the function item is used as a value; lidx has no edge for a bare name there",
+     "bucket_size": null
+    },
+    {
+     "id": "16ed883a",
+     "decl": "get_args (src/util.rs:34) -> [`From<docopt::Error>`]from (src/main.rs:214)",
+     "cell": "rust/xsv/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`Type::method` / `Trait::method` path used as a callback (`.map(Type::method)`, `.map_err(Error::f)`, `.and_then(T::f)`): a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    },
+    {
+     "id": "b05a7b66",
+     "decl": "select (src/select.rs:353) -> get_field (src/select.rs:360)",
+     "cell": "rust/xsv/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "`let get_field: _GetField = get_field;` coerces the function to a fn pointer; real value use, lidx has no assignment-context edge",
+     "bucket_size": null
+    },
+    {
+     "id": "cd49a70b",
+     "decl": "into_parser (nextest-filtering/src/parsing.rs:597) -> implicit_equal (nextest-filtering/src/expression.rs:37)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "lidx_error",
+     "note": "lidx records this reference only as a module-level USES row with no line (a `Type::f` / `Trait::f` path in value position), not as a pair for the referencing function: a real reference; lidx has no edge for a path expression in value position",
+     "bucket_size": null
+    }
+   ],
+   "tp": [
+    {
+     "id": "7b245bb6",
+     "decl": "get (src/function.rs:59) -> trim_start_match (src/function.rs:861)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "5c6a4410",
+     "decl": "config (src/bin/bat/app.rs:98) -> from (src/line_range.rs:205)",
+     "cell": "rust/bat/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "f196d9a0",
+     "decl": "rpc (src/rpc/mod.rs:0) -> handle_dead_symbols (src/rpc/handlers.rs:1598)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "9f2ebe49",
+     "decl": "rpc (src/rpc/mod.rs:0) -> handle_top_complexity (src/rpc/handlers.rs:1652)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "88b0855c",
+     "decl": "get_all_files (src/utils/fs.rs:14) -> new (src/language/mod.rs:38)",
+     "cell": "rust/tokei/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "99ba03c3",
+     "decl": "get (src/function.rs:59) -> choose (src/function.rs:252)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "2bac2bca",
+     "decl": "get (src/function.rs:59) -> without_extension (src/function.rs:888)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "224c4bab",
+     "decl": "has_poisonous_literal (crates/regex/src/literal.rs:580) -> is_poisonous (crates/regex/src/literal.rs:635)",
+     "cell": "rust/ripgrep/no_tests",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "a0c548e8",
+     "decl": "container_children (src/rpc/reading.rs:553) -> first_doc_line (src/rpc/reading.rs:32)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "a468bfb2",
+     "decl": "wrapper_call_target (src/indexer/javascript.rs:4905) -> normalize_method (src/indexer/http.rs:11)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "a649afe6",
+     "decl": "symbols_by_ids (src/db/graph_query.rs:1408) -> symbol_from_row (src/db/mod.rs:2506)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "35ad657d",
+     "decl": "get (src/function.rs:59) -> lowercamelcase (src/function.rs:511)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "4bc438dd",
+     "decl": "query_root (src/indexer/javascript.rs:3105) -> query_root (src/indexer/javascript.rs:3105)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "6282c42e",
+     "decl": "get (src/function.rs:59) -> module_directory (src/function.rs:519)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "03c8783b",
+     "decl": "get (src/function.rs:59) -> env_var_or_default (src/function.rs:355)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "cb7e4b23",
+     "decl": "get (src/function.rs:59) -> uppercamelcase (src/function.rs:869)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "03989105",
+     "decl": "get (src/function.rs:59) -> snakecase (src/function.rs:680)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "7d1bbdde",
+     "decl": "parse_regex_matcher (nextest-filtering/src/parsing.rs:511) -> parse_regex (nextest-filtering/src/parsing.rs:473)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "ebf57431",
+     "decl": "get (src/function.rs:59) -> source_directory (src/function.rs:684)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "580e8080",
+     "decl": "write_event (nextest-runner/src/reporter/structured/libtest.rs:221) -> fmt_err (nextest-runner/src/reporter/structured/libtest.rs:119)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "correct",
+     "note": "function used as a value at the evidence line (table entry, `.map(f)`, `.map_err(f)`, combinator argument, handler-table field of a static); confirmed in source",
+     "bucket_size": null
+    }
+   ],
+   "fp_population": 2,
+   "fn_population": 66,
+   "tp_population": 191
+  },
+  "ts": {
+   "fp": [
+    {
+     "id": "24261186",
+     "decl": "_sendEvents (src/utils/event-stream.ts:175) -> _isClosed (src/utils/event-stream.ts:72)",
+     "cell": "ts/h3",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "9245a0fd",
+     "decl": "required (packages/zod/src/v3/types.ts:2852) -> shape (packages/zod/src/v3/types.ts:2570)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "e12d082c",
+     "decl": "omit (packages/zod/src/v3/types.ts:2789) -> shape (packages/zod/src/v3/types.ts:2570)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "6854cb52",
+     "decl": "keyof (packages/zod/src/v3/types.ts:2876) -> shape (packages/zod/src/v3/types.ts:2570)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "fd80bf14",
+     "decl": "_ZodString (packages/zod/src/v4/classic/schemas.ts:368) -> _endsWith (packages/zod/src/v4/core/api.ts:1089)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`(checks.f as any)(...)` is a call through an `any` cast (the compiler cannot type it, so it lists no call); lidx records it as a value reference instead of a call",
+     "bucket_size": null
+    },
+    {
+     "id": "2dbd2c51",
+     "decl": "_ZodString (packages/zod/src/v4/classic/schemas.ts:368) -> _maxLength (packages/zod/src/v4/core/api.ts:992)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`(checks.f as any)(...)` is a call through an `any` cast (the compiler cannot type it, so it lists no call); lidx records it as a value reference instead of a call",
+     "bucket_size": null
+    },
+    {
+     "id": "609cfb05",
+     "decl": "_ZodBigInt (packages/zod/src/v4/classic/schemas.ts:1188) -> bigint (packages/zod/src/v4/classic/schemas.ts:1234)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`bigint` here is the primitive type keyword in a parameter type; lidx resolved it to the same-named function `bigint`",
+     "bucket_size": null
+    },
+    {
+     "id": "c79f079b",
+     "decl": "_ZodString (packages/zod/src/v4/classic/schemas.ts:368) -> _startsWith (packages/zod/src/v4/core/api.ts:1077)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`(checks.f as any)(...)` is a call through an `any` cast (the compiler cannot type it, so it lists no call); lidx records it as a value reference instead of a call",
+     "bucket_size": null
+    },
+    {
+     "id": "0f28681e",
+     "decl": "partial (packages/zod/src/v3/types.ts:2823) -> shape (packages/zod/src/v3/types.ts:2570)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "9432af5c",
+     "decl": "_ZodString (packages/zod/src/v4/classic/schemas.ts:368) -> _minLength (packages/zod/src/v4/core/api.ts:1006)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`(checks.f as any)(...)` is a call through an `any` cast (the compiler cannot type it, so it lists no call); lidx records it as a value reference instead of a call",
+     "bucket_size": null
+    },
+    {
+     "id": "cda2a968",
+     "decl": "createLazyLoader (packages/server/src/unstable-core-do-not-import/router.ts:268) -> lazy (packages/server/src/unstable-core-do-not-import/router.ts:105)",
+     "cell": "ts/trpc",
+     "verdict": "lidx_error",
+     "note": "`lazy[...]` indexes a local record named lazy that shadows the imported function lazy; lidx bound it to the function",
+     "bucket_size": null
+    },
+    {
+     "id": "3171e72b",
+     "decl": "_ZodString (packages/zod/src/v4/classic/schemas.ts:368) -> _length (packages/zod/src/v4/core/api.ts:1019)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`(checks.f as any)(...)` is a call through an `any` cast (the compiler cannot type it, so it lists no call); lidx records it as a value reference instead of a call",
+     "bucket_size": null
+    },
+    {
+     "id": "31625603",
+     "decl": "flush (src/utils/event-stream.ts:207) -> _isClosed (src/utils/event-stream.ts:72)",
+     "cell": "ts/h3",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "6b422ba6",
+     "decl": "toString (packages/zod/src/v3/ZodError.ts:277) -> message (packages/zod/src/v3/ZodError.ts:280)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "c1eed7c0",
+     "decl": "_ZodString (packages/zod/src/v4/classic/schemas.ts:368) -> _includes (packages/zod/src/v4/core/api.ts:1064)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`(checks.f as any)(...)` is a call through an `any` cast (the compiler cannot type it, so it lists no call); lidx records it as a value reference instead of a call",
+     "bucket_size": null
+    },
+    {
+     "id": "d3d7fcf2",
+     "decl": "step (packages/server/src/unstable-core-do-not-import/router.ts:303) -> lazy (packages/server/src/unstable-core-do-not-import/router.ts:105)",
+     "cell": "ts/trpc",
+     "verdict": "lidx_error",
+     "note": "`lazy[...]` indexes a local record named lazy that shadows the imported function lazy; lidx bound it to the function",
+     "bucket_size": null
+    },
+    {
+     "id": "34d2ebfc",
+     "decl": "_parse (packages/zod/src/v3/types.ts:3120) -> discriminator (packages/zod/src/v3/types.ts:3162)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "5b606e03",
+     "decl": "ZodBigInt (packages/zod/src/v4/classic/schemas.ts:1208) -> bigint (packages/zod/src/v4/classic/schemas.ts:1234)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`bigint` is the primitive type argument of `$ZodBigIntInternals<bigint>`; lidx resolved it to the same-named function (type position)",
+     "bucket_size": null
+    },
+    {
+     "id": "90a7a409",
+     "decl": "_close (src/utils/event-stream.ts:229) -> _isClosed (src/utils/event-stream.ts:72)",
+     "cell": "ts/h3",
+     "verdict": "lidx_error",
+     "note": "a property read of a getter (`this.x` with `get x()`), recorded as a reference to the accessor; no function is used as a value",
+     "bucket_size": null
+    },
+    {
+     "id": "6567dd8d",
+     "decl": "KyInstance (source/types/ky.ts:5) -> retry (source/core/constants.ts:263)",
+     "cell": "ts/ky",
+     "verdict": "lidx_error",
+     "note": "`typeof retry` is a type position, not a value use",
+     "bucket_size": null
+    }
+   ],
+   "fn": [
+    {
+     "id": "ceaed0b3",
+     "decl": "constructor (packages/zod/src/v3/types.ts:411) -> superRefine (packages/zod/src/v3/types.ts:405)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`this.m = this.m.bind(this)` (or `x.m.bind(x)`): the method is read as a value to bind it; real reference, lidx has no edge for a bound member",
+     "bucket_size": null
+    },
+    {
+     "id": "27f59a5a",
+     "decl": "<module> (packages/zod/src/v3/types.ts:0) -> create (packages/zod/src/v3/types.ts:3658)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "static method / factory read as a value (`const x = Cls.create`, `.map(Cls.resolve)`): a real reference through a property access; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "221a7d5a",
+     "decl": "<module> (src/immer.ts:0) -> applyPatches (src/core/immerClass.ts:205)",
+     "cell": "ts/immer",
+     "verdict": "lidx_error",
+     "note": "`this.m = this.m.bind(this)` (or `x.m.bind(x)`): the method is read as a value to bind it; real reference, lidx has no edge for a bound member",
+     "bucket_size": null
+    },
+    {
+     "id": "2c7b78d9",
+     "decl": "<module> (src/h3.ts:0) -> H3 (src/h3.ts:147)",
+     "cell": "ts/h3",
+     "verdict": "lidx_error",
+     "note": "`return H3;` returns the class as a value; real reference, lidx has no return-context edge",
+     "bucket_size": null
+    },
+    {
+     "id": "aa93316e",
+     "decl": "enablePatches (src/plugins/patches.ts:35) -> generatePatches_ (src/plugins/patches.ts:132)",
+     "cell": "ts/immer",
+     "verdict": "lidx_error",
+     "note": "shorthand property `{ generatePatches_ }`: the function is stored as a value; lidx has no edge for shorthand entries",
+     "bucket_size": null
+    },
+    {
+     "id": "5a5e8d3d",
+     "decl": "<module> (packages/zod/src/v4/core/json-schema-processors.ts:0) -> objectProcessor (packages/zod/src/v4/core/json-schema-processors.ts:290)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "module-level object-literal table `{ key: fn }`: handler table entry; lidx has no edge from the module for it",
+     "bucket_size": null
+    },
+    {
+     "id": "092d0116",
+     "decl": "<module> (packages/zod/src/v4/core/json-schema-processors.ts:0) -> mapProcessor (packages/zod/src/v4/core/json-schema-processors.ts:262)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "module-level object-literal table `{ key: fn }`: handler table entry; lidx has no edge from the module for it",
+     "bucket_size": null
+    },
+    {
+     "id": "dc878f50",
+     "decl": "constructor (packages/zod/src/v3/types.ts:411) -> safeParse (packages/zod/src/v3/types.ts:229)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`this.m = this.m.bind(this)` (or `x.m.bind(x)`): the method is read as a value to bind it; real reference, lidx has no edge for a bound member",
+     "bucket_size": null
+    },
+    {
+     "id": "e2ce5922",
+     "decl": "race (packages/server/src/vendor/unpromise/unpromise.ts:291) -> resolve (packages/server/src/vendor/unpromise/unpromise.ts:252)",
+     "cell": "ts/trpc",
+     "verdict": "lidx_error",
+     "note": "static method / factory read as a value (`const x = Cls.create`, `.map(Cls.resolve)`): a real reference through a property access; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "8c1e739f",
+     "decl": "constructor (packages/zod/src/v3/types.ts:411) -> optional (packages/zod/src/v3/types.ts:444)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "`this.optional = this.optional.bind(this)`: the method is read as a value to bind it; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "662747cd",
+     "decl": "wrapMiddleware (src/tracing.ts:46) -> wrappedMiddleware (src/tracing.ts:51)",
+     "cell": "ts/h3",
+     "verdict": "lidx_error",
+     "note": "`return wrappedMiddleware;` returns a local function as a value; real reference, lidx has no return-context edge",
+     "bucket_size": null
+    },
+    {
+     "id": "01da917e",
+     "decl": "enableArrayMethods (src/plugins/arrayMethods.ts:100) -> isArrayOperationMethod (src/plugins/arrayMethods.ts:152)",
+     "cell": "ts/immer",
+     "verdict": "lidx_error",
+     "note": "shorthand property `{ fn }` in an object literal: the function is stored as a value; lidx has no edge for shorthand entries",
+     "bucket_size": null
+    },
+    {
+     "id": "d443c780",
+     "decl": "any (packages/server/src/vendor/unpromise/unpromise.ts:271) -> resolve (packages/server/src/vendor/unpromise/unpromise.ts:252)",
+     "cell": "ts/trpc",
+     "verdict": "lidx_error",
+     "note": "static method / factory read as a value (`const x = Cls.create`, `.map(Cls.resolve)`): a real reference through a property access; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "4f2c6569",
+     "decl": "createResolver (packages/server/src/unstable-core-do-not-import/procedureBuilder.ts:634) -> callerWrapper (packages/server/src/unstable-core-do-not-import/procedureBuilder.ts:665)",
+     "cell": "ts/trpc",
+     "verdict": "lidx_error",
+     "note": "`return callerWrapper;` returns a local function as a value; real reference, lidx has no return-context edge",
+     "bucket_size": null
+    },
+    {
+     "id": "58196f27",
+     "decl": "composeMiddleware (src/middleware.ts:91) -> chain (src/middleware.ts:92)",
+     "cell": "ts/h3",
+     "verdict": "lidx_error",
+     "note": "`const inner = chain; ... return chain;`: a variable holding a function is read as a value; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "8e1f53dc",
+     "decl": "<module> (packages/zod/src/v3/types.ts:0) -> create (packages/zod/src/v3/types.ts:3463)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "static method / factory read as a value (`const x = Cls.create`, `.map(Cls.resolve)`): a real reference through a property access; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "eda4a1d1",
+     "decl": "<module> (packages/zod/src/v3/types.ts:0) -> create (packages/zod/src/v3/types.ts:2207)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "static method / factory read as a value (`const x = Cls.create`, `.map(Cls.resolve)`): a real reference through a property access; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "d11ec96f",
+     "decl": "<module> (packages/zod/src/v3/types.ts:0) -> create (packages/zod/src/v3/types.ts:3559)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "static method / factory read as a value (`const x = Cls.create`, `.map(Cls.resolve)`): a real reference through a property access; lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "3f08885a",
+     "decl": "trigger (packages/server/src/unstable-core-do-not-import/utils.ts:115) -> trigger (packages/server/src/unstable-core-do-not-import/utils.ts:115)",
+     "cell": "ts/trpc",
+     "verdict": "lidx_error",
+     "note": "`signal.removeEventListener('abort', trigger)` inside trigger itself: the function is passed as a value; real reference, lidx has no edge",
+     "bucket_size": null
+    },
+    {
+     "id": "7f2de20a",
+     "decl": "<module> (packages/zod/src/v4/core/json-schema-processors.ts:0) -> undefinedProcessor (packages/zod/src/v4/core/json-schema-processors.ts:124)",
+     "cell": "ts/zod",
+     "verdict": "lidx_error",
+     "note": "module-level object-literal table `{ key: fn }`: handler table entry; lidx has no edge from the module for it",
+     "bucket_size": null
+    }
+   ],
+   "tp": [
+    {
+     "id": "b00227c1",
+     "decl": "appendAcceptQuery (src/utils/query.ts:24) -> serializeMediaType (src/utils/query.ts:107)",
+     "cell": "ts/h3",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "fe1bdf9d",
+     "decl": "_deprecated (src/_deprecated.ts:0) -> getBodyStream (src/_deprecated.ts:115)",
+     "cell": "ts/h3",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, assignment, field initialiser, export object, `instanceof`); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "a52c507f",
+     "decl": "components (src/jsx/dom/intrinsic-element/components.ts:0) -> meta (src/jsx/dom/intrinsic-element/components.ts:314)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "36723716",
+     "decl": "makeArgsIssue (packages/zod/src/v3/types.ts:3833) -> errorMap (packages/zod/src/v3/locales/en.ts:4)",
+     "cell": "ts/zod",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, assignment, field initialiser, export object, `instanceof`); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "67edee84",
+     "decl": "childrenToStringToBuffer (src/jsx/base.ts:108) -> JSXNode (src/jsx/base.ts:140)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "4fc2d0a2",
+     "decl": "dom (src/jsx/dom/index.ts:0) -> forwardRef (src/jsx/hooks/index.ts:375)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "c8685507",
+     "decl": "isEventStream (src/utils/event-stream.ts:290) -> EventStream (src/utils/event-stream.ts:58)",
+     "cell": "ts/h3",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "365daf4f",
+     "decl": "_deprecated (src/_deprecated.ts:0) -> defineNodeHandler (src/adapters.ts:70)",
+     "cell": "ts/h3",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "21b99fe8",
+     "decl": "components (src/jsx/dom/intrinsic-element/components.ts:0) -> script (src/jsx/dom/intrinsic-element/components.ts:272)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "40f0b204",
+     "decl": "match (src/router/smart-router/router.ts:21) -> UnsupportedPathError (src/router.ts:103)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, assignment, field initialiser, export object, `instanceof`); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "b39c564a",
+     "decl": "components (src/jsx/dom/intrinsic-element/components.ts:0) -> input (src/jsx/dom/intrinsic-element/components.ts:423)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "f67dc078",
+     "decl": "errorHandler (src/hono-base.ts:188) -> errorHandler (src/hono-base.ts:35)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "4a804bb5",
+     "decl": "_deprecated (src/_deprecated.ts:0) -> toNodeHandler (src/_deprecated.ts:290)",
+     "cell": "ts/h3",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "1e0988d4",
+     "decl": "getDiscriminator (packages/zod/src/v3/types.ts:3067) -> ZodOptional (packages/zod/src/v3/types.ts:4485)",
+     "cell": "ts/zod",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "58826efa",
+     "decl": "ErrorBoundary (src/jsx/components.ts:55) -> resolveChildEarly (src/jsx/components.ts:32)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, assignment, field initialiser, export object, `instanceof`); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "f5e9358f",
+     "decl": "language (src/middleware/language/language.ts:0) -> detectFromPath (src/middleware/language/language.ts:167)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "4bb4330c",
+     "decl": "schemas (packages/zod/src/v4/mini/schemas.ts:0) -> meta (packages/zod/src/v4/core/api.ts:1709)",
+     "cell": "ts/zod",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "0394da37",
+     "decl": "joinPaths (src/helper/ssg/utils.ts:50) -> normalizePath (src/helper/ssg/utils.ts:16)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "ada89e5c",
+     "decl": "jsx (src/jsx/index.ts:0) -> use (src/jsx/hooks/index.ts:332)",
+     "cell": "ts/hono",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    },
+    {
+     "id": "af73e133",
+     "decl": "deepPartialify (packages/zod/src/v3/types.ts:2424) -> ZodTuple (packages/zod/src/v3/types.ts:3395)",
+     "cell": "ts/zod",
+     "verdict": "correct",
+     "note": "function or class used as a value at the evidence line (argument, export object, class field initialiser, `instanceof`, alias const); confirmed in source",
+     "bucket_size": null
+    }
+   ],
+   "fp_population": 29,
+   "fn_population": 185,
+   "tp_population": 213
+  }
+ },
+ "buckets": {
+  "go": {
+   "call_wins:lidx": [
+    {
+     "id": "37423223",
+     "decl": "once (cmd/syft/internal/test/integration/testdata/npm-lock/node_modules/once/once.js:0) -> once (cmd/syft/internal/test/integration/testdata/npm-lock/node_modules/once/once.js:21)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "a JavaScript file in syft's testdata (not Go); the pair is a real call `once(function ...)`, so lidx keeping only the CALLS edge is right",
+     "bucket_size": 1
+    }
+   ],
+   "call_wins:oracle": [
+    {
+     "id": "bb198f78",
+     "decl": "defaultLicenseComparer (syft/pkg/license_set_test.go:175) -> defaultLocationComparer (syft/pkg/license_set_test.go:171)",
+     "cell": "go/syft/tests",
+     "verdict": "correct_exclusion",
+     "note": "defaultLicenseComparer also calls defaultLocationComparer inside its func literal (line 185): a real call from the same declaration, call wins",
+     "bucket_size": 3
+    },
+    {
+     "id": "b0b68ddc",
+     "decl": "TestPackage_Merge (syft/pkg/package_test.go:231) -> locationComparer (syft/pkg/package_test.go:433)",
+     "cell": "go/syft/tests",
+     "verdict": "correct_exclusion",
+     "note": "TestPackage_Merge also calls locationComparer(xe, ye) in a func literal (line 395): a real call from the same declaration, call wins",
+     "bucket_size": 3
+    },
+    {
+     "id": "eb5af032",
+     "decl": "Apply (sliceflag.go:75) -> Apply (flag.go:106)",
+     "cell": "go/urfavecli/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "SliceFlag.Apply also calls x.Target.Apply(set) (line 82): a real call from the same declaration, call wins",
+     "bucket_size": 3
+    }
+   ],
+   "ungradable:caller_file_not_covered": [
+    {
+     "id": "87d2989b",
+     "decl": "main (_examples/router-walk/main.go:11) -> Ping (_examples/router-walk/main.go:40)",
+     "cell": "go/chi/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "chi `_examples/` is skipped by Go (leading underscore): file not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "5ebbe395",
+     "decl": "TestChildTakesNoArgs (args_test.go:449) -> emptyRun (command_test.go:30)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "a1bc0a6e",
+     "decl": "TestParseConaninfo (syft/pkg/cataloger/cpp/parse_conaninfo_test.go:12) -> parseConaninfo (syft/pkg/cataloger/cpp/parse_conaninfo.go:82)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "513dea71",
+     "decl": "Test_parseCompositeActionForActionUsage (syft/pkg/cataloger/githubactions/parse_composite_action_test.go:12) -> parseCompositeActionForActionUsage (syft/pkg/cataloger/githubactions/parse_composite_action.go:26)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "6f9b7278",
+     "decl": "TestVersionFlagOnlyExistsIfVersionNonEmpty (command_test.go:1348) -> emptyRun (command_test.go:30)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "dcef329a",
+     "decl": "TestShorthandVersionFlagOnlyAddedIfShorthandNotDefined (command_test.go:1368) -> emptyRun (command_test.go:30)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "8146c3b3",
+     "decl": "Test_addEntryFuncs (syft/pkg/cataloger/internal/cpegenerate/dictionary/index-generator/generate_test.go:63) -> addEntryForPyPIPackage (syft/pkg/cataloger/internal/cpegenerate/dictionary/index-generator/generate.go:228)",
+     "cell": "go/syft/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "d94d336e",
+     "decl": "TestRootExecuteUnknownCommand (command_test.go:146) -> emptyRun (command_test.go:30)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "51b5ce46",
+     "decl": "TestGrandChildSameName (command_test.go:465) -> emptyRun (command_test.go:30)",
+     "cell": "go/cobra/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    },
+    {
+     "id": "f5f7968f",
+     "decl": "TestClearMsg (screen_test.go:8) -> EnterAltScreen (screen.go:32)",
+     "cell": "go/bubbletea/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "test file in a no_tests cell: not analysed",
+     "bucket_size": 483
+    }
+   ]
+  },
+  "rust": {
+   "call_wins:oracle": [
+    {
+     "id": "e599dbf8",
+     "decl": "finish_value_references (src/indexer/javascript.rs:3017) -> site (src/indexer/javascript.rs:3044)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`site(e)` is called at line 3071 of the same function besides `.map(site)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "2f201a8a",
+     "decl": "analyze_impact (src/impact/mod.rs:116) -> [`From<Symbol>`]from (src/model.rs:137)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`SymbolCompact::from(symbol)` is called at line 191 of analyze_impact besides `.map(SymbolCompact::from)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "d76c3010",
+     "decl": "same_service (src/indexer/config.rs:702) -> norm (src/indexer/config.rs:685)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`norm(code)` is called at line 715 besides `.map(norm)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "8f9d9673",
+     "decl": "[ColorDisplay]fmt (src/usage.rs:10) -> is_option (src/parameter.rs:23)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`p.is_option()` is called at line 24 besides `.any(Parameter::is_option)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "aefffcbe",
+     "decl": "infer_receiver_type_raw (src/indexer/csharp.rs:4892) -> receiver (src/indexer/csharp.rs:285)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`ctx.base_type.receiver()` is called at line 4903 besides `LocalType::receiver` as an argument",
+     "bucket_size": 19
+    },
+    {
+     "id": "4c18989f",
+     "decl": "hir_has_uppercase_char (src/regex_helper.rs:15) -> hir_has_uppercase_char (src/regex_helper.rs:15)",
+     "cell": "rust/fd/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "`hir_has_uppercase_char(sub)` is called at line 30 besides `.any(hir_has_uppercase_char)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "fd2ea387",
+     "decl": "dup_ordinals_follow_declaration_order_not_lines (src/indexer/stable_id.rs:359) -> compute_stable_symbol_id (src/indexer/stable_id.rs:43)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`compute_stable_symbol_id(..)` is called at line 371 besides `.map(compute_stable_symbol_id)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "c07f11ba",
+     "decl": "handle_explain_symbol (src/rpc/handlers.rs:56) -> resolution_kind_rank (src/rpc/handlers.rs:1801)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`resolution_kind_rank(tier)` is called at line 126 besides `.and_then(resolution_kind_rank)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "133ceba9",
+     "decl": "test (src/lexer.rs:955) -> lexeme (src/token.rs:15)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`token.lexeme()` is called at line 991 besides `.map(Token::lexeme)`",
+     "bucket_size": 19
+    },
+    {
+     "id": "1ba3193f",
+     "decl": "test_stable_id_collision_is_reported_not_dropped (src/indexer/differ.rs:1263) -> compute_stable_symbol_id (src/indexer/stable_id.rs:43)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`compute_stable_symbol_id(&a)` is called at line 1275 besides `.map(compute_stable_symbol_id)`",
+     "bucket_size": 19
+    }
+   ],
+   "capture_gap:callee_not_indexed": [
+    {
+     "id": "ab319be3",
+     "decl": "<module> (benches/impact.rs:0) -> benches (benches/impact.rs:406)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "`benches` is the function generated by `criterion_group!`; lidx has no symbol for it (macro-generated)",
+     "bucket_size": 1
+    }
+   ],
+   "capture_gap:macro_generated": [
+    {
+     "id": "efe56137",
+     "decl": "benches (benches/impact.rs:406) -> bench_analyze_impact_baseline (benches/impact.rs:99)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "579906b0",
+     "decl": "benches (benches/impact.rs:406) -> bench_multi_layer_parallel (benches/impact.rs:336)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "d4e9d5ad",
+     "decl": "benches (benches/impact.rs:406) -> bench_test_layer (benches/impact.rs:388)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "9134b317",
+     "decl": "benches (benches/impact.rs:406) -> bench_varying_depth (benches/impact.rs:158)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "1e132883",
+     "decl": "benches (benches/impact.rs:406) -> bench_direct_layer (benches/impact.rs:128)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "0b2e45c4",
+     "decl": "dirname_utf8_1 (src/fmt/input.rs:72) -> remove_extension (src/fmt/input.rs:12)",
+     "cell": "rust/fd/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing test function is generated by the `func_tests!` macro from `name: func for input => output` lines; lidx has no symbol for it (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "a44e1714",
+     "decl": "benches (benches/impact.rs:406) -> bench_semantic_layer (benches/impact.rs:400)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "db988e35",
+     "decl": "benches (benches/impact.rs:406) -> bench_historical_layer (benches/impact.rs:394)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "a0d66951",
+     "decl": "benches (benches/impact.rs:406) -> bench_with_paths (benches/impact.rs:260)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing function `benches` is generated by `criterion_group!(benches, a, b, ..)`: its arguments are references the compiler sees, but lidx has no symbol for the generated function (macro-generated capture gap)",
+     "bucket_size": 14
+    },
+    {
+     "id": "4e818ddb",
+     "decl": "dirname_utf8_1 (src/fmt/input.rs:72) -> dirname (src/fmt/input.rs:22)",
+     "cell": "rust/fd/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "the referencing test function is generated by the `func_tests!` macro from `name: func for input => output` lines; lidx has no symbol for it (macro-generated capture gap)",
+     "bucket_size": 14
+    }
+   ],
+   "ungradable:caller_file_not_covered": [
+    {
+     "id": "89f8119f",
+     "decl": "csharp_edit_dropping_a_shared_second_namespace_keeps_contains_edges (tests/incremental_sync.rs:1371) -> csharp_shape (tests/incremental_sync.rs:1347)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "tests/ directory excluded by the path_tests_excluded cell",
+     "bucket_size": 46
+    },
+    {
+     "id": "cff4e69b",
+     "decl": "cat_rows_space (tests/test_cat.rs:45) -> no_headers (tests/test_cat.rs:6)",
+     "cell": "rust/xsv/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "tests/ directory excluded by the path_tests_excluded cell",
+     "bucket_size": 46
+    },
+    {
+     "id": "e68dbd1b",
+     "decl": "rust_shared_module_edits_match_fresh (tests/incremental_sync.rs:1439) -> rust_shape (tests/incremental_sync.rs:1406)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "tests/ directory excluded by the path_tests_excluded cell",
+     "bucket_size": 46
+    },
+    {
+     "id": "efc34e8d",
+     "decl": "run (benchmarks/answers/run.py:0) -> run_dead (benchmarks/answers/run.py:375)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a Python file of the lidx repository: not analysed by the Rust oracle",
+     "bucket_size": 46
+    },
+    {
+     "id": "290425e7",
+     "decl": "p (tests/test_cat.rs:28) -> no_headers (tests/test_cat.rs:6)",
+     "cell": "rust/xsv/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "tests/ directory excluded by the path_tests_excluded cell",
+     "bucket_size": 46
+    },
+    {
+     "id": "56c99e7b",
+     "decl": "main (benchmarks/agent/bench.py:854) -> cmd_dry_run (benchmarks/agent/bench.py:840)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a Python file of the lidx repository: not analysed by the Rust oracle",
+     "bucket_size": 46
+    },
+    {
+     "id": "b3393dcf",
+     "decl": "test_refuses_on_missing_or_failed_trial (benchmarks/agent/test_bench.py:252) -> Fatal (benchmarks/agent/bench.py:56)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a Python file of the lidx repository: not analysed by the Rust oracle",
+     "bucket_size": 46
+    },
+    {
+     "id": "1d5bb8e6",
+     "decl": "cmd_run (benchmarks/agent/bench.py:401) -> run_trial (benchmarks/agent/bench.py:289)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a Python file of the lidx repository: not analysed by the Rust oracle",
+     "bucket_size": 46
+    },
+    {
+     "id": "15011e44",
+     "decl": "slugify (site/src/ext/slugs.py:22) -> _make_slug (site/src/ext/slugs.py:7)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a Python file (nextest's docs site): not analysed by the Rust oracle",
+     "bucket_size": 46
+    },
+    {
+     "id": "2b93e0b1",
+     "decl": "python_shared_package_edits_match_fresh (tests/incremental_sync.rs:1434) -> python_shape (tests/incremental_sync.rs:1398)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "tests/ directory excluded by the path_tests_excluded cell",
+     "bucket_size": 46
+    }
+   ],
+   "ungradable:no_evidence_line": [
+    {
+     "id": "d4a3c8b0",
+     "decl": "jsont (crates/printer/src/jsont.rs:0) -> from_path (crates/printer/src/jsont.rs:183)",
+     "cell": "rust/ripgrep/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "45a93c55",
+     "decl": "language_type (src/language/language_type.rs:0) -> new (src/stats.rs:21)",
+     "cell": "rust/tokei/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "b4d604ce",
+     "decl": "node (src/node.rs:0) -> tree (src/node.rs:7)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "a377dfe4",
+     "decl": "test_groups (nextest-runner/src/show_config/test_groups.rs:0) -> new (nextest-runner/src/list/display_filter.rs:16)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "07f3b8b1",
+     "decl": "compiler (src/compiler.rs:0) -> from (src/modulepath.rs:52)",
+     "cell": "rust/just/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "e5fad213",
+     "decl": "resolve (src/resolve.rs:0) -> direct (src/resolve.rs:78)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "c6c84078",
+     "decl": "crate (src/main.rs:0) -> default_path_separator (src/filesystem.rs:128)",
+     "cell": "rust/fd/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "40dd0f16",
+     "decl": "csharp (src/indexer/csharp.rs:0) -> receiver (src/indexer/csharp.rs:285)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "1cc4fa7d",
+     "decl": "golden (tests/common/golden.rs:0) -> from (tests/common/golden.rs:156)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    },
+    {
+     "id": "5e652ff6",
+     "decl": "core (crates/searcher/src/searcher/core.rs:0) -> error_message (crates/searcher/src/sink.rs:43)",
+     "cell": "rust/ripgrep/no_tests",
+     "verdict": "correct_exclusion",
+     "note": "a USES row from the module symbol with no source line (what lidx records for a `Type::f` path used as a value); the source has the reference (`.map(Type::f)`), but the row names no declaration, so the pair cannot be graded; reported as `coarse_module_level` misses",
+     "bucket_size": 58
+    }
+   ]
+  },
+  "ts": {
+   "call_wins:lidx": [
+    {
+     "id": "deb3047d",
+     "decl": "cache.test (test/rules/cache.test.ts:0) -> routeRules (src/rules/middleware.ts:36)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "ddfb2319",
+     "decl": "TryItOut (www/src/pages/index.tsx:100) -> SectionTitle (www/src/components/SectionTitle.tsx:13)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "283314e5",
+     "decl": "utils.test (test/utils.test.ts:0) -> writeEarlyHints (src/utils/response.ts:136)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "818c8fb4",
+     "decl": "useTransition (src/jsx/hooks/index.ts:126) -> startTransitionHook (src/jsx/hooks/index.ts:122)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "4f77316a",
+     "decl": "index.test (src/jsx/index.test.tsx:0) -> captureRenderContext (src/jsx/context.ts:196)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "fc4d61d2",
+     "decl": "body-limit.test (test/unit/body-limit.test.ts:0) -> mockEvent (src/utils/event.ts:37)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "5ab20a31",
+     "decl": "sendMessage (test/json-rpc-ws.test.ts:94) -> createMockPeer (test/json-rpc-ws.test.ts:7)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "363c1649",
+     "decl": "sse.test (test/sse.test.ts:0) -> createEventStream (src/_deprecated.ts:151)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "ff30568e",
+     "decl": "index.test (src/jsx/dom/hooks/index.test.tsx:0) -> useFormStatus (src/jsx/dom/hooks/index.ts:41)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    },
+    {
+     "id": "120a9f28",
+     "decl": "transformResult (packages/server/src/unstable-core-do-not-import/transformer.ts:165) -> transformResultInner (packages/server/src/unstable-core-do-not-import/transformer.ts:126)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "lidx has a CALLS edge for the pair (checked in the index and the source: the caller calls the function elsewhere); the `typeof f` / JSX use is the same pair, so lidx keeps only the call. Note: this also hides the wrong type-position USES rows from the precision count",
+     "bucket_size": 17
+    }
+   ],
+   "call_wins:oracle": [
+    {
+     "id": "3c0a5e42",
+     "decl": "<module> (packages/zod/src/v3/types.ts:0) -> create (packages/zod/src/v3/types.ts:1455)",
+     "cell": "ts/zod",
+     "verdict": "correct_exclusion",
+     "note": "`ZodNumber.create(..)` is called inside an anonymous arrow at module level (line 5086), keyed at the module like the call edges, besides `const numberType = ZodNumber.create`",
+     "bucket_size": 48
+    },
+    {
+     "id": "8311c0c3",
+     "decl": "serveStatic (src/adapter/deno/serve-static.ts:11) -> isDir (src/adapter/deno/serve-static.ts:27)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "`isDir(path)` is called in serveStatic (line 14) besides the shorthand `isDir`",
+     "bucket_size": 48
+    },
+    {
+     "id": "400895fc",
+     "decl": "buildMatcher (src/middleware/ip-restriction/index.ts:51) -> convertIPv6ToBinary (src/utils/ipaddr.ts:157)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "`(isIPv4 ? f : g)(x)` is a call through a conditional; the compiler lists the call, so call wins (line 132 is a plain value use but the pair is a call)",
+     "bucket_size": 48
+    },
+    {
+     "id": "92387cb0",
+     "decl": "enablePatches (src/plugins/patches.ts:35) -> getPath (src/plugins/patches.ts:50)",
+     "cell": "ts/immer",
+     "verdict": "correct_exclusion",
+     "note": "getPath is called (line 99) from the nested declaration, lifted to enablePatches like the call edges",
+     "bucket_size": 48
+    },
+    {
+     "id": "a10a3538",
+     "decl": "abortSignalsAnyPonyfill (packages/server/src/unstable-core-do-not-import/utils.ts:98) -> trigger (packages/server/src/unstable-core-do-not-import/utils.ts:115)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "`trigger()` is called (line 107) besides being passed to addEventListener",
+     "bucket_size": 48
+    },
+    {
+     "id": "799e6dbb",
+     "decl": "some (src/middleware/combine/index.ts:39) -> wrappedNext (src/middleware/combine/index.ts:41)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "wrappedNext() is called (line 51) besides being passed to handler (line 49)",
+     "bucket_size": 48
+    },
+    {
+     "id": "58b837ce",
+     "decl": "callLayer (src/middleware.ts:125) -> next (src/middleware.ts:134)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "`next()` is called in callLayer (lines 145-148) besides being passed to fn",
+     "bucket_size": 48
+    },
+    {
+     "id": "34a6f042",
+     "decl": "getStreamResource (packages/server/src/unstable-core-do-not-import/stream/sse.ts:392) -> dispose (packages/server/src/unstable-core-do-not-import/stream/sse.ts:396)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "`await dispose()` is called (line 407) besides the shorthand `dispose`",
+     "bucket_size": 48
+    },
+    {
+     "id": "0712d5f9",
+     "decl": "Suspense (src/jsx/streaming.ts:42) -> popNodeStack (src/jsx/streaming.ts:56)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "popNodeStack() is called in Suspense (line 84) besides `.finally(popNodeStack)`",
+     "bucket_size": 48
+    },
+    {
+     "id": "f79a2133",
+     "decl": "<module> (src/h3.ts:0) -> H3Core (src/h3.ts:41)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "H3Core is called through `super(..)` of class H3 (lifted to the container), besides the `(H3Core as any).prototype` use",
+     "bucket_size": 48
+    }
+   ],
+   "capture_gap:callee_not_indexed": [
+    {
+     "id": "b45b3d4d",
+     "decl": "onEnd (packages/server/src/adapters/node-http/incomingMessageToRequest.ts:55) -> onData (packages/server/src/adapters/node-http/incomingMessageToRequest.ts:37)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or an object-literal member that lidx does not index as a symbol (a capture gap by design); it cannot be paired",
+     "bucket_size": 18
+    },
+    {
+     "id": "c4d0fc52",
+     "decl": "createInputMiddleware (packages/server/src/unstable-core-do-not-import/middleware.ts:195) -> inputValidatorMiddleware (packages/server/src/unstable-core-do-not-import/middleware.ts:197)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or an object-literal member that lidx does not index as a symbol (a capture gap by design); it cannot be paired",
+     "bucket_size": 18
+    },
+    {
+     "id": "d1faabcb",
+     "decl": "start (src/jsx/streaming.ts:152) -> then (src/jsx/streaming.ts:171)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or an object-literal member that lidx does not index as a symbol (a capture gap by design); it cannot be paired",
+     "bucket_size": 18
+    },
+    {
+     "id": "afddd932",
+     "decl": "parse (packages/server/src/unstable-core-do-not-import/http/contentType.ts:258) -> result (packages/server/src/unstable-core-do-not-import/http/contentType.ts:72)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or object-literal member that lidx does not index as a symbol (capture gap by design)",
+     "bucket_size": 18
+    },
+    {
+     "id": "344ad5cf",
+     "decl": "$constructor (packages/zod/src/v4/core/core.ts:17) -> _ (packages/zod/src/v4/core/core.ts:58)",
+     "cell": "ts/zod",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or an object-literal member that lidx does not index as a symbol (a capture gap by design); it cannot be paired",
+     "bucket_size": 18
+    },
+    {
+     "id": "712ad07d",
+     "decl": "onEnd (packages/server/src/adapters/node-http/incomingMessageToRequest.ts:55) -> onEnd (packages/server/src/adapters/node-http/incomingMessageToRequest.ts:55)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or an object-literal member that lidx does not index as a symbol (a capture gap by design); it cannot be paired",
+     "bucket_size": 18
+    },
+    {
+     "id": "f53c2ba8",
+     "decl": "parse (packages/server/src/unstable-core-do-not-import/http/contentType.ts:258) -> read (packages/server/src/unstable-core-do-not-import/http/contentType.ts:47)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or an object-literal member that lidx does not index as a symbol (a capture gap by design); it cannot be paired",
+     "bucket_size": 18
+    },
+    {
+     "id": "b30e695e",
+     "decl": "createErrorFormatterMiddleware (packages/server/src/unstable-core-do-not-import/middleware.ts:228) -> errorFormatterMiddleware (packages/server/src/unstable-core-do-not-import/middleware.ts:233)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or object-literal member that lidx does not index as a symbol (capture gap by design)",
+     "bucket_size": 18
+    },
+    {
+     "id": "b1e03fec",
+     "decl": "parse (packages/server/src/unstable-core-do-not-import/http/contentType.ts:218) -> result (packages/server/src/unstable-core-do-not-import/http/contentType.ts:72)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or an object-literal member that lidx does not index as a symbol (a capture gap by design); it cannot be paired",
+     "bucket_size": 18
+    },
+    {
+     "id": "f74d6073",
+     "decl": "onData (packages/server/src/adapters/node-http/incomingMessageToRequest.ts:37) -> onEnd (packages/server/src/adapters/node-http/incomingMessageToRequest.ts:55)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "the referenced declaration is a local const / inner function or object-literal member that lidx does not index as a symbol (capture gap by design)",
+     "bucket_size": 18
+    }
+   ],
+   "ungradable:caller_file_not_covered": [
+    {
+     "id": "0e21c97c",
+     "decl": "procedureErrors.client.test (packages/tests/server/procedureErrors.client.test.ts:0) -> TRPCClientError (packages/client/src/TRPCClientError.ts:47)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "test file under packages/tests, outside the trpc cell's --subdir packages/server/src",
+     "bucket_size": 413
+    },
+    {
+     "id": "8979afef",
+     "decl": "TRPCWebSocketClient (packages/client/src/links/wsLink/createWsClient.ts:10) -> createWSClient (packages/client/src/links/wsLink/createWsClient.ts:6)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "packages/client is outside the trpc cell's --subdir packages/server/src",
+     "bucket_size": 413
+    },
+    {
+     "id": "de7f7043",
+     "decl": "immutability-profiling (perf-testing/immutability-profiling.mjs:0) -> scenario_reverse_array (perf-testing/immutability-profiling.mjs:402)",
+     "cell": "ts/immer",
+     "verdict": "correct_exclusion",
+     "note": "immer perf-testing/ is outside the cell's --subdir src",
+     "bucket_size": 413
+    },
+    {
+     "id": "e788ded1",
+     "decl": "Env (www/src/utils/useEnv.ts:5) -> parseEnv (www/src/utils/env.js:11)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "www/ is outside the trpc cell's --subdir",
+     "bucket_size": 413
+    },
+    {
+     "id": "e0f7df1c",
+     "decl": "Home (examples/.experimental/next-app-dir/src/app/server-action/page.tsx:8) -> RawExample (examples/.experimental/next-app-dir/src/app/server-action/RawExample.tsx:6)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "examples/ is outside the trpc cell's --subdir",
+     "bucket_size": 413
+    },
+    {
+     "id": "577dc1e5",
+     "decl": "_app (examples/next-edge-runtime/src/pages/_app.tsx:0) -> MyApp (examples/next-edge-runtime/src/pages/_app.tsx:4)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "examples/ is outside the trpc cell's --subdir",
+     "bucket_size": 413
+    },
+    {
+     "id": "c32e9e56",
+     "decl": "server (examples/lambda-api-gateway/src/server.ts:0) -> createContext (examples/lambda-api-gateway/src/server.ts:7)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "examples/ is outside the trpc cell's --subdir",
+     "bucket_size": 413
+    },
+    {
+     "id": "91b43a23",
+     "decl": "updateScenarios (__tests__/updateScenarios.js:0) -> removeHigh (__tests__/updateScenarios.js:91)",
+     "cell": "ts/immer",
+     "verdict": "correct_exclusion",
+     "note": "immer __tests__ is outside the cell's --subdir src",
+     "bucket_size": 413
+    },
+    {
+     "id": "d8ad0079",
+     "decl": "response-size (test/response-size.ts:0) -> HTTPError (source/errors/HTTPError.ts:15)",
+     "cell": "ts/ky",
+     "verdict": "correct_exclusion",
+     "note": "ky test/ is outside the cell's --subdir source",
+     "bucket_size": 413
+    },
+    {
+     "id": "21d9d098",
+     "decl": "Context (examples/next-sse-chat/src/server/context.ts:18) -> createContext (examples/next-sse-chat/src/server/context.ts:8)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "examples/ is outside the trpc cell's --subdir",
+     "bucket_size": 413
+    }
+   ],
+   "ungradable:oracle_call_wins": [
+    {
+     "id": "0ec24eeb",
+     "decl": "buildMatcher (src/middleware/ip-restriction/index.ts:51) -> convertIPv4ToBinary (src/utils/ipaddr.ts:148)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "the callee is a conditional `(isIPv4 ? f : g)(x)`: the compiler resolves the call to f, so the pair is a call in the oracle (call wins); lidx has only a REFERENCES row",
+     "bucket_size": 7
+    },
+    {
+     "id": "b970af48",
+     "decl": "memo (packages/server/src/unstable-core-do-not-import/http/contentType.ts:39) -> TRPCError (packages/server/src/unstable-core-do-not-import/error/TRPCError.ts:65)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "`new TRPCError(..)` is called in the same function besides `cause instanceof TRPCError`; call wins",
+     "bucket_size": 7
+    },
+    {
+     "id": "9a3f51ed",
+     "decl": "$ZodObject (packages/zod/src/v4/core/schemas.ts:1832) -> isObject (packages/zod/src/v4/core/util.ts:360)",
+     "cell": "ts/zod",
+     "verdict": "correct_exclusion",
+     "note": "`const isObject = util.isObject;` then `isObject(..)` is called through the alias: the compiler lists the call, call wins",
+     "bucket_size": 7
+    },
+    {
+     "id": "44e47853",
+     "decl": "getTRPCErrorFromUnknown (packages/server/src/unstable-core-do-not-import/error/TRPCError.ts:43) -> TRPCError (packages/server/src/unstable-core-do-not-import/error/TRPCError.ts:65)",
+     "cell": "ts/trpc",
+     "verdict": "correct_exclusion",
+     "note": "`new TRPCError(..)` is called in the same function besides `cause instanceof TRPCError`; call wins",
+     "bucket_size": 7
+    },
+    {
+     "id": "9e8dfb9f",
+     "decl": "$ZodObjectJIT (packages/zod/src/v4/core/schemas.ts:1981) -> isObject (packages/zod/src/v4/core/util.ts:360)",
+     "cell": "ts/zod",
+     "verdict": "correct_exclusion",
+     "note": "`const isObject = util.isObject;` then `isObject(..)` is called through the alias: the compiler lists the call, call wins",
+     "bucket_size": 7
+    },
+    {
+     "id": "84ea046f",
+     "decl": "H3 (src/h3.ts:146) -> H3Core (src/h3.ts:41)",
+     "cell": "ts/h3",
+     "verdict": "correct_exclusion",
+     "note": "H3Core is called through `super(..)` of class H3, besides the `(H3Core as any).prototype` use; call wins",
+     "bucket_size": 7
+    },
+    {
+     "id": "ed8f9431",
+     "decl": "buildMatcher (src/middleware/ip-restriction/index.ts:51) -> convertIPv6ToBinary (src/utils/ipaddr.ts:157)",
+     "cell": "ts/hono",
+     "verdict": "correct_exclusion",
+     "note": "`(isIPv4 ? f : g)(x)` is a call through a conditional; the compiler lists the call, call wins",
+     "bucket_size": 7
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,6 @@
+[
+{"callee":{"file":"__tests__/patch.js","line":47,"name":"runPatchTests","qualname":"__tests__/patch.runPatchTests"},"caller":{"file":"__tests__/patch.js","line":0,"name":"patch","qualname":"__tests__/patch"},"evidence_file":"__tests__/patch.js","evidence_lines":[103,122],"side":"lidx"},
+{"callee":{"file":"src/plugins/arrayMethods.ts","line":140,"name":"isMutatingArrayMethod"},"caller":{"file":"src/plugins/arrayMethods.ts","line":100,"name":"enableArrayMethods"},"side":"oracle","sites":["src/plugins/arrayMethods.ts:508"]},
+{"callee":{"file":"src/plugins/patches.ts","line":406,"name":"deepClonePatchValue"},"caller":{"file":"src/plugins/patches.ts","line":406,"name":"deepClonePatchValue"},"side":"oracle","sites":["src/plugins/patches.ts:408","src/plugins/patches.ts:413"]},
+{"callee":{"file":"src/plugins/patches.ts","line":50,"name":"getPath"},"caller":{"file":"src/plugins/patches.ts","line":35,"name":"enablePatches"},"side":"oracle","sites":["src/plugins/patches.ts:430"]}
+]

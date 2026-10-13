@@ -1,0 +1,5 @@
+[
+{"callee":{"file":"src/client/client.ts","line":137,"name":"proxyCallback"},"caller":{"file":"src/client/client.ts","line":137,"name":"proxyCallback"},"reason":"callee_not_indexed","sites":["src/client/client.ts:158"]},
+{"callee":{"file":"src/jsx/streaming.ts","line":171,"name":"then"},"caller":{"file":"src/jsx/streaming.ts","line":152,"name":"start"},"reason":"callee_not_indexed","sites":["src/jsx/streaming.ts:202"]},
+{"callee":{"file":"src/jsx/streaming.ts","line":171,"name":"then"},"caller":{"file":"src/jsx/streaming.ts","line":171,"name":"then"},"reason":"callee_not_indexed","sites":["src/jsx/streaming.ts:190"]}
+]

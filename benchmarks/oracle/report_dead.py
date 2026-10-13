@@ -282,6 +282,13 @@ def section(meta, cells, results_dir):
         w("`go/syft/tests` (the largest cell): %s s, %s MB peak, recorded in `cells.json` under `cells['go/syft/tests']['dead']['oracle_meta']`." % (
             m.get("seconds"), m.get("peak_rss_mb")))
         w("")
+    # ---- value references (issue #452): dead claims that are missing references ----------------------------------
+    import report_refs
+    xref = report_refs.dead_xref_table(meta, heading="### Missing value references")
+    if xref:
+        w(xref)
+        w("(The value references themselves are graded in \"Value references\" below.)")
+        w("")
     # ---- spot-check ----------------------------------------------------------------------------------------
     sc = os.path.join(results_dir, "spotcheck-dead.json")
     if os.path.exists(sc):

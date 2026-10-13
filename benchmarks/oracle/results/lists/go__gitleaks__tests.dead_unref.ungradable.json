@@ -1,5 +1,3 @@
 [
-{"file":"regexp/wasilibs_regex.go","key":"regexp/wasilibs_regex.go:13","lidx_kind":"function","name":"MustCompile","qualname":"regexp/wasilibs_regex.MustCompile","reason":"file_not_in_program"},
-{"file":"testdata/repos/small/api/api.go","key":"testdata/repos/small/api/api.go:5","lidx_kind":"function","name":"PrintHello","qualname":"testdata/repos/small/api/api.PrintHello","reason":"file_not_in_program"},
-{"file":"testdata/repos/staged/api/api.go","key":"testdata/repos/staged/api/api.go:5","lidx_kind":"function","name":"PrintHello","qualname":"testdata/repos/staged/api/api.PrintHello","reason":"file_not_in_program"}
+
 ]

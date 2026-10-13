@@ -1,8 +1,7 @@
 [
-{"file":"command_test.go","key":"command_test.go:2604","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
-{"file":"command_test.go","key":"command_test.go:2629","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
-{"file":"command_test.go","key":"command_test.go:2655","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
-{"file":"command_test.go","key":"command_test.go:2676","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
-{"file":"command_win.go","key":"command_win.go:30","lidx_kind":"function","name":"preExecHook","qualname":"command_win.preExecHook","reason":"file_not_in_program"},
-{"file":"completions.go","key":"completions.go:313","lidx_kind":"method","name":"GetSlice","qualname":"completions.SliceValue.GetSlice","reason":"not_a_judged_declaration"}
+{"confidence":"high","file":"command_test.go","key":"command_test.go:2604","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"confidence":"high","file":"command_test.go","key":"command_test.go:2629","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"confidence":"high","file":"command_test.go","key":"command_test.go:2655","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"confidence":"high","file":"command_test.go","key":"command_test.go:2676","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"confidence":"high","file":"command_win.go","key":"command_win.go:30","lidx_kind":"function","name":"preExecHook","qualname":"command_win.preExecHook","reason":"file_not_in_program"}
 ]

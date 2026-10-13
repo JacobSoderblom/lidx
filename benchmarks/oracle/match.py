@@ -514,9 +514,12 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
                     for ck in r["cks"]:
                         u = uses_by_line.get((cn(ck), int(ln)))
                         if u:
-                            cat, detail = "recorded_as_uses", {"edge_kind": u[0][0], "lidx_target": u[0][1]}
+                            # a REFERENCES row at the site: lidx recorded the call as a value reference (issue #452); that pair is graded in the
+                            # "Value references" tables, where it is an FP `call_as_reference`
+                            cat = "call_as_reference" if any(x[0] == "REFERENCES" for x in u) else "recorded_as_uses"
+                            detail = {"edge_kind": u[0][0], "lidx_target": u[0][1]}
                             break
-                    if cat == "recorded_as_uses":
+                    if cat in ("recorded_as_uses", "call_as_reference"):
                         break
             if best:
                 cat = best[1]

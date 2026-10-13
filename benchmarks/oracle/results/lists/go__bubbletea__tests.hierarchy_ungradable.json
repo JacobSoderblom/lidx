@@ -1,4 +1,5 @@
 [
+{"base":"inputreader_windows.go:112","evidence_file":"inputreader_windows.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"inputreader_windows.go:18"},
 {"base":"tea.go:44","evidence_file":"examples/altscreen-toggle/main.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"examples/altscreen-toggle/main.go:16"},
 {"base":"tea.go:44","evidence_file":"examples/autocomplete/main.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"examples/autocomplete/main.go:63"},
 {"base":"tea.go:44","evidence_file":"examples/cellbuffer/main.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"examples/cellbuffer/main.go:137"},

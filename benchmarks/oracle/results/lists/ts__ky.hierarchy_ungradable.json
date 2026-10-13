@@ -1,3 +1,4 @@
 [
-{"base":"source/errors/KyError.ts:8","evidence_file":"test/main.ts","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"extends","sub":"test/main.ts:713"}
+{"base":"source/errors/KyError.ts:8","evidence_file":"test/main.ts","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"extends","sub":"test/main.ts:713"},
+{"base":"source/errors/KyError.ts:9","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"test/main.ts:714"}
 ]

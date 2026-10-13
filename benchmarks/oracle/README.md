@@ -30,7 +30,7 @@ takes about 10 minutes, dominated by Go's SSA build of syft, which needs roughly
 `cells.json` records the toolchain versions (rust-analyzer, node, typescript, Go) and the lidx build.
 
 Outputs in `results/`: `report.md`, `cells.json` (all numbers), `lists/<cell>.{fn,fp,capture_gap,ungradable}.json`
-(every miss, wrong edge, capture-gap edge and excluded edge with source locations and a category, for fixing; Go cells also `<cell>.closure_self.json`, the oracle self-edges left out of the lidx-native grading;
+(every miss, wrong edge, capture-gap edge and excluded edge with source locations and a category, for fixing; value references also `<cell>.refs_{fn,fp,capture_gap,ungradable,call_wins}.json`; Go cells also `<cell>.closure_self.json`, the oracle self-edges left out of the lidx-native grading;
 `<cell>.dispatch_fn.json` too, except the very large `go__syft__tests` one), `spotcheck.json` / `spotcheck-sample.json`.
 
 ## Corpus
@@ -225,6 +225,57 @@ FN categories: `no_edge`, `not_indexed` (a declaration of the pair has no lidx s
 methods) and `promoted_method` (Go: the method is promoted from an embedded type). FP categories: `reverse_direction`, `structural_only` (TS),
 `other_relation_in_oracle`, `no_such_override`, `types_unrelated_in_compiler`, `other`.
 
+### Value references
+
+A function, method or class used as a value rather than called (a callback argument, a handler-table entry, a struct-field handler such as
+`cobra.Command{RunE: run}`, a method value, `.map(f)`) is a `REFERENCES` edge in lidx. It keeps handler layers out of `dead_symbols` and is what
+`explain_symbol` shows under `other_edges`. The "Alongside REFERENCES and USES" table of the call grading only shows that adding these edges to a
+*call* grading costs precision; it says nothing about whether the references themselves are right. A third grading, in its own section of
+`results/report.md` ("Value references"), checks them against the same compilers. **The call-edge, hierarchy and dead-code tables and their numbers are
+untouched**; this is a new `refs` list in each oracle's JSON (`ref_callers` for Go, `refs_dropped` for the buckets below) and a new `refs` key per cell in
+`cells.json`. Code: `go_oracle/refs.go`, `ts_oracle/refs.mjs`, `rust_oracle/scip_calls.py` (oracles), `refs.py` (matching and grading), `report_refs.py`,
+`spotcheck_refs.py`. Pairs are keyed (enclosing declaration, referenced declaration) at the declaration's name identifier, like the call edges; a use outside
+any function (a package-level table, a module-level object literal) is keyed at line 0 of its file (`<module>`), and in TypeScript also accepted at the
+module-level const or class that contains it, as for calls.
+
+| Language | Oracle definition |
+|---|---|
+| Go (`go_oracle/refs.go`, `go/types`) | every identifier in `types.Info.Uses` whose object is a `*types.Func`, in an analysed in-repo file, whose declaration is in the repository, and which is not the `Fun` of a `CallExpr` after unwrapping parentheses, selectors and generic instantiation (`f[int](x)`). Method values `x.M`, method expressions `T.M` and interface method values are references. A generic instance collapses to its origin. `go f()` and `defer f()` are calls. Each pair records its forms (`ident`, `qualified`, `method_value`, `method_expr`, `iface_method_value`) and contexts (`call_argument`, `struct_field`, `map_value`, `composite_element`, `assignment`, `return`, `var_init`, `other`) |
+| TypeScript (`ts_oracle/refs.mjs`, checker) | identifiers and property-access names whose (alias-resolved) checker symbol is function-like: a function, a method with a body, a class, or a const / property whose initialiser is a function. Excluded, each a named bucket in `refs_dropped`: callee position of a call, `new`, tagged template, decorator or JSX tag (and `f.call(..)` / `f.apply(..)`, which are calls); declaration names (including the key of `{ key: value }`); type positions (`typeof f`, annotations, type arguments, `implements X`, `extends X`); import and export specifiers and clauses (`export { f }`; `export default f` is a reference, context `export_default`); the left side of an assignment (`assignment_target`: `f = ..` writes the variable); the object of a static access (`Foo.create`: the class is not used as a value; `Foo.prototype` is kept) or of a property read on a function (`f.displayName`); `f.bind(..)` is kept (it binds the function as a value); symbols declared in a `.d.ts`, `lib` or outside the cell's `--subdir` (`external_target`); interface / type-literal members and abstract methods (`abstract_target`: no body to point at). Shorthand `{ fn }` is a reference |
+| Rust (`rust_oracle/scip_calls.py`, rust-analyzer SCIP) | the `refs` the call reader already computes: a non-definition occurrence of a function symbol not followed by `(` (a turbofish `::<T>` is skipped before looking, so `Type::method::<T>(..)` is a call), minus occurrences with the SCIP `Import` role and occurrences inside a `use` item (`use_item`). An occurrence outside any function body (a `static` table, a closure in a `static`, a macro invocation at module level) is keyed at line 0 of its file, like Go and TypeScript (`ref_at_module_level`). SCIP columns are UTF-8 byte offsets: on a line with non-ASCII text the oracle re-reads what follows the identifier at the byte column and a call that the older reading took for a reference is dropped (`call_on_non_ascii_line`). An occurrence whose text is not the function's name is an implicit call (an overloaded operator `a += b`, a deref `*x`, an index `m[k]`), not a reference (`implicit_call`). `Trait::method` resolved by inference to one impl carries the trait's own declaration as `callee_alts`, an acceptable target. A reference whose every site is inside `#[cfg(...)]`-disabled code is left out (`oracle_refs_cfg_gated`, `rust_cfg.py`): rust-analyzer resolves names there only partly (a local declared in the disabled block is invisible and the name resolves to a function of the same name). Tuple-struct and variant constructors are not references |
+
+**lidx side** (`refs.py`): its `REFERENCES` rows plus its `USES` rows whose target is a function (symbol kind `function` or `method`; TypeScript also a
+`const` the compiler says holds a function; this is the call grading's `recorded_as_uses` category), both ends in-repo symbols, deduplicated to pairs. A
+`REFERENCES` row with no resolved target is counted (`lidx_unresolved_reference_rows`) and used to classify misses (`unresolved`), not graded.
+
+**Call wins, on both sides.** A reference pair that is also a call is a call. On the oracle side the pair is dropped when the compiler also sees a call from
+the same declaration to the same function (`also called`: Go's callee positions of the same package, whether or not RTA reaches the caller; TypeScript's
+own callee positions; Rust's call edges) or the call oracle lists the pair. An RTA edge that is dynamic (a call through a function value or interface, `dispatch`) is not such a call: `t.addEntryFunc(..)` makes RTA list every function stored in the field as a callee of the test, which would otherwise turn each `addEntryFunc: f` reference into a call. On the lidx side the pair is dropped when lidx has a `CALLS` or `DISPATCH`
+edge for it, because lidx keeps only the call. Both removals are counted in the table (`removed: also called, oracle / lidx`) and sampled by hand
+(`call_wins:oracle`, `call_wins:lidx`). A lidx reference the compiler agrees is a reference but whose pair the compiler also calls is **ungradable**
+(`oracle_call_wins`), never a wrong pair.
+
+**Counting.** A lidx pair is **correct** when the oracle has it as a reference that is not also a call, **wrong** when it does not and the pair is
+judgeable, **ungradable** otherwise (`oracle_call_wins`; a caller or callee in a file the oracle did not analyse; a Rust caller that is neither a function definition nor a module; `cfg_gated_evidence`, evidence in `#[cfg]`-disabled code;
+`no_evidence_line`, a USES row with no source line, which is how the Rust extractor records a `Type::f` path in value position: a module-level row that names no referencing declaration). Precision = correct / (correct + wrong). Recall = oracle pairs lidx has / oracle pairs whose caller and
+callee are both lidx symbols; pairs with no lidx symbol at an end are `capture_gap` rows (also reported as `recall_incl_capture_gap`).
+
+Categories. Wrong pairs: `same_name_elsewhere` (lidx bound the reference to a different declaration of the same name as the one the compiler names at the
+site, or elsewhere in that caller: the failure a name-tier guess produces), `wrong_target` (the compiler has a reference of another name at the site),
+`call_as_reference` (the compiler only **calls** the function from that declaration), `caller_attribution`, `call_syntax_at_site`, `no_reference_at_site`.
+Missed pairs: `no_edge` (nothing at the site; the report breaks these down by the reference's form, context and whether it is module level),
+`coarse_module_level` (Rust: lidx has the reference only as a module-level USES row with no line),
+`reference_as_call` (lidx has a `CALLS` edge for the pair), `wrong_target` (lidx has a reference there to another declaration; `same_name` in the detail),
+`unresolved`, `marked_external`. The cross-categories are one edge labelled on both sides: an oracle reference lidx records as a call is a miss
+`reference_as_call` here and a wrong edge `reference_as_call` in the call table; a call lidx records as a reference is a wrong pair `call_as_reference` here and a
+missed call `call_as_reference` in the call table (the call table's `recorded_as_uses` keeps the `USES` rows).
+
+**Precision by resolution kind.** Each lidx pair carries the `resolution_kind` of its rows; the report gives precision per cell and kind, so the failure of a
+tier (`bare_name`, `receiver_type`, ...) is visible without reading lists.
+
+**Dead-code cross-reference.** The dead-code section ("Missing value references") counts, per cell and column, how many of the declarations `dead_symbols`
+claims dead although the oracle judged them live are the target of a value reference the compiler sees, and for how many lidx holds no reference pair at all.
+
 ## Oracle artefacts
 
 The PR #445 spot-check found oracle artefacts concentrated in two places. Each change below removes an **oracle blind spot**, never a lidx
@@ -370,3 +421,55 @@ interfaces keyed at the wrong declaration); the oracle was fixed and the sample 
 
 What the numbers say: lidx's precision is 1.00 everywhere. Recall is where the
 gaps are: at the commit of the committed results, Go struct embedding had no edge and Go methods declared in another file than their receiver type never joined it (issues #455, #456, fixed since; regenerate the results to see the current figures), Rust's `implements` recall is 1.00 on every cell with pairs since #457. TypeScript is complete (`overrides` 116 of 116: interface and type-literal members are `decl` symbols and `override` is optional, #458) and Go `implements` is good (see the tables). Go `implements` recall caps the dispatch-credited call recall (see the report).
+
+## Value reference results
+
+`REFERENCES` rows and function-target `USES` rows against the compiler (README "Method / Value references"; the per-cell tables, resolution-kind
+tables, categories, lists and the dead-code cross-reference are in `results/report.md`, "Value references"). P = correct / (correct + wrong) over the lidx pairs the
+oracle can judge, R = oracle pairs lidx has / oracle pairs whose ends are both lidx symbols, 95% Wilson intervals; pairs that are also calls are removed on both sides.
+Quoted only after the hand spot-check came in under the 10% bar: 244 sampled items (20 wrong pairs, 20 missed pairs and 20 correct pairs per language where that many exist, plus up to 10 per exclusion
+bucket), 0 oracle or matching artefacts, 0 mis-bucketed exclusions, all 60 sampled correct pairs confirmed in the source (0/244, [0.0%, 1.5%]). The earlier draws were over the bar and found the harness bugs listed in
+`spotcheck-refs-verdicts.json` (most of all: a Go RTA edge for a call through a function value counted as a call of the declaration that stores the function, 20 of 31 Go bucket items), which were fixed and the sample redrawn.
+
+| Cell | P [95% CI] | R [95% CI] | lidx pairs graded (wrong) | oracle pairs (matched) |
+|---|---|---|---:|---:|
+| go/cobra/tests | 1.000 [0.985, 1.000] | 0.985 [0.961, 0.994] | 257 (0) | 261 (257) |
+| go/gitleaks/tests | 1.000 [0.741, 1.000] | 1.000 [0.741, 1.000] | 11 (0) | 11 (11) |
+| go/syft/tests | 1.000 [0.988, 1.000] | 0.745 [0.701, 0.785] | 310 (0) | 416 (310) |
+| go/syft/no_tests | 1.000 [0.980, 1.000] | 0.755 [0.698, 0.804] | 188 (0) | 249 (188) |
+| go/chi/tests | 1.000 [0.871, 1.000] | 0.929 [0.773, 0.980] | 26 (0) | 28 (26) |
+| go/urfavecli/tests | 1.000 [0.867, 1.000] | 0.694 [0.531, 0.820] | 25 (0) | 36 (25) |
+| go/bubbletea/tests | 1.000 [0.839, 1.000] | 0.909 [0.722, 0.975] | 20 (0) | 22 (20) |
+| go/viper | no value reference in the repository | | 0 | 0 |
+| ts/zod | 0.721 [0.598, 0.818] | 0.321 [0.250, 0.403] | 61 (17) | 140 (45) |
+| ts/hono | 0.974 [0.926, 0.991] | 0.830 [0.757, 0.884] | 115 (3) | 135 (112) |
+| ts/trpc | 0.867 [0.621, 0.963] | 0.302 [0.186, 0.451] | 15 (2) | 43 (13) |
+| ts/ky | 0.875 [0.529, 0.978] | 0.700 [0.397, 0.892] | 8 (1) | 10 (7) |
+| ts/immer | 1.000 [0.342, 1.000] | 0.111 [0.031, 0.328] | 2 (0) | 18 (2) |
+| ts/h3 | 0.854 [0.716, 0.931] | 0.633 [0.493, 0.753] | 41 (6) | 49 (31) |
+| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] | 0.679 [0.493, 0.821] | 19 (0) | 28 (19) |
+| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] | 0.667 [0.208, 0.939] | 2 (0) | 3 (2) |
+| rust/xsv/path_tests_excluded | no pair graded | 0.000 [0.000, 0.354] | 0 | 7 (0) |
+| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] | 0.935 [0.846, 0.975] | 58 (0) | 62 (58) |
+| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] | 0.862 [0.778, 0.917] | 80 (0) | 94 (81) |
+| rust/nextest/path_tests_excluded | 0.909 [0.722, 0.975] | 0.400 [0.276, 0.538] | 22 (2) | 50 (20) |
+
+(The `no_tests` and `tests` cells of a repository overlap; the other Go `no_tests` cells, the Rust `no_tests` / `tests` / `all_features` cells and the per-cell lists are in the report.)
+
+Reading:
+
+- **Where lidx says a function is used as a value it is almost always right in Go and Rust, and wrong about one time in four in zod.** Go has no wrong pair in any cell (0 of 837 pairs in the cells above),
+  Rust two (nextest, a shorthand `VersionInfo { short, long }` whose fields are locals that lidx bound to functions of the same name). TypeScript's 29 wrong pairs are lidx errors: a getter read (`this.shape` of `get shape()`)
+  recorded as a reference to the accessor (9 of the 20 sampled), a call through an `any` cast `(checks.f as any)(..)` recorded as a reference rather than a call (6), a primitive type name `bigint` bound to a function of that name, a local variable
+  shadowing a function (`lazy[..]`) and `typeof f` in a type. `same_name_elsewhere` (a name-tier guess binding the reference to another declaration of the same name) is empty in every cell: the resolver refuses bare-name guesses here.
+- **Recall is where the gap is: 0.11 to 0.99 depending on how the codebase writes its callbacks.** The edges lidx does have are the call-argument and struct-field forms the extractors were written for. Top missed shapes (distinct pairs over the cells of a language):
+  Go (125 missed): a method value passed as an argument whose receiver is a local built by a constructor (`adapter := newGenericYarnLockAdapter(cfg); WithParserByGlobs(adapter.parseYarnLock, ..)`, 65, 52%), a package-level `var _ generic.Parser = parseX` (38), returns and assignments (19).
+  TypeScript (185 missed): entries of an object literal, at module level (`{ any: anyProcessor, .. }`, 39) or shorthand (`{ createContext }`, 30), 72 in all; a property access read as a value, `this.m = this.m.bind(this)` (26), `const x = Cls.create` (29), `immer.f.bind(immer)` (7), 66 in all; a local function passed as a callback (`.catch(handleError)`, 35).
+  Rust (66 missed): a `Type::method` / `Trait::method` path passed as a callback (`.map(Node::tree)`, `.map_err(Error::f)`), 35 (24 of them lidx records only as a module-level USES row with no line and no declaration to pair with, the category `coarse_module_level`; the other 11 not at all), a parser function named in a combinator (`alt((a, b))`, `f.parse_next(..)`, 20), a function coerced in a `let` (4).
+- **What is recorded as a call stays a call.** Call wins removes 0 to 14 oracle pairs and 0 to 7 lidx pairs per cell (the largest: zod 14, trpc 13/7, h3 5/6); one `call_as_reference` wrong pair (hono) and no `reference_as_call` miss.
+  A wrong lidx reference that coincides with a real call of the same pair is dropped rather than counted (the `ReturnType<typeof f>` pairs of TypeScript tests).
+- **Dead code.** Of the declarations `dead_symbols` claims dead although the oracle judged them live, the compiler sees a value reference to 4 of 9 in cobra, 18 of 304 in syft, 4 of 23 in urfavecli, 17 of 113 in nextest, 2 of 14 in xsv and 1 of 27 in just (unreferenced column; TypeScript 0 of 2): the dead claim is a missing reference there. Findings filed as lidx issues: #473 (Go method values on constructor-built locals, package-level `var _ T = f`, returns), #474 (TypeScript object-literal entries, bound members, local callbacks; getter reads recorded as references), #475 (Rust `Type::f` paths: module-level USES rows with no line, or missing); #476 is the harness follow-up for the call oracle's byte columns.
+
+Not graded here: value references of lidx's other languages, `USES` rows to classes and constants (type and value uses), and repowise (its `references` edge is graded with the same matcher in a separate issue).

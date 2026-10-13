@@ -1,0 +1,4 @@
+[
+{"callee":{"file":"src/regex_helper.rs","line":15,"name":"hir_has_uppercase_char"},"caller":{"file":"src/regex_helper.rs","line":15,"name":"hir_has_uppercase_char"},"side":"oracle","sites":["src/regex_helper.rs:33"]},
+{"callee":{"file":"src/sanitize.rs","line":9,"name":"needs_escape"},"caller":{"file":"src/sanitize.rs","line":28,"name":"sanitize_for_terminal"},"side":"oracle","sites":["src/sanitize.rs:29"]}
+]

@@ -1,3 +1,15 @@
 [
-
+{"callee":{"file":"src/core/proxy.ts","line":30,"name":"revoke_"},"caller":{"file":"src/core/scope.ts","line":90,"name":"revokeDraft"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/scope.ts:93"]},
+{"callee":{"file":"src/utils/plugins.ts","line":19,"name":"generatePatches_"},"caller":{"file":"src/core/finalize.ts","line":194,"name":"generatePatchesAndFinalize"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/finalize.ts:209"]},
+{"callee":{"file":"src/utils/plugins.ts","line":19,"name":"generatePatches_"},"caller":{"file":"src/core/immerClass.ts","line":261,"name":"rootDraftCleanup"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/immerClass.ts:267"]},
+{"callee":{"file":"src/utils/plugins.ts","line":24,"name":"generateReplacementPatches_"},"caller":{"file":"src/core/finalize.ts","line":27,"name":"processResult"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/finalize.ts:43"]},
+{"callee":{"file":"src/utils/plugins.ts","line":24,"name":"generateReplacementPatches_"},"caller":{"file":"src/core/immerClass.ts","line":83,"name":"produce"},"category":"dispatch","detail":null,"dispatch":true,"fanout":2,"sites":["src/core/immerClass.ts:127"]},
+{"callee":{"file":"src/utils/plugins.ts","line":30,"name":"getPath"},"caller":{"file":"src/core/finalize.ts","line":194,"name":"generatePatchesAndFinalize"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/finalize.ts:206"]},
+{"callee":{"file":"src/utils/plugins.ts","line":34,"name":"proxyMap_"},"caller":{"file":"src/core/immerClass.ts","line":234,"name":"createProxy"},"category":"dispatch","detail":null,"dispatch":true,"fanout":2,"sites":["src/core/immerClass.ts:244"]},
+{"callee":{"file":"src/utils/plugins.ts","line":35,"name":"proxySet_"},"caller":{"file":"src/core/immerClass.ts","line":234,"name":"createProxy"},"category":"dispatch","detail":null,"dispatch":true,"fanout":2,"sites":["src/core/immerClass.ts:246"]},
+{"callee":{"file":"src/utils/plugins.ts","line":36,"name":"fixSetContents"},"caller":{"file":"src/core/finalize.ts","line":174,"name":"childCleanup"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/finalize.ts:183"]},
+{"callee":{"file":"src/utils/plugins.ts","line":36,"name":"fixSetContents"},"caller":{"file":"src/core/immerClass.ts","line":261,"name":"rootDraftCleanup"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/immerClass.ts:262"]},
+{"callee":{"file":"src/utils/plugins.ts","line":40,"name":"createMethodInterceptor"},"caller":{"file":"src/core/proxy.ts","line":111,"name":"get"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/proxy.ts:121"]},
+{"callee":{"file":"src/utils/plugins.ts","line":41,"name":"isArrayOperationMethod"},"caller":{"file":"src/core/proxy.ts","line":111,"name":"get"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/proxy.ts:120"]},
+{"callee":{"file":"src/utils/plugins.ts","line":42,"name":"isMutatingArrayMethod"},"caller":{"file":"src/core/proxy.ts","line":111,"name":"get"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/core/proxy.ts:140"]}
 ]

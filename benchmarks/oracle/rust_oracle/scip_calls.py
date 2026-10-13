@@ -309,6 +309,70 @@ def test_regions(text):
 
 
 
+USE_RE = re.compile(r"(?m)^[ \t]*(?:pub\s*(?:\([^)]*\))?\s*)?use\b")
+
+
+def use_item_lines(text):
+    """0-based (first_line, last_line) of every `use` item, so an occurrence inside one (an import, not a use of the function)
+    is left out of the value references. Strings and comments are blanked first, braces of grouped imports are balanced."""
+    clean = STRIP_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    out = []
+    for m in USE_RE.finditer(clean):
+        depth, j = 0, m.end()
+        while j < len(clean):
+            ch = clean[j]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            elif ch == ";" and depth <= 0:
+                break
+            j += 1
+        out.append((clean.count("\n", 0, m.start()), clean.count("\n", 0, j)))
+    return out
+
+
+def ref_shape(row, col):
+    """(form, context) of a function reference at `row[col:]`, from the text before it: a path (`Type::method`, `self::f`) or a bare
+    name, and the character that introduces the expression."""
+    i = min(col, len(row))  # SCIP columns count UTF-16 units, so a line with wide characters can end before `col`
+    col = i
+    while i > 0 and (row[i - 1].isalnum() or row[i - 1] in "_:"):
+        i -= 1
+    form = "path" if "::" in row[i:col] else "ident"
+    j = i
+    while j > 0 and row[j - 1] == " ":
+        j -= 1
+    prev = row[j - 1] if j > 0 else ""
+    ctx = {"(": "argument_or_element", ",": "argument_or_element", ":": "field_value", "=": "assignment", "[": "array_element", "|": "closure_body"}.get(prev, "other")
+    return form, ctx
+
+
+def row_text_after(row, byte_col):
+    """What follows byte offset `byte_col` of `row` (SCIP columns are UTF-8 byte offsets), left-stripped."""
+    return row.encode("utf-8")[byte_col:].decode("utf-8", errors="ignore").lstrip()
+
+
+def after_turbofish(rest):
+    """`rest` (what follows an identifier, left-stripped) without a leading turbofish `::<...>`."""
+    if rest.startswith("::<"):
+        depth, k = 0, 0
+        for k, ch in enumerate(rest):
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+                if depth == 0:
+                    break
+        rest = rest[k + 1:].lstrip()
+    return rest
+
+
+def fn_ident(sym):
+    """The identifier a function symbol is spelled with at its use sites (`impl#[Type][Trait]name().` and `Trait#name().` both give `name`)."""
+    return re.split(r"[\]#/]", desc(sym)[:-3])[-1].strip("`").removeprefix("r#")
+
+
 def short_name(sym):
     # ".../Type#method()." -> method
     body = desc(sym)[:-3]
@@ -375,7 +439,13 @@ def main():
                 ctors.setdefault(o["symbol"], (d["path"], l + 1, ctor_name(o["symbol"])))
 
     impl_idx = trait_impl_index(defs)
-    out = {"repo": repo, "tests": not (a.no_tests or a.path_tests_excluded), "files": [], "callers": [], "edges": [], "refs": [], "dropped": defaultdict(int), "unresolved_sites": [], "ext_sites": []}
+    trait_decl_idx = defaultdict(list)  # (trait name, method) -> declaration symbols of that trait method
+    for sym_ in defs:
+        if is_trait_method(sym_):
+            tk_ = trait_key(sym_)
+            if tk_:
+                trait_decl_idx[tk_].append(sym_)
+    out = {"repo": repo, "tests": not (a.no_tests or a.path_tests_excluded), "files": [], "callers": [], "edges": [], "refs": [], "refs_dropped": defaultdict(int), "dropped": defaultdict(int), "unresolved_sites": [], "ext_sites": []}
     ext = set()
     seen, seen_ref = {}, {}
     callers = set()
@@ -388,6 +458,7 @@ def main():
             lines = open(os.path.join(repo, path), encoding="utf-8", errors="replace").read().split("\n")
         except OSError:
             continue
+        use_lines = use_item_lines("\n".join(lines))
         fdefs = []  # (start, end, this occurrence's own (file, line, name)); a symbol such as `main().` can be defined in several files of one package
         for o in d["occ"]:
             if a.no_tests and o["range"] and in_test(path, rng(o)[0]):
@@ -418,23 +489,37 @@ def main():
             for s, e, fs in fdefs:
                 if s <= (l, c) <= e and (best is None or s >= best[0]):
                     best = (s, e, fs)
+            row = lines[el] if el < len(lines) else ""
+            rest = after_turbofish(row[ec:].lstrip())
+            is_call = rest.startswith("(")
+            if not is_call and not ctor and (o["roles"] & 2 or any(a0 <= l <= b0 for a0, b0 in use_lines)):
+                # an import, or an occurrence inside a `use` item: not a use of the function as a value
+                out["refs_dropped"]["use_item"] += 1
+                if best is None:
+                    out["dropped"]["caller_not_in_function"] += 1  # as before: the call benchmark's counter is unchanged
+                continue
+            if not is_call and not ctor and not row.isascii() and after_turbofish(row_text_after(row, ec)).startswith("("):
+                # SCIP columns count UTF-8 bytes: on a line with non-ASCII text the slice above is shifted and a call reads as a reference.
+                # The call tables keep their long-standing reading of such lines; a reference is only taken when the corrected column agrees.
+                out["refs_dropped"]["call_on_non_ascii_line"] += 1
+                if best is None:
+                    out["dropped"]["caller_not_in_function"] += 1
+                continue
             if best is None:
                 out["dropped"]["caller_not_in_function"] += 1
-                continue
-            cdef = best[2]
-            row = lines[el] if el < len(lines) else ""
-            rest = row[ec:].lstrip()
-            if rest.startswith("::<"):
-                depth, k = 0, 0
-                for k, ch in enumerate(rest):
-                    if ch == "<":
-                        depth += 1
-                    elif ch == ">":
-                        depth -= 1
-                        if depth == 0:
-                            break
-                rest = rest[k + 1:].lstrip()
-            is_call = rest.startswith("(")
+                if is_call or ctor:
+                    continue
+                # a const / static / closure-in-a-static initialiser: the reference belongs to the module, keyed at line 0 like Go and TypeScript
+                cdef = (path, 0, "<module>")
+                out["refs_dropped"]["ref_at_module_level"] += 1
+            else:
+                cdef = best[2]
+            if not is_call and not ctor and l == el and ec <= len(lines[l]) and lines[l][:ec].isascii():
+                # the occurrence is not spelled like the function: an overloaded operator (`a += b` is `add_assign`), a deref (`*x`), an index
+                # (`m[k]`) or another implicit call. It is a call, not a function used as a value.
+                if lines[l][c:ec].strip("`").removeprefix("r#") != fn_ident(sym):
+                    out["refs_dropped"]["implicit_call"] += 1
+                    continue
             if ctor:
                 if not is_call or is_pattern(rest):
                     continue  # a type mention or a pattern, not a call
@@ -451,10 +536,24 @@ def main():
             if key in seen_set:
                 if len(seen_set[key]["sites"]) < 20:
                     seen_set[key]["sites"].append(site)
+                if not is_call:
+                    form, ctx = ref_shape(lines[l] if l < len(lines) else '', c)
+                    for lst, v in ((seen_set[key]["forms"], form), (seen_set[key]["ctxs"], ctx)):
+                        if v not in lst:
+                            lst.append(v)
                 continue
             e = {"caller": {"file": cdef[0], "line": cdef[1], "name": cdef[2]},
                  "callee": {"file": tgt[0], "line": tgt[1], "name": tgt[2]},
                  "sites": [site]}
+            if not is_call:
+                form, ctx = ref_shape(lines[l] if l < len(lines) else '', c)
+                e["forms"], e["ctxs"] = [form], [ctx]
+                im = IMPL_RE.match(last_segment(sym))
+                if im:
+                    # `Trait::method` resolved by inference to one impl: the trait's own declaration names the same function
+                    decl_alts = sorted({"%s:%d" % defs[d][:2] for d in trait_decl_idx.get((im.group(2).strip("`").split("<")[0].split("::")[-1], im.group(3).strip("`")), []) if d in defs})
+                    if decl_alts:
+                        e["callee_alts"] = decl_alts
             seen_set[key] = e
             if is_trait_method(sym):
                 # declared on a trait: the receiver decides which implementation runs; any implementation in the
@@ -468,6 +567,8 @@ def main():
     out["callers"] = [{"file": f, "line": l, "name": n} for f, l, n in sorted(callers)]
     out["ext_sites"] = sorted(ext)
     out["dropped"] = dict(out["dropped"])
+    out["refs_dropped"] = dict(out["refs_dropped"])
+    out["refs"].sort(key=lambda e: (e["caller"]["file"], e["caller"]["line"], e["callee"]["file"], e["callee"]["line"]))
     out["files"].sort()
     out["edges"].sort(key=lambda e: (e["caller"]["file"], e["caller"]["line"], e["callee"]["file"], e["callee"]["line"]))
     json.dump(out, sys.stdout, indent=1)

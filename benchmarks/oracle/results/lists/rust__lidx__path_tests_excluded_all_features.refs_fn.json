@@ -1,0 +1,6 @@
+[
+{"callee":{"file":"src/indexer/stable_id.rs","line":43,"name":"compute_stable_symbol_id"},"caller":{"file":"src/indexer/differ.rs","line":1753,"name":"test_edge_case_special_characters_in_qualname"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/indexer/differ.rs:1766"]},
+{"callee":{"file":"src/model.rs","line":137,"name":"[`From<Symbol>`]from"},"caller":{"file":"src/impact/orchestrator.rs","line":364,"name":"analyze_sequential"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/impact/orchestrator.rs:538"]},
+{"callee":{"file":"src/model.rs","line":137,"name":"[`From<Symbol>`]from"},"caller":{"file":"src/impact/orchestrator.rs","line":48,"name":"analyze_parallel"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/impact/orchestrator.rs:351"]},
+{"callee":{"file":"src/model.rs","line":151,"name":"[`From<&Symbol>`]from"},"caller":{"file":"src/resolve.rs","line":610,"name":"build_resolution_recovery_payload"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/resolve.rs:700"]}
+]

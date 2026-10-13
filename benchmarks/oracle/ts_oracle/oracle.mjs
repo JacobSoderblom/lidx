@@ -12,6 +12,7 @@ import ts from "typescript";
 import fs from "node:fs";
 import path from "node:path";
 import { computeHierarchy } from "./hierarchy.mjs";
+import { computeRefs } from "./refs.mjs";
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
@@ -297,4 +298,7 @@ const diag = ts.getPreEmitDiagnostics(program).filter((d) => d.code === 2307).le
 out.unresolved_module_diagnostics = diag;
 if (process.env.ORACLE_DEBUG) { const c = {}; for (const d of ts.getPreEmitDiagnostics(program).filter((d) => d.code === 2307)) { const m = /module '(.*?)'/.exec(ts.flattenDiagnosticMessageText(d.messageText, " ")); const k = m ? m[1] : "?"; c[k] = (c[k] || 0) + 1; } console.error("MODDIAG", JSON.stringify(Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 25))); }
 out.hierarchy = computeHierarchy({ program, checker, rel, inRepo, inScope, isTestPath, withTests });
+const valueRefs = computeRefs({ program, checker, rel, inRepo, inScope, isTestPath, withTests, enclosing, declLoc, keyOf, lineOf, isFnLike });
+out.refs = valueRefs.refs; // value references (refs.mjs): graded by the "Value references" tables; callers are `callers` (exhaustive_callers)
+out.refs_dropped = valueRefs.dropped;
 process.stdout.write(JSON.stringify(out, null, 1));

@@ -1,0 +1,14 @@
+[
+{"callee":{"file":"benches/impact.rs","line":128,"name":"bench_direct_layer"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:408"]},
+{"callee":{"file":"benches/impact.rs","line":158,"name":"bench_varying_depth"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:409"]},
+{"callee":{"file":"benches/impact.rs","line":192,"name":"bench_directions"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:410"]},
+{"callee":{"file":"benches/impact.rs","line":260,"name":"bench_with_paths"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:411"]},
+{"callee":{"file":"benches/impact.rs","line":310,"name":"bench_multi_layer_sequential"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:413"]},
+{"callee":{"file":"benches/impact.rs","line":336,"name":"bench_multi_layer_parallel"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:414"]},
+{"callee":{"file":"benches/impact.rs","line":362,"name":"bench_multi_layer_direct_only"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:415"]},
+{"callee":{"file":"benches/impact.rs","line":388,"name":"bench_test_layer"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:417"]},
+{"callee":{"file":"benches/impact.rs","line":394,"name":"bench_historical_layer"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:418"]},
+{"callee":{"file":"benches/impact.rs","line":400,"name":"bench_semantic_layer"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:419"]},
+{"callee":{"file":"benches/impact.rs","line":406,"name":"benches"},"caller":{"file":"benches/impact.rs","line":0,"name":"<module>"},"reason":"callee_not_indexed","sites":["benches/impact.rs:422"]},
+{"callee":{"file":"benches/impact.rs","line":99,"name":"bench_analyze_impact_baseline"},"caller":{"file":"benches/impact.rs","line":406,"name":"benches"},"reason":"macro_generated","sites":["benches/impact.rs:407"]}
+]

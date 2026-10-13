@@ -1,6 +1,3 @@
 [
-{"category":"public_api","exported":true,"file":"src/core/immerClass.ts","key":"src/core/immerClass.ts:152","kind":"method","lidx_kind":"method","line":152,"name":"createDraft","policy":true,"qualname":"src/core/immerClass.Immer.createDraft","subkind":"instance"},
-{"category":"public_api","exported":true,"file":"src/core/immerClass.ts","key":"src/core/immerClass.ts:162","kind":"method","lidx_kind":"method","line":162,"name":"finishDraft","policy":true,"qualname":"src/core/immerClass.Immer.finishDraft","subkind":"instance"},
-{"category":"public_api","exported":true,"file":"src/core/immerClass.ts","key":"src/core/immerClass.ts:201","kind":"method","lidx_kind":"method","line":201,"name":"shouldUseStrictIteration","policy":true,"qualname":"src/core/immerClass.Immer.shouldUseStrictIteration","subkind":"instance"},
-{"category":"public_api","exported":true,"file":"src/core/immerClass.ts","key":"src/core/immerClass.ts:205","kind":"method","lidx_kind":"method","line":205,"name":"applyPatches","policy":true,"qualname":"src/core/immerClass.Immer.applyPatches","subkind":"instance"}
+
 ]

@@ -1,0 +1,4 @@
+[
+{"callee":{"file":"src/core/scope.ts","line":90,"name":"revokeDraft","qualname":"src/core/scope.revokeDraft"},"caller":{"file":"src/core/scope.ts","line":74,"name":"revokeScope","qualname":"src/core/scope.revokeScope"},"edge_kinds":["REFERENCES"],"evidence_file":"src/core/scope.ts","evidence_lines":[76],"resolution_kind":"exact","sites":["src/core/scope.ts:76"]},
+{"callee":{"file":"src/utils/common.ts","line":278,"name":"dontMutateFrozenCollections","qualname":"src/utils/common.dontMutateFrozenCollections"},"caller":{"file":"src/utils/common.ts","line":0,"name":"common","qualname":"src/utils/common"},"edge_kinds":["REFERENCES"],"evidence_file":"src/utils/common.ts","evidence_lines":[283],"resolution_kind":"exact","sites":["src/utils/common.ts:283"]}
+]

@@ -99,7 +99,10 @@ class RustAnalyzerRunsNothing(unittest.TestCase):
             touch(os.path.join(crate, "macros", "Cargo.toml"),
                   '[package]\nname = "toymacros"\nversion = "0.1.0"\nedition = "2021"\n[lib]\nproc-macro = true\n')
             touch(os.path.join(crate, "macros", "src", "lib.rs"), MACRO_LIB % os.path.join(marks, "macro"))
-            touch(os.path.join(crate, "src", "main.rs"), "toymacros::mk!();\n#[cfg(feature = \"extra\")]\nmod extra;\nfn helper() {}\nfn main() {\n    helper();\n    made();\n    #[cfg(feature = \"extra\")]\n    extra::gated_only_with_feature();\n}\n")
+            touch(os.path.join(crate, "src", "main.rs"),
+                  "toymacros::mk!();\n#[cfg(feature = \"extra\")]\nmod extra;\nmod inner {\n    pub fn deep() {}\n}\nfn helper() {}\nfn conv(x: &u8) -> u8 {\n    *x\n}\n"
+                  "fn main() {\n    use inner::deep;\n    helper();\n    made();\n    deep();\n    let _ = [1u8].iter().map(conv);\n    #[cfg(feature = \"extra\")]\n"
+                  "    extra::gated_only_with_feature();\n}\n")
             touch(os.path.join(crate, "src", "extra.rs"), "pub fn gated_only_with_feature() {}\n")
             wrapper = os.path.join(d, "wrapper.sh")
             touch(wrapper, '#!/bin/sh\ntouch "%s/wrapper-$$"\nexec "$@"\n' % marks)
@@ -126,6 +129,14 @@ class RustAnalyzerRunsNothing(unittest.TestCase):
                 data = open(scip, "rb").read()
                 self.assertGreater(len(data), 0)
                 seen[all_features] = b"gated_only_with_feature" in data
+                if not all_features:
+                    # the value-reference oracle (issue #452) reads the same index: `.map(conv)` is a reference of main; `helper()` and
+                    # `deep()` are calls, and the `use inner::deep;` inside main is an import, not a reference
+                    out = json.loads(subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "rust_oracle", "scip_calls.py"),
+                                                     "--repo", crate, "--scip", scip], capture_output=True, text=True, check=True).stdout)
+                    self.assertEqual({(r["caller"]["name"], r["callee"]["name"]) for r in out["refs"]}, {("main", "conv")})
+                    self.assertTrue({("main", "helper"), ("main", "deep")} <= {(e["caller"]["name"], e["callee"]["name"]) for e in out["edges"]})
+                    self.assertEqual(out["refs_dropped"].get("use_item"), 1)
             # the feature-gated module is analysed only with cargo.features = "all": that is what the setting buys
             self.assertEqual(seen, {False: False, True: True})
 

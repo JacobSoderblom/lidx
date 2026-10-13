@@ -1,7 +1,3 @@
 [
-{"base":"exec.go:60","base_name":"ExecCommand","category":"no_edge","ptr":true,"relation":"implements","sub":"exec.go:75","sub_name":"osExecCommand"},
-{"base":"exec.go:62","base_name":"SetStdin","base_type":"ExecCommand@exec.go:60","category":"type_edge_missing","relation":"overrides","sub":"exec.go:78","sub_name":"SetStdin","sub_type":"osExecCommand@exec.go:75"},
-{"base":"exec.go:63","base_name":"SetStdout","base_type":"ExecCommand@exec.go:60","category":"type_edge_missing","relation":"overrides","sub":"exec.go:86","sub_name":"SetStdout","sub_type":"osExecCommand@exec.go:75"},
-{"base":"exec.go:64","base_name":"SetStderr","base_type":"ExecCommand@exec.go:60","category":"type_edge_missing","relation":"overrides","sub":"exec.go:94","sub_name":"SetStderr","sub_type":"osExecCommand@exec.go:75"},
 {"base":"os/exec.Cmd","bucket":"external_base","category":"no_edge","relation":"embeds","sub":"exec.go:75"}
 ]

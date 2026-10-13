@@ -1,6 +1,4 @@
 [
-{"base":"Map","bucket":"external_base","category":"not_indexed","relation":"extends","sub":"src/plugins/mapset.ts:35"},
-{"base":"Set","bucket":"external_base","category":"not_indexed","relation":"extends","sub":"src/plugins/mapset.ts:213"},
-{"base":"src/core/immerClass.ts:41","base_name":"produce","base_type":"src/core/immerClass.ts:40","category":"not_indexed","depth":1,"relation":"overrides","sub":"src/core/immerClass.ts:83","sub_name":"produce","sub_type":"src/core/immerClass.ts:47","via":"implements"},
-{"base":"src/core/immerClass.ts:42","base_name":"produceWithPatches","base_type":"src/core/immerClass.ts:40","category":"not_indexed","depth":1,"relation":"overrides","sub":"src/core/immerClass.ts:137","sub_name":"produceWithPatches","sub_type":"src/core/immerClass.ts:47","via":"implements"}
+{"base":"Map","bucket":"external_base","category":"no_edge","relation":"extends","sub":"src/plugins/mapset.ts:35"},
+{"base":"Set","bucket":"external_base","category":"no_edge","relation":"extends","sub":"src/plugins/mapset.ts:213"}
 ]
