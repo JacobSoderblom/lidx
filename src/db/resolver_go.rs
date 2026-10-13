@@ -1236,6 +1236,37 @@ impl Resolver<'_> {
         Ok(out)
     }
 
+    /// The embedding types (of `embedders`) with a field embedding a
+    /// standard-library type `std_interface` knows.
+    fn go_std_embedders(
+        &mut self,
+        embedders: &HashMap<String, Vec<GoTypeRow>>,
+    ) -> Result<Vec<GoTypeRow>> {
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut out = Vec::new();
+        for row in embedders.values().flatten() {
+            if !seen.insert(row.id) {
+                continue;
+            }
+            let imports = self.go_file_imports(row.file_id)?;
+            let dir = row.dir().to_string();
+            let known = struct_fields(row.signature.as_deref())
+                .into_iter()
+                .filter(|(name, _)| name.is_none())
+                .any(|(_, text)| {
+                    matches!(
+                        canonical_type(&text, &dir, &imports),
+                        Some(GoType::Foreign { path, name }) if std_interface(&path, &name).is_some()
+                    )
+                });
+            if known {
+                out.push(row.clone());
+            }
+        }
+        out.sort_by_key(|t| t.id);
+        Ok(out)
+    }
+
     /// A Go call that resolved to a method *spec* of an interface
     /// (`Doer.Do`), narrowed to the method that runs when the call site or
     /// the repository say so:
@@ -1325,6 +1356,7 @@ impl Resolver<'_> {
     fn go_structural_implements(&mut self) -> Result<Vec<(i64, i64, i64)>> {
         let interfaces = self.go_type_query("s.kind = 'interface'", params![self.graph_version])?;
         let embedders = self.go_embedders()?;
+        let foreign = self.go_std_embedders(&embedders)?;
         let mut pairs = Vec::new();
         for iface in interfaces {
             let base = self.go_implementers(&iface, None, true)?;
@@ -1341,6 +1373,23 @@ impl Resolver<'_> {
                 .chain([iface.name.clone()])
                 .collect();
             if want.complete && !want.methods.is_empty() {
+                // A type with no method of its own can still hold every one
+                // of them through an embedded standard-library type; the
+                // types declaring a method never reach it.
+                for row in &foreign {
+                    if !seen.insert(row.id) {
+                        continue;
+                    }
+                    frontier.push(row.name.clone());
+                    let has = self.go_method_set(row, 0)?;
+                    if want
+                        .methods
+                        .iter()
+                        .all(|(m, a)| has.methods.get(m) == Some(a))
+                    {
+                        all.push(row.clone());
+                    }
+                }
                 for _ in 0..MAX_EMBEDDING_DEPTH {
                     let mut next = Vec::new();
                     for ty in frontier.drain(..) {
