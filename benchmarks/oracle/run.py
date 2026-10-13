@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import dead_code  # noqa: E402
 import hierarchy  # noqa: E402
+import impact_run  # noqa: E402
 import match  # noqa: E402
 import report  # noqa: E402
 import rust_cfg  # noqa: E402
@@ -329,6 +330,11 @@ def main():
     ap.add_argument("--reuse-index", action="store_true", help="development only: skip reindexing when a db exists")
     ap.add_argument("--results", default=RESULTS)
     ap.add_argument("--skip-dead", action="store_true", help="development only: leave out the dead-code benchmark (res['dead'])")
+    ap.add_argument("--impact", action="store_true",
+                    help="grade analyze_impact upstream sets, test reach and trace_flow stop reasons against the oracle call-graph closure "
+                         "(issue #451) for the 32 comparable cells, from the cached oracle outputs; writes results/impact/, results/seeds/ and "
+                         "rebuilds report.md; leaves the call-edge, hierarchy and dead-code results untouched")
+    ap.add_argument("--redraw-seeds", action="store_true", help="with --impact: replace the committed seeds by a fresh draw")
     a = ap.parse_args()
 
     if a.report_only:
@@ -344,6 +350,12 @@ def main():
         sys.exit("lidx binary not found: %s (cargo build --release, or pass --binary)" % binary)
     version = sh([binary, "--version"], capture_output=True).stdout.strip()
     rx = re.compile(a.only) if a.only else None
+
+    if a.impact:
+        n = impact_run.run(a, lock, cache, binary, version, {"cells_for": cells_for, "fetch": fetch, "index": index, "get_oracle": get_oracle})
+        print("graded %d cells" % n)
+        report.build(a.results)
+        return 0
 
     meta_path = os.path.join(a.results, "cells.json")
     prev = json.load(open(meta_path)) if os.path.exists(meta_path) else {"cells": {}}
