@@ -1,4 +1,3 @@
 [
-{"callee":{"file":"remote.go","line":210,"name":"watchKeyValueConfigOnChannel"},"caller":{"file":"remote.go","line":210,"name":"watchKeyValueConfigOnChannel"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["remote.go:218"]},
-{"callee":{"file":"viper.go","line":318,"name":"WatchConfig"},"caller":{"file":"viper.go","line":318,"name":"WatchConfig"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["viper.go:342","viper.go:321"]}
+
 ]

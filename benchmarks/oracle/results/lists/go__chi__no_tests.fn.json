@@ -1,8 +1,5 @@
 [
-{"callee":{"file":"middleware/logger.go","line":44,"name":"RequestLogger"},"caller":{"file":"middleware/logger.go","line":44,"name":"RequestLogger"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["middleware/logger.go:51"]},
-{"callee":{"file":"middleware/recoverer.go","line":22,"name":"Recoverer"},"caller":{"file":"middleware/recoverer.go","line":22,"name":"Recoverer"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["middleware/recoverer.go:24"]},
 {"callee":{"file":"middleware/route_headers.go","line":116,"name":"IsMatch"},"caller":{"file":"middleware/route_headers.go","line":77,"name":"Handler"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["middleware/route_headers.go:93"]},
-{"callee":{"file":"middleware/throttle.go","line":44,"name":"ThrottleWithOpts"},"caller":{"file":"middleware/throttle.go","line":44,"name":"ThrottleWithOpts"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["middleware/throttle.go:86","middleware/throttle.go:93","middleware/throttle.go:114"]},
 {"callee":{"file":"middleware/timeout.go","line":32,"name":"Timeout"},"caller":{"file":"middleware/timeout.go","line":32,"name":"Timeout"},"category":"no_edge_at_site","detail":null,"fanout":9,"sites":["middleware/timeout.go:37","middleware/timeout.go:36"]},
 {"callee":{"file":"tree.go","line":716,"name":"walk"},"caller":{"file":"tree.go","line":716,"name":"walk"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["tree.go:725"]}
 ]

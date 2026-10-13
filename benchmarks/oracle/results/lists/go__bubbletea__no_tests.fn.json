@@ -1,7 +1,3 @@
 [
-{"callee":{"file":"signals_unix.go","line":15,"name":"listenForResize"},"caller":{"file":"signals_unix.go","line":15,"name":"listenForResize"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["signals_unix.go:19"]},
-{"callee":{"file":"tea.go","line":122,"name":"shutdown"},"caller":{"file":"tea.go","line":122,"name":"shutdown"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["tea.go:126"]},
-{"callee":{"file":"tea.go","line":273,"name":"handleSignals"},"caller":{"file":"tea.go","line":273,"name":"handleSignals"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["tea.go:287","tea.go:284"]},
-{"callee":{"file":"tea.go","line":333,"name":"handleCommands"},"caller":{"file":"tea.go","line":333,"name":"handleCommands"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["tea.go:354","tea.go:357","tea.go:336"]},
-{"callee":{"file":"tea.go","line":578,"name":"Run"},"caller":{"file":"tea.go","line":578,"name":"Run"},"category":"no_edge_at_site","detail":null,"fanout":15,"sites":["tea.go:584","tea.go:588","tea.go:588"]}
+
 ]

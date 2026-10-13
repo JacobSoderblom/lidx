@@ -1,0 +1,4 @@
+[
+{"callee":{"file":"remote.go","line":210,"name":"watchKeyValueConfigOnChannel"},"caller":{"file":"remote.go","line":210,"name":"watchKeyValueConfigOnChannel"},"closure":true,"closure_self":true,"sites":["remote.go:218"]},
+{"callee":{"file":"viper.go","line":318,"name":"WatchConfig"},"caller":{"file":"viper.go","line":318,"name":"WatchConfig"},"closure":true,"closure_self":true,"sites":["viper.go:342","viper.go:321"]}
+]
