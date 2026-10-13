@@ -1330,6 +1330,11 @@ pub(crate) struct Resolver<'c> {
     external_file_id: Option<i64>,
     /// What this resolver has read of the Go declarations.
     go: resolver_go::GoCaches,
+    /// Narrow a Go call bound to an interface method spec to the concrete
+    /// method it runs (`refine_go_interface_call`). Only the re-judging
+    /// passes (one resolver, one cache, for every such edge) do: the edge
+    /// insert, which makes a resolver per file, leaves the call on the spec.
+    narrow_interface_calls: bool,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
 }
@@ -1363,6 +1368,7 @@ impl<'c> Resolver<'c> {
             call_scope: TypeScope::default(),
             external_file_id: None,
             go: resolver_go::GoCaches::default(),
+            narrow_interface_calls: false,
             repo_entity_memo: HashMap::new(),
         })
     }
@@ -4810,6 +4816,7 @@ impl Db {
 
         {
             let mut resolver = Resolver::new(&tx, graph_version)?;
+            resolver.narrow_interface_calls = true;
             let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
@@ -4891,6 +4898,28 @@ impl Db {
                   OR substr(promoted.qualname, -length(e.target_qualname) - 1)
                      != '.' || e.target_qualname)
              AND e.file_id IN (SELECT id FROM files WHERE language = 'go')",
+        )
+    }
+
+    /// Narrow the Go calls left on an interface method spec (`DISPATCH`
+    /// edges) to the concrete method they run, and re-judge the ones already
+    /// narrowed, now that every symbol and edge of this pass exists: the
+    /// answer depends on the interface's implementations
+    /// (`Resolver::refine_go_interface_call`), so adding, removing or editing
+    /// one changes edges in files nothing touched. Run last in
+    /// `repair_unresolved`, so a fresh reindex and a sync end alike.
+    pub fn retry_go_interface_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "LEFT JOIN symbols bound ON bound.id = e.target_symbol_id",
+            "AND e.target_symbol_id IS NOT NULL
+             AND e.file_id IN (SELECT id FROM files WHERE language = 'go')
+             AND (e.kind = 'DISPATCH'
+                  OR (e.kind = 'CALLS' AND e.resolution_kind = 'receiver_type'
+                      AND (e.deferred_kind IS NOT NULL
+                           OR (e.import_candidates IS NOT NULL AND e.target_qualname LIKE '%.%'
+                               AND substr(bound.qualname, -length(e.target_qualname) - 1)
+                                   != '.' || e.target_qualname))))",
         )
     }
 
@@ -5149,6 +5178,13 @@ impl Db {
             );
             // Edges unbound from a stub are now NULL-target; move them into
             // the store like any other orphaned edge.
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let interface_rejudged = self.retry_go_interface_edges(graph_version)?;
+        if interface_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {interface_rejudged} interface call edge(s) after {context}"
+            );
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
         // After every step that can bind a deferred call site, since it

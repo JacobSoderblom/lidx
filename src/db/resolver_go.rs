@@ -800,6 +800,8 @@ pub(super) struct Implementers {
     /// there may be an implementer this list lacks, so it proves no
     /// uniqueness.
     pub(super) uncertain: bool,
+    /// False when the search stopped at its limit.
+    complete: bool,
 }
 
 /// What one `Resolver` has read of the Go declarations, memoized: the
@@ -809,7 +811,7 @@ pub(super) struct GoCaches {
     types: HashMap<(String, String), Rc<Vec<GoTypeRow>>>,
     methods: HashMap<String, Rc<Vec<(String, MethodSig)>>>,
     sets: HashMap<i64, MethodSet>,
-    implementers: HashMap<i64, Rc<Implementers>>,
+    implementers: HashMap<(i64, bool), Rc<Implementers>>,
 }
 
 /// A type text with the parts two declarations of one signature may spell
@@ -1100,19 +1102,26 @@ impl Resolver<'_> {
     /// with an embedded interface whose methods are not known, so no
     /// implementer rests on a guess. Found through the types that declare
     /// one of the interface's methods.
-    pub(super) fn go_implementers(&mut self, iface: &GoTypeRow) -> Result<Rc<Implementers>> {
-        if let Some(known) = self.go.implementers.get(&iface.id) {
+    pub(super) fn go_implementers(
+        &mut self,
+        iface: &GoTypeRow,
+        limit: Option<usize>,
+        from_test: bool,
+    ) -> Result<Rc<Implementers>> {
+        if let Some(known) = self.go.implementers.get(&(iface.id, from_test))
+            && (known.complete || limit.is_some_and(|l| known.types.len() >= l))
+        {
             return Ok(known.clone());
         }
         let want = self.go_method_set(iface, 0)?;
         let mut found: Vec<GoTypeRow> = Vec::new();
         let mut uncertain = !want.complete;
+        let mut complete = true;
         if want.complete && !want.methods.is_empty() {
             let mut seen: HashSet<String> = HashSet::new();
-            let mut candidates: Vec<(String, String)> = Vec::new();
             let mut names: Vec<&String> = want.methods.keys().collect();
             names.sort();
-            for name in names {
+            'names: for name in names {
                 let owners: Vec<String> = {
                     let mut stmt = self.conn.prepare_cached(&format!(
                         "SELECT s.qualname FROM symbols s JOIN files f ON s.file_id = f.id
@@ -1130,57 +1139,39 @@ impl Resolver<'_> {
                     else {
                         continue;
                     };
-                    let dir = module.rsplit_once('/').map_or("", |(d, _)| d);
-                    if seen.insert(format!("{dir}|{ty}")) {
-                        candidates.push((dir.to_string(), ty.to_string()));
+                    let dir = module.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+                    let ty = ty.to_string();
+                    if !seen.insert(format!("{dir}|{ty}")) {
+                        continue;
                     }
-                }
-            }
-            // A type embedding one of those (or the interface itself) holds
-            // their methods too: search embedders a few levels out.
-            let mut frontier: Vec<String> = candidates
-                .iter()
-                .map(|(_, ty)| ty.clone())
-                .chain([iface.name.clone()])
-                .collect();
-            for _ in 0..MAX_EMBEDDING_DEPTH {
-                let mut next = Vec::new();
-                for ty in frontier.drain(..) {
-                    let pattern = format!("%~%{ty}%");
-                    let rows = self.go_type_query(
-                        "s.kind IN ('class', 'type') AND s.signature LIKE ?1",
-                        params![pattern, self.graph_version],
-                    )?;
-                    for row in rows {
-                        if seen.insert(format!("{}|{}", row.dir(), row.name)) {
-                            next.push(row.name.clone());
-                            candidates.push((row.dir().to_string(), row.name.clone()));
+                    let rows = self.go_types_named(&dir, &ty)?;
+                    if rows.is_empty() {
+                        // methods of a receiver type with no declaration here
+                        let own = self.go_own_methods(&dir, &ty)?;
+                        if want.methods.keys().all(|m| own.iter().any(|(n, _)| n == m)) {
+                            uncertain = true;
+                        }
+                        continue;
+                    }
+                    for t in rows.iter().filter(|t| t.kind != "interface") {
+                        let has = self.go_method_set(t, 0)?;
+                        if want
+                            .methods
+                            .iter()
+                            .all(|(m, a)| has.methods.get(m) == Some(a))
+                        {
+                            found.push(t.clone());
                         }
                     }
-                }
-                if next.is_empty() {
-                    break;
-                }
-                frontier = next;
-            }
-            for (dir, ty) in candidates {
-                let rows = self.go_types_named(&dir, &ty)?;
-                if rows.is_empty() {
-                    // methods of a receiver type with no declaration here
-                    let own = self.go_own_methods(&dir, &ty)?;
-                    if want.methods.keys().all(|m| own.iter().any(|(n, _)| n == m)) {
-                        uncertain = true;
-                    }
-                    continue;
-                }
-                for t in rows.iter().filter(|t| t.kind != "interface") {
-                    let has = self.go_method_set(t, 0)?;
-                    if want
-                        .methods
+                    // the limit counts what a caller can reach: a production
+                    // caller never reaches a type declared in a test file
+                    let reachable = found
                         .iter()
-                        .all(|(m, a)| has.methods.get(m) == Some(a))
-                    {
-                        found.push(t.clone());
+                        .filter(|t| from_test || !t.path.ends_with("_test.go"))
+                        .count();
+                    if limit.is_some_and(|l| reachable >= l) {
+                        complete = false;
+                        break 'names;
                     }
                 }
             }
@@ -1189,9 +1180,38 @@ impl Resolver<'_> {
         let found = Rc::new(Implementers {
             types: found,
             uncertain,
+            complete,
         });
-        self.go.implementers.insert(iface.id, found.clone());
+        self.go
+            .implementers
+            .insert((iface.id, from_test), found.clone());
         Ok(found)
+    }
+
+    /// The types with a struct field embedding a type of that simple name.
+    fn go_embedders(&mut self) -> Result<HashMap<String, Vec<GoTypeRow>>> {
+        let rows = self.go_type_query(
+            "s.kind IN ('class', 'type') AND s.signature LIKE '%~%'",
+            params![self.graph_version],
+        )?;
+        let mut out: HashMap<String, Vec<GoTypeRow>> = HashMap::new();
+        for row in rows {
+            for (name, text) in struct_fields(row.signature.as_deref()) {
+                if name.is_none() {
+                    let simple = text
+                        .trim_start_matches('*')
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .split('[')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    out.entry(simple).or_default().push(row.clone());
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// A Go call that resolved to a method *spec* of an interface
@@ -1212,7 +1232,8 @@ impl Resolver<'_> {
         let Resolution::Resolved { target_id, .. } = resolution else {
             return Ok(resolution);
         };
-        if r.source_lang != "go"
+        if !self.narrow_interface_calls
+            || r.source_lang != "go"
             || r.edge_kind != edge_views::CALLS
             || r.call_shape.is_some_and(|shape| shape.is_ref)
         {
@@ -1233,9 +1254,9 @@ impl Resolver<'_> {
         {
             return Ok(resolved(found.id, ResolutionKind::ReceiverType));
         }
-        let implementers = self.go_implementers(&iface)?;
-        // A production caller never reaches a type declared in a test file.
         let from_test = r.source_file_path.ends_with("_test.go");
+        // A production caller never reaches a type declared in a test file.
+        let implementers = self.go_implementers(&iface, Some(2), from_test)?;
         let visible: Vec<&GoTypeRow> = implementers
             .types
             .iter()
@@ -1277,12 +1298,52 @@ impl Resolver<'_> {
     }
 
     /// Every `(type, interface)` pair, by type id, interface id and the
-    /// type's file.
+    /// type's file: the types declaring the interface's methods, and those
+    /// embedding such a type (or the interface) a few levels out.
     fn go_structural_implements(&mut self) -> Result<Vec<(i64, i64, i64)>> {
         let interfaces = self.go_type_query("s.kind = 'interface'", params![self.graph_version])?;
+        let embedders = self.go_embedders()?;
         let mut pairs = Vec::new();
         for iface in interfaces {
-            for t in self.go_implementers(&iface)?.types.iter() {
+            let base = self.go_implementers(&iface, None, true)?;
+            if base.uncertain && base.types.is_empty() {
+                continue;
+            }
+            let want = self.go_method_set(&iface, 0)?;
+            let mut seen: HashSet<i64> = base.types.iter().map(|t| t.id).collect();
+            let mut all: Vec<GoTypeRow> = base.types.clone();
+            let mut frontier: Vec<String> = base
+                .types
+                .iter()
+                .map(|t| t.name.clone())
+                .chain([iface.name.clone()])
+                .collect();
+            if want.complete && !want.methods.is_empty() {
+                for _ in 0..MAX_EMBEDDING_DEPTH {
+                    let mut next = Vec::new();
+                    for ty in frontier.drain(..) {
+                        for row in embedders.get(&ty).into_iter().flatten() {
+                            if !seen.insert(row.id) {
+                                continue;
+                            }
+                            next.push(row.name.clone());
+                            let has = self.go_method_set(row, 0)?;
+                            if want
+                                .methods
+                                .iter()
+                                .all(|(m, a)| has.methods.get(m) == Some(a))
+                            {
+                                all.push(row.clone());
+                            }
+                        }
+                    }
+                    if next.is_empty() {
+                        break;
+                    }
+                    frontier = next;
+                }
+            }
+            for t in all {
                 pairs.push((t.id, iface.id, t.file_id));
             }
         }
