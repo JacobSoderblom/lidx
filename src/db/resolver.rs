@@ -1321,6 +1321,9 @@ pub(crate) struct Resolver<'c> {
     external_file_id: Option<i64>,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
+    /// Whether the exact tier drops `module` symbols for the current
+    /// reference (a Rust call).
+    exact_skips_modules: bool,
 }
 
 impl<'c> Resolver<'c> {
@@ -1350,6 +1353,7 @@ impl<'c> Resolver<'c> {
             call_scope: TypeScope::default(),
             external_file_id: None,
             repo_entity_memo: HashMap::new(),
+            exact_skips_modules: false,
         })
     }
 
@@ -1362,6 +1366,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.caller_scope = r.source_qualname.map(str::to_string);
+        self.exact_skips_modules = r.source_lang == "rust" && r.edge_kind == "CALLS";
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             return self.refuse_uncallable_kind(r, resolution);
@@ -2031,6 +2036,11 @@ impl<'c> Resolver<'c> {
         )?;
         if types_only {
             candidates.retain(|c| !matches!(c.kind.as_str(), "module" | "namespace"));
+        }
+        // A Rust call never targets a module: `exec::job(..)` with `mod job;
+        // pub use job::job;` names the function, not the module `exec::job`.
+        if self.exact_skips_modules {
+            candidates.retain(|c| c.kind != "module");
         }
         // Issue #123: an overload set is told apart by the call's arity, and
         // never collapsed to "the lowest id" -- 2+ admitted overloads refuse.
@@ -3968,13 +3978,22 @@ fn rust_package_items(
     // `pkg::helpers::f`, with `f` declared in a private submodule of
     // `helpers` and re-exported (`pub use imp::*`): the path names a module,
     // so the item is the package's one public free item of that name.
-    let through_module =
-        segments.len() >= 2 && segments[segments.len() - 2].starts_with(char::is_lowercase);
+    let module = segments
+        .len()
+        .checked_sub(2)
+        .map(|i| segments[i])
+        .filter(|segment| segment.starts_with(char::is_lowercase));
     let tiers: [&dyn Fn(&PackageItem) -> bool; 4] = [
         &|i| i.qualname == exact,
         &|i| i.qualname.ends_with(&whole),
         &|i| i.qualname.ends_with(&last_two),
-        &|i| through_module && i.kind != "method" && i.qualname.ends_with(&name_only),
+        // ... and only one that passes through the module the path names
+        // (`helpers` may re-export an outside crate's `f`).
+        &|i| {
+            module.is_some_and(|m| i.qualname.rsplit("::").skip(1).any(|part| part == m))
+                && i.kind != "method"
+                && i.qualname.ends_with(&name_only)
+        },
     ];
     for tier in tiers {
         let hits: Vec<&PackageItem> = items.iter().filter(|i| tier(i)).collect();

@@ -584,3 +584,68 @@ fn facade_reexports_are_read_with_the_rust_parser() {
         )]
     );
 }
+
+/// `mod job; pub use job::job;`: `exec::job(..)` is the function, never the
+/// module `exec::job`.
+#[test]
+fn call_through_a_module_named_like_its_function_binds_the_function() {
+    let tree = vec![
+        ("Cargo.toml", "[package]\nname = \"g7\"\n"),
+        (
+            "src/lib.rs",
+            "pub mod exec;\npub fn receive() -> u32 { exec::job(1) }\n",
+        ),
+        ("src/exec/mod.rs", "mod job;\npub use self::job::job;\n"),
+        ("src/exec/job.rs", "pub fn job(n: u32) -> u32 { n }\n"),
+    ];
+    assert_eq!(
+        call_paths(&tree, "crate::receive"),
+        vec![(
+            "src/exec/job.rs".to_string(),
+            "crate::exec::job::job".to_string()
+        )]
+    );
+}
+
+/// The name-only tier for a path through a module must stay inside that
+/// module: `helpers` re-exports an outside crate's `f`, and another module of
+/// the package happens to declare an `f` too.
+#[test]
+fn name_only_tier_requires_the_named_module() {
+    let tree = vec![
+        ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+        (
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"a\"\n[dependencies]\nextcrate = \"1\"\n",
+        ),
+        (
+            "crates/a/src/lib.rs",
+            "pub mod helpers;\npub mod other;\npub mod deep;\n",
+        ),
+        ("crates/a/src/helpers/mod.rs", "pub use extcrate::f;\n"),
+        ("crates/a/src/other.rs", "pub fn f() -> u32 { 1 }\n"),
+        ("crates/a/src/deep/mod.rs", "mod imp;\npub use imp::*;\n"),
+        ("crates/a/src/deep/imp.rs", "pub fn g() -> u32 { 2 }\n"),
+        (
+            "crates/b/Cargo.toml",
+            "[package]\nname = \"b\"\n[dependencies]\na = { path = \"../a\" }\n",
+        ),
+        (
+            "crates/b/src/lib.rs",
+            "pub fn ext_reexport() -> u32 { a::helpers::f() }\npub fn glob_reexport() -> u32 { a::deep::g() }\npub fn wrong_module() -> u32 { a::other::g() }\n",
+        ),
+    ];
+    let bound_paths = |caller: &str| -> Vec<String> {
+        call_paths(&tree, caller)
+            .into_iter()
+            .map(|(path, _)| path)
+            .filter(|path| path.starts_with("crates/"))
+            .collect()
+    };
+    assert!(bound_paths("crate::ext_reexport").is_empty());
+    assert_eq!(
+        bound_paths("crate::glob_reexport"),
+        vec!["crates/a/src/deep/imp.rs".to_string()]
+    );
+    assert!(bound_paths("crate::wrong_module").is_empty());
+}
