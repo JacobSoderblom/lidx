@@ -133,6 +133,10 @@ pub(crate) const LOCAL_MODIFIER: &str = "local";
 /// exact typed-receiver call, but never by a name tier, and never dead code.
 pub(crate) const DECL_MODIFIER: &str = "decl";
 
+/// The `symbols.visibility` modifier of a JS/TS declaration every file sees
+/// as a global (a script file's top level, `declare global { }`).
+pub(crate) const GLOBAL_MODIFIER: &str = "global";
+
 /// Rust form of [`has_modifier_sql`]: whether a `symbols.visibility` value
 /// carries `modifier`.
 pub(crate) fn has_modifier(visibility: Option<&str>, modifier: &str) -> bool {

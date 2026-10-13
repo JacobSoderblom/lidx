@@ -329,7 +329,12 @@ fn assert_incremental_matches_fresh(
     let incremental = state(indexer.db());
     let fresh = fresh_state(after);
     assert_eq!(incremental.0, fresh.0, "symbols");
-    common::assert_matches_fresh(&incremental.1, &fresh.1);
+    let only_incremental: Vec<_> = incremental.1.difference(&fresh.1).collect();
+    let only_fresh: Vec<_> = fresh.1.difference(&incremental.1).collect();
+    assert!(
+        only_incremental.is_empty() && only_fresh.is_empty(),
+        "edges only in the incremental sync: {only_incremental:#?}\nonly in a fresh reindex: {only_fresh:#?}"
+    );
     assert_eq!(incremental.2, fresh.2, "dispatch pairs");
 }
 
@@ -489,5 +494,106 @@ fn incremental_sync_matches_fresh_when_a_local_class_changes() {
     assert!(
         got.contains("src/base.Base.stop -> src/user.enable.Draft.stop"),
         "{got:#?}"
+    );
+}
+
+const LEGACY: &str =
+    "declare class GlobalBase {\n  ping(): void\n}\ninterface GlobalShape { id: number }\n";
+const AUGMENT: &str = "export {}\ndeclare global {\n  class AugBase {\n    hello(): void\n  }\n  interface AugShape { tag: string }\n}\n";
+const GLOBAL_USER: &str = "export class Mine2 extends GlobalBase {\n  ping() {}\n}\n\
+export class Mine3 implements GlobalShape {\n  id = 1\n}\n\
+export class Mine4 extends AugBase {\n  hello() {}\n}\n\
+export class Mine5 implements AugShape {\n  tag = 'x'\n}\n\
+export class NotGlobal extends Error {}\n";
+
+fn extends_targets(db: &Db, source: &str) -> Vec<String> {
+    let snapshot = golden::snapshot_edges(db, db.current_graph_version().unwrap()).unwrap();
+    snapshot
+        .iter()
+        .filter(|e| {
+            matches!(e.kind.as_str(), "EXTENDS" | "IMPLEMENTS") && e.source_qualname == source
+        })
+        .filter_map(|e| e.target_qualname.clone())
+        .collect()
+}
+
+#[test]
+fn script_and_declare_global_declarations_bind_unimported_heritage() {
+    let files: Files = &[
+        ("src/legacy.d.ts", LEGACY),
+        ("src/augment.ts", AUGMENT),
+        ("src/useglobal.ts", GLOBAL_USER),
+    ];
+    let (_tmp, root, db_path) = common::index_repo("lidx-ts-globals-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let db = indexer.db();
+    assert_eq!(
+        extends_targets(db, "src/useglobal.Mine2"),
+        ["src/legacy.GlobalBase"]
+    );
+    assert_eq!(
+        extends_targets(db, "src/useglobal.Mine3"),
+        ["src/legacy.GlobalShape"]
+    );
+    assert_eq!(
+        extends_targets(db, "src/useglobal.Mine4"),
+        ["src/augment.AugBase"]
+    );
+    assert_eq!(
+        extends_targets(db, "src/useglobal.Mine5"),
+        ["src/augment.AugShape"]
+    );
+    // A name no script or `declare global` declares stays unbound.
+    assert!(extends_targets(db, "src/useglobal.NotGlobal").is_empty());
+    let got = pairs(db);
+    assert!(
+        got.contains("src/legacy.GlobalBase.ping -> src/useglobal.Mine2.ping"),
+        "{got:#?}"
+    );
+    assert!(
+        got.contains("src/augment.AugBase.hello -> src/useglobal.Mine4.hello"),
+        "{got:#?}"
+    );
+}
+
+#[test]
+fn an_exported_alias_is_not_a_global_for_heritage() {
+    let files: Files = &[
+        (
+            "src/mod.ts",
+            "export type Ev = { k: string }\nexport class Cls {}\n",
+        ),
+        (
+            "src/use.ts",
+            "export class A extends Cls {}\nexport interface B extends Ev {}\n",
+        ),
+    ];
+    let (_tmp, root, db_path) = common::index_repo("lidx-ts-notglobal-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    assert!(extends_targets(indexer.db(), "src/use.A").is_empty());
+    assert!(extends_targets(indexer.db(), "src/use.B").is_empty());
+}
+
+#[test]
+fn incremental_sync_matches_fresh_when_a_global_declaration_appears() {
+    let user = ("src/useglobal.ts", GLOBAL_USER);
+    let legacy = ("src/legacy.d.ts", LEGACY);
+    let augment = ("src/augment.ts", AUGMENT);
+    assert_incremental_matches_fresh(
+        "ts-global-appears",
+        &[user],
+        &[legacy, augment],
+        &[user, legacy, augment],
+    );
+    // And when the declaring file goes back to a module, the binding goes.
+    let module = (
+        "src/legacy.d.ts",
+        "export {}\ndeclare class GlobalBase { ping(): void }\n",
+    );
+    assert_incremental_matches_fresh(
+        "ts-global-vanishes",
+        &[user, legacy, augment],
+        &[module],
+        &[user, module, augment],
     );
 }

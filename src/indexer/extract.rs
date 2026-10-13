@@ -706,6 +706,11 @@ pub struct EdgeInput {
     pub call_shape: Option<CallShape>,
 }
 
+/// `receiver_type` of a JS/TS EXTENDS/IMPLEMENTS edge whose bare name the ES
+/// module neither imports nor declares: it binds only a symbol recorded
+/// `global` (a script or `declare global` declaration), by no other tier.
+pub const GLOBAL_HERITAGE: &str = "\u{1}global-heritage";
+
 #[derive(Debug, Default)]
 pub struct ExtractedFile {
     pub symbols: Vec<SymbolInput>,
@@ -763,6 +768,12 @@ pub struct ExtractedFile {
     /// Go `Example*` functions whose body ends in an `// Output:` comment:
     /// the only examples `go test` runs. Recorded as `example_output`.
     pub example_output_qualnames: Vec<String>,
+    /// Qualnames of JS/TS symbols visible as globals to every other file: a
+    /// top-level declaration of a script file (no import/export, `.d.ts`
+    /// ambient declarations included) and a member of `declare global { }`.
+    /// Recorded as the `global` modifier; only an unimported heritage name of
+    /// an ES module may bind a symbol that has it.
+    pub global_qualnames: Vec<String>,
 }
 
 /// The declaration modifiers one file's extraction recorded, written to
@@ -784,6 +795,8 @@ pub struct SymbolModifiers<'a> {
     pub public: &'a [String],
     /// Go examples with an `// Output:` comment.
     pub example_output: &'a [String],
+    /// Qualnames of global declarations.
+    pub globals: &'a [String],
 }
 
 impl ExtractedFile {
@@ -799,6 +812,7 @@ impl ExtractedFile {
             file_wide: &self.file_modifiers,
             public: &self.public_qualnames,
             example_output: &self.example_output_qualnames,
+            globals: &self.global_qualnames,
         }
     }
 }

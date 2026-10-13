@@ -2069,6 +2069,7 @@ fn extract_with_parser(
     dedup_namespace_symbols(&mut output);
     mark_local_class_members(&mut output);
     drop_ambiguous_locals(&mut output);
+    mark_global_symbols(root, source, module_name, &mut output);
     mark_unexported_private(root, source, module_name, &mut output);
     mark_global_heritage(&ctx, &mut output);
     finish_value_references(&mut output);
@@ -2255,6 +2256,7 @@ fn mark_unexported_private(
                 && s.name != DEFAULT_EXPORT
                 && s.qualname == build_qualname(module_name, &[], &s.name)
                 && !exports.names.contains(&s.name)
+                && !output.global_qualnames.contains(&s.qualname)
         })
         .map(|s| s.qualname.clone())
         .collect();
@@ -2308,6 +2310,72 @@ fn mark_local_class_members(output: &mut ExtractedFile) {
     }
 }
 
+/// Records the declarations every other file sees as globals: the top level
+/// of a script (a file with no import, export or CommonJS use, `.d.ts`
+/// ambient declarations included) and the declarations inside `declare global
+/// { }`. An unimported heritage name of an ES module binds only these.
+fn mark_global_symbols(
+    root: Node<'_>,
+    source: &str,
+    module_name: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut exports = Exports::default();
+    let mut cursor = root.walk();
+    let statements: Vec<Node<'_>> = root.named_children(&mut cursor).collect();
+    for stmt in &statements {
+        collect_exported_names(*stmt, source, &mut exports);
+    }
+    let is_script = !exports.is_module && !exports.opaque && !uses_require(root, source);
+    let mut globals: HashSet<String> = HashSet::new();
+    if is_script {
+        globals.extend(
+            output
+                .symbols
+                .iter()
+                .filter(|s| s.kind != "module")
+                .map(|s| s.qualname.clone())
+                .filter(|q| {
+                    q.strip_prefix(module_name)
+                        .and_then(|r| r.strip_prefix('.'))
+                        .is_some_and(|name| !name.contains('.'))
+                }),
+        );
+    }
+    // `declare global { class G {} }`: an ambient block holding statements
+    // directly (a named `declare module "x"` has a name field instead).
+    for stmt in &statements {
+        if stmt.kind() != "ambient_declaration" {
+            continue;
+        }
+        let mut c = stmt.walk();
+        let Some(block) = stmt
+            .named_children(&mut c)
+            .find(|n| n.kind() == "statement_block")
+        else {
+            continue;
+        };
+        let mut c = block.walk();
+        for decl in block.named_children(&mut c) {
+            let decl = if decl.kind() == "export_statement" {
+                decl.child_by_field_name("declaration").unwrap_or(decl)
+            } else {
+                decl
+            };
+            if let Some(name) = decl.child_by_field_name("name") {
+                globals.insert(build_qualname(module_name, &[], &node_text(name, source)));
+            }
+        }
+    }
+    let known: HashSet<&str> = output.symbols.iter().map(|s| s.qualname.as_str()).collect();
+    let mut globals: Vec<String> = globals
+        .into_iter()
+        .filter(|q| known.contains(q.as_str()))
+        .collect();
+    globals.sort();
+    output.global_qualnames = globals;
+}
+
 /// A heritage name (`interface ExtendableEvent extends Event`) that this ES
 /// module neither imports, requires nor declares anywhere (nested namespaces
 /// included) is a global of the runtime or of `lib`: never another module's
@@ -2333,7 +2401,8 @@ fn mark_global_heritage(ctx: &Context, output: &mut ExtractedFile) {
         {
             continue;
         }
-        edge.receiver_type = ReceiverType::Unresolved;
+        edge.receiver_type =
+            ReceiverType::Known(crate::indexer::extract::GLOBAL_HERITAGE.to_string());
     }
 }
 

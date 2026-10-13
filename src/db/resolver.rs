@@ -62,7 +62,9 @@ mod resolver_go;
 pub(crate) use resolver_go::go_deferred_candidate;
 
 use super::Db;
-use super::graph_query::{DECL_MODIFIER, LOCAL_MODIFIER, has_modifier, has_modifier_sql};
+use super::graph_query::{
+    DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, has_modifier, has_modifier_sql,
+};
 use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
@@ -1519,6 +1521,21 @@ impl<'c> Resolver<'c> {
         self.exact_language =
             (r.source_lang == "rust" && !is_bridge_edge_kind(r.edge_kind)).then_some("rust");
         self.exact_skips_modules = r.source_lang == "rust" && r.edge_kind == "CALLS";
+        // A heritage name the module never binds is a global: only a symbol
+        // recorded `global` (a script / `declare global` declaration) is it.
+        if r.receiver_type == Some(crate::indexer::extract::GLOBAL_HERITAGE) {
+            let plain = Reference {
+                receiver_type: None,
+                ..*r
+            };
+            let resolution = self.resolve_tiers_and_refine(&plain, symbol_map)?;
+            if let Resolution::Resolved { target_id, .. } = resolution
+                && !self.has_symbol_modifier(target_id, GLOBAL_MODIFIER)?
+            {
+                return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+            }
+            return Ok(resolution);
+        }
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             let resolution = self.refuse_uncallable_kind(r, resolution)?;
@@ -1533,6 +1550,16 @@ impl<'c> Resolver<'c> {
         };
         let resolution = self.resolve_tiers_and_refine(&as_call, symbol_map)?;
         self.filter_value_reference(r, resolution)
+    }
+
+    /// Whether symbol `id` carries `modifier` in `symbols.visibility`.
+    fn has_symbol_modifier(&self, id: i64, modifier: &str) -> Result<bool> {
+        let visibility: Option<Option<String>> = self
+            .conn
+            .prepare_cached("SELECT visibility FROM symbols WHERE id = ?")?
+            .query_row([id], |row| row.get(0))
+            .optional()?;
+        Ok(visibility.is_some_and(|v| has_modifier(v.as_deref(), modifier)))
     }
 
     /// Whether `id` is a `field` marked `decl` (an interface or type-literal
