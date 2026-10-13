@@ -14,6 +14,5 @@
 {"callee":{"file":"src/pretty_printer.rs","line":348,"name":"from_reader"},"caller":{"file":"src/pretty_printer.rs","line":106,"name":"input_from_reader"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/pretty_printer.rs:107"]},
 {"callee":{"file":"src/pretty_printer.rs","line":348,"name":"from_reader"},"caller":{"file":"src/pretty_printer.rs","line":358,"name":"from_bytes"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/pretty_printer.rs:359"]},
 {"callee":{"file":"src/style.rs","line":101,"name":"grid"},"caller":{"file":"src/bin/bat/app.rs","line":408,"name":"style_components"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/bin/bat/app.rs:434"]},
-{"callee":{"file":"src/style.rs","line":25,"name":"components"},"caller":{"file":"src/style.rs","line":25,"name":"components"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/style.rs:29","src/style.rs:31"]},
 {"callee":{"file":"src/theme.rs","line":157,"name":"[Display]fmt"},"caller":{"file":"src/theme.rs","line":110,"name":"[Display]fmt"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/theme.rs:116"]}
 ]

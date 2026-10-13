@@ -4,6 +4,11 @@
 {"base":"source/errors/KyError.ts:8","evidence_file":"source/errors/NetworkError.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"source/errors/NetworkError.ts:11"},
 {"base":"source/errors/KyError.ts:8","evidence_file":"source/errors/ResponseSizeError.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"source/errors/ResponseSizeError.ts:20"},
 {"base":"source/errors/KyError.ts:8","evidence_file":"source/errors/TimeoutError.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"source/errors/TimeoutError.ts:7"},
+{"base":"source/errors/KyError.ts:9","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"source/errors/ForceRetryError.ts:12"},
+{"base":"source/errors/KyError.ts:9","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"source/errors/HTTPError.ts:16"},
+{"base":"source/errors/KyError.ts:9","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"source/errors/NetworkError.ts:12"},
+{"base":"source/errors/KyError.ts:9","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"source/errors/ResponseSizeError.ts:21"},
+{"base":"source/errors/KyError.ts:9","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"source/errors/TimeoutError.ts:8"},
 {"base":"source/types/options.ts:447","evidence_file":"source/types/options.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"source/types/options.ts:454"},
 {"base":"source/types/options.ts:45","evidence_file":"source/types/options.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"source/types/options.ts:454"}
 ]

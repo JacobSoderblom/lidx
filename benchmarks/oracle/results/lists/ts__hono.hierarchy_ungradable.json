@@ -1,4 +1,9 @@
 [
 {"base":"src/context.ts:31","evidence_file":"src/middleware/cache/index.test.ts","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"src/middleware/cache/index.test.ts:39"},
+{"base":"src/context.ts:37","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"src/middleware/cache/index.test.ts:43"},
+{"base":"src/context.ts:41","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"src/middleware/cache/index.test.ts:40"},
+{"base":"src/context.ts:46","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"src/middleware/cache/index.test.ts:47"},
+{"base":"src/hono-base.ts:208","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"src/hono.test.ts:3667"},
+{"base":"src/hono-base.ts:247","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"src/hono.test.ts:3673"},
 {"base":"src/hono.ts:16","evidence_file":"src/hono.test.ts","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"extends","sub":"src/hono.test.ts:3665"}
 ]

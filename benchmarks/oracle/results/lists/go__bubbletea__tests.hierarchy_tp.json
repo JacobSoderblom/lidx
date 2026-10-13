@@ -1,4 +1,8 @@
 [
+{"base":"exec.go:60","evidence_file":"exec.go","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"structural","sub":"exec.go:75"},
+{"base":"exec.go:62","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"exec.go:78"},
+{"base":"exec.go:63","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"exec.go:86"},
+{"base":"exec.go:64","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"exec.go:94"},
 {"base":"renderer.go:12","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"nil_renderer.go:7"},
 {"base":"renderer.go:12","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"standard_renderer.go:132"},
 {"base":"renderer.go:16","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"nil_renderer.go:8"},
@@ -17,6 +21,7 @@
 {"base":"renderer.go:35","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"standard_renderer.go:399"},
 {"base":"renderer.go:37","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"nil_renderer.go:15"},
 {"base":"renderer.go:37","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"standard_renderer.go:407"},
+{"base":"renderer.go:4","evidence_file":"exec_test.go","evidence_line":null,"kind":"EXTENDS","relation":"embeds","resolution":"structural","sub":"exec_test.go:40"},
 {"base":"renderer.go:4","evidence_file":"exec_test.go","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"structural","sub":"exec_test.go:40"},
 {"base":"renderer.go:4","evidence_file":"nil_renderer.go","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"structural","sub":"nil_renderer.go:3"},
 {"base":"renderer.go:4","evidence_file":"standard_renderer.go","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"structural","sub":"standard_renderer.go:27"},

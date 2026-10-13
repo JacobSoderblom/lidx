@@ -5,6 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import match  # noqa: E402
+import refs  # noqa: E402
 
 
 def sym(i, path, line, name, kind="function", qual=None):
@@ -630,6 +631,242 @@ def _scip_index(path, occs, kinds):
     for sym, kind in kinds.items():
         doc += _field(3, 2, _field(1, 2, sym.encode()) + _field(5, 0, _varint(kind)))
     return _field(2, 2, doc)
+
+
+# ---------------------------------------------------------------- value references (issue #452)
+def rsym(path, line, name, kind="function", qual=None):
+    return sym(0, path, line, name, kind, qual)
+
+
+def rref(caller, callee, forms=("ident",), ctxs=("call_argument",), called=False, **kw):
+    r = {"caller": {"file": caller[0], "line": caller[1], "name": caller[2]}, "callee": {"file": callee[0], "line": callee[1], "name": callee[2]},
+         "sites": ["%s:%d" % (caller[0], kw.pop("site", caller[1] + 1))], "forms": list(forms), "ctxs": list(ctxs)}
+    if called:
+        r["called"] = True
+    r.update(kw)
+    return r
+
+
+def roracle(files, refs_, edges=(), **kw):
+    o = {"files": list(files), "callers": [], "edges": list(edges), "refs": list(refs_), "ref_callers": [], "exhaustive_callers": True}
+    o.update(kw)
+    return o
+
+
+def redge(s, t, line, kind="REFERENCES", res="exact", path="a.go"):
+    return {"kind": kind, "s": s, "t": t, "target_qualname": None, "resolution_kind": res, "line": line, "end_line": line, "epath": path}
+
+
+class ValueRefs(unittest.TestCase):
+    def grade(self, oracle, syms, edges, lang="go"):
+        return refs.grade_refs(oracle, syms, edges, lang, match.Sources("/nonexistent"))
+
+    def test_go_struct_literal_field_handler(self):
+        """`cmd := &Command{RunE: run}` inside main: the compiler reports run as a reference of main (ctx struct_field)."""
+        oracle = roracle(["a.go"], [rref(("a.go", 10, "main"), ("a.go", 3, "run"), ctxs=["struct_field"], site=11)], ref_callers=[{"file": "a.go", "line": 10, "name": "main"}])
+        syms = {1: rsym("a.go", 10, "main"), 2: rsym("a.go", 3, "run")}
+        summ, fn, fp, gap, ungr, _ = self.grade(oracle, syms, [redge(1, 2, 11)])
+        self.assertEqual((summ["tp"], summ["fp"], summ["matched_oracle_refs"], summ["recall"], summ["precision"]), (1, 0, 1, 1.0, 1.0))
+        summ, fn, *_ = self.grade(oracle, syms, [])
+        self.assertEqual((summ["recall"], fn[0]["category"], fn[0]["ctxs"]), (0.0, "no_edge", ["struct_field"]))
+
+    def test_go_method_value_passed_as_an_argument(self):
+        """`register(s.handle)`: lidx's REFERENCES row to the method, resolved by exact qualname, is a true reference."""
+        oracle = roracle(["a.go"], [rref(("a.go", 14, "wire"), ("a.go", 10, "handle"), forms=["method_value"], site=15)], ref_callers=[{"file": "a.go", "line": 14, "name": "wire"}])
+        syms = {1: rsym("a.go", 14, "wire", "method", "Server.wire"), 2: rsym("a.go", 10, "handle", "method", "Server.handle")}
+        summ, fn, fp, *_ = self.grade(oracle, syms, [redge(1, 2, 15)])
+        self.assertEqual((summ["tp"], summ["recall"]), (1, 1.0))
+        self.assertEqual(summ["by_resolution_kind"]["exact"]["tp"], 1)
+
+    def test_ts_object_literal_callback_at_module_level(self):
+        """`export const handlers = { onClick: handle }` has no enclosing function: the caller is the module-level const."""
+        r = rref(("a.ts", 0, "<module>"), ("a.ts", 15, "handle"), ctxs=["object_property"], site=17, caller_alts=["a.ts:17"], caller_chain=[])
+        oracle = roracle(["a.ts"], [r], callers=[{"file": "a.ts", "line": 0, "name": "<module>"}, {"file": "a.ts", "line": 17, "name": "handlers"}])
+        syms = {1: rsym("a.ts", 17, "handlers", "const"), 2: rsym("a.ts", 15, "handle")}
+        summ, *_ = self.grade(oracle, syms, [redge(1, 2, 17, path="a.ts")], "ts")
+        self.assertEqual((summ["tp"], summ["recall"]), (1, 1.0))
+
+    def test_rust_map_argument(self):
+        """`[1].iter().map(helper)` inside other(): a reference; lidx's USES row to a function counts, a USES row to a struct does not."""
+        oracle = roracle(["src/lib.rs"], [rref(("src/lib.rs", 5, "other"), ("src/lib.rs", 2, "helper"), forms=["ident"], ctxs=["argument_or_element"], site=6)],
+                         callers=[{"file": "src/lib.rs", "line": 5, "name": "other"}])
+        syms = {1: rsym("src/lib.rs", 5, "other"), 2: rsym("src/lib.rs", 2, "helper"), 3: rsym("src/lib.rs", 8, "Opts", "struct")}
+        edges = [redge(1, 2, 6, "USES", path="src/lib.rs"), redge(1, 3, 6, "USES", path="src/lib.rs")]
+        summ, fn, fp, *_ = self.grade(oracle, syms, edges, "rust")
+        self.assertEqual((summ["tp"], summ["fp"], summ["recall"], summ["lidx_rows"]), (1, 0, 1.0, {"USES": 1}))
+
+    def test_a_pair_with_both_a_call_and_a_reference_is_removed_on_both_sides(self):
+        """f calls g and also passes g on: the compiler counts a call, lidx keeps a CALLS edge. Neither side holds a value reference."""
+        r = rref(("a.go", 1, "f"), ("a.go", 5, "g"), called=True)
+        oracle = roracle(["a.go"], [r], ref_callers=[{"file": "a.go", "line": 1, "name": "f"}])
+        syms = {1: rsym("a.go", 1, "f"), 2: rsym("a.go", 5, "g")}
+        summ, fn, fp, gap, ungr, _ = self.grade(oracle, syms, [redge(1, 2, 2, "CALLS"), redge(1, 2, 3)])
+        self.assertEqual((summ["oracle_refs_called_removed"], summ["lidx_pairs_with_call_dropped"], summ["graded"], summ["oracle_refs_caller_and_callee_indexed"]), (1, 1, 0, 0))
+        self.assertEqual((fn, fp, ungr), ([], [], []))
+        self.assertIsNone(summ["precision"])
+
+    def test_call_wins_when_only_one_side_keeps_the_reference(self):
+        r = rref(("a.go", 1, "f"), ("a.go", 5, "g"), called=True)
+        oracle = roracle(["a.go"], [r], ref_callers=[{"file": "a.go", "line": 1, "name": "f"}])
+        syms = {1: rsym("a.go", 1, "f"), 2: rsym("a.go", 5, "g")}
+        summ, fn, fp, gap, ungr, _ = self.grade(oracle, syms, [redge(1, 2, 3)])  # lidx lost the call but kept the reference
+        self.assertEqual((summ["graded"], summ["ungradable"]), (0, {"oracle_call_wins": 1}))
+
+    def test_go_rta_dispatch_edge_does_not_make_a_stored_function_a_call(self):
+        """`Test{addEntryFunc: g}` then `t.addEntryFunc(..)`: RTA lists g as a callee of the test through the function value. That is a dynamic
+        edge, not a call of g from the test, so the reference stays a reference."""
+        dyn = {"caller": {"file": "a.go", "line": 1, "name": "f"}, "callee": {"file": "a.go", "line": 5, "name": "g"}, "sites": ["a.go:3"], "dispatch": True}
+        oracle = roracle(["a.go"], [rref(("a.go", 1, "f"), ("a.go", 5, "g"), ctxs=["struct_field"])], [dyn], ref_callers=[{"file": "a.go", "line": 1, "name": "f"}])
+        syms = {1: rsym("a.go", 1, "f"), 2: rsym("a.go", 5, "g")}
+        summ, *_ = self.grade(oracle, syms, [redge(1, 2, 2)])
+        self.assertEqual((summ["oracle_refs_called_removed"], summ["tp"]), (0, 1))
+
+    def test_rust_module_level_reference_is_keyed_at_the_module_and_an_import_row_is_not_a_reference(self):
+        """`static TABLE: [fn(); 1] = [handler];` is a reference of the module (line 0); a USES row without a source line is an import."""
+        r = rref(("src/lib.rs", 0, "<module>"), ("src/lib.rs", 7, "handler"), forms=["ident"], ctxs=["other"], site=3)
+        oracle = roracle(["src/lib.rs"], [r], callers=[])
+        syms = {1: rsym("src/lib.rs", 1, "lib", "module"), 2: rsym("src/lib.rs", 7, "handler"), 3: rsym("src/lib.rs", 9, "other")}
+        syms[1]["key"] = "src/lib.rs:0"
+        imp = redge(1, 3, None, "USES", path="src/lib.rs")
+        imp["end_line"] = None
+        summ, fn, fp, gap, ungr, _ = self.grade(oracle, syms, [redge(1, 2, 3, "REFERENCES", path="src/lib.rs"), imp], "rust")
+        self.assertEqual((summ["tp"], summ["fp"], summ["ungradable"]), (1, 0, {"no_evidence_line": 1}))
+        # the same import-like row stands for a reference of some function of the file: a miss there is `coarse_module_level`, not `no_edge`
+        oracle2 = roracle(["src/lib.rs"], [rref(("src/lib.rs", 12, "run"), ("src/lib.rs", 9, "other"), site=13)], callers=[{"file": "src/lib.rs", "line": 12, "name": "run"}])
+        syms2 = {**syms, 4: rsym("src/lib.rs", 12, "run")}
+        summ2, fn2, *_ = self.grade(oracle2, syms2, [imp], "rust")
+        self.assertEqual((summ2["recall"], fn2[0]["category"]), (0.0, "coarse_module_level"))
+
+    def test_a_call_in_a_nested_function_is_a_call_of_the_enclosing_declaration(self):
+        """`strict() { errorUtil.errToObj; ... errorMap: (i) => errToObj(m) }`: the call sits in an arrow keyed `errorMap`, lifted to strict, which is where
+        lidx keeps both the reference and the CALLS edge."""
+        call = {"caller": {"file": "a.ts", "line": 9, "name": "errorMap"}, "callee": {"file": "a.ts", "line": 20, "name": "errToObj"}, "sites": ["a.ts:10"],
+                "caller_chain": ["a.ts:5", "a.ts:0"]}
+        oracle = roracle(["a.ts"], [rref(("a.ts", 5, "strict"), ("a.ts", 20, "errToObj"), forms=["property_access"], ctxs=["other"], site=6)], [call], callers=[])
+        syms = {1: rsym("a.ts", 5, "strict", "method"), 2: rsym("a.ts", 20, "errToObj")}
+        summ, fn, fp, *_ = self.grade(oracle, syms, [redge(1, 2, 6, "CALLS", path="a.ts"), redge(1, 2, 6, path="a.ts")], "ts")
+        self.assertEqual((summ["oracle_refs_called_removed"], summ["lidx_pairs_with_call_dropped"], summ["graded"], fn, fp), (1, 1, 0, [], []))
+
+    def test_rust_trait_path_resolved_to_one_impl_accepts_the_trait_declaration(self):
+        """`.map(Node::tree)`: the compiler resolves the path to one impl's method; lidx points at the trait's declaration, which names the same function."""
+        r = rref(("src/lib.rs", 5, "run"), ("src/lib.rs", 20, "tree"), forms=["path"], ctxs=["argument_or_element"], site=6, callee_alts=["src/lib.rs:2"])
+        oracle = roracle(["src/lib.rs"], [r], callers=[{"file": "src/lib.rs", "line": 5, "name": "run"}])
+        syms = {1: rsym("src/lib.rs", 5, "run"), 2: rsym("src/lib.rs", 2, "tree", "method"), 3: rsym("src/lib.rs", 20, "tree", "method")}
+        summ, *_ = self.grade(oracle, syms, [redge(1, 2, 6, path="src/lib.rs")], "rust")
+        self.assertEqual((summ["tp"], summ["fp"], summ["matched_oracle_refs"]), (1, 0, 1))
+
+    def test_rust_reference_inside_inactive_cfg_code_is_left_out(self):
+        """rust-analyzer resolves names in `#[cfg]`-disabled code only partly (a local declared there is invisible), so a reference whose every site is
+        gated is not graded, and an unmatched lidx pair with gated evidence is ungradable."""
+        gate = lambda f, lines: all(ln >= 50 for ln in lines)  # noqa: E731
+        oracle = roracle(["src/lib.rs"], [rref(("src/lib.rs", 40, "f"), ("src/lib.rs", 2, "features"), site=52)], callers=[{"file": "src/lib.rs", "line": 40, "name": "f"}])
+        syms = {1: rsym("src/lib.rs", 40, "f"), 2: rsym("src/lib.rs", 2, "features"), 3: rsym("src/lib.rs", 9, "other")}
+        summ, fn, fp, gap, ungr, _ = refs.grade_refs(oracle, syms, [redge(1, 3, 53, path="src/lib.rs")], "rust", match.Sources("/nonexistent"), cfg_gate=gate)
+        self.assertEqual((summ["oracle_refs_cfg_gated"], summ["oracle_refs_caller_and_callee_indexed"], summ["fp"]), (1, 0, 0))
+        self.assertEqual(summ["ungradable"], {"cfg_gated_evidence": 1})
+
+    def test_reference_recorded_as_a_call_is_a_miss_with_a_cross_category(self):
+        oracle = roracle(["a.go"], [rref(("a.go", 1, "f"), ("a.go", 5, "g"))], ref_callers=[{"file": "a.go", "line": 1, "name": "f"}])
+        syms = {1: rsym("a.go", 1, "f"), 2: rsym("a.go", 5, "g")}
+        summ, fn, *_ = self.grade(oracle, syms, [redge(1, 2, 2, "CALLS")])
+        self.assertEqual((summ["recall"], fn[0]["category"]), (0.0, "reference_as_call"))
+
+    def test_call_recorded_as_a_reference_is_an_fp(self):
+        """The compiler only calls g from f, lidx has a REFERENCES row: a wrong reference, `call_as_reference`."""
+        oracle = roracle(["a.go"], [], [{"caller": {"file": "a.go", "line": 1, "name": "f"}, "callee": {"file": "a.go", "line": 5, "name": "g"}, "sites": ["a.go:2"]}],
+                         ref_callers=[{"file": "a.go", "line": 1, "name": "f"}])
+        syms = {1: rsym("a.go", 1, "f"), 2: rsym("a.go", 5, "g")}
+        summ, fn, fp, *_ = self.grade(oracle, syms, [redge(1, 2, 2)])
+        self.assertEqual((summ["fp"], fp[0]["category"]), (1, "call_as_reference"))
+
+    def test_same_name_elsewhere(self):
+        """lidx bound `register(handle)` to another declaration called handle: the failure of a name-tier guess."""
+        oracle = roracle(["a.go", "b.go"], [rref(("a.go", 1, "f"), ("a.go", 5, "handle"), site=2)], ref_callers=[{"file": "a.go", "line": 1, "name": "f"}])
+        syms = {1: rsym("a.go", 1, "f"), 2: rsym("a.go", 5, "handle"), 3: rsym("b.go", 9, "handle")}
+        summ, fn, fp, *_ = self.grade(oracle, syms, [redge(1, 3, 2, res="bare_name")])
+        self.assertEqual((summ["fp"], summ["same_name_elsewhere"], fp[0]["category"]), (1, 1, "same_name_elsewhere"))
+        self.assertEqual(summ["by_resolution_kind"]["bare_name"], {"graded": 1, "tp": 0, "precision": 0.0, "ci": summ["by_resolution_kind"]["bare_name"]["ci"]})
+        self.assertEqual(fn[0]["category"], "wrong_target")
+        self.assertTrue(fn[0]["detail"]["same_name"])
+
+    def test_dead_code_cross_reference_counts_value_referenced_dead_claims(self):
+        oracle = roracle(["a.go"], [rref(("a.go", 1, "f"), ("a.go", 5, "g"))], ref_callers=[{"file": "a.go", "line": 1, "name": "f"}])
+        syms = {1: rsym("a.go", 1, "f"), 2: rsym("a.go", 5, "g"), 3: rsym("a.go", 9, "h")}
+        *_, state = self.grade(oracle, syms, [])
+        x = refs.dead_xref(state, [{"key": "a.go:5"}, {"key": "a.go:9"}])
+        self.assertEqual(x, {"fp_items": 2, "with_value_reference": 1, "lidx_has_no_reference_to_it": 1})
+
+
+class RustValueReferenceOracle(unittest.TestCase):
+    """scip_calls.py through a synthetic SCIP index: a function passed to `.map` is a reference, a call is not, an occurrence inside a
+    `use` item or with the Import role is left out."""
+
+    SRC = ("use crate::helper;\n"                      # 0: use item
+           "pub fn helper(x: u8) -> u8 { x }\n"        # 1
+           "pub fn other() {\n"                         # 2
+           "    let _ = [1u8].iter().map(helper);\n"   # 3: a reference
+           "    helper(1);\n"                           # 4: a call
+           "    let _ = helper::<>;\n"                  # 5: a reference through an (empty) turbofish
+           "}\n"
+           "pub fn third() {\n"                          # 7
+           "    let _ = (\"\u0428\u0428\", helper(2));\n"      # 8: a call after non-ASCII text (SCIP columns are UTF-8 bytes)
+           "}\n")
+
+    def run_oracle(self, extra_occ=()):
+        P = "rust-analyzer cargo demo 0.1.0 "
+        helper, other = P + "helper().", P + "other()."
+
+        def occ(sym, line, c0, c1, role, encl=None):
+            rng = b"".join(_varint(x) for x in (line, c0, c1))
+            o = _field(1, 2, rng) + _field(2, 2, sym.encode()) + (_field(3, 0, _varint(role)) if role else b"")
+            if encl:
+                o += _field(7, 2, b"".join(_varint(x) for x in encl))
+            return _field(2, 2, o)
+        doc = _field(1, 2, b"src/lib.rs")
+        doc += occ(helper, 0, 11, 17, 0)                       # `use crate::helper;`
+        doc += occ(helper, 1, 7, 13, 1, (1, 0, 1, 33))         # fn helper
+        doc += occ(other, 2, 7, 12, 1, (2, 0, 6, 1))           # fn other
+        doc += occ(helper, 3, 29, 35, 0)                       # .map(helper)
+        doc += occ(helper, 4, 4, 10, 0)                        # helper(1)
+        doc += occ(helper, 5, 12, 18, 0)                       # helper::<>
+        for o in extra_occ:
+            doc += occ(*o[:1], *o[1:])
+        idx = _field(2, 2, doc)
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, "src"))
+            with open(os.path.join(td, "src", "lib.rs"), "w") as f:
+                f.write(self.SRC)
+            scip = os.path.join(td, "x.scip")
+            with open(scip, "wb") as f:
+                f.write(idx)
+            here = os.path.dirname(os.path.abspath(__file__))
+            out = subprocess.run([sys.executable, "-I", os.path.join(here, "rust_oracle", "scip_calls.py"), "--repo", td, "--scip", scip],
+                                 capture_output=True, text=True, check=True).stdout
+        return json.loads(out)
+
+    def test_map_argument_is_a_reference_and_the_use_item_is_not(self):
+        d = self.run_oracle()
+        self.assertEqual([(e["caller"]["name"], e["callee"]["name"]) for e in d["edges"]], [("other", "helper")])
+        self.assertEqual(len(d["refs"]), 1)
+        r = d["refs"][0]
+        self.assertEqual((r["caller"]["name"], r["callee"]["name"]), ("other", "helper"))
+        self.assertEqual(sorted(r["sites"]), ["src/lib.rs:4", "src/lib.rs:6"])  # the `use` line (1) is not a site
+        self.assertEqual(d["refs_dropped"], {"use_item": 1})
+        self.assertEqual(r["ctxs"], ["argument_or_element", "assignment"])
+
+    def test_a_call_after_non_ascii_text_is_not_a_reference(self):
+        """SCIP columns count UTF-8 bytes, so on a line with Cyrillic text the characters after it are shifted and `helper(2)` read as a reference."""
+        P = "rust-analyzer cargo demo 0.1.0 "
+        prefix = '    let _ = ("\u0428\u0428", '
+        c0 = len(prefix.encode("utf-8"))
+        d = self.run_oracle(extra_occ=[(P + "third().", 7, 7, 12, 1, (7, 0, 9, 1)), (P + "helper().", 8, c0, c0 + 6, 0)])
+        self.assertEqual(sorted(r["sites"][0] for r in d["refs"]), ["src/lib.rs:4"])  # no reference from third()
+        self.assertEqual(d["refs_dropped"]["call_on_non_ascii_line"], 1)
+
+    def test_import_role_is_left_out(self):
+        P = "rust-analyzer cargo demo 0.1.0 "
+        d = self.run_oracle(extra_occ=[(P + "helper().", 3, 29, 35, 2)])  # the same range again, with the Import role
+        self.assertEqual(d["refs_dropped"]["use_item"], 2)
 
 
 if __name__ == "__main__":

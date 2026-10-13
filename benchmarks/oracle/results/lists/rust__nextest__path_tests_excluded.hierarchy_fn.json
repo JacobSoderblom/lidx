@@ -2,12 +2,9 @@
 {"base":"Clone","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/reuse_build/mod.rs:155"},
 {"base":"Debug","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/partition.rs:41"},
 {"base":"Debug","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/reuse_build/mod.rs:155"},
-{"base":"Default","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/list/rust_build_meta.rs:22"},
 {"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/reporter/displayer/status_level.rs:20"},
 {"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/reporter/displayer/status_level.rs:57"},
 {"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/reporter/displayer/unit_output.rs:28"},
 {"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/test_filter.rs:20"},
-{"base":"Future","bucket":"external_base","category":"not_indexed","relation":"implements","sub":"nextest-runner/src/time/pausable_sleep.rs:15"},
-{"base":"Sized","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/config/overrides.rs:112"},
-{"base":"nextest-runner/src/list/test_list.rs:800","base_name":"ListProfile","category":"no_edge","relation":"implements","sub":"nextest-runner/src/config/config_impl.rs:929","sub_name":"EvaluatableProfile"}
+{"base":"Sized","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/config/overrides.rs:112"}
 ]

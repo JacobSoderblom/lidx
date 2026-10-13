@@ -1,0 +1,7 @@
+[
+{"callee":{"file":"src/lib.rs","line":215,"name":"signal_exit_code"},"caller":{"file":"src/error.rs","line":351,"name":"code"},"side":"oracle","sites":["src/error.rs:367"]},
+{"callee":{"file":"src/parameter.rs","line":23,"name":"is_option"},"caller":{"file":"src/recipe_signature.rs","line":9,"name":"[ColorDisplay]fmt"},"side":"oracle","sites":["src/recipe_signature.rs:11"]},
+{"callee":{"file":"src/parameter.rs","line":23,"name":"is_option"},"caller":{"file":"src/usage.rs","line":10,"name":"[ColorDisplay]fmt"},"side":"oracle","sites":["src/usage.rs:22"]},
+{"callee":{"file":"src/token.rs","line":15,"name":"lexeme"},"caller":{"file":"src/lexer.rs","line":955,"name":"test"},"side":"oracle","sites":["src/lexer.rs:969"]},
+{"callee":{"file":"src/value.rs","line":126,"name":"[`From<String>`]from"},"caller":{"file":"src/evaluator.rs","line":483,"name":"evaluate_value"},"side":"oracle","sites":["src/evaluator.rs:520"]}
+]

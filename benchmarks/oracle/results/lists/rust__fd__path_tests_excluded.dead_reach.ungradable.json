@@ -1,8 +1,8 @@
 [
-{"file":"src/filesystem.rs","key":"src/filesystem.rs:109","lidx_kind":"function","name":"osstr_to_bytes","qualname":"crate::filesystem::osstr_to_bytes","reason":"not_a_judged_declaration"},
-{"file":"src/filesystem.rs","key":"src/filesystem.rs:68","lidx_kind":"function","name":"is_block_device","qualname":"crate::filesystem::is_block_device","reason":"not_a_judged_declaration"},
-{"file":"src/filesystem.rs","key":"src/filesystem.rs:78","lidx_kind":"function","name":"is_char_device","qualname":"crate::filesystem::is_char_device","reason":"not_a_judged_declaration"},
-{"file":"src/filesystem.rs","key":"src/filesystem.rs:88","lidx_kind":"function","name":"is_socket","qualname":"crate::filesystem::is_socket","reason":"not_a_judged_declaration"},
-{"file":"src/filesystem.rs","key":"src/filesystem.rs:98","lidx_kind":"function","name":"is_pipe","qualname":"crate::filesystem::is_pipe","reason":"not_a_judged_declaration"},
-{"file":"src/hyperlink.rs","key":"src/hyperlink.rs:60","lidx_kind":"function","name":"host","qualname":"crate::hyperlink::host","reason":"not_a_judged_declaration"}
+{"confidence":"high","file":"src/filesystem.rs","key":"src/filesystem.rs:109","lidx_kind":"function","name":"osstr_to_bytes","qualname":"crate::filesystem::osstr_to_bytes","reason":"not_a_judged_declaration"},
+{"confidence":"high","file":"src/filesystem.rs","key":"src/filesystem.rs:98","lidx_kind":"function","name":"is_pipe","qualname":"crate::filesystem::is_pipe","reason":"not_a_judged_declaration"},
+{"confidence":"high","file":"src/hyperlink.rs","key":"src/hyperlink.rs:60","lidx_kind":"function","name":"host","qualname":"crate::hyperlink::host","reason":"not_a_judged_declaration"},
+{"confidence":"medium","file":"src/filesystem.rs","key":"src/filesystem.rs:68","lidx_kind":"function","name":"is_block_device","qualname":"crate::filesystem::is_block_device","reason":"not_a_judged_declaration"},
+{"confidence":"medium","file":"src/filesystem.rs","key":"src/filesystem.rs:78","lidx_kind":"function","name":"is_char_device","qualname":"crate::filesystem::is_char_device","reason":"not_a_judged_declaration"},
+{"confidence":"medium","file":"src/filesystem.rs","key":"src/filesystem.rs:88","lidx_kind":"function","name":"is_socket","qualname":"crate::filesystem::is_socket","reason":"not_a_judged_declaration"}
 ]

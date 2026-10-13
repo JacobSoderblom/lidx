@@ -1,9 +1,11 @@
 [
 {"base":"altsrc/input_source_context.go:14","evidence_file":"altsrc/flag_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"altsrc/flag_test.go:29"},
 {"base":"altsrc/input_source_context.go:31","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"altsrc/flag_test.go:33"},
+{"base":"altsrc/map_input_source.go:14","evidence_file":"altsrc/flag_test.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"altsrc/flag_test.go:29"},
 {"base":"errors.go:73","evidence_file":"errors_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"errors_test.go:110"},
 {"base":"errors.go:74","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"errors_test.go:118"},
 {"base":"flag.go:103","evidence_file":"app_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"app_test.go:2472"},
+{"base":"flag.go:103","evidence_file":"flag_test.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"flag_test.go:299"},
 {"base":"flag.go:103","evidence_file":"flag_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"flag_test.go:299"},
 {"base":"flag.go:103","evidence_file":"sliceflag.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"generic_type","relation":"implements","sub":"sliceflag.go:12"},
 {"base":"flag.go:106","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"end_not_judged","relation":"overrides","sub":"sliceflag.go:75"},
@@ -38,5 +40,6 @@
 {"base":"flag_generic.go:9","evidence_file":"altsrc/flag_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"altsrc/flag_test.go:1007"},
 {"base":"flag_generic.go:9","evidence_file":"flag_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"flag_test.go:2956"},
 {"base":"flag_generic.go:9","evidence_file":"flag_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"flag_test.go:2995"},
-{"base":"flag_generic.go:9","evidence_file":"sliceflag_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"sliceflag_test.go:981"}
+{"base":"flag_generic.go:9","evidence_file":"sliceflag_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"sliceflag_test.go:981"},
+{"base":"flag_int_slice.go:12","evidence_file":"sliceflag_test.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"sliceflag_test.go:981"}
 ]

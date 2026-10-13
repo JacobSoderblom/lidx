@@ -1,0 +1,11 @@
+[
+{"callee":{"file":"src/indexer/config.rs","line":685,"name":"norm"},"caller":{"file":"src/indexer/config.rs","line":702,"name":"same_service"},"side":"oracle","sites":["src/indexer/config.rs:713"]},
+{"callee":{"file":"src/indexer/csharp.rs","line":285,"name":"receiver"},"caller":{"file":"src/indexer/csharp.rs","line":4892,"name":"infer_receiver_type_raw"},"side":"oracle","sites":["src/indexer/csharp.rs:4928","src/indexer/csharp.rs:4971","src/indexer/csharp.rs:4978"]},
+{"callee":{"file":"src/indexer/http.rs","line":11,"name":"normalize_method"},"caller":{"file":"src/indexer/javascript.rs","line":5175,"name":"analyze"},"side":"oracle","sites":["src/indexer/javascript.rs:5217"]},
+{"callee":{"file":"src/indexer/javascript.rs","line":3044,"name":"site"},"caller":{"file":"src/indexer/javascript.rs","line":3017,"name":"finish_value_references"},"side":"oracle","sites":["src/indexer/javascript.rs:3057"]},
+{"callee":{"file":"src/indexer/stable_id.rs","line":43,"name":"compute_stable_symbol_id"},"caller":{"file":"src/indexer/differ.rs","line":1263,"name":"test_stable_id_collision_is_reported_not_dropped"},"side":"oracle","sites":["src/indexer/differ.rs:1275"]},
+{"callee":{"file":"src/indexer/stable_id.rs","line":43,"name":"compute_stable_symbol_id"},"caller":{"file":"src/indexer/stable_id.rs","line":359,"name":"dup_ordinals_follow_declaration_order_not_lines"},"side":"oracle","sites":["src/indexer/stable_id.rs:368","src/indexer/stable_id.rs:391"]},
+{"callee":{"file":"src/model.rs","line":137,"name":"[`From<Symbol>`]from"},"caller":{"file":"src/impact/mod.rs","line":116,"name":"analyze_impact"},"side":"oracle","sites":["src/impact/mod.rs:222"]},
+{"callee":{"file":"src/resolve.rs","line":78,"name":"direct"},"caller":{"file":"src/resolve.rs","line":137,"name":"resolve_symbol"},"side":"oracle","sites":["src/resolve.rs:146"]},
+{"callee":{"file":"src/rpc/handlers.rs","line":1801,"name":"resolution_kind_rank"},"caller":{"file":"src/rpc/handlers.rs","line":56,"name":"handle_explain_symbol"},"side":"oracle","sites":["src/rpc/handlers.rs:146"]}
+]
