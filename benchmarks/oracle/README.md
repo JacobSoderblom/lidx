@@ -194,7 +194,7 @@ verdict table below comes from the same oracle edges and the same lidx edges as 
    same call is an `F -> literal` edge that no tool can match and that sits in the denominator of every tool, repowise's included. The blind spot is
    therefore shared, but removing the edge from our comparable recall would shrink a denominator repowise keeps, so the **repowise-rules column
    keeps these edges**; the lidx-native (dispatch-credited, diagnostic) grading leaves them out, and the report prints the repowise-rules recall with
-   and without them side by side. Counts per cell are in the report (cobra tests 16, gitleaks 7 and 9, syft 32 and 57, plus the held-out cells).
+   and without them side by side. Counts per cell are in the report (cobra tests 16, gitleaks 7 and 9, syft 33 and 60, plus the held-out cells).
 2. **Rust features** (`safety.rust_config(all_features=True)`, `_all_features` cells). rust-analyzer analyses `cargo.features = "all"`, so
    calls behind `#[cfg(feature = "...")]` (ripgrep's `pcre2`) are in the compiler graph. *repowise*: runs `cargo check` then `rust-analyzer scip .`
    with default features, so it has the same blind spot (and lidx's edges there would be wrong edges in a repowise-style grading). Because the
