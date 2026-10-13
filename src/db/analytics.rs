@@ -940,6 +940,8 @@ impl Db {
             .filter(|j| !j.public && !j.named_by_unresolved)
             .map(|j| j.claim.symbol.id)
             .collect();
+        // Computed on the first method that needs it.
+        let mut live: Option<HashSet<i64>> = None;
         let mut implemented: HashMap<i64, Vec<String>> = HashMap::new();
         let mut siblings: HashMap<i64, Vec<(String, Option<String>)>> = HashMap::new();
         let mut out = DeadSymbols::default();
@@ -950,6 +952,9 @@ impl Db {
                     &j,
                     graph_version,
                     &claimed,
+                    &reachability,
+                    repo_root,
+                    &mut live,
                     &mut implemented,
                     &mut siblings,
                 )?
@@ -989,11 +994,25 @@ impl Db {
         j: &Judged,
         graph_version: i64,
         claimed: &HashSet<i64>,
+        reachability: &str,
+        repo_root: &Path,
+        live: &mut Option<HashSet<i64>>,
         implemented: &mut HashMap<i64, Vec<String>>,
         siblings: &mut HashMap<i64, Vec<(String, Option<String>)>>,
     ) -> Result<Option<String>> {
-        if j.parent_id.is_some_and(|p| claimed.contains(&p)) {
-            return Ok(None);
+        if let Some(parent) = j.parent_id {
+            if live.is_none() {
+                *live = Some(live_symbols(
+                    conn,
+                    graph_version,
+                    reachability,
+                    claimed,
+                    repo_root,
+                )?);
+            }
+            if !live.as_ref().is_some_and(|l| l.contains(&parent)) {
+                return Ok(None);
+            }
         }
         let method = &j.claim.symbol;
         let found = match j.language.as_str() {
@@ -1526,6 +1545,178 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
 
 /// The `visibility` modifiers of the symbol(s) a method's qualname hangs
 /// under (`Type::method` or `pkg.Type.method`), joined by spaces.
+/// The symbols reachable from the roots along `reachability` edges. A root
+/// is a symbol nothing references that is not a claim (public API, tests,
+/// modules, members reached by dispatch or an interface); a symbol referenced
+/// only from claims, or from a cluster no root reaches, is not live even
+/// though `dead_symbols` finds an incoming edge for it (#472).
+///
+/// A Go type mention is stored as one `USES` edge per file from the file's
+/// module, so the edge alone cannot say whether the mentioning code is live.
+/// Those edges are settled last, by reading the file: the type is live when
+/// some mention lies in a live declaration (or outside any declaration), and
+/// mentions inside the type's own declaration and methods do not count.
+fn live_symbols(
+    conn: &rusqlite::Connection,
+    graph_version: i64,
+    reachability: &str,
+    claimed: &HashSet<i64>,
+    repo_root: &Path,
+) -> Result<HashSet<i64>> {
+    struct Mention {
+        target: i64,
+        qualname: String,
+        name: String,
+        path: String,
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT e.source_symbol_id, e.target_symbol_id, e.kind, ss.kind, f.language, f.path,
+                t.name, t.qualname
+         FROM edges e
+         LEFT JOIN symbols ss ON ss.id = e.source_symbol_id
+         JOIN symbols t ON t.id = e.target_symbol_id
+         JOIN files f ON f.id = e.file_id
+         WHERE e.kind IN ({reachability}) AND e.graph_version = ?1
+           AND (e.source_symbol_id IS NULL OR e.source_symbol_id != e.target_symbol_id)"
+    ))?;
+    let mut out_edges: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut referenced: HashSet<i64> = HashSet::new();
+    let mut live: HashSet<i64> = HashSet::new();
+    let mut stack: Vec<i64> = Vec::new();
+    let mut mentions: Vec<Mention> = Vec::new();
+    let rows = stmt.query_map([graph_version], |r| {
+        Ok((
+            r.get::<_, Option<i64>>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
+        ))
+    })?;
+    for row in rows {
+        let (source, target, kind, source_kind, language, path, name, qualname) = row?;
+        referenced.insert(target);
+        match source {
+            // not owned by a symbol: a file-level reference
+            None => {
+                if live.insert(target) {
+                    stack.push(target);
+                }
+            }
+            Some(_)
+                if kind == "USES"
+                    && language == "go"
+                    && source_kind.as_deref() == Some("module") =>
+            {
+                mentions.push(Mention {
+                    target,
+                    qualname,
+                    name,
+                    path,
+                });
+            }
+            Some(source) => out_edges.entry(source).or_default().push(target),
+        }
+    }
+    drop(stmt);
+    let mut ids = conn.prepare("SELECT id FROM symbols WHERE graph_version = ?1")?;
+    let rows = ids.query_map([graph_version], |r| r.get::<_, i64>(0))?;
+    for id in rows {
+        let id = id?;
+        if !referenced.contains(&id) && !claimed.contains(&id) && live.insert(id) {
+            stack.push(id);
+        }
+    }
+    drop(ids);
+
+    // file path -> (declarations: id, qualname, first line, last line; text lines)
+    type Decls = Vec<(i64, String, i64, i64)>;
+    let mut files: HashMap<String, Option<(Decls, Vec<String>)>> = HashMap::new();
+    loop {
+        while let Some(id) = stack.pop() {
+            for &target in out_edges.get(&id).into_iter().flatten() {
+                if live.insert(target) {
+                    stack.push(target);
+                }
+            }
+        }
+        let mut grew = false;
+        for m in &mentions {
+            if live.contains(&m.target) {
+                continue;
+            }
+            if !files.contains_key(&m.path) {
+                let decls: Decls = {
+                    let mut stmt = conn.prepare_cached(
+                        "SELECT s.id, s.qualname, s.start_line, s.end_line FROM symbols s
+                         JOIN files f ON f.id = s.file_id
+                         WHERE f.path = ?1 AND s.graph_version = ?2 AND s.kind != 'module'",
+                    )?;
+                    stmt.query_map(rusqlite::params![m.path, graph_version], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?
+                };
+                let text = std::fs::read_to_string(repo_root.join(&m.path)).ok();
+                files.insert(
+                    m.path.clone(),
+                    text.map(|t| (decls, t.lines().map(str::to_string).collect())),
+                );
+            }
+            // No readable source: keep the benefit of the doubt.
+            let Some((decls, lines)) = &files[&m.path] else {
+                live.insert(m.target);
+                stack.push(m.target);
+                grew = true;
+                continue;
+            };
+            let own = format!("{}.", m.qualname);
+            let mut found = false;
+            let mut any = false;
+            for (idx, line) in lines.iter().enumerate() {
+                if !mentions_word(line, &m.name) {
+                    continue;
+                }
+                any = true;
+                let n = idx as i64 + 1;
+                let enclosing = decls
+                    .iter()
+                    .filter(|(_, _, lo, hi)| *lo <= n && n <= *hi)
+                    .min_by_key(|(_, _, lo, hi)| hi - lo);
+                match enclosing {
+                    Some((_, q, _, _)) if *q == m.qualname || q.starts_with(&own) => {}
+                    Some((id, _, _, _)) => found |= live.contains(id),
+                    None => found = true,
+                }
+                if found {
+                    break;
+                }
+            }
+            if found || !any {
+                live.insert(m.target);
+                stack.push(m.target);
+                grew = true;
+            }
+        }
+        if !grew && stack.is_empty() {
+            break;
+        }
+    }
+    Ok(live)
+}
+
+/// Whether `line` contains `word` as a whole identifier.
+fn mentions_word(line: &str, word: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    line.match_indices(word).any(|(i, _)| {
+        !line[..i].chars().next_back().is_some_and(ident)
+            && !line[i + word.len()..].chars().next().is_some_and(ident)
+    })
+}
+
 /// One candidate once classified, before external-interface liveness.
 struct Judged {
     claim: DeadSymbol,

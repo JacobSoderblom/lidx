@@ -279,3 +279,53 @@ fn rust_type_becoming_live_after_incremental_sync_matches_fresh() {
     );
     assert_flip(RUST_FILES, ("src/lib.rs", &lib), "Orphan::fmt");
 }
+
+const GO_GHOST: &[(&str, &str)] = &[
+    ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+    (
+        "main.go",
+        "package main\n\nimport \"example.com/app/internal/app\"\n\nfunc main() { _ = app.NewLive() }\n",
+    ),
+    (
+        "internal/app/app.go",
+        "package app\n\ntype Live struct{}\n\nfunc NewLive() *Live { return &Live{} }\n\n\
+         func (l *Live) String() string { return \"l\" }\n\n\
+         type Ghost struct{ n int }\n\n\
+         func (g *Ghost) String() string { return \"g\" }\n\
+         func (g *Ghost) Read(p []byte) (int, error) { return 0, nil }\n\n\
+         func buildGhost() Ghost {\n\tg := Ghost{n: 1}\n\treturn g\n}\n",
+    ),
+];
+
+#[test]
+fn go_type_referenced_only_from_dead_code_is_dead_and_so_are_its_methods() {
+    let (_tmp, _root, mut ix) = common::live_indexer("lidx-dead-ext-ghost-", GO_GHOST);
+    let dead = claimed(&call(&mut ix));
+    assert!(has(&dead, "app.buildGhost"), "{dead:?}");
+    for method in ["Ghost.String", "Ghost.Read"] {
+        assert!(has(&dead, method), "{method} not claimed: {dead:?}");
+    }
+    assert!(!has(&dead, "Live.String"), "{dead:?}");
+}
+
+#[test]
+fn go_ghost_type_revived_by_a_live_caller_matches_fresh() {
+    let main_calls = "package main\n\nimport \"example.com/app/internal/app\"\n\nfunc main() { _ = app.NewLive(); _ = app.Make() }\n";
+    let app = GO_GHOST[2]
+        .1
+        .replace("func buildGhost() Ghost", "func Make() Ghost");
+    let (_tmp, root, mut ix) = common::live_indexer("lidx-dead-ext-ghost-inc-", GO_GHOST);
+    std::fs::write(root.join("main.go"), main_calls).unwrap();
+    std::fs::write(root.join("internal/app/app.go"), &app).unwrap();
+    ix.sync_rel_paths(&["main.go".to_string(), "internal/app/app.go".to_string()])
+        .unwrap();
+    let after = answer(&mut ix);
+    assert!(!has(&strings(&after["dead"]), "Ghost.String"), "{after}");
+    let merged = [
+        GO_GHOST[0],
+        ("main.go", main_calls),
+        ("internal/app/app.go", app.as_str()),
+    ];
+    let (_t2, _r2, mut fresh) = common::live_indexer("lidx-dead-ext-ghost-fresh-", &merged);
+    assert_eq!(after, answer(&mut fresh), "incremental != fresh");
+}
