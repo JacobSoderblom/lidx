@@ -23,6 +23,13 @@
 use crate::indexer::{channel, config, http, proto, python, sql_extractor, xref};
 
 pub const CALLS: &str = "CALLS";
+/// A call on an interface-typed receiver whose implementation cannot be told
+/// (Go: several implementations, none provable at the call site): the target is
+/// the interface method, and traversals fan out from it to the implementations
+/// through `IMPLEMENTS` (`Db::edges_for_symbols_with_dispatch`). Never a
+/// `CALLS` edge: a graph that names one callee for the call is not
+/// describing it. See [`CALL_LIKE`].
+pub const DISPATCH: &str = "DISPATCH";
 pub const IMPORTS: &str = "IMPORTS";
 pub const CONTAINS: &str = "CONTAINS";
 pub const EXTENDS: &str = "EXTENDS";
@@ -54,6 +61,7 @@ pub const CONFIG_BIND: &str = config::CONFIG_BIND_KIND;
 /// out before the bridge is consulted.
 pub const EXECUTION: &[&str] = &[
     CALLS,
+    DISPATCH,
     RPC_IMPL,
     RPC_CALL,
     RPC_ROUTE,
@@ -71,6 +79,7 @@ pub const EXECUTION: &[&str] = &[
 /// `trace_flow`'s default kinds are built from it.
 pub const CONSUMER: &[&str] = &[
     CALLS,
+    DISPATCH,
     RPC_IMPL,
     RPC_CALL,
     RPC_ROUTE,
@@ -88,6 +97,7 @@ pub const CONSUMER: &[&str] = &[
 /// edges, `USES` and `REFERENCES`.
 pub const SYMBOL_USE: &[&str] = &[
     CALLS,
+    DISPATCH,
     RPC_IMPL,
     RPC_CALL,
     RPC_ROUTE,
@@ -114,6 +124,7 @@ pub const SYMBOL_USE: &[&str] = &[
 /// bound only through `IOptions<T>` consumers is live.
 pub const REACHABILITY: &[&str] = &[
     CALLS,
+    DISPATCH,
     IMPORTS,
     RPC_IMPL,
     IMPLEMENTS,
@@ -128,14 +139,21 @@ pub const REACHABILITY: &[&str] = &[
 pub const TRACE_DEFAULT: &[&str] = CONSUMER;
 
 /// Edges `gather_context` follows when expanding seeds into a subgraph.
-pub const CONTEXT_EXPANSION: &[&str] = &[CALLS, CONTAINS, IMPLEMENTS, EXTENDS, IMPORTS, RPC_IMPL];
+pub const CONTEXT_EXPANSION: &[&str] = &[
+    CALLS, DISPATCH, CONTAINS, IMPLEMENTS, EXTENDS, IMPORTS, RPC_IMPL,
+];
 
 /// Edges counted as module-to-module coupling in the repo overview.
-pub const MODULE_COUPLING: &[&str] = &[CALLS, IMPORTS, XREF];
+pub const MODULE_COUPLING: &[&str] = &[CALLS, DISPATCH, IMPORTS, XREF];
 
 /// Edges that make their *source* an entry point (server side of a bridge),
 /// so `dead_symbols` never reports it.
 pub const ENTRYPOINT: &[&str] = &[HTTP_ROUTE, RPC_IMPL, CHANNEL_SUBSCRIBE];
+
+/// The edges whose source *calls* the target: a call with a named callee and a
+/// dispatch through an interface method. What `callers`/`callees` logic that
+/// special-cases calls (as opposed to bridge edges) tests with [`is_call_like`].
+pub const CALL_LIKE: &[&str] = &[CALLS, DISPATCH];
 
 /// Subtype relations whose class hierarchy is walked (`EXTENDS`, `IMPLEMENTS`).
 pub const SUBTYPING: &[&str] = &[EXTENDS, IMPLEMENTS];
@@ -164,7 +182,7 @@ pub const BRIDGE_CLIENT: &[&str] = &[RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH, CONFI
 pub const BRIDGE_SERVER: &[&str] = &[RPC_IMPL, HTTP_ROUTE, CHANNEL_SUBSCRIBE, CONFIG_SOURCE];
 
 /// Edges that call out of a file in the per-file context view.
-pub const CALL_SITE: &[&str] = &[CALLS, RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH];
+pub const CALL_SITE: &[&str] = &[CALLS, DISPATCH, RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH];
 
 /// gRPC protocol family.
 pub const RPC_FAMILY: &[&str] = &[RPC_IMPL, RPC_CALL, RPC_ROUTE];
@@ -211,6 +229,7 @@ pub const STRUCTURAL: &[&str] = &[CONTAINS, MODULE_FILE];
 /// fixtures is accepted.
 pub const ALL: &[&str] = &[
     CALLS,
+    DISPATCH,
     IMPORTS,
     CONTAINS,
     EXTENDS,
@@ -241,6 +260,11 @@ pub const ALL: &[&str] = &[
 /// `callers`/`callees`.
 pub fn is_other_edge(kind: &str) -> bool {
     contains(SYMBOL_USE, kind) && !contains(CONSUMER, kind)
+}
+
+/// Whether `kind` is [`CALLS`] or [`DISPATCH`].
+pub fn is_call_like(kind: &str) -> bool {
+    contains(CALL_LIKE, kind)
 }
 
 /// Whether `kind` belongs to `set`.
@@ -292,6 +316,7 @@ mod tests {
             members(EXECUTION),
             of(&[
                 "CALLS",
+                "DISPATCH",
                 "RPC_IMPL",
                 "RPC_CALL",
                 "RPC_ROUTE",
@@ -314,6 +339,7 @@ mod tests {
             members(SYMBOL_USE),
             of(&[
                 "CALLS",
+                "DISPATCH",
                 "RPC_IMPL",
                 "RPC_CALL",
                 "RPC_ROUTE",
@@ -340,6 +366,7 @@ mod tests {
             members(REACHABILITY),
             of(&[
                 "CALLS",
+                "DISPATCH",
                 "IMPORTS",
                 "RPC_IMPL",
                 "IMPLEMENTS",
@@ -400,6 +427,7 @@ mod tests {
             members(CONTEXT_EXPANSION),
             of(&[
                 "CALLS",
+                "DISPATCH",
                 "CONTAINS",
                 "IMPLEMENTS",
                 "EXTENDS",
@@ -407,7 +435,10 @@ mod tests {
                 "RPC_IMPL"
             ])
         );
-        assert_eq!(members(MODULE_COUPLING), of(&["CALLS", "IMPORTS", "XREF"]));
+        assert_eq!(
+            members(MODULE_COUPLING),
+            of(&["CALLS", "DISPATCH", "IMPORTS", "XREF"])
+        );
         assert_eq!(
             members(ENTRYPOINT),
             of(&["HTTP_ROUTE", "RPC_IMPL", "CHANNEL_SUBSCRIBE"])
@@ -436,7 +467,13 @@ mod tests {
         );
         assert_eq!(
             members(CALL_SITE),
-            of(&["CALLS", "RPC_CALL", "HTTP_CALL", "CHANNEL_PUBLISH"])
+            of(&[
+                "CALLS",
+                "DISPATCH",
+                "RPC_CALL",
+                "HTTP_CALL",
+                "CHANNEL_PUBLISH"
+            ])
         );
         assert_eq!(
             members(RPC_FAMILY),

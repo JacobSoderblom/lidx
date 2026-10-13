@@ -181,6 +181,10 @@ pub(crate) fn stored_edge_kind(
     target_id: i64,
 ) -> Result<String> {
     if !is_value_reference(edge_kind, call_shape) {
+        // A call that stays on a Go interface's method spec is a dispatch.
+        if edge_kind == edge_views::CALLS && is_go_interface_method(conn, target_id)? {
+            return Ok(edge_views::DISPATCH.to_string());
+        }
         return Ok(edge_kind.to_string());
     }
     Ok(
@@ -191,6 +195,30 @@ pub(crate) fn stored_edge_kind(
         }
         .to_string(),
     )
+}
+
+/// Whether symbol `id` is a method spec of a Go interface (the container of
+/// its qualname is an `interface`).
+fn is_go_interface_method(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT 1 FROM symbols m
+             JOIN files f ON f.id = m.file_id AND f.language = 'go'
+             JOIN symbols p ON p.graph_version = m.graph_version AND p.kind = 'interface'
+                           AND p.qualname = substr(m.qualname, 1, length(m.qualname) - length(m.name) - 1)
+             WHERE m.id = ?1 AND m.kind = 'method'",
+        )?
+        .exists([id])?)
+}
+
+/// The kind a stored edge is resolved as: a `DISPATCH` edge is re-judged as
+/// the `CALLS` it was written as.
+fn resolution_edge_kind(stored: String) -> String {
+    if stored == edge_views::DISPATCH {
+        edge_views::CALLS.to_string()
+    } else {
+        stored
+    }
 }
 
 /// The kind an unresolved value reference is stored under (always
@@ -488,6 +516,9 @@ pub(crate) struct LanguageProfile {
     /// told, so the call binds nothing.
     pub deferred_candidate: Option<DeferredCandidateFn>,
     /// What two symbols of one kind sharing a qualname in one file are.
+    /// Go declares no such twins; its conditional-compilation variants live
+    /// in different files (so different qualnames) and are chosen by the
+    /// package-member lookup instead: see `resolver_go::collapse_build_twins`.
     pub same_file_twins: SameFileTwins,
     /// The package a file belongs to (Cargo crate directory), for a language
     /// whose qualnames restart at each package root (`crate::`): among
@@ -1348,6 +1379,11 @@ pub(crate) struct Resolver<'c> {
     /// Qualname of the symbol making the reference being resolved: which
     /// fn-local twins it can see.
     caller_scope: Option<String>,
+    /// Path of the file making the reference being resolved.
+    caller_file: String,
+    /// Go build constraint of a file (by path), memoized: `None` for an
+    /// unconstrained one.
+    caller_build_tags: HashMap<String, Option<resolver_go::BuildTag>>,
     /// Simple name of the current call's known receiver type, if any --
     /// narrows same-arity extension-method overloads.
     call_receiver: Option<String>,
@@ -1361,6 +1397,13 @@ pub(crate) struct Resolver<'c> {
     /// `external_file_id`. `None` until the first stub of this `Resolver`
     /// instance's lifetime is created or looked up.
     external_file_id: Option<i64>,
+    /// What this resolver has read of the Go declarations.
+    go: resolver_go::GoCaches,
+    /// Narrow a Go call bound to an interface method spec to the concrete
+    /// method it runs (`refine_go_interface_call`). Only the re-judging
+    /// passes (one resolver, one cache, for every such edge) do: the edge
+    /// insert, which makes a resolver per file, leaves the call on the spec.
+    narrow_interface_calls: bool,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
     /// The only language the exact tier may bind a candidate in, for the
@@ -1393,10 +1436,14 @@ impl<'c> Resolver<'c> {
             binds_local_functions: false,
             deferred_cache: HashMap::new(),
             caller_scope: None,
+            caller_file: String::new(),
+            caller_build_tags: HashMap::new(),
             call_receiver: None,
             merged_half: MergedHalf::Value,
             call_scope: TypeScope::default(),
             external_file_id: None,
+            go: resolver_go::GoCaches::default(),
+            narrow_interface_calls: false,
             repo_entity_memo: HashMap::new(),
             exact_language: None,
             exact_skips_modules: false,
@@ -1412,6 +1459,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.caller_scope = r.source_qualname.map(str::to_string);
+        self.caller_file = r.source_file_path.to_string();
         // A Rust call names a Rust item: a bare method name that is also the
         // qualname of a SQL table or a Python function is no candidate.
         self.exact_language =
@@ -1419,7 +1467,8 @@ impl<'c> Resolver<'c> {
         self.exact_skips_modules = r.source_lang == "rust" && r.edge_kind == "CALLS";
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
-            return self.refuse_uncallable_kind(r, resolution);
+            let resolution = self.refuse_uncallable_kind(r, resolution)?;
+            return self.refine_go_interface_call(r, resolution);
         }
         // A value reference (`map(handler)`) is looked up exactly like a bare
         // or qualified call to the same text -- same tiers, same scoping --
@@ -3226,28 +3275,42 @@ impl<'c> Resolver<'c> {
                 continue;
             };
             let name = member.rsplit('.').next().unwrap_or(member);
-            let rows: Vec<(i64, String)> = self
+            let rows: Vec<(i64, String, String, Option<String>)> = self
                 .conn
                 .prepare_cached(
-                    "SELECT s.id, s.qualname, s.kind FROM symbols s JOIN files f ON f.id = s.file_id
+                    "SELECT s.id, s.qualname, s.kind, s.visibility FROM symbols s JOIN files f ON f.id = s.file_id
                      WHERE s.name = ?1 AND s.graph_version = ?2 AND f.language = 'go'
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
                 )?
                 .query_map(params![name, gv], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
                 // A bare `Name()` never dispatches to a method.
-                .filter(|(_, _, kind)| !(bare && kind == "method"))
-                .map(|(id, qualname, _)| (id, qualname))
+                .filter(|(_, _, kind, _)| !(bare && kind == "method"))
                 .collect();
             let dot_member = format!(".{member}");
-            let mut hits = rows.iter().filter_map(|(id, qualname)| {
-                let module = qualname.strip_suffix(&dot_member)?;
-                let dir = module.rsplit_once('/').map_or("", |(dir, _)| dir);
-                (dir == want_dir).then_some(*id)
-            });
+            let hits: Vec<(i64, String, String, Option<String>)> = rows
+                .into_iter()
+                .filter(|(_, qualname, _, _)| {
+                    qualname.strip_suffix(&dot_member).is_some_and(|module| {
+                        module.rsplit_once('/').map_or("", |(dir, _)| dir) == want_dir
+                    })
+                })
+                .collect();
+            // One declaration written in several files under mutually
+            // exclusive build constraints is one hit, not an ambiguity.
+            let caller_tag = self.go_caller_tag()?;
+            let mut hits = resolver_go::collapse_build_twins(
+                hits,
+                |(_, _, kind, visibility): &(i64, String, String, Option<String>)| {
+                    resolver_go::TwinKey::new(kind, member, visibility.as_deref())
+                },
+                caller_tag.as_ref(),
+            )
+            .into_iter()
+            .map(|(id, ..)| id);
             let first = hits.next();
             let second = first.and_then(|_| hits.next());
             // `Type.Method`: a method promoted from an embedded type when
@@ -4816,7 +4879,7 @@ impl Db {
                     event_ts: row.get(16)?,
                     ctx: ReferenceContext {
                         edge_id: Some(row.get(0)?),
-                        edge_kind: row.get(3)?,
+                        edge_kind: resolution_edge_kind(row.get(3)?),
                         target_qualname: row.get(4)?,
                         receiver_type: row.get(5)?,
                         receiver_scope: row.get(21)?,
@@ -5287,7 +5350,7 @@ impl Db {
         self.rejudge_bound_edges(
             graph_version,
             "",
-            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
+            "AND e.target_symbol_id IS NOT NULL AND e.kind IN ('CALLS', 'DISPATCH')
              AND e.deferred_kind IS NOT NULL",
         )
     }
@@ -5298,15 +5361,15 @@ impl Db {
     /// another file). The extractor can't see that return type, so the call
     /// site's `CALLS` edge (or its unresolved-store row) is re-read here and
     /// the edges derived from the callee's declaration. Last pass's derived
-    /// edges (`derived = 1`) go first, so the outcome
+    /// edges (`derived = DERIVED_DEFERRED_RPC`) go first, so the outcome
     /// depends only on the current symbols and incremental sync equals a
     /// fresh reindex (issue #77). Returns how many edges it wrote.
     pub fn rederive_deferred_rpc_calls(&self, graph_version: i64) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
-            "DELETE FROM edges WHERE graph_version = ?1 AND derived = 1",
-            params![graph_version],
+            "DELETE FROM edges WHERE graph_version = ?1 AND derived = ?2",
+            params![graph_version, crate::model::DERIVED_DEFERRED_RPC],
         )?;
         let sites = load_deferred_call_sites(&tx, graph_version)?;
         let derived = {
@@ -5335,6 +5398,8 @@ impl Db {
         struct StubEdgeRow {
             edge_id: i64,
             target_symbol_id: i64,
+            /// The `edges.kind` stored now (`DISPATCH` is resolved as `CALLS`).
+            stored_kind: String,
             ctx: ReferenceContext,
         }
 
@@ -5354,9 +5419,10 @@ impl Db {
                 Ok(StubEdgeRow {
                     edge_id: row.get(0)?,
                     target_symbol_id: row.get(1)?,
+                    stored_kind: row.get(2)?,
                     ctx: ReferenceContext {
                         edge_id: Some(row.get(0)?),
-                        edge_kind: row.get(2)?,
+                        edge_kind: resolution_edge_kind(row.get(2)?),
                         target_qualname: row.get(3)?,
                         receiver_type: row.get(4)?,
                         receiver_scope: row.get(11)?,
@@ -5377,6 +5443,7 @@ impl Db {
 
         {
             let mut resolver = Resolver::new(&tx, graph_version)?;
+            resolver.narrow_interface_calls = true;
             let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
@@ -5386,7 +5453,7 @@ impl Db {
                     // stores differently (a constant became a function).
                     Resolution::Resolved { target_id, kind }
                         if target_id != row.target_symbol_id
-                            || row.ctx.kind_for_target(&tx, target_id)? != row.ctx.edge_kind =>
+                            || row.ctx.kind_for_target(&tx, target_id)? != row.stored_kind =>
                     {
                         update_edge.execute(params![
                             target_id,
@@ -5442,19 +5509,65 @@ impl Db {
     }
 
     /// Re-judge the Go calls bound to a method their receiver's type got
-    /// from an embedded type (the bound symbol is not the `Type.Method` the
-    /// call named): editing the struct, or giving the type a method of its
-    /// own, changes the answer without touching the call or its target.
+    /// from an embedded type, or to the one implementation of an interface
+    /// (the bound symbol is not the `Type.Method` the call named), and the
+    /// `DISPATCH` edges: editing the struct, giving the type a method of its
+    /// own, or adding or removing an implementation of the interface changes
+    /// the answer without touching the call or its target.
     pub fn retry_go_promoted_edges(&self, graph_version: i64) -> Result<usize> {
         self.rejudge_bound_edges(
             graph_version,
             "JOIN symbols promoted ON promoted.id = e.target_symbol_id",
-            "AND e.kind = 'CALLS' AND e.resolution_kind = 'receiver_type'
+            "AND e.kind IN ('CALLS', 'DISPATCH') AND e.resolution_kind = 'receiver_type'
              AND e.deferred_kind IS NULL AND e.import_candidates IS NOT NULL
              AND e.target_qualname LIKE '%.%'
-             AND substr(promoted.qualname, -length(e.target_qualname) - 1)
-                 != '.' || e.target_qualname
+             AND (e.kind = 'DISPATCH'
+                  OR substr(promoted.qualname, -length(e.target_qualname) - 1)
+                     != '.' || e.target_qualname)
              AND e.file_id IN (SELECT id FROM files WHERE language = 'go')",
+        )
+    }
+
+    /// Narrow the Go calls left on an interface method spec (`DISPATCH`
+    /// edges) to the concrete method they run, and re-judge the ones already
+    /// narrowed, now that every symbol and edge of this pass exists: the
+    /// answer depends on the interface's implementations
+    /// (`Resolver::refine_go_interface_call`), so adding, removing or editing
+    /// one changes edges in files nothing touched. Run last in
+    /// `repair_unresolved`, so a fresh reindex and a sync end alike.
+    pub fn retry_go_interface_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "LEFT JOIN symbols bound ON bound.id = e.target_symbol_id",
+            "AND e.target_symbol_id IS NOT NULL
+             AND e.file_id IN (SELECT id FROM files WHERE language = 'go')
+             AND (e.kind = 'DISPATCH'
+                  OR (e.kind = 'CALLS' AND e.resolution_kind = 'receiver_type'
+                      AND (e.deferred_kind IS NOT NULL
+                           OR (e.import_candidates IS NOT NULL AND e.target_qualname LIKE '%.%'
+                               AND substr(bound.qualname, -length(e.target_qualname) - 1)
+                                   != '.' || e.target_qualname))))",
+        )
+    }
+
+    /// Re-judge the Go edges bound to one of several same-package twins of a
+    /// declaration (one name and kind in different files, at least one under
+    /// a build constraint): editing a constraint, or adding or removing a
+    /// twin, changes which twin a call means without touching the call.
+    pub fn retry_go_twin_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "JOIN symbols twin ON twin.id = e.target_symbol_id",
+            &format!(
+                "AND e.kind IN ('CALLS', 'REFERENCES')
+                 AND e.file_id IN (SELECT id FROM files WHERE language = 'go')
+                 AND EXISTS (
+                    SELECT 1 FROM symbols other
+                    WHERE other.graph_version = e.graph_version AND other.name = twin.name
+                      AND other.kind = twin.kind AND other.file_id != twin.file_id
+                      AND (other.visibility LIKE '%{tag}%' OR twin.visibility LIKE '%{tag}%'))",
+                tag = crate::indexer::go_build::BUILD_TAG_MODIFIER
+            ),
         )
     }
 
@@ -5637,6 +5750,10 @@ impl Db {
         symbols_deleted_this_batch: bool,
         context: &str,
     ) -> Result<(usize, usize)> {
+        // First: symbols are final by now, and a NULL-target derived edge
+        // (its interface or type was deleted) must go before the reconcile
+        // below mistakes it for an unresolved reference.
+        self.rederive_go_implements(graph_version)?;
         let reconciled = self.reconcile_unresolved_reference_store(graph_version)?;
         if reconciled > 0 {
             eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after {context}");
@@ -5654,6 +5771,13 @@ impl Db {
         if promoted_rejudged > 0 {
             eprintln!(
                 "lidx: re-judged {promoted_rejudged} promoted-method edge(s) after {context}"
+            );
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let twins_rejudged = self.retry_go_twin_edges(graph_version)?;
+        if twins_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {twins_rejudged} build-constraint twin edge(s) after {context}"
             );
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
@@ -5681,6 +5805,13 @@ impl Db {
             );
             // Edges unbound from a stub are now NULL-target; move them into
             // the store like any other orphaned edge.
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let interface_rejudged = self.retry_go_interface_edges(graph_version)?;
+        if interface_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {interface_rejudged} interface call edge(s) after {context}"
+            );
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
         // After every step that can bind a deferred call site, since it
@@ -5941,7 +6072,7 @@ fn insert_derived_rpc_calls(
          (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
           evidence_snippet, evidence_start_line, evidence_end_line, confidence,
           graph_version, commit_sha, trace_id, span_id, event_ts, resolution_kind, derived)
-         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?;
     for d in derived {
         let site = d.site;
@@ -5961,6 +6092,7 @@ fn insert_derived_rpc_calls(
             site.span_id,
             site.event_ts,
             d.resolution_kind,
+            crate::model::DERIVED_DEFERRED_RPC,
         ])?;
     }
     Ok(derived.len())

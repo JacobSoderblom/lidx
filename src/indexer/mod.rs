@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 26;
+pub const EXTRACTOR_VERSION: i64 = 27;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 /// `meta` key of the Cargo manifest view (`rust_workspace`) the Rust files
 /// were last extracted against.
@@ -58,6 +58,7 @@ pub mod csharp;
 pub mod differ;
 pub mod extract;
 pub mod go;
+pub mod go_build;
 mod go_repo;
 mod go_types;
 pub mod http;

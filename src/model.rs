@@ -358,6 +358,15 @@ impl ReadSymbolEntry {
     }
 }
 
+/// `edges.derived` values: edges a repair pass rebuilds from the current
+/// symbols instead of an extractor writing them (each pass owns its value and
+/// deletes only its own). The partial index `idx_edges_derived_rpc` covers
+/// `DERIVED_DEFERRED_RPC` only; the Go structural pass finds its rows by
+/// `kind = 'IMPLEMENTS'` (`idx_edges_kind_source`), which is as selective.
+pub const DERIVED_DEFERRED_RPC: i64 = 1;
+/// `IMPLEMENTS` edges of Go's structural typing (`Db::rederive_go_implements`).
+pub const DERIVED_GO_STRUCTURAL: i64 = 2;
+
 /// `resolution_kind` of the synthetic CALLS edges built by
 /// `Db::edges_for_symbols_with_dispatch` (interface method -> implementor).
 pub const INTERFACE_DISPATCH_KIND: &str = "interface_dispatch";

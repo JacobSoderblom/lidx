@@ -268,7 +268,10 @@ fn direction_labels(
             config.languages.as_deref(),
             config.graph_version,
         )?;
-        for e in edges.iter().filter(|e| e.kind == "CALLS") {
+        for e in edges
+            .iter()
+            .filter(|e| crate::edge_views::is_call_like(&e.kind))
+        {
             if e.source_symbol_id == Some(symbol.id) {
                 labels.extend(e.target_symbol_id.map(|id| (id, "callee")));
             } else if e.target_symbol_id == Some(symbol.id) {
@@ -490,7 +493,9 @@ fn collect_content_file_strategy(
                 config.graph_version,
             )?;
             for edge in &edges {
-                if edge.kind == "CALLS" && edge.target_symbol_id == Some(symbol_id) {
+                if crate::edge_views::is_call_like(&edge.kind)
+                    && edge.target_symbol_id == Some(symbol_id)
+                {
                     let Some(source_id) = edge.source_symbol_id else {
                         continue;
                     };
@@ -674,7 +679,7 @@ fn collect_content_symbol_strategy(
                     if c.total_bytes - cross_start >= cross_file_budget {
                         break;
                     }
-                    if edge.kind == "CALLS" {
+                    if crate::edge_views::is_call_like(&edge.kind) {
                         let (target_id, relationship) = if edge.source_symbol_id == Some(*seed_id) {
                             (edge.target_symbol_id, "callee")
                         } else if edge.target_symbol_id == Some(*seed_id) {

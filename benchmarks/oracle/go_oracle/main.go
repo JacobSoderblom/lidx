@@ -43,7 +43,12 @@ type Edge struct {
 	Dispatch bool `json:"dispatch,omitempty"`
 	// Closure marks an edge whose callee is a function literal, keyed at its enclosing declaration.
 	Closure bool `json:"closure,omitempty"`
-	static  int
+	// CalleeAlts are the interface method declarations ("file:line" of the method name) the
+	// edge's dynamic call sites invoke. The callee above is the concrete implementation RTA
+	// found; a graph that points a call at the interface method instead is describing the
+	// same call (see README, "Dispatch edges").
+	CalleeAlts []string `json:"callee_alts,omitempty"`
+	static     int
 }
 
 type Output struct {
@@ -62,6 +67,15 @@ type Output struct {
 	// compiler knows what they call but the callee is not gradable.
 	ExtSites     []string `json:"ext_sites"`
 	ClosureSites []string `json:"closure_sites"`
+	// IfaceCalls are the (caller, interface method) pairs of every interface method invocation in a reachable
+	// function, whatever RTA found behind it (nothing in the repository, or only types outside it). The type
+	// checker resolves the call to the interface method; a graph edge to it is a true call.
+	IfaceCalls []IfaceCall `json:"iface_calls"`
+}
+
+type IfaceCall struct {
+	Caller Decl   `json:"caller"`
+	Method string `json:"method"`
 }
 
 func main() {
@@ -286,6 +300,31 @@ func main() {
 				siteStr = fmt.Sprintf("%s:%d", rel, p.Line)
 			}
 		}
+		ifaceAlt := ""
+		if site != nil {
+			if c := site.Common(); c != nil && c.IsInvoke() && c.Method != nil {
+				m := c.Method
+				if o := m.Origin(); o != nil {
+					m = o
+				}
+				if pos := prog.Fset.Position(m.Pos()); pos.IsValid() {
+					if rel, ok := inRepo(pos.Filename); ok {
+						ifaceAlt = fmt.Sprintf("%s:%d", rel, pos.Line)
+					}
+				}
+			}
+		}
+		addAlt := func(e *Edge) {
+			if ifaceAlt == "" {
+				return
+			}
+			for _, a := range e.CalleeAlts {
+				if a == ifaceAlt {
+					return
+				}
+			}
+			e.CalleeAlts = append(e.CalleeAlts, ifaceAlt)
+		}
 		isStatic := true
 		if site != nil {
 			if c := site.Common(); c != nil && (c.IsInvoke() || c.StaticCallee() == nil) {
@@ -294,6 +333,7 @@ func main() {
 		}
 		if idx, ok := seen[k]; ok {
 			e := &out.Edges[idx]
+			addAlt(e)
 			if isStatic {
 				e.static++
 				e.Dispatch = false
@@ -308,6 +348,7 @@ func main() {
 		}
 		seen[k] = len(out.Edges)
 		e := Edge{Caller: cf, Callee: ct, Dispatch: !isStatic, Closure: closure}
+		addAlt(&e)
 		if isStatic {
 			e.static = 1
 		}
@@ -377,6 +418,49 @@ func main() {
 			callerSeen[d] = true
 		}
 	}
+
+	ifaceSeen := map[IfaceCall]bool{}
+	for fn := range res.Reachable {
+		if fn == nil {
+			continue
+		}
+		cf, why := declOf(fn)
+		if why != "" {
+			continue
+		}
+		for _, b := range fn.Blocks {
+			for _, in := range b.Instrs {
+				ci, ok := in.(ssa.CallInstruction)
+				if !ok || !ci.Common().IsInvoke() || ci.Common().Method == nil {
+					continue
+				}
+				m := ci.Common().Method
+				if o := m.Origin(); o != nil {
+					m = o
+				}
+				pos := prog.Fset.Position(m.Pos())
+				if !pos.IsValid() {
+					continue
+				}
+				if rel, ok := inRepo(pos.Filename); ok {
+					ifaceSeen[IfaceCall{Caller: cf, Method: fmt.Sprintf("%s:%d", rel, pos.Line)}] = true
+				}
+			}
+		}
+	}
+	for c := range ifaceSeen {
+		out.IfaceCalls = append(out.IfaceCalls, c)
+	}
+	sort.Slice(out.IfaceCalls, func(i, j int) bool {
+		a, b := out.IfaceCalls[i], out.IfaceCalls[j]
+		if a.Caller.File != b.Caller.File {
+			return a.Caller.File < b.Caller.File
+		}
+		if a.Caller.Line != b.Caller.Line {
+			return a.Caller.Line < b.Caller.Line
+		}
+		return a.Method < b.Method
+	})
 
 	for f := range fileSet {
 		out.Files = append(out.Files, f)

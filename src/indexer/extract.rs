@@ -370,6 +370,11 @@ impl GoValue {
 pub struct GoDeferred {
     pub recv: GoValue,
     pub method: String,
+    /// The receiver's dynamic type where the call site proves it (`var d Doer
+    /// = &Impl{}` with `d` assigned nowhere else): a call on an interface
+    /// binds the concrete method instead of the interface's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic: Option<GoValue>,
 }
 
 /// A deferred resolution the extractor could not finish in one file: the
@@ -727,6 +732,9 @@ pub struct ExtractedFile {
     /// per overload. Recorded into `symbols.visibility` as `override`;
     /// dispatch only pairs a base-class member with an override.
     pub override_symbols: Vec<(String, i64)>,
+    /// Modifier words recorded on **every** symbol of the file (Go: the
+    /// file's build constraint, see `indexer::go_build`).
+    pub file_modifiers: Vec<String>,
 }
 
 /// The declaration modifiers one file's extraction recorded, written to
@@ -738,6 +746,8 @@ pub struct SymbolModifiers<'a> {
     pub local: &'a [String],
     /// `(qualname, start_line)`: overloads share a qualname.
     pub overrides: &'a [(String, i64)],
+    /// Words every symbol of the file carries.
+    pub file_wide: &'a [String],
 }
 
 impl ExtractedFile {
@@ -748,6 +758,7 @@ impl ExtractedFile {
             statics: &self.static_member_qualnames,
             local: &self.local_qualnames,
             overrides: &self.override_symbols,
+            file_wide: &self.file_modifiers,
         }
     }
 }

@@ -1,0 +1,484 @@
+//! Go interface method specs are symbols; a call on an interface-typed
+//! receiver binds to the spec; types that structurally implement the
+//! interface get `IMPLEMENTS` edges, so `analyze_impact` reaches the caller
+//! from an implementing method through interface dispatch. Every incremental
+//! scenario ends equal to a fresh reindex.
+
+mod common;
+
+use common::golden;
+use lidx::indexer::Indexer;
+use lidx::rpc;
+
+const GO_MOD: &str = "module example.com/m\n\ngo 1.22\n";
+const DOER: &str = "package app\n\ntype Doer interface {\n\tDo() error\n}\n";
+const IMPLS: &str = "package app\n\ntype ImplA struct{}\n\nfunc (a *ImplA) Do() error { return nil }\n\ntype ImplB struct{}\n\nfunc (b ImplB) Do() error { return nil }\n";
+const USE: &str = "package app\n\nfunc Use() {\n\tvar d Doer\n\td.Do()\n}\n";
+/// Wrong arity for `Do() error`: not an implementation.
+const NOT_IMPL: &str =
+    "package app\n\ntype Other struct{}\n\nfunc (o Other) Do(x int) error { return nil }\n";
+
+fn base() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("go.mod", GO_MOD),
+        ("doer.go", DOER),
+        ("impls.go", IMPLS),
+        ("use.go", USE),
+        ("other.go", NOT_IMPL),
+    ]
+}
+
+/// Only `ImplA` implements `Doer`.
+const IMPLS_ONE: &str =
+    "package app\n\ntype ImplA struct{}\n\nfunc (a *ImplA) Do() error { return nil }\n";
+
+fn indexed(files: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf, Indexer) {
+    let (tmp, root, db_path) = common::index_repo("lidx-go-iface-", files);
+    let indexer = Indexer::new(root.clone(), db_path).unwrap();
+    (tmp, root, indexer)
+}
+
+fn edges(indexer: &Indexer, kind: &str, source_like: &str) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.qualname || ' -> ' || COALESCE(t.qualname, '?') FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = ?1 AND e.graph_version = ?2 AND s.qualname LIKE ?3
+             ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![kind, gv, source_like], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+fn sync(indexer: &mut Indexer, root: &std::path::Path, files: &[(&str, &str)]) {
+    common::write_files(root, files);
+    let paths: Vec<String> = files.iter().map(|(p, _)| p.to_string()).collect();
+    indexer.sync_rel_paths(&paths).unwrap();
+}
+
+fn assert_incremental_equals_fresh(indexer: &Indexer, final_files: &[(&str, &str)]) {
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(final_files);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+fn with(
+    files: &[(&'static str, &'static str)],
+    edit: (&'static str, &'static str),
+) -> Vec<(&'static str, &'static str)> {
+    let mut out: Vec<_> = files
+        .iter()
+        .filter(|(p, _)| *p != edit.0)
+        .copied()
+        .collect();
+    out.push(edit);
+    out
+}
+
+fn rpc_result(root: &std::path::Path, method: &str, params: &str) -> serde_json::Value {
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let response = rpc::call(root.to_path_buf(), db_path, method.to_string(), params, "1").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    value["result"].clone()
+}
+
+#[test]
+fn several_implementations_leave_the_call_on_the_spec_as_a_dispatch_edge() {
+    let (_tmp, _root, indexer) = indexed(&base());
+    assert!(edges(&indexer, "CALLS", "use.Use").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+}
+
+#[test]
+fn the_one_implementation_is_bound_directly() {
+    let files = with(&base(), ("impls.go", IMPLS_ONE));
+    let (_tmp, _root, indexer) = indexed(&files);
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> impls.ImplA.Do"]
+    );
+    assert!(edges(&indexer, "DISPATCH", "use.Use").is_empty());
+}
+
+#[test]
+fn a_type_with_another_signature_is_no_implementation_for_uniqueness() {
+    // `Other.Do(x int)` does not implement `Doer`, so ImplA stays the only one.
+    let files = with(&base(), ("impls.go", IMPLS_ONE));
+    let (_tmp, _root, indexer) = indexed(&files);
+    assert_eq!(edges(&indexer, "IMPLEMENTS", "%").len(), 1);
+}
+
+const PROVABLE: &str = "package app\n\ntype Holder struct{ h Doer }\n\nfunc NewB() *ImplB { return &ImplB{} }\n\nfunc Literal() {\n\tvar d Doer = &ImplA{}\n\td.Do()\n}\n\nfunc Factory() {\n\tvar d Doer = NewB()\n\td.Do()\n}\n\nfunc Field() {\n\ts := &Holder{h: &ImplA{}}\n\ts.h.Do()\n}\n\nfunc Reassigned() {\n\tvar d Doer = &ImplA{}\n\td = &ImplB{}\n\td.Do()\n}\n\nfunc Param(d Doer) {\n\td.Do()\n}\n\nfunc FieldReassigned() {\n\ts := &Holder{h: &ImplA{}}\n\ts.h = &ImplB{}\n\ts.h.Do()\n}\n";
+
+#[test]
+fn a_receiver_type_proven_at_the_call_site_binds_the_concrete_method() {
+    let files = with(&base(), ("use.go", PROVABLE));
+    let (_tmp, _root, indexer) = indexed(&files);
+    for (caller, target) in [
+        ("use.Literal", "impls.ImplA.Do"),
+        ("use.Factory", "impls.ImplB.Do"),
+        ("use.Field", "impls.ImplA.Do"),
+    ] {
+        // (`Factory` also calls the constructor)
+        let calls = edges(&indexer, "CALLS", caller);
+        assert!(
+            calls.contains(&format!("{caller} -> {target}")),
+            "{caller}: {calls:?}"
+        );
+        assert!(!calls.iter().any(|c| c.ends_with("Doer.Do")), "{calls:?}");
+        assert!(edges(&indexer, "DISPATCH", caller).is_empty(), "{caller}");
+    }
+    // not provable: assigned again, a parameter, a reassigned field
+    for caller in ["use.Reassigned", "use.Param", "use.FieldReassigned"] {
+        assert!(edges(&indexer, "CALLS", caller).is_empty(), "{caller}");
+        assert_eq!(
+            edges(&indexer, "DISPATCH", caller),
+            vec![format!("{caller} -> doer.Doer.Do")],
+            "{caller}"
+        );
+    }
+}
+
+#[test]
+fn structural_implementers_get_implements_edges() {
+    let (_tmp, _root, indexer) = indexed(&base());
+    assert_eq!(
+        edges(&indexer, "IMPLEMENTS", "impls.%"),
+        vec!["impls.ImplA -> doer.Doer", "impls.ImplB -> doer.Doer"]
+    );
+    assert!(edges(&indexer, "IMPLEMENTS", "other.%").is_empty());
+}
+
+#[test]
+fn analyze_impact_on_an_implementation_reaches_the_caller_through_either_path() {
+    // two implementations: the DISPATCH edge, fanned out through IMPLEMENTS
+    let (_tmp, root, _indexer) = indexed(&base());
+    for target in ["impls.ImplA.Do", "impls.ImplB.Do"] {
+        let result = rpc_result(
+            &root,
+            "analyze_impact",
+            &format!(r#"{{"qualname":"{target}","direction":"upstream"}}"#),
+        );
+        let affected = result["affected"].to_string();
+        assert!(affected.contains("use.Use"), "{target}: {affected}");
+    }
+    // one implementation: the direct CALLS edge
+    let files = with(&base(), ("impls.go", IMPLS_ONE));
+    let (_tmp2, root2, _indexer2) = indexed(&files);
+    let result = rpc_result(
+        &root2,
+        "analyze_impact",
+        r#"{"qualname":"impls.ImplA.Do","direction":"upstream"}"#,
+    );
+    assert!(result["affected"].to_string().contains("use.Use"));
+}
+
+#[test]
+fn trace_flow_from_a_caller_fans_out_through_the_dispatch_edge() {
+    let (_tmp, root, _indexer) = indexed(&base());
+    let result = rpc_result(
+        &root,
+        "trace_flow",
+        r#"{"start_qualname":"use.Use","direction":"downstream","max_hops":3}"#,
+    );
+    let text = result.to_string();
+    for target in ["doer.Doer.Do", "impls.ImplA.Do", "impls.ImplB.Do"] {
+        assert!(text.contains(target), "{target}: {text}");
+    }
+    assert!(text.contains("DISPATCH"), "{text}");
+}
+
+#[test]
+fn explain_symbol_lists_the_dispatch_edge_with_its_kind() {
+    let (_tmp, root, _indexer) = indexed(&base());
+    let caller = rpc_result(&root, "explain_symbol", r#"{"qualname":"use.Use"}"#);
+    let callees = caller["callees"].to_string();
+    assert!(callees.contains("doer.Doer.Do"), "{callees}");
+    assert!(callees.contains("DISPATCH"), "{callees}");
+    let spec = rpc_result(&root, "explain_symbol", r#"{"qualname":"doer.Doer.Do"}"#);
+    assert!(spec["callers"].to_string().contains("use.Use"), "{spec}");
+}
+
+#[test]
+fn embedded_interfaces_contribute_their_methods() {
+    let files = [
+        ("go.mod", GO_MOD),
+        (
+            "ifaces.go",
+            "package app\n\ntype Reader interface{ Read() int }\n\ntype Closer interface{ Close() }\n\ntype RC interface {\n\tReader\n\tCloser\n}\n",
+        ),
+        (
+            "file.go",
+            "package app\n\ntype File struct{}\n\nfunc (f *File) Read() int { return 0 }\n\nfunc (f *File) Close() {}\n\ntype Half struct{}\n\nfunc (h Half) Read() int { return 0 }\n",
+        ),
+        (
+            "use.go",
+            "package app\n\nfunc Use(rc RC) {\n\trc.Read()\n\trc.Close()\n}\n",
+        ),
+    ];
+    let (_tmp, _root, indexer) = indexed(&files);
+    // Reader has two implementations, Closer one
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> ifaces.Reader.Read"]
+    );
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> file.File.Close"]
+    );
+    let impls = edges(&indexer, "IMPLEMENTS", "file.%");
+    assert!(
+        impls.contains(&"file.File -> ifaces.RC".to_string()),
+        "{impls:?}"
+    );
+    assert!(
+        impls.contains(&"file.Half -> ifaces.Reader".to_string()),
+        "{impls:?}"
+    );
+    assert!(
+        !impls.contains(&"file.Half -> ifaces.RC".to_string()),
+        "{impls:?}"
+    );
+}
+
+#[test]
+fn a_struct_embedding_an_interface_promotes_its_methods() {
+    let files = [
+        ("go.mod", GO_MOD),
+        ("doer.go", DOER),
+        (
+            "wrap.go",
+            "package app\n\ntype Wrapper struct {\n\tDoer\n}\n",
+        ),
+        (
+            "use.go",
+            "package app\n\nfunc Use(w *Wrapper) {\n\tw.Do()\n}\n",
+        ),
+    ];
+    let (_tmp, _root, indexer) = indexed(&files);
+    // the promoted method is the spec itself: nothing concrete to bind
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+    assert_eq!(
+        edges(&indexer, "IMPLEMENTS", "wrap.%"),
+        vec!["wrap.Wrapper -> doer.Doer"]
+    );
+}
+
+#[test]
+fn a_second_implementation_turns_the_direct_call_into_a_dispatch_and_back() {
+    let one = with(&base(), ("impls.go", IMPLS_ONE));
+    let (_tmp, root, mut indexer) = indexed(&one);
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> impls.ImplA.Do"]
+    );
+    assert_incremental_equals_fresh(&indexer, &one);
+
+    // a second implementation in a new file
+    let second = "package app\n\ntype ImplB struct{}\n\nfunc (b ImplB) Do() error { return nil }\n";
+    sync(&mut indexer, &root, &[("second.go", second)]);
+    assert!(edges(&indexer, "CALLS", "use.Use").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+    let mut two = one.clone();
+    two.push(("second.go", second));
+    assert_incremental_equals_fresh(&indexer, &two);
+
+    // removing it turns the edge back
+    std::fs::remove_file(root.join("second.go")).unwrap();
+    indexer.sync_rel_paths(&["second.go".to_string()]).unwrap();
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> impls.ImplA.Do"]
+    );
+    assert!(edges(&indexer, "DISPATCH", "use.Use").is_empty());
+    assert_incremental_equals_fresh(&indexer, &one);
+}
+
+#[test]
+fn editing_an_interface_method_matches_a_fresh_reindex() {
+    let files = base();
+    let (_tmp, root, mut indexer) = indexed(&files);
+    assert_incremental_equals_fresh(&indexer, &files);
+
+    // The spec gains a method nobody implements: no implementers left.
+    let grown = "package app\n\ntype Doer interface {\n\tDo() error\n\tStop()\n}\n";
+    sync(&mut indexer, &root, &[("doer.go", grown)]);
+    assert!(edges(&indexer, "IMPLEMENTS", "impls.%").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+    assert_incremental_equals_fresh(&indexer, &with(&files, ("doer.go", grown)));
+
+    // An implementation gains it: it is the only one again, so the call binds it.
+    let impls = "package app\n\ntype ImplA struct{}\n\nfunc (a *ImplA) Do() error { return nil }\n\nfunc (a *ImplA) Stop() {}\n\ntype ImplB struct{}\n\nfunc (b ImplB) Do() error { return nil }\n";
+    sync(&mut indexer, &root, &[("impls.go", impls)]);
+    assert_eq!(
+        edges(&indexer, "IMPLEMENTS", "impls.%"),
+        vec!["impls.ImplA -> doer.Doer"]
+    );
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> impls.ImplA.Do"]
+    );
+    let step2 = with(&with(&files, ("doer.go", grown)), ("impls.go", impls));
+    assert_incremental_equals_fresh(&indexer, &step2);
+
+    // The spec method is renamed: the call no longer binds.
+    let renamed = "package app\n\ntype Doer interface {\n\tDo2() error\n\tStop()\n}\n";
+    sync(&mut indexer, &root, &[("doer.go", renamed)]);
+    assert!(edges(&indexer, "CALLS", "use.Use").is_empty());
+    assert!(edges(&indexer, "DISPATCH", "use.Use").is_empty());
+    let step3 = with(&step2, ("doer.go", renamed));
+    assert_incremental_equals_fresh(&indexer, &step3);
+
+    // And back.
+    sync(
+        &mut indexer,
+        &root,
+        &[("doer.go", DOER), ("impls.go", IMPLS)],
+    );
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+    assert_incremental_equals_fresh(&indexer, &files);
+}
+
+#[test]
+fn deleting_the_interface_file_drops_its_edges_like_a_fresh_reindex() {
+    let files = base();
+    let (_tmp, root, mut indexer) = indexed(&files);
+    std::fs::remove_file(root.join("doer.go")).unwrap();
+    indexer.sync_rel_paths(&["doer.go".to_string()]).unwrap();
+    assert!(edges(&indexer, "IMPLEMENTS", "impls.%").is_empty());
+    assert!(edges(&indexer, "DISPATCH", "use.Use").is_empty());
+    let rest: Vec<_> = files
+        .iter()
+        .filter(|(p, _)| *p != "doer.go")
+        .copied()
+        .collect();
+    assert_incremental_equals_fresh(&indexer, &rest);
+}
+
+#[test]
+fn editing_the_proof_matches_a_fresh_reindex() {
+    // the proven receiver loses its proof when `d` is assigned again
+    let proven = "package app\n\nfunc Use() {\n\tvar d Doer = &ImplA{}\n\td.Do()\n}\n";
+    let files = with(&base(), ("use.go", proven));
+    let (_tmp, root, mut indexer) = indexed(&files);
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> impls.ImplA.Do"]
+    );
+    assert_incremental_equals_fresh(&indexer, &files);
+
+    let unproven =
+        "package app\n\nfunc Use() {\n\tvar d Doer = &ImplA{}\n\td = &ImplB{}\n\td.Do()\n}\n";
+    sync(&mut indexer, &root, &[("use.go", unproven)]);
+    assert!(edges(&indexer, "CALLS", "use.Use").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+    assert_incremental_equals_fresh(&indexer, &with(&files, ("use.go", unproven)));
+}
+
+#[test]
+fn a_production_caller_does_not_see_an_implementation_declared_in_a_test_file() {
+    let mock =
+        "package app\n\ntype mockDoer struct{}\n\nfunc (m mockDoer) Do() error { return nil }\n";
+    let test_caller = "package app\n\nfunc UseInTest(d Doer) {\n\td.Do()\n}\n";
+    let mut files = with(&base(), ("impls.go", IMPLS_ONE));
+    files.push(("mock_test.go", mock));
+    files.push(("use_test.go", test_caller));
+    let (_tmp, _root, indexer) = indexed(&files);
+    // the production caller: ImplA is the only implementation it can reach
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> impls.ImplA.Do"]
+    );
+    // the test caller sees both
+    assert!(edges(&indexer, "CALLS", "use_test.UseInTest").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use_test.UseInTest"),
+        vec!["use_test.UseInTest -> doer.Doer.Do"]
+    );
+}
+
+#[test]
+fn a_method_on_an_undeclared_receiver_type_makes_the_implementation_unproven() {
+    // `A2` is an alias of `ImplB`; its method has no type symbol to judge, so
+    // `ImplA` is not shown to be the only implementation
+    let alias = "package app\n\ntype A2 = ImplA\n\nfunc (a *A2) Do() error { return nil }\n";
+    let mut files = with(&base(), ("impls.go", IMPLS_ONE));
+    files.push(("alias.go", alias));
+    let (_tmp, _root, indexer) = indexed(&files);
+    assert!(edges(&indexer, "CALLS", "use.Use").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+}
+
+#[test]
+fn an_implementation_reached_only_through_a_dispatch_edge_is_not_dead() {
+    let (_tmp, root, mut indexer) = indexed(&base());
+    let result = rpc::handle_method(
+        &mut indexer,
+        "dead_symbols",
+        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false}),
+    )
+    .unwrap();
+    let dead = result["dead_symbols"].to_string();
+    assert!(!dead.contains("impls.ImplA.Do"), "{dead}");
+    assert!(!dead.contains("impls.ImplB.Do"), "{dead}");
+    drop(root);
+}
+
+#[test]
+fn a_method_with_other_parameter_or_result_types_is_no_implementation() {
+    let files = [
+        ("go.mod", GO_MOD),
+        (
+            "artifact/artifact.go",
+            "package artifact\n\ntype ID string\n\ntype Identifiable interface {\n\tID() ID\n}\n\ntype Sink interface {\n\tPut(v int) error\n}\n",
+        ),
+        ("sbom/sbom.go", "package sbom\n\ntype FormatID string\n"),
+        (
+            "enc/enc.go",
+            "package enc\n\nimport \"example.com/m/sbom\"\n\ntype Encoder struct{}\n\nfunc (e Encoder) ID() sbom.FormatID { return \"\" }\n",
+        ),
+        (
+            "enc/ok.go",
+            "package enc\n\nimport \"example.com/m/artifact\"\n\ntype Plain struct{}\n\nfunc (p Plain) ID() artifact.ID { return \"\" }\n\ntype Store struct{}\n\nfunc (s Store) Put(v int) error { return nil }\n\ntype Wrong struct{}\n\nfunc (w Wrong) Put(v string) error { return nil }\n",
+        ),
+    ];
+    let (_tmp, _root, indexer) = indexed(&files);
+    let mut got = edges(&indexer, "IMPLEMENTS", "enc/%");
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "enc/ok.Plain -> artifact/artifact.Identifiable",
+            "enc/ok.Store -> artifact/artifact.Sink",
+        ]
+    );
+}

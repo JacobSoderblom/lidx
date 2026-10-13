@@ -289,22 +289,22 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 .dispatch_peers(symbol.id, ctx.graph_version)?
                 .interface_methods
                 .is_empty()
-            || edges
-                .iter()
-                .any(|e| e.kind == "CALLS" && e.target_symbol_id == Some(symbol.id)));
+            || edges.iter().any(|e| {
+                edge_views::is_call_like(&e.kind) && e.target_symbol_id == Some(symbol.id)
+            }));
     let has_callees = wants_callees
         && (crate::resolve::is_type_container_kind(&symbol.kind)
             || !outgoing_cross.is_empty()
             || edges.iter().any(|e| {
-                e.kind == "CALLS"
+                edge_views::is_call_like(&e.kind)
                     && e.source_symbol_id == Some(symbol.id)
                     && e.target_symbol_id.is_some()
             }));
     let has_tests = wants_tests
         && (!incoming_cross.is_empty()
-            || edges
-                .iter()
-                .any(|e| e.kind == "CALLS" && e.target_symbol_id == Some(symbol.id)));
+            || edges.iter().any(|e| {
+                edge_views::is_call_like(&e.kind) && e.target_symbol_id == Some(symbol.id)
+            }));
     let has_direct_implements = edges.iter().any(|e| {
         edge_views::contains(edge_views::TYPE_HIERARCHY, &e.kind)
             && e.target_symbol_id.is_some()
@@ -501,7 +501,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         continue;
                     }
                 }
-                if edge.kind == "CALLS"
+                if edge_views::is_call_like(&edge.kind)
                     && !edge.is_synthetic()
                     && edge.target_symbol_id == Some(*target_id)
                     && meets_min_resolution(&edge.resolution_kind)
@@ -534,7 +534,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             symbol: caller_sym,
                             evidence,
                             evidence_line: edge.evidence_start_line,
-                            edge_kind: "CALLS".to_string(),
+                            edge_kind: edge.kind.clone(),
                             protocol_context: None,
                             resolution_kind: edge.resolution_kind.clone(),
                             via_interface: via_interface_ids.contains(target_id),
@@ -612,7 +612,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 )?;
 
                 for edge in &method_edges {
-                    if edge.kind == "CALLS" && edge.source_symbol_id == Some(method.id) {
+                    if edge_views::is_call_like(&edge.kind)
+                        && edge.source_symbol_id == Some(method.id)
+                    {
                         // `target_symbol_id` is NULL means the write path could not
                         // attribute this call (ambiguous or unresolved receiver) —
                         // the read path must not invent one via fuzzy qualname
@@ -651,7 +653,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     symbol: callee_sym,
                                     evidence,
                                     evidence_line: edge.evidence_start_line,
-                                    edge_kind: "CALLS".to_string(),
+                                    edge_kind: edge.kind.clone(),
                                     protocol_context: None,
                                     resolution_kind: edge.resolution_kind.clone(),
                                     via_interface: edge.is_synthetic(),
@@ -665,7 +667,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         } else {
             // For non-class symbols, use direct edges
             for edge in &edges {
-                if edge.kind == "CALLS" && edge.source_symbol_id == Some(symbol.id) {
+                if edge_views::is_call_like(&edge.kind) && edge.source_symbol_id == Some(symbol.id)
+                {
                     // See the class-symbol branch above: NULL target_symbol_id
                     // means the write path deliberately refused to attribute
                     // this call, so the read path must not guess one either.
@@ -701,7 +704,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 symbol: callee_sym,
                                 evidence,
                                 evidence_line: edge.evidence_start_line,
-                                edge_kind: "CALLS".to_string(),
+                                edge_kind: edge.kind.clone(),
                                 protocol_context: None,
                                 resolution_kind: edge.resolution_kind.clone(),
                                 via_interface: edge.is_synthetic(),
@@ -763,7 +766,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             .map(|e| (e, false))
             .chain(interface_edges.iter().map(|e| (e, true)))
         {
-            if edge.kind == "CALLS"
+            if edge_views::is_call_like(&edge.kind)
                 && (via_interface || edge.target_symbol_id == Some(symbol.id))
                 && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
@@ -789,7 +792,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     symbol: test_sym,
                     evidence: edge.evidence_snippet.clone(),
                     evidence_line: edge.evidence_start_line,
-                    edge_kind: "CALLS".to_string(),
+                    edge_kind: edge.kind.clone(),
                     protocol_context: None,
                     resolution_kind: edge.resolution_kind.clone(),
                     via_interface,
@@ -3216,7 +3219,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 if upstream.len() >= max_upstream {
                     break;
                 }
-                if edge.kind == "CALLS"
+                if edge_views::is_call_like(&edge.kind)
                     && edge.target_symbol_id == Some(sym.id)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_ids.insert(source_id)
@@ -3270,7 +3273,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 .map(|e| (e, "direct"))
                 .chain(via_interface.iter().map(|e| (e, "via_interface")))
             {
-                if edge.kind == "CALLS"
+                if edge_views::is_call_like(&edge.kind)
                     && let Some(source_id) = edge.source_symbol_id
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                     && is_test_symbol(&caller)

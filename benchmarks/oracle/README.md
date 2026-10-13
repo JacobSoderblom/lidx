@@ -107,6 +107,28 @@ calls of function values; TypeScript interface and type-literal members and abst
 initialiser is a static call); Rust methods declared on a trait (`Trait#method()`, not `impl#[T][Trait]method()`),
 which also carry the trait's in-repo implementations as acceptable targets. They stay in the comparable recall.
 
+**Two Go scorings.** lidx binds a call on an interface-typed receiver to the concrete method when it can (the receiver's dynamic
+type is proven at the call site, or the repository has exactly one implementation): a `CALLS` edge, graded like any other against
+the concrete callee RTA names. When it cannot, the edge goes to the interface method as a `DISPATCH` edge, a kind of its own that
+`analyze_impact`, `trace_flow` and `explain_symbol` follow and fan out through `IMPLEMENTS`; it is **not a call** and the
+repowise-rules grading never sees it.
+- The head-to-head with repowise (`comparable` in `cells.json`, the verdict and held-out tables) uses repowise's rules: `calls`
+  edges keyed (caller declaration, callee declaration), a dynamic call keyed at the concrete implementation RTA names, dispatch
+  edges never expanded (`match.repowise_go_scope`); lidx's `CALLS` edges only. A `DISPATCH` edge is neither a true nor a wrong edge
+  there, and the oracle edges it stands for stay missed.
+- The **dispatch-credited, lidx-native** scoring (`calls`, its own labelled table in the report, no verdict) adds the `DISPATCH`
+  edges, described next; it measures what lidx's graph can answer through its dispatch machinery and is not comparable to repowise.
+
+**Go interface edges (dispatch-credited, lidx-native).** RTA keys a call through an interface at the concrete implementations; a
+`DISPATCH` edge points at the interface method (`Doer.Do`). The Go oracle therefore also records, per
+edge, the interface methods its dynamic call sites invoke (`callee_alts`, `file:line` of the method name). Grading a `DISPATCH` edge:
+it is a **true edge** when the caller has such a site invoking exactly that method, and a **wrong edge**
+otherwise (the call exists in no form the compiler knows). It **covers** an oracle dispatch edge to an implementation only when
+lidx's own graph links that implementation to the interface method (`match.go_dispatch_pairs`: lidx's `IMPLEMENTS` edges plus
+same-named methods), so an implementation lidx cannot reach stays a missed edge and the recall cannot be flattered by the
+mapping. The oracle also lists every interface invocation of a reachable function (`iface_calls`), including those RTA found no
+in-repo target behind. Unit-tested in `test_match.py` (`GoInterfaceDispatch`).
+
 **lidx side** (`match.py`): CALLS edges whose source and target are in-repo symbols, deduplicated to (caller, callee)
 pairs, keyed the same way (name line recovered from source; `module` symbols are line 0 in every language). A lidx edge
 matches an oracle edge when both ends land on the same declaration; declarations are compared by (file, qualname) so a

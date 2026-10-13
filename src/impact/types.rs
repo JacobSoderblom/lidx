@@ -147,7 +147,7 @@ impl TestStrategy {
     pub fn from_edge_kind(kind: &str) -> Self {
         match kind {
             "IMPORTS" => Self::Import,
-            "CALLS" => Self::Call,
+            "CALLS" | "DISPATCH" => Self::Call,
             _ => Self::Graph,
         }
     }

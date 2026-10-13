@@ -278,6 +278,10 @@ def main():
         print("   indexed in %ss" % secs, flush=True)
         syms, edges = match.load_lidx(db, repo_dir, repo["lang"])
         src = match.Sources(repo_dir)
+        dpairs = match.go_dispatch_pairs(db, syms) if repo["lang"] == "go" else None
+        # lidx-native Go grading also counts its DISPATCH edges (a call left on an interface method); the repowise-rules
+        # grading and every other language see CALLS only
+        native_kinds = ("CALLS", "DISPATCH") if repo["lang"] == "go" else ("CALLS",)
         for cell in cells:
             oracle, cached = get_oracle(cell, repo, repo_dir, cache, a.force)
             print("   %s: oracle %d edges%s" % (cell["id"], len(oracle["edges"]), " (cached)" if cached else ""), flush=True)
@@ -285,8 +289,8 @@ def main():
                    "cell": cell["id"], "repo": repo["name"], "lang": repo["lang"], "variant": cell["variant"],
                    "index_seconds": secs, "oracle_mode": oracle.get("mode"), "oracle_meta": oracle.get("_meta", {}),
                    "oracle_dropped": oracle.get("dropped", {})}
-            summ, fn, fp, gap, ungr = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS",))
-            summ_r, fn_r, fp_r, _, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES", "USES"))
+            summ, fn, fp, gap, ungr = match.grade(oracle, syms, edges, repo["lang"], src, native_kinds, dispatch_pairs=dpairs)
+            summ_r, fn_r, fp_r, _, _ = match.grade(oracle, syms, edges, repo["lang"], src, native_kinds + ("REFERENCES", "USES"), dispatch_pairs=dpairs)
             res["calls"] = summ
             if cell["lang"] == "ts":
                 # the repowise-comparable TypeScript grading: no module-level callers, no abstract targets (see
@@ -297,6 +301,10 @@ def main():
                 comp["module_level_removed"] = sum(1 for e in oracle["edges"] if e["caller"]["line"] == 0)
                 comp["abstract_target_removed"] = sum(1 for e in oracle["edges"] if e.get("dispatch"))
                 res["comparable"] = comp  # other languages: `calls` is the comparable grading
+            if cell["lang"] == "go":
+                # the repowise-comparable Go grading: no interface edges, no dispatch credit (match.repowise_go_scope);
+                # `calls` stays the dispatch-credited, lidx-native grading (a labelled diagnostic)
+                res["comparable"] = match.grade(match.repowise_go_scope(oracle), syms, edges, repo["lang"], src, ("CALLS",))[0]
             res["calls_plus_references"] = {k: summ_r[k] for k in ("graded", "tp", "fp", "precision", "precision_ci", "recall", "recall_ci",
                                                                    "matched_oracle_edges")}
             res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES", "USES")}

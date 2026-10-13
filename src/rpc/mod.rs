@@ -118,7 +118,7 @@ struct AnalyzeImpactParams {
     max_depth: Option<usize>,
     /// "upstream" (find consumers/callers), "downstream" (follow calls), or "both" (default). Use "upstream" for "what depends on this?" Case-insensitive; aliases "up"/"callers" and "down"/"callees"; anything else is an error.
     direction: Option<String>,
-    /// Edge kinds to follow, upper-case names such as CALLS, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
+    /// Edge kinds to follow, upper-case names such as CALLS, DISPATCH, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
     /// to exclude the guarded name-fallback tier's heuristic edges. "containment" is also
@@ -342,7 +342,7 @@ struct TraceFlowParams {
     direction: Option<String>,
     /// Max hops (default: 5, max: 10)
     max_hops: Option<usize>,
-    /// Edge kinds to follow, upper-case names such as CALLS, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
+    /// Edge kinds to follow, upper-case names such as CALLS, DISPATCH, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
     /// to exclude the guarded name-fallback tier's heuristic edges. "containment" is also
