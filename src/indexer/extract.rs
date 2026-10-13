@@ -586,6 +586,13 @@ pub struct CallShape {
     /// function or method. Persisted as `"ref:typeof"`. Only meaningful
     /// together with `is_ref`.
     pub is_typeof: bool,
+    /// Not a call but a JS/TS property read or write (`this.shape`,
+    /// `model.shape = v`) that runs a `get` / `set` accessor if it lands on
+    /// one. Persisted as `"member"`. The resolver binds it to an accessor
+    /// only and stores it as `USES`; it is no value reference (no function is
+    /// used as a value), so the value-reference counts and grading leave it
+    /// out. Never set together with `is_ref`.
+    pub is_member: bool,
 }
 
 impl CallShape {
@@ -598,6 +605,8 @@ impl CallShape {
     pub const REF_TYPE_ENCODING: &'static str = "ref:type";
     /// `call_shape` column text of a `typeof` query (see `is_typeof`).
     pub const REF_TYPEOF_ENCODING: &'static str = "ref:typeof";
+    /// `call_shape` column text of a property read or write (see `is_member`).
+    pub const MEMBER_ENCODING: &'static str = "member";
 
     /// The shape of a value reference (a function used as a value, not
     /// called): see `is_ref`.
@@ -609,6 +618,7 @@ impl CallShape {
             is_ref: true,
             is_type: false,
             is_typeof: false,
+            is_member: false,
         }
     }
 
@@ -617,6 +627,26 @@ impl CallShape {
         Self {
             is_typeof: true,
             ..Self::value_reference()
+        }
+    }
+
+    /// The shape of a property read or write: see `is_member`.
+    pub fn member_access() -> Self {
+        Self {
+            is_member: true,
+            ..Self::default_call()
+        }
+    }
+
+    fn default_call() -> Self {
+        Self {
+            arg_count: 0,
+            is_new: false,
+            implicit_this: false,
+            is_ref: false,
+            is_type: false,
+            is_typeof: false,
+            is_member: false,
         }
     }
 
@@ -645,6 +675,8 @@ impl CallShape {
                 "ref"
             }
             .to_string()
+        } else if self.is_member {
+            Self::MEMBER_ENCODING.to_string()
         } else if self.is_new {
             format!("new:{}", self.arg_count)
         } else if self.implicit_this {
@@ -662,6 +694,9 @@ impl CallShape {
         if raw == Self::REF_TYPEOF_ENCODING {
             return Some(Self::typeof_reference());
         }
+        if raw == Self::MEMBER_ENCODING {
+            return Some(Self::member_access());
+        }
         if raw == Self::REF_ENCODING || raw == Self::REF_THIS_ENCODING {
             return Some(Self {
                 arg_count: 0,
@@ -670,6 +705,7 @@ impl CallShape {
                 is_ref: true,
                 is_type: false,
                 is_typeof: false,
+                is_member: false,
             });
         }
         let (is_new, implicit_this, count) =
@@ -685,6 +721,7 @@ impl CallShape {
             is_ref: false,
             is_type: false,
             is_typeof: false,
+            is_member: false,
         })
     }
 }
@@ -806,7 +843,7 @@ pub struct ExtractedFile {
     /// `(qualname, start_line)` of each `get` / `set` accessor (JS/TS).
     /// Recorded as the `accessor` modifier: reading the property calls it, but
     /// the read is not a function used as a value, so no value reference binds
-    /// it (and `dead_symbols` cannot tell an unread accessor from a read one).
+    /// it; a property access (`CallShape::is_member`) does.
     pub accessor_symbols: Vec<(String, i64)>,
     /// `(qualname, start_line)` of each `static` member keyed by line (a
     /// TypeScript static and an instance member may share a name); recorded

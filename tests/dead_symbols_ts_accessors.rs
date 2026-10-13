@@ -1,36 +1,161 @@
-//! A `get` / `set` accessor is run by a property read that no edge records,
-//! so `dead_symbols` never reports one; the methods and local callbacks
-//! around it are still judged.
+//! A `get` / `set` accessor is run by a property read or write. The access is
+//! a `USES` edge (call shape `member`) on the accessor, so `dead_symbols`
+//! reports an accessor nothing reads or writes, keeps one that is accessed,
+//! and demotes (never hides) one only a receiver the index cannot resolve
+//! may access.
 
 mod common;
 
+use common::golden;
 use lidx::indexer::Indexer;
 use lidx::rpc;
 
-const FILES: &[(&str, &str)] = &[(
-    "src/model.ts",
-    "export class Model {\n  get shape() { return 1; }\n  get unread() { return 2; }\n  dead() { return 3; }\n  copy() { return this.shape; }\n}\nexport function make() {\n  const orphan = () => 1;\n  return new Model().copy();\n}\n",
-)];
+const MODEL: &str = "export class Model {
+  get used() { return 1; }
+  get unread() { return 2; }
+  get level() { return 3; }
+  set level(v: number) {}
+  get unwritten() { return 4; }
+  set unwritten(v: number) {}
+  get pulled() { return 5; }
+  get opaque() { return 6; }
+  dead() { return 3; }
+  copy() {
+    const { pulled } = this;
+    return this.used + pulled;
+  }
+}
+";
+const USE: &str = "import { Model } from './model';
+export function make(m: Model, anything: any) {
+  m.level = 7;
+  return anything.opaque;
+}
+";
 
-#[test]
-fn accessors_are_never_dead_but_methods_still_are() {
-    let (_tmp, root, db_path) = common::index_repo("lidx-ts-dead-accessor-", FILES);
-    let mut indexer = Indexer::new(root, db_path).unwrap();
+/// Not exported: the dead-symbol tiers apply (an export is public API).
+const INNER: &str = "class Inner {
+  get hidden() { return 1; }
+  get opaque() { return 2; }
+}
+export function run(x: any) {
+  new Inner();
+  return x.opaque;
+}
+";
+
+fn files() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("src/model.ts", MODEL),
+        ("src/use.ts", USE),
+        ("src/inner.ts", INNER),
+    ]
+}
+
+/// `(qualname, confidence)` of every reported symbol.
+fn reported(indexer: &mut Indexer) -> Vec<(String, String)> {
     let result = rpc::handle_method(
-        &mut indexer,
+        indexer,
         "dead_symbols",
         serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false, "include_public_api": true}),
     )
     .unwrap();
-    let dead: Vec<String> = result["dead_symbols"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .chain(result["public_api"].as_array().unwrap())
-        .filter_map(|s| s["qualname"].as_str().map(str::to_string))
-        .collect();
-    assert!(dead.iter().any(|d| d == "src/model.Model.dead"), "{dead:?}");
-    for q in ["src/model.Model.shape", "src/model.Model.unread"] {
-        assert!(!dead.iter().any(|d| d == q), "{q}: {dead:?}");
+    let rows = |key: &str| result[key].as_array().cloned().unwrap_or_default();
+    rows("dead_symbols")
+        .into_iter()
+        .chain(rows("public_api"))
+        .filter_map(|s| {
+            Some((
+                s["qualname"].as_str()?.to_string(),
+                s["confidence"].as_str().unwrap_or("").to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn names(reported: &[(String, String)]) -> Vec<&str> {
+    reported.iter().map(|(q, _)| q.as_str()).collect()
+}
+
+#[test]
+fn an_accessor_is_dead_only_when_nothing_reads_or_writes_it() {
+    let (_tmp, _root, mut indexer) = common::live_indexer("lidx-ts-dead-accessor-", &files());
+    let dead = reported(&mut indexer);
+    let dead_names = names(&dead);
+    assert!(dead_names.contains(&"src/model.Model.dead"), "{dead:?}");
+    assert!(dead_names.contains(&"src/model.Model.unread"), "{dead:?}");
+    // The get / set pair: unread and unwritten, both are dead.
+    assert!(
+        dead_names.contains(&"src/model.Model.unwritten"),
+        "{dead:?}"
+    );
+    for live in [
+        "src/model.Model.used",   // `this.used`
+        "src/model.Model.level",  // `m.level = 7` on a typed receiver
+        "src/model.Model.pulled", // `const { pulled } = this`
+    ] {
+        assert!(!dead_names.contains(&live), "{live}: {dead:?}");
     }
+}
+
+#[test]
+fn an_accessor_only_an_unresolved_receiver_may_read_is_demoted_not_hidden() {
+    let (_tmp, _root, mut indexer) = common::live_indexer("lidx-ts-dead-accessor-", &files());
+    let dead = reported(&mut indexer);
+    let tier = |q: &str| {
+        dead.iter()
+            .find(|(name, _)| name == q)
+            .unwrap_or_else(|| panic!("{q} hidden: {dead:?}"))
+            .1
+            .clone()
+    };
+    assert_eq!(tier("src/inner.Inner.hidden"), "high", "{dead:?}");
+    assert_eq!(tier("src/inner.Inner.opaque"), "medium", "{dead:?}");
+}
+
+#[test]
+fn accessor_liveness_survives_incremental_sync() {
+    let (_tmp, root, mut indexer) = common::live_indexer("lidx-ts-dead-accessor-", &files());
+    // The only reader goes away: `level` is dead, like in a fresh index.
+    let without_reader = "import { Model } from './model';\nexport function make(m: Model, anything: any) {\n  return anything.opaque;\n}\n";
+    common::write_files(&root, &[("src/use.ts", without_reader)]);
+    indexer.sync_rel_paths(&["src/use.ts".to_string()]).unwrap();
+    assert!(
+        names(&reported(&mut indexer)).contains(&"src/model.Model.level"),
+        "level is unwritten now"
+    );
+    let final_files = [
+        ("src/model.ts", MODEL),
+        ("src/use.ts", without_reader),
+        ("src/inner.ts", INNER),
+    ];
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&final_files);
+    common::assert_matches_fresh(&snapshot, &fresh);
+
+    // It comes back, and so does the accessor's liveness.
+    common::write_files(&root, &[("src/use.ts", USE)]);
+    indexer.sync_rel_paths(&["src/use.ts".to_string()]).unwrap();
+    assert!(!names(&reported(&mut indexer)).contains(&"src/model.Model.level"));
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&files());
+    common::assert_matches_fresh(&snapshot, &fresh);
+
+    // A field turned into an accessor in another file is picked up too.
+    let field_model = MODEL.replace("get used() { return 1; }", "used = 1;");
+    common::write_files(&root, &[("src/model.ts", &field_model)]);
+    indexer
+        .sync_rel_paths(&["src/model.ts".to_string()])
+        .unwrap();
+    common::write_files(&root, &[("src/model.ts", MODEL)]);
+    indexer
+        .sync_rel_paths(&["src/model.ts".to_string()])
+        .unwrap();
+    assert!(!names(&reported(&mut indexer)).contains(&"src/model.Model.used"));
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&files());
+    common::assert_matches_fresh(&snapshot, &fresh);
 }

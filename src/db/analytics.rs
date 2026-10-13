@@ -636,7 +636,9 @@ impl Db {
             super::graph_query::has_modifier_sql("s", super::graph_query::LOCAL_MODIFIER);
         // A bodiless member declaration has no code to be dead.
         let is_decl = super::graph_query::has_modifier_sql("s", super::graph_query::DECL_MODIFIER);
-        // A property read runs an accessor and no edge records the read.
+        // An accessor is run by a property read or write, recorded as a
+        // `USES` edge (call shape `member`) on whichever of the get / set pair
+        // the resolver bound: a read keeps its same-named sibling alive too.
         let is_accessor =
             super::graph_query::has_modifier_sql("s", super::graph_query::ACCESSOR_MODIFIER);
         let external_base = super::graph_query::external_base_member_sql("s", gv);
@@ -674,7 +676,13 @@ impl Db {
                                    OR f.path LIKE 'pages/%' OR f.path LIKE '%/pages/%'))
                      AND NOT {is_local}
                      AND NOT {is_decl}
-                     AND NOT {is_accessor}
+                     AND NOT ({is_accessor} AND EXISTS (
+                       SELECT 1 FROM symbols sib
+                       JOIN edges e ON e.target_symbol_id = sib.id
+                       WHERE sib.file_id = s.file_id AND sib.qualname = s.qualname
+                         AND sib.graph_version = s.graph_version AND sib.id != s.id
+                         AND e.kind IN ({reachability}) AND e.graph_version = {gv}
+                     ))
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
                      -- Operators and finalizers are invoked implicitly (#247).
                      AND NOT (f.language = 'csharp' AND (s.name LIKE 'operator %'
@@ -833,7 +841,9 @@ impl Db {
                         MAX(COALESCE(source_symbol_id, -1))
                  FROM unresolved_references
                  WHERE graph_version = ?1 AND edge_kind IN ({reachability})
-                 GROUP BY name_tail"
+                   AND COALESCE(call_shape, '') != '{member}'
+                 GROUP BY name_tail",
+                member = crate::indexer::extract::CallShape::MEMBER_ENCODING,
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map([graph_version], |r| {
@@ -841,7 +851,12 @@ impl Db {
             })?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        let mut api = PublicApi::new(repo_root, js_files, rust_libs);
+        // Names read as `.name` anywhere in the JS/TS files, only when an
+        // accessor candidate needs them: the receivers the index could not
+        // resolve leave no edge, so an accessor no edge reaches but some
+        // `.name` read mentions is not provably dead.
+        let member_names: std::cell::OnceCell<HashSet<String>> = std::cell::OnceCell::new();
+        let mut api = PublicApi::new(repo_root, js_files.clone(), rust_libs);
 
         let mut out = DeadSymbols::default();
         for (symbol, signature, language, visibility) in candidates {
@@ -858,9 +873,16 @@ impl Db {
                 continue;
             }
             // A reference the symbol makes to itself does not count.
-            let unresolved = unresolved_names
+            let mut unresolved = unresolved_names
                 .get(&symbol.name)
                 .is_some_and(|&(lo, hi)| !(lo == symbol.id && hi == symbol.id));
+            let mentioned = super::graph_query::has_modifier(
+                visibility.as_deref(),
+                super::graph_query::ACCESSOR_MODIFIER,
+            ) && member_names
+                .get_or_init(|| member_names_read(repo_root, &js_files))
+                .contains(&symbol.name);
+            unresolved |= mentioned;
             let parent_visibility = if symbol.kind == "method" {
                 parent_visibility_of(&conn, &symbol, graph_version)?
             } else {
@@ -875,7 +897,9 @@ impl Db {
                 visibility: visibility.as_deref(),
                 parent_visibility: parent_visibility.as_deref(),
             });
-            let named = if unresolved {
+            let named = if mentioned {
+                "; a property read of that name has a receiver the index could not resolve"
+            } else if unresolved {
                 "; an unresolved reference names it"
             } else {
                 ""
@@ -1418,6 +1442,37 @@ fn parent_visibility_of(
         |r| r.get(0),
     )?;
     Ok(parent)
+}
+
+/// Every `name` that follows a `.` (or `?.`) in the JS/TS `files` under
+/// `repo_root`: the property reads and writes, whatever their receiver.
+fn member_names_read(repo_root: &Path, files: &HashSet<String>) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for rel in files {
+        let Ok(text) = std::fs::read_to_string(repo_root.join(rel)) else {
+            continue;
+        };
+        let bytes = text.as_bytes();
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'.'
+                && let Some(&first) = bytes.get(i + 1)
+                && is_ident(first)
+                && !first.is_ascii_digit()
+            {
+                let end = bytes[i + 1..]
+                    .iter()
+                    .position(|&b| !is_ident(b))
+                    .map_or(bytes.len(), |n| i + 1 + n);
+                names.insert(text[i + 1..end].to_string());
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    names
 }
 
 #[cfg(test)]

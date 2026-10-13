@@ -2124,6 +2124,7 @@ fn extract_with_parser(
     mark_unexported_private(root, source, module_name, &mut output);
     mark_global_heritage(&ctx, &mut output);
     finish_value_references(&mut output);
+    finish_member_accesses(&mut output);
     collect_type_references(root, &ctx, source, &mut output);
     output.export_surface = Some(surface_hash(root, source, &http_wrappers));
     Ok(output)
@@ -2935,10 +2936,18 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
-    if node.kind() == "member_expression"
-        && let Some(edge) = member_reference_edge(node, ctx, source)
-    {
-        output.edges.push(edge);
+    if node.kind() == "member_expression" {
+        if let Some(edge) = member_reference_edge(node, ctx, source) {
+            output.edges.push(edge);
+        }
+        if let Some(edge) = member_access_edge(node, ctx, source) {
+            output.edges.push(edge);
+        }
+    }
+    if node.kind() == "variable_declarator" {
+        output
+            .edges
+            .extend(destructured_access_edges(node, ctx, source));
     }
     if (node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element")
         && let Some(edge) = jsx_route_edge(node, ctx, source)
@@ -4056,6 +4065,213 @@ fn member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
     })
 }
 
+/// `USES` edge (call shape `member`) for a property read or write whose
+/// receiver the file can name: `this.shape` inside a class, `Cls.shape`,
+/// `model.shape = v` on a typed receiver. A `get` / `set` accessor runs on
+/// such an access and nothing else records it, so the resolver keeps the
+/// edge only when it lands on an accessor (`dead_symbols` then sees the
+/// accessor as used). A callee is a call and has its own edge.
+fn member_access_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let property = node.child_by_field_name("property")?;
+    if property.kind() != "property_identifier" || is_callee(climb_wrappers(node)) {
+        return None;
+    }
+    let (root, hops) = member_chain_root(node);
+    let receiver_type = pin_receiver_type(infer_receiver_type(node, source, ctx), ctx);
+    member_access_site(
+        node,
+        &node_text(node, source),
+        root,
+        hops,
+        receiver_type,
+        ctx,
+        source,
+    )
+}
+
+/// Member-access edges for `const { shape, other: x } = this` (or a typed
+/// receiver): each destructured key reads that property.
+fn destructured_access_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
+    let (Some(pattern), Some(value)) = (
+        node.child_by_field_name("name"),
+        node.child_by_field_name("value"),
+    ) else {
+        return Vec::new();
+    };
+    let value = peel_expression(value);
+    if pattern.kind() != "object_pattern" || !matches!(value.kind(), "this" | "identifier") {
+        return Vec::new();
+    }
+    let receiver_type = if value.kind() == "identifier" {
+        let name = node_text(value, source);
+        if is_unshadowed_global_receiver(&name, ctx) {
+            return Vec::new();
+        }
+        match ctx.local_types.get(&name) {
+            Some(LocalType::Known(ty)) => pin_receiver_type(ReceiverType::Known(ty.clone()), ctx),
+            Some(LocalType::ReturnOf(f)) => match ctx.return_types.get(f) {
+                Some(ty) => pin_receiver_type(ReceiverType::Known(ty.clone()), ctx),
+                None => ReceiverType::Unresolved,
+            },
+            Some(_) => ReceiverType::Unresolved,
+            None => ReceiverType::NotTracked,
+        }
+    } else {
+        ReceiverType::NotTracked
+    };
+    let owner = node_text(value, source);
+    let mut cursor = pattern.walk();
+    let mut edges = Vec::new();
+    for entry in pattern.named_children(&mut cursor) {
+        let key = match entry.kind() {
+            "shorthand_property_identifier_pattern" => Some(entry),
+            "pair_pattern" => entry
+                .child_by_field_name("key")
+                .filter(|k| k.kind() == "property_identifier"),
+            "object_assignment_pattern" => entry
+                .child_by_field_name("left")
+                .filter(|k| k.kind() == "shorthand_property_identifier_pattern"),
+            _ => None,
+        };
+        let Some(key) = key else { continue };
+        let raw = format!("{owner}.{}", node_text(key, source));
+        edges.extend(member_access_site(
+            entry,
+            &raw,
+            value,
+            1,
+            receiver_type.clone(),
+            ctx,
+            source,
+        ));
+    }
+    edges
+}
+
+/// The `member` `USES` edge of the access `raw` (rooted at `root`, `hops`
+/// property reads away) spanning `node`, when the file names its owner:
+/// `this` directly, a class, namespace or import of this file, or a receiver
+/// with an inferred type. Anything else is left to `dead_symbols`' fallback
+/// for an unresolved receiver.
+fn member_access_site(
+    node: Node<'_>,
+    raw: &str,
+    root: Node<'_>,
+    hops: usize,
+    receiver_type: ReceiverType,
+    ctx: &Context,
+    source: &str,
+) -> Option<EdgeInput> {
+    let root_name = (root.kind() == "identifier").then(|| node_text(root, source));
+    let on_this = root.kind() == "this";
+    if on_this {
+        if ctx.this_rebound || ctx.class_stack.len() <= ctx.ns_depth {
+            return None;
+        }
+    } else if root_name.is_none() {
+        return None;
+    }
+    let known = matches!(
+        receiver_type,
+        ReceiverType::Known(_) | ReceiverType::Pinned(_) | ReceiverType::Scoped { .. }
+    );
+    let names_owner = on_this && hops == 1
+        || root_name.as_deref().is_some_and(|name| {
+            (ctx.declared_names.contains(name)
+                || ctx.declared_types.contains(name)
+                || ctx.import_bindings.contains_key(name))
+                && !ctx.local_fns.contains_key(name)
+                && !value_root_is_shadowed(root, name, source)
+                && (is_same_file_declaration_root(name, ctx)
+                    || ctx.import_bindings.contains_key(name))
+        });
+    if !known && !names_owner {
+        return None;
+    }
+    let import_candidates: Vec<String> = import_placeholder(raw, ctx).into_iter().collect();
+    let target = if import_candidates.is_empty() {
+        Some(resolve_call_target(raw, ctx)?)
+    } else {
+        None
+    };
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: edge_views::USES.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        detail: target.is_none().then(|| raw.to_string()),
+        target_qualname: target,
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        receiver_type,
+        import_candidates,
+        call_shape: Some(CallShape::member_access()),
+        ..Default::default()
+    })
+}
+
+fn is_member_access_edge(edge: &EdgeInput) -> bool {
+    edge.kind == "USES" && edge.call_shape.is_some_and(|s| s.is_member)
+}
+
+/// Keeps a property-access edge only when its target can exist (an import,
+/// a symbol of this file or a typed receiver's member), never for a symbol
+/// reading itself, and once per source and target: `this.shape` read ten
+/// times in a method is one edge.
+fn finish_member_accesses(output: &mut ExtractedFile) {
+    if !output.edges.iter().any(is_member_access_edge) {
+        return;
+    }
+    let symbols: HashSet<&str> = output.symbols.iter().map(|s| s.qualname.as_str()).collect();
+    let accessors: HashSet<&str> = output
+        .accessor_symbols
+        .iter()
+        .map(|(q, _)| q.as_str())
+        .collect();
+    // Classes of this file with a base class: a member they do not declare
+    // may be an accessor the base declares.
+    let derived: HashSet<&str> = output
+        .edges
+        .iter()
+        .filter(|e| e.kind == "EXTENDS")
+        .filter_map(|e| e.source_qualname.as_deref())
+        .collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let keep: Vec<bool> = output
+        .edges
+        .iter()
+        .map(|e| {
+            if !is_member_access_edge(e) {
+                return true;
+            }
+            let typed = matches!(
+                e.receiver_type,
+                ReceiverType::Known(_) | ReceiverType::Pinned(_) | ReceiverType::Scoped { .. }
+            );
+            let known = typed
+                || !e.import_candidates.is_empty()
+                || e.target_qualname.as_deref().is_some_and(|t| {
+                    if symbols.contains(t) {
+                        accessors.contains(t)
+                    } else {
+                        t.rsplit_once('.')
+                            .is_some_and(|(owner, _)| derived.contains(owner))
+                    }
+                });
+            known
+                && e.target_qualname != e.source_qualname
+                && seen.insert(format!(
+                    "{:?}|{:?}|{:?}|{:?}",
+                    e.source_qualname, e.target_qualname, e.import_candidates, e.receiver_type
+                ))
+        })
+        .collect();
+    let mut keep = keep.into_iter();
+    output.edges.retain(|_| keep.next().unwrap_or(true));
+}
+
 /// A function used as a value; a `typeof` query names a value in a type
 /// position and is judged like any other `USES`.
 fn is_value_ref(edge: &EdgeInput) -> bool {
@@ -4068,7 +4284,7 @@ fn is_value_ref(edge: &EdgeInput) -> bool {
 /// line and target — by a call or an earlier reference.
 fn finish_value_references(output: &mut ExtractedFile) {
     // At this point a `USES` edge is a member-access read (`config.port`).
-    let is_ref = |e: &EdgeInput| is_value_ref(e) || e.kind == "USES";
+    let is_ref = |e: &EdgeInput| is_value_ref(e) || (e.kind == "USES" && !is_member_access_edge(e));
     if !output.edges.iter().any(is_ref) {
         return;
     }
@@ -4486,6 +4702,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             is_ref: false,
             is_type: false,
             is_typeof: false,
+            is_member: false,
         }),
         ..Default::default()
     });
@@ -4517,6 +4734,7 @@ fn super_constructor_edge(node: Node<'_>, base: &str, ctx: &Context, source: &st
             is_ref: false,
             is_type: false,
             is_typeof: false,
+            is_member: false,
         }),
         ..Default::default()
     }

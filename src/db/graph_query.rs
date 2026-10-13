@@ -135,7 +135,8 @@ pub(crate) const DECL_MODIFIER: &str = "decl";
 
 /// The `symbols.visibility` modifier of a JS/TS `get` / `set` accessor: a
 /// property read or write runs it, which no value reference to a function
-/// means, and no edge records, so `dead_symbols` never judges it.
+/// means. Such an access is a `USES` edge with the `member` call shape,
+/// bound only to an accessor; `dead_symbols` judges an accessor by it.
 pub(crate) const ACCESSOR_MODIFIER: &str = "accessor";
 
 /// The `symbols.visibility` modifier of a JS/TS declaration every file sees
