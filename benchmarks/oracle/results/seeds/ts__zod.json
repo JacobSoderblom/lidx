@@ -1,0 +1,742 @@
+{
+ "cell": "ts/zod",
+ "repo": "zod",
+ "repo_sha": "bbc68f990c7e6a5e3f506c56fb04bd0279b9c9b5",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 1053,
+  "stratum_pool": {
+   "0": 482,
+   "1-3": 500,
+   "4-10": 48,
+   ">10": 23
+  },
+  "stratum_drawn": {
+   "0": 25,
+   "1-3": 26,
+   "4-10": 26,
+   ">10": 23
+  }
+ },
+ "seeds": [
+  {
+   "file": "packages/zod/src/v3/ZodError.ts",
+   "line": 277,
+   "name": "toString",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/ZodError.ts",
+   "line": 284,
+   "name": "isEmpty",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/ZodError.ts",
+   "line": 292,
+   "name": "addIssues",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/helpers/errorUtil.ts",
+   "line": 3,
+   "name": "errToObj",
+   "indegree": 26,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/helpers/errorUtil.ts",
+   "line": 6,
+   "name": "toString",
+   "indegree": 30,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/helpers/parseUtil.ts",
+   "line": 72,
+   "name": "addIssueToContext",
+   "indegree": 28,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/helpers/parseUtil.ts",
+   "line": 94,
+   "name": "dirty",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/helpers/parseUtil.ts",
+   "line": 166,
+   "name": "OK",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/helpers/parseUtil.ts",
+   "line": 174,
+   "name": "isValid",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/helpers/util.ts",
+   "line": 175,
+   "name": "getParsedType",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 123,
+   "name": "processCreateParams",
+   "indegree": 41,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 170,
+   "name": "_parse",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 172,
+   "name": "_getType",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 176,
+   "name": "_getOrReturnCtx",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 191,
+   "name": "_processInputParams",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 218,
+   "name": "_parseAsync",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 229,
+   "name": "safeParse",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 298,
+   "name": "safeParseAsync",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 335,
+   "name": "getIssueProperties",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 444,
+   "name": "optional",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 698,
+   "name": "isValidJWT",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1050,
+   "name": "_addCheck",
+   "indegree": 24,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1216,
+   "name": "length",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1238,
+   "name": "toLowerCase",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1279,
+   "name": "isUUID",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1455,
+   "name": "create",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1497,
+   "name": "_addCheck",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1577,
+   "name": "minValue",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1734,
+   "name": "setLimit",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1749,
+   "name": "_addCheck",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 1852,
+   "name": "create",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 2376,
+   "name": "shape",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 2880,
+   "name": "create",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 3600,
+   "name": "valueSchema",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 3979,
+   "name": "_parse",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 4024,
+   "name": "create",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 4498,
+   "name": "unwrap",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v3/types.ts",
+   "line": 4502,
+   "name": "create",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/coerce.ts",
+   "line": 10,
+   "name": "number",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 98,
+   "name": "check",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 379,
+   "name": "min",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 674,
+   "name": "guid",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 997,
+   "name": "stringFormat",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 1170,
+   "name": "uint32",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 1376,
+   "name": "date",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 1387,
+   "name": "max",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/classic/schemas.ts",
+   "line": 1626,
+   "name": "union",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 130,
+   "name": "_uuid",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 201,
+   "name": "_url",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 547,
+   "name": "_isoTime",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 593,
+   "name": "_coercedNumber",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 796,
+   "name": "_unknown",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 805,
+   "name": "_never",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 934,
+   "name": "_nonnegative",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 1089,
+   "name": "_endsWith",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 1124,
+   "name": "_overwrite",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 1143,
+   "name": "_toLowerCase",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 1148,
+   "name": "_toUpperCase",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 1221,
+   "name": "_discriminatedUnion",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 1420,
+   "name": "_file",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/api.ts",
+   "line": 1802,
+   "name": "_stringFormat",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/core.ts",
+   "line": 17,
+   "name": "$constructor",
+   "indegree": 246,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/core.ts",
+   "line": 150,
+   "name": "config",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/errors.ts",
+   "line": 442,
+   "name": "prettifyError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/core/json-schema-generator.ts",
+   "line": 111,
+   "name": "emit",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/core/parse.ts",
+   "line": 16,
+   "name": "_parse",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/parse.ts",
+   "line": 59,
+   "name": "_safeParse",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/regexes.ts",
+   "line": 29,
+   "name": "uuid",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/regexes.ts",
+   "line": 163,
+   "name": "fixedBase64url",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/registries.ts",
+   "line": 33,
+   "name": "add",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/registries.ts",
+   "line": 60,
+   "name": "get",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/schemas.ts",
+   "line": 111,
+   "name": "run",
+   "indegree": 31,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/schemas.ts",
+   "line": 4647,
+   "name": "handleRefineResult",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/to-json-schema.ts",
+   "line": 89,
+   "name": "override",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/to-json-schema.ts",
+   "line": 139,
+   "name": "process",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/to-json-schema.ts",
+   "line": 217,
+   "name": "extractDefs",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/to-json-schema.ts",
+   "line": 367,
+   "name": "flattenRef",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 215,
+   "name": "joinValues",
+   "indegree": 50,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 259,
+   "name": "defineLazy",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 284,
+   "name": "objectClone",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 288,
+   "name": "assignProp",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 406,
+   "name": "shallowClone",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 493,
+   "name": "clone",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 517,
+   "name": "normalizeParams",
+   "indegree": 128,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 568,
+   "name": "stringifyPrimitive",
+   "indegree": 51,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 837,
+   "name": "prefixIssues",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line": 885,
+   "name": "parsedType",
+   "indegree": 50,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/da.ts",
+   "line": 5,
+   "name": "error",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/el.ts",
+   "line": 117,
+   "name": "default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/en.ts",
+   "line": 5,
+   "name": "error",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/es.ts",
+   "line": 13,
+   "name": "getSizing",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/ko.ts",
+   "line": 5,
+   "name": "error",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/lt.ts",
+   "line": 22,
+   "name": "error",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/ru.ts",
+   "line": 69,
+   "name": "getSizing",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/sl.ts",
+   "line": 13,
+   "name": "getSizing",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/th.ts",
+   "line": 115,
+   "name": "default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/uz.ts",
+   "line": 113,
+   "name": "default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/locales/zh-CN.ts",
+   "line": 5,
+   "name": "error",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/zod/src/v4/mini/schemas.ts",
+   "line": 698,
+   "name": "_undefined",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/zod/src/v4/mini/schemas.ts",
+   "line": 927,
+   "name": "merge",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

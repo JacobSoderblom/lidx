@@ -1,0 +1,742 @@
+{
+ "cell": "go/chi/tests",
+ "repo": "chi",
+ "repo_sha": "7f9b7448f51d28804fac98c0a17bc2a7cec1079f",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 336,
+  "stratum_pool": {
+   "0": 85,
+   "1-3": 165,
+   "4-10": 64,
+   ">10": 22
+  },
+  "stratum_drawn": {
+   "0": 26,
+   "1-3": 26,
+   "4-10": 26,
+   ">10": 22
+  }
+ },
+ "seeds": [
+  {
+   "file": "chain.go",
+   "line": 12,
+   "name": "Handler",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "chain.go",
+   "line": 30,
+   "name": "ServeHTTP",
+   "indegree": 44,
+   "stratum": ">10"
+  },
+  {
+   "file": "chi.go",
+   "line": 62,
+   "name": "NewRouter",
+   "indegree": 88,
+   "stratum": ">10"
+  },
+  {
+   "file": "context.go",
+   "line": 11,
+   "name": "URLParam",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "context.go",
+   "line": 31,
+   "name": "NewRouteContext",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "context.go",
+   "line": 124,
+   "name": "URLParam",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "context_test.go",
+   "line": 100,
+   "name": "TestReplaceWildcardsConsecutive",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/basic_auth.go",
+   "line": 10,
+   "name": "BasicAuth",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 60,
+   "name": "ClientIPFromHeader",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 121,
+   "name": "ClientIPFromXFF",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/client_ip.go",
+   "line": 220,
+   "name": "ClientIPFromRemoteAddr",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/client_ip_test.go",
+   "line": 176,
+   "name": "TestClientIPFromXFF_PanicsOnBadPrefix",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/client_ip_test.go",
+   "line": 242,
+   "name": "TestClientIPFromXFFTrustedProxies",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/client_ip_test.go",
+   "line": 297,
+   "name": "TestClientIPFromXFFTrustedProxies_PanicsOnZero",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/client_ip_test.go",
+   "line": 392,
+   "name": "TestGetClientIPAddr_RoundTrip",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/client_ip_test.go",
+   "line": 749,
+   "name": "TestXFF_FailClosedOnUnparseable",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/client_ip_test.go",
+   "line": 817,
+   "name": "run",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 45,
+   "name": "Compress",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 72,
+   "name": "NewCompressor",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 231,
+   "name": "selectEncoder",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 310,
+   "name": "WriteHeader",
+   "indegree": 31,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 338,
+   "name": "Write",
+   "indegree": 66,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 346,
+   "name": "writer",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 387,
+   "name": "Close",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/compress.go",
+   "line": 406,
+   "name": "encoderDeflate",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/content_charset.go",
+   "line": 12,
+   "name": "ContentCharset",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/content_charset_test.go",
+   "line": 13,
+   "name": "TestContentCharset",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/content_encoding_test.go",
+   "line": 12,
+   "name": "TestContentEncodingMiddleware",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/content_type.go",
+   "line": 20,
+   "name": "AllowContentType",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/get_head.go",
+   "line": 10,
+   "name": "GetHead",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/heartbeat_test.go",
+   "line": 11,
+   "name": "TestHeartbeat",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/logger.go",
+   "line": 172,
+   "name": "init#1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/middleware_test.go",
+   "line": 27,
+   "name": "ServeHTTP",
+   "indegree": 45,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/middleware_test.go",
+   "line": 141,
+   "name": "testRequest",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/middleware_test.go",
+   "line": 194,
+   "name": "assertNoError",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/middleware_test.go",
+   "line": 208,
+   "name": "assertEqual",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/path_rewrite.go",
+   "line": 9,
+   "name": "PathRewrite",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/realip.go",
+   "line": 39,
+   "name": "realIP",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/realip_test.go",
+   "line": 11,
+   "name": "TestXRealIP",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/recoverer.go",
+   "line": 22,
+   "name": "Recoverer",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/recoverer.go",
+   "line": 61,
+   "name": "printPrettyStack",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/recoverer.go",
+   "line": 76,
+   "name": "parse",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/recoverer.go",
+   "line": 132,
+   "name": "decorateFuncCallLine",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/recoverer_test.go",
+   "line": 13,
+   "name": "panickingHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/request_id.go",
+   "line": 67,
+   "name": "RequestID",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/route_headers.go",
+   "line": 135,
+   "name": "NewPattern",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/strip.go",
+   "line": 73,
+   "name": "StripPrefix",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/strip_test.go",
+   "line": 56,
+   "name": "TestStripSlashesInRoute",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/strip_test.go",
+   "line": 203,
+   "name": "TestStripSlashesWithNilContext",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/strip_test.go",
+   "line": 241,
+   "name": "TestStripPrefix",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/sunset.go",
+   "line": 11,
+   "name": "Sunset",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/terminal_test.go",
+   "line": 8,
+   "name": "Test_cW",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/throttle.go",
+   "line": 44,
+   "name": "ThrottleWithOpts",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/throttle_test.go",
+   "line": 17,
+   "name": "TestThrottleBacklog",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/throttle_test.go",
+   "line": 202,
+   "name": "TestThrottleRetryAfter",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/throttle_test.go",
+   "line": 315,
+   "name": "BenchmarkThrottle",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 83,
+   "name": "WriteHeader",
+   "indegree": 32,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 97,
+   "name": "Write",
+   "indegree": 69,
+   "stratum": ">10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 134,
+   "name": "BytesWritten",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 138,
+   "name": "Tee",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 166,
+   "name": "Hijack",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/wrap_writer.go",
+   "line": 202,
+   "name": "Hijack",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "middleware/wrap_writer_test.go",
+   "line": 25,
+   "name": "TestWrapResponseWriterStatusWhenFlushed",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "middleware/wrap_writer_test.go",
+   "line": 116,
+   "name": "TestBasicWritesTeesWritesWithoutDiscard",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 63,
+   "name": "ServeHTTP",
+   "indegree": 71,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 100,
+   "name": "Use",
+   "indegree": 49,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 109,
+   "name": "Handle",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "mux.go",
+   "line": 137,
+   "name": "MethodFunc",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mux.go",
+   "line": 143,
+   "name": "Connect",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux.go",
+   "line": 155,
+   "name": "Get",
+   "indegree": 78,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 161,
+   "name": "Head",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "mux.go",
+   "line": 203,
+   "name": "NotFound",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 268,
+   "name": "Group",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "mux.go",
+   "line": 278,
+   "name": "Route",
+   "indegree": 23,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 295,
+   "name": "Mount",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux.go",
+   "line": 430,
+   "name": "handle",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 245,
+   "name": "TestMuxPlain",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 266,
+   "name": "TestMuxEmptyRoutes",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 316,
+   "name": "TestMuxNestedNotFound",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 738,
+   "name": "TestRouterFromMuxWith",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 833,
+   "name": "TestMuxRouteGroups",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 1452,
+   "name": "TestMiddlewarePanicOnLateUse",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 1553,
+   "name": "TestMuxEmptyParams",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 1573,
+   "name": "TestMuxMissingParams",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 1802,
+   "name": "TestCustomHTTPMethod",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 1952,
+   "name": "TestMuxMatch_DoesNotHaveBasePath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 2047,
+   "name": "TestServerBaseContext",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "mux_test.go",
+   "line": 2075,
+   "name": "testRequest",
+   "indegree": 30,
+   "stratum": ">10"
+  },
+  {
+   "file": "tree.go",
+   "line": 139,
+   "name": "Value",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 559,
+   "name": "findEdge",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 716,
+   "name": "walk",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 803,
+   "name": "patParamKeys",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree.go",
+   "line": 822,
+   "name": "longestPrefix",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree_test.go",
+   "line": 338,
+   "name": "TestTreeRegexpRecursive",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tree_test.go",
+   "line": 389,
+   "name": "TestTreeRegexMatchWholeParam",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tree_test.go",
+   "line": 419,
+   "name": "TestTreeFindPattern",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tree_test.go",
+   "line": 489,
+   "name": "BenchmarkTreeGet",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "tree_test.go",
+   "line": 525,
+   "name": "TestWalkInlineMiddlewaresAcrossSubrouter",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "tree_test.go",
+   "line": 582,
+   "name": "TestWalkRouteWithHandlerAndSubrouter",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "tree_test.go",
+   "line": 663,
+   "name": "TestWalkMiddlewaresAcrossGroupAndRoute",
+   "indegree": 8,
+   "stratum": "4-10"
+  }
+ ]
+}

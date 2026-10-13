@@ -1,0 +1,742 @@
+{
+ "cell": "go/gitleaks/no_tests",
+ "repo": "gitleaks",
+ "repo_sha": "8ad8470035d31a209322c580153b45c18e21b980",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 415,
+  "stratum_pool": {
+   "0": 24,
+   "1-3": 359,
+   "4-10": 17,
+   ">10": 15
+  },
+  "stratum_drawn": {
+   "0": 24,
+   "1-3": 44,
+   "4-10": 17,
+   ">10": 15
+  }
+ },
+ "seeds": [
+  {
+   "file": "cmd/detect.go",
+   "line": 33,
+   "name": "init#1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/detect.go",
+   "line": 50,
+   "name": "runDetect",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/diagnostics.go",
+   "line": 167,
+   "name": "StopCPUProfile",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/directory.go",
+   "line": 12,
+   "name": "init#2",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/directory.go",
+   "line": 24,
+   "name": "runDirectory",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/generate/config/main.go",
+   "line": 20,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/generate/config/rules/1password.go",
+   "line": 11,
+   "name": "OnePasswordServiceAccountToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/adobe.go",
+   "line": 9,
+   "name": "AdobeClientID",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/cloudflare.go",
+   "line": 64,
+   "name": "CloudflareOriginCAKey",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/doppler.go",
+   "line": 10,
+   "name": "Doppler",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/facebook.go",
+   "line": 51,
+   "name": "FacebookPageAccessToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/generic.go",
+   "line": 283,
+   "name": "newPlausibleSecret",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/github.go",
+   "line": 74,
+   "name": "GitHubApp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/gitlab.go",
+   "line": 99,
+   "name": "GitlabPat",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/gitlab.go",
+   "line": 116,
+   "name": "GitlabPatRoutable",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/heroku.go",
+   "line": 9,
+   "name": "Heroku",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/intra42.go",
+   "line": 9,
+   "name": "Intra42ClientSecret",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/jfrog.go",
+   "line": 11,
+   "name": "JFrogAPIKey",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/kubernetes.go",
+   "line": 12,
+   "name": "KubernetesSecret",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/launchdarkly.go",
+   "line": 9,
+   "name": "LaunchDarklyAccessToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/linkedin.go",
+   "line": 28,
+   "name": "LinkedinClientSecret",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/lob.go",
+   "line": 28,
+   "name": "LobAPIToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/mailchimp.go",
+   "line": 9,
+   "name": "MailChimp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/mailgun.go",
+   "line": 43,
+   "name": "MailGunSigningKey",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/mapbox.go",
+   "line": 9,
+   "name": "MapBox",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/sendinblue.go",
+   "line": 9,
+   "name": "SendInBlueAPIToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/sentry.go",
+   "line": 29,
+   "name": "SentryOrgToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/shippo.go",
+   "line": 9,
+   "name": "ShippoAPIToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/shopify.go",
+   "line": 10,
+   "name": "ShopifySharedSecret",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/sidekiq.go",
+   "line": 10,
+   "name": "SidekiqSecret",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/twilio.go",
+   "line": 10,
+   "name": "Twilio",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/twitter.go",
+   "line": 52,
+   "name": "TwitterAccessToken",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/rules/typeform.go",
+   "line": 9,
+   "name": "Typeform",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/utils/generate.go",
+   "line": 34,
+   "name": "GenerateSemiGenericRegex",
+   "indegree": 101,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/generate.go",
+   "line": 53,
+   "name": "MergeRegexps",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/generate/config/utils/generate.go",
+   "line": 69,
+   "name": "GenerateUniqueTokenRegex",
+   "indegree": 51,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/generate.go",
+   "line": 80,
+   "name": "GenerateSampleSecret",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/generate.go",
+   "line": 85,
+   "name": "GenerateSampleSecrets",
+   "indegree": 188,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/patterns.go",
+   "line": 11,
+   "name": "Numeric",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/patterns.go",
+   "line": 15,
+   "name": "Hex",
+   "indegree": 46,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/patterns.go",
+   "line": 19,
+   "name": "AlphaNumeric",
+   "indegree": 91,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/patterns.go",
+   "line": 23,
+   "name": "AlphaNumericExtendedShort",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/patterns.go",
+   "line": 27,
+   "name": "AlphaNumericExtended",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/patterns.go",
+   "line": 35,
+   "name": "Hex8_4_4_4_12",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/generate/config/utils/validate.go",
+   "line": 16,
+   "name": "Validate",
+   "indegree": 215,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/generate/config/utils/validate.go",
+   "line": 41,
+   "name": "ValidateWithPaths",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/generate/secrets/regen.go",
+   "line": 9,
+   "name": "NewSecret",
+   "indegree": 198,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/git.go",
+   "line": 14,
+   "name": "init#3",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/git.go",
+   "line": 29,
+   "name": "runGit",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/protect.go",
+   "line": 15,
+   "name": "init#4",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/protect.go",
+   "line": 29,
+   "name": "runProtect",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 73,
+   "name": "init#5",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 107,
+   "name": "initLog",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 132,
+   "name": "initConfig",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 197,
+   "name": "initDiagnostics",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 234,
+   "name": "Config",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 249,
+   "name": "Detector",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 438,
+   "name": "findingSummaryAndExit",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 534,
+   "name": "mustGetIntFlag",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/root.go",
+   "line": 542,
+   "name": "mustGetStringFlag",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/stdin.go",
+   "line": 13,
+   "name": "init#6",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/stdin.go",
+   "line": 23,
+   "name": "runStdIn",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/version.go",
+   "line": 10,
+   "name": "init#7",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/version.go",
+   "line": 20,
+   "name": "runVersion",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "config/allowlist.go",
+   "line": 20,
+   "name": "String",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "config/config.go",
+   "line": 365,
+   "name": "GetOrderedRules",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "detect/codec/ascii.go",
+   "line": 5,
+   "name": "init#1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "detect/codec/base64.go",
+   "line": 13,
+   "name": "init#2",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "detect/codec/base64.go",
+   "line": 20,
+   "name": "decodeBase64",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "detect/codec/encodings.go",
+   "line": 105,
+   "name": "init#3",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "detect/codec/encodings.go",
+   "line": 120,
+   "name": "findEncodingMatches",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "detect/codec/hex.go",
+   "line": 28,
+   "name": "init#4",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "detect/codec/segment.go",
+   "line": 64,
+   "name": "CurrentLine",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "detect/codec/start_end.go",
+   "line": 31,
+   "name": "overlaps",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "detect/codec/start_end.go",
+   "line": 42,
+   "name": "overflow",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "detect/codec/start_end.go",
+   "line": 55,
+   "name": "String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "detect/detect.go",
+   "line": 208,
+   "name": "DetectSource",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "detect/git.go",
+   "line": 19,
+   "name": "DetectGit",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "detect/utils.go",
+   "line": 23,
+   "name": "createScmLink",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 11,
+   "name": "init#1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 18,
+   "name": "With",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 22,
+   "name": "Trace",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 26,
+   "name": "Debug",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 29,
+   "name": "Info",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 32,
+   "name": "Warn",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 36,
+   "name": "Error",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "logging/log.go",
+   "line": 44,
+   "name": "Fatal",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "main.go",
+   "line": 11,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "regexp/stdlib_regex.go",
+   "line": 13,
+   "name": "MustCompile",
+   "indegree": 82,
+   "stratum": ">10"
+  },
+  {
+   "file": "report/json.go",
+   "line": 13,
+   "name": "Write",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "report/junit.go",
+   "line": 71,
+   "name": "getMessage",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "report/sarif.go",
+   "line": 38,
+   "name": "getTool",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "sources/common.go",
+   "line": 20,
+   "name": "init#1",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "sources/file.go",
+   "line": 52,
+   "name": "Fragments",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "sources/file.go",
+   "line": 90,
+   "name": "extractorFragments",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "sources/file.go",
+   "line": 254,
+   "name": "FullPath",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "sources/files.go",
+   "line": 60,
+   "name": "scanTargets",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "sources/git.go",
+   "line": 193,
+   "name": "String",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "sources/git.go",
+   "line": 201,
+   "name": "NewBlobReader",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "sources/git.go",
+   "line": 207,
+   "name": "NewBlobReaderContext",
+   "indegree": 2,
+   "stratum": "1-3"
+  }
+ ]
+}

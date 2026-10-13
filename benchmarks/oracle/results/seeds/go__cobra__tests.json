@@ -1,0 +1,742 @@
+{
+ "cell": "go/cobra/tests",
+ "repo": "cobra",
+ "repo_sha": "adbc8813901bba65827259daa8e22ff94ec1f30e",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 591,
+  "stratum_pool": {
+   "0": 248,
+   "1-3": 245,
+   "4-10": 66,
+   ">10": 32
+  },
+  "stratum_drawn": {
+   "0": 25,
+   "1-3": 25,
+   "4-10": 25,
+   ">10": 25
+  }
+ },
+ "seeds": [
+  {
+   "file": "active_help.go",
+   "line": 58,
+   "name": "activeHelpEnvVar",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "args.go",
+   "line": 87,
+   "name": "MinimumNArgs",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "args.go",
+   "line": 97,
+   "name": "MaximumNArgs",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "args.go",
+   "line": 107,
+   "name": "ExactArgs",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "args.go",
+   "line": 117,
+   "name": "RangeArgs",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "args.go",
+   "line": 127,
+   "name": "MatchAll",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "args.go",
+   "line": 142,
+   "name": "ExactValidArgs",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "args_test.go",
+   "line": 23,
+   "name": "getCommand",
+   "indegree": 51,
+   "stratum": ">10"
+  },
+  {
+   "file": "args_test.go",
+   "line": 35,
+   "name": "expectSuccess",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "args_test.go",
+   "line": 88,
+   "name": "exactArgsWithInvalidCount",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "args_test.go",
+   "line": 110,
+   "name": "noDuplicateArgsWithDuplicate",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "args_test.go",
+   "line": 187,
+   "name": "TestNoDuplicateArgs_WithValidOnly_WithInvalidArgs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "args_test.go",
+   "line": 213,
+   "name": "TestArbitraryArgs_WithValidOnly_WithInvalidArgs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "args_test.go",
+   "line": 407,
+   "name": "TestRangeArgs_WithInvalidCount_WithValid_WithInvalidArgs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "args_test.go",
+   "line": 477,
+   "name": "TestMatchAll",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "args_test.go",
+   "line": 533,
+   "name": "TestExactValidArgs_WithInvalidCount",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "args_test.go",
+   "line": 539,
+   "name": "TestExactValidArgs_WithInvalidCount_WithInvalidArgs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "args_test.go",
+   "line": 555,
+   "name": "TestLegacyArgsRootAcceptsArgs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "args_test.go",
+   "line": 567,
+   "name": "TestLegacyArgsSubcmdAcceptsArgs",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "bash_completions.go",
+   "line": 652,
+   "name": "gen",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "bash_completions.go",
+   "line": 683,
+   "name": "GenBashCompletion",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "bash_completions_test.go",
+   "line": 33,
+   "name": "check",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "bash_completions_test.go",
+   "line": 279,
+   "name": "TestBashCompletionNoActiveHelp",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cobra.go",
+   "line": 179,
+   "name": "tmpl",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cobra.go",
+   "line": 243,
+   "name": "WriteStringAndCheck",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "cobra_test.go",
+   "line": 27,
+   "name": "assertNoErr",
+   "indegree": 30,
+   "stratum": ">10"
+  },
+  {
+   "file": "cobra_test.go",
+   "line": 33,
+   "name": "TestAddTemplateFunctions",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command.go",
+   "line": 302,
+   "name": "SetErr",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 343,
+   "name": "SetHelpCommandGroupID",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 352,
+   "name": "SetCompletionCommandGroupID",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command.go",
+   "line": 422,
+   "name": "getErr",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command.go",
+   "line": 526,
+   "name": "UsageString",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 715,
+   "name": "argsMinusFirstX",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command.go",
+   "line": 884,
+   "name": "VisitParents",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 892,
+   "name": "Root",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1047,
+   "name": "preRun",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command.go",
+   "line": 1070,
+   "name": "Execute",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1205,
+   "name": "checkCommandGroups",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command.go",
+   "line": 1219,
+   "name": "InitDefaultHelpFlag",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1263,
+   "name": "InitDefaultHelpCmd",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1327,
+   "name": "Len",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command.go",
+   "line": 1332,
+   "name": "Commands",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1396,
+   "name": "AddGroup",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1401,
+   "name": "RemoveCommand",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1450,
+   "name": "PrintErr",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1455,
+   "name": "PrintErrln",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1465,
+   "name": "CommandPath",
+   "indegree": 23,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1474,
+   "name": "DisplayName",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1541,
+   "name": "Name",
+   "indegree": 59,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1562,
+   "name": "CalledAs",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command.go",
+   "line": 1571,
+   "name": "hasNameOrAliasPrefix",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command.go",
+   "line": 1596,
+   "name": "Runnable",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 1607,
+   "name": "IsAvailableCommand",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1628,
+   "name": "IsAdditionalHelpTopicCommand",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1677,
+   "name": "HasParent",
+   "indegree": 25,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1688,
+   "name": "Flags",
+   "indegree": 90,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1716,
+   "name": "LocalFlags",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1744,
+   "name": "InheritedFlags",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1775,
+   "name": "PersistentFlags",
+   "indegree": 40,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1892,
+   "name": "Parent",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "command.go",
+   "line": 1898,
+   "name": "mergePersistentFlags",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "command_test.go",
+   "line": 80,
+   "name": "checkStringOmits",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command_test.go",
+   "line": 138,
+   "name": "TestCallCommandWithoutSubcommands",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 159,
+   "name": "TestSubcommandExecuteC",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 305,
+   "name": "TestEnablePrefixMatching",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command_test.go",
+   "line": 562,
+   "name": "TestChildFlag",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1168,
+   "name": "TestVersionFlagExecuted",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1197,
+   "name": "TestVersionFlagExecutedWithNoName",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1219,
+   "name": "TestLongVersionFlagOnlyInHelpWhenShortPredefined",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1267,
+   "name": "TestRootErrPrefixExecutedOnSubcommand",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1402,
+   "name": "TestVisitParents",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1697,
+   "name": "TestPersistentHooks",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1823,
+   "name": "TestNormPassedOnInherited",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 1935,
+   "name": "TestEnableCommandSortingIsDisabled",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 2069,
+   "name": "TestWrongGroupNestedLevel",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command_test.go",
+   "line": 2425,
+   "name": "TestUpdateName",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command_test.go",
+   "line": 2603,
+   "name": "TestSetContext",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "command_test.go",
+   "line": 2723,
+   "name": "TestNoRootRunCommandExecutedWithoutVersionSet",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 376,
+   "name": "TestValidArgsAndCmdCompletionInGo",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 689,
+   "name": "Type",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 693,
+   "name": "GetSlice",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 2121,
+   "name": "TestFlagCompletionConcurrentRegistration",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 2187,
+   "name": "TestFlagCompletionInGoWithDesc",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 2787,
+   "name": "TestCompleteWithDisableFlagParsing",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 3157,
+   "name": "TestCompletionForOneRequiredGroupFlags",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 3255,
+   "name": "TestCompletionForMutuallyExclusiveFlags",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "completions_test.go",
+   "line": 3647,
+   "name": "TestGetFlagCompletion",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "doc/cmd_test.go",
+   "line": 95,
+   "name": "checkStringContains",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "doc/md_docs.go",
+   "line": 57,
+   "name": "GenMarkdownCustom",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "doc/md_docs_test.go",
+   "line": 58,
+   "name": "TestGenMdNoHiddenParents",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "doc/rest_docs.go",
+   "line": 62,
+   "name": "GenReSTCustom",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "doc/util.go",
+   "line": 26,
+   "name": "hasSeeAlso",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "doc/yaml_docs.go",
+   "line": 88,
+   "name": "GenYaml",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "doc/yaml_docs_test.go",
+   "line": 75,
+   "name": "TestGenYamlDocRunnable",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_groups.go",
+   "line": 49,
+   "name": "MarkFlagsOneRequired",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "powershell_completions.go",
+   "line": 313,
+   "name": "genPowerShellCompletion",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "shell_completions.go",
+   "line": 61,
+   "name": "MarkPersistentFlagFilename",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "shell_completions.go",
+   "line": 67,
+   "name": "MarkFlagFilename",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "shell_completions.go",
+   "line": 96,
+   "name": "MarkFlagDirname",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "zsh_completions.go",
+   "line": 42,
+   "name": "GenZshCompletionNoDesc",
+   "indegree": 2,
+   "stratum": "1-3"
+  }
+ ]
+}

@@ -1,0 +1,6 @@
+[
+{"k":"3","member":"src/main.rs:62 main","node":"src/main.rs|crate::main","seed":"src/cli.rs:776","seed_name":"gen_completions"},
+{"k":"3","member":"src/main.rs:75 run","node":"src/main.rs|crate::run","seed":"src/cli.rs:776","seed_name":"gen_completions"},
+{"k":"inf","member":"src/main.rs:62 main","node":"src/main.rs|crate::main","seed":"src/cli.rs:776","seed_name":"gen_completions"},
+{"k":"inf","member":"src/main.rs:75 run","node":"src/main.rs|crate::run","seed":"src/cli.rs:776","seed_name":"gen_completions"}
+]

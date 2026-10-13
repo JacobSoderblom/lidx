@@ -1,0 +1,742 @@
+{
+ "cell": "ts/immer",
+ "repo": "immer",
+ "repo_sha": "8848a5b16938e5681a890d73de7bda24b5080498",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 142,
+  "stratum_pool": {
+   "0": 46,
+   "1-3": 72,
+   "4-10": 20,
+   ">10": 4
+  },
+  "stratum_drawn": {
+   "0": 38,
+   "1-3": 38,
+   "4-10": 20,
+   ">10": 4
+  }
+ },
+ "seeds": [
+  {
+   "file": "src/core/finalize.ts",
+   "line": 27,
+   "name": "processResult",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/finalize.ts",
+   "line": 112,
+   "name": "isSameScope",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/core/finalize.ts",
+   "line": 169,
+   "name": "registerChildFinalizationCallback",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/finalize.ts",
+   "line": 194,
+   "name": "generatePatchesAndFinalize",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/finalize.ts",
+   "line": 217,
+   "name": "handleCrossReference",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 83,
+   "name": "produce",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 137,
+   "name": "produceWithPatches",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 152,
+   "name": "createDraft",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 162,
+   "name": "finishDraft",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 187,
+   "name": "setUseStrictShallowCopy",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 197,
+   "name": "setUseStrictIteration",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 201,
+   "name": "shouldUseStrictIteration",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 205,
+   "name": "applyPatches",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/immerClass.ts",
+   "line": 234,
+   "name": "createProxy",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 57,
+   "name": "createProxyProxy",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 111,
+   "name": "get",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 166,
+   "name": "ownKeys",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 219,
+   "name": "deleteProperty",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 236,
+   "name": "getOwnPropertyDescriptor",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 247,
+   "name": "defineProperty",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 253,
+   "name": "setPrototypeOf",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 291,
+   "name": "peek",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 303,
+   "name": "isRelocatedBaseRef",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 316,
+   "name": "readPropFromProto",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 342,
+   "name": "markChanged",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/core/proxy.ts",
+   "line": 351,
+   "name": "prepareCopy",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/core/scope.ts",
+   "line": 39,
+   "name": "getCurrentScope",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/core/scope.ts",
+   "line": 90,
+   "name": "revokeDraft",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/immer.ts",
+   "line": 110,
+   "name": "castDraft",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/immer.ts",
+   "line": 117,
+   "name": "castImmutable",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 100,
+   "name": "enableArrayMethods",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 140,
+   "name": "isMutatingArrayMethod",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 146,
+   "name": "isNonMutatingArrayMethod",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 152,
+   "name": "isArrayOperationMethod",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 165,
+   "name": "exitOperation",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 194,
+   "name": "markAllIndicesReassigned",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 199,
+   "name": "normalizeSliceIndex",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/arrayMethods.ts",
+   "line": 336,
+   "name": "createMethodInterceptor",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 34,
+   "name": "enableMapSet",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 56,
+   "name": "size",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 62,
+   "name": "has",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 68,
+   "name": "set",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 82,
+   "name": "delete",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 114,
+   "name": "forEach",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 122,
+   "name": "get",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 139,
+   "name": "keys",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 145,
+   "name": "values",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 177,
+   "name": "[Symbol.iterator]",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 197,
+   "name": "proxyMap_",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 206,
+   "name": "prepareMapCopy",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 253,
+   "name": "add",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 265,
+   "name": "delete",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 282,
+   "name": "clear",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 299,
+   "name": "entries",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 306,
+   "name": "keys",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 310,
+   "name": "[Symbol.iterator]",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 332,
+   "name": "prepareSetCopy",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 348,
+   "name": "assertUnrevoked",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/plugins/mapset.ts",
+   "line": 352,
+   "name": "fixSetContents",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 35,
+   "name": "enablePatches",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 50,
+   "name": "getPath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 116,
+   "name": "resolvePath",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 132,
+   "name": "generatePatches_",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 171,
+   "name": "generateArrayPatches",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 238,
+   "name": "generatePatchesFromAssigned",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 266,
+   "name": "generateSetPatches",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 328,
+   "name": "applyPatches_",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/plugins/patches.ts",
+   "line": 406,
+   "name": "deepClonePatchValue",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 29,
+   "name": "isDraft",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 33,
+   "name": "isDraftable",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 70,
+   "name": "original",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 89,
+   "name": "each",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 103,
+   "name": "getArchtype",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 117,
+   "name": "has",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 127,
+   "name": "get",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 136,
+   "name": "set",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 149,
+   "name": "is",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 161,
+   "name": "isMap",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 164,
+   "name": "isSet",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 166,
+   "name": "isObjectish",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 168,
+   "name": "isFunction",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 174,
+   "name": "isArrayIndex",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 185,
+   "name": "latest",
+   "indegree": 22,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 196,
+   "name": "getFinalValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 200,
+   "name": "shallowCopy",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 278,
+   "name": "dontMutateFrozenCollections",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/common.ts",
+   "line": 286,
+   "name": "isFrozen",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/errors.ts",
+   "line": 41,
+   "name": "die",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 19,
+   "name": "generatePatches_",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 24,
+   "name": "generateReplacementPatches_",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 29,
+   "name": "applyPatches_",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 30,
+   "name": "getPath",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 34,
+   "name": "proxyMap_",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 35,
+   "name": "proxySet_",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 36,
+   "name": "fixSetContents",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 40,
+   "name": "createMethodInterceptor",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 54,
+   "name": "getPlugin",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 65,
+   "name": "isPluginLoaded",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 68,
+   "name": "clearPlugin",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/plugins.ts",
+   "line": 72,
+   "name": "loadPlugin",
+   "indegree": 3,
+   "stratum": "1-3"
+  }
+ ]
+}

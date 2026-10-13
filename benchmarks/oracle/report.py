@@ -343,6 +343,12 @@ def build(results_dir):
     if hier:
         w("")
         w(hier)
+    import report_impact  # the impact, test reach and stop reason section (issue #451) follows the hierarchy section
+    imp = report_impact.section(results_dir)
+    if imp:
+        w("")
+        w(imp)
+        report_impact.write_outliers(results_dir)
     w("")
     open(os.path.join(results_dir, "report.md"), "w").write("\n".join(L))
     print("wrote", os.path.join(results_dir, "report.md"))

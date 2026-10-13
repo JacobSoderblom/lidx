@@ -1,0 +1,742 @@
+{
+ "cell": "ts/h3",
+ "repo": "h3",
+ "repo_sha": "66cfb8a357b6285451bad498c2c40002601fae98",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 471,
+  "stratum_pool": {
+   "0": 138,
+   "1-3": 322,
+   "4-10": 11,
+   ">10": 0
+  },
+  "stratum_drawn": {
+   "0": 44,
+   "1-3": 45,
+   "4-10": 11,
+   ">10": 0
+  }
+ },
+ "seeds": [
+  {
+   "file": "src/_deprecated.ts",
+   "line": 32,
+   "name": "createError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 46,
+   "name": "getRequestPath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 65,
+   "name": "getMethod",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 125,
+   "name": "sendStream",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 219,
+   "name": "setResponseStatus",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 229,
+   "name": "defaultContentType",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 246,
+   "name": "removeResponseHeader",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 251,
+   "name": "appendResponseHeaders",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 262,
+   "name": "clearResponseHeaders",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_deprecated.ts",
+   "line": 312,
+   "name": "createApp",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/_entries/_common.ts",
+   "line": 3,
+   "name": "freezeApp",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/adapters.ts",
+   "line": 24,
+   "name": "toWebHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapters.ts",
+   "line": 32,
+   "name": "fromWebHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/adapters.ts",
+   "line": 101,
+   "name": "settle",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/error.ts",
+   "line": 129,
+   "name": "isError",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/error.ts",
+   "line": 144,
+   "name": "status",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/error.ts",
+   "line": 215,
+   "name": "statusCode",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/error.ts",
+   "line": 222,
+   "name": "statusMessage",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/event.ts",
+   "line": 128,
+   "name": "res",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/event.ts",
+   "line": 136,
+   "name": "runtime",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/event.ts",
+   "line": 192,
+   "name": "method",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/h3.ts",
+   "line": 39,
+   "name": "NoHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/h3.ts",
+   "line": 157,
+   "name": "register",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/h3.ts",
+   "line": 268,
+   "name": "use",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/handler.ts",
+   "line": 33,
+   "name": "defineHandler",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/handler.ts",
+   "line": 150,
+   "name": "defineLazyEventHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/handler.ts",
+   "line": 170,
+   "name": "toEventHandler",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/response.ts",
+   "line": 13,
+   "name": "toResponse",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/response.ts",
+   "line": 114,
+   "name": "status",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/response.ts",
+   "line": 121,
+   "name": "headers",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/rules/cache.ts",
+   "line": 153,
+   "name": "setRequestHeaders",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/cache.ts",
+   "line": 257,
+   "name": "variableHeaderNames",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/compiler/codegen.ts",
+   "line": 8,
+   "name": "serializePreMergedRouteRules",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/compiler/codegen.ts",
+   "line": 100,
+   "name": "compileOverridePredicate",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/compiler/codegen.ts",
+   "line": 131,
+   "name": "assertHandlerBinding",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/rules/compiler/compile.ts",
+   "line": 60,
+   "name": "compileFindRouteRules",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/rules/compiler/compile.ts",
+   "line": 116,
+   "name": "resolveCompileCtx",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/handlers/_splat.ts",
+   "line": 29,
+   "name": "asPath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/rules/handlers/_splat.ts",
+   "line": 47,
+   "name": "authorityEnd",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/handlers/_utils.ts",
+   "line": 291,
+   "name": "splitSegments",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/internal/premerge.ts",
+   "line": 103,
+   "name": "preMergeRuleLayers",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/internal/resets.ts",
+   "line": 29,
+   "name": "addReset",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/internal/scope.ts",
+   "line": 59,
+   "name": "decodedPath",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/rules/internal/scope.ts",
+   "line": 92,
+   "name": "encodedReading",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/internal/scope.ts",
+   "line": 119,
+   "name": "needsCanonicalPasses",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/internal/scope.ts",
+   "line": 226,
+   "name": "hasDecodableEscape",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/internal/scope.ts",
+   "line": 265,
+   "name": "nestingEnd",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/internal/scope.ts",
+   "line": 274,
+   "name": "escapeByte",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/match.ts",
+   "line": 180,
+   "name": "createRouteRulesMatcher",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/match.ts",
+   "line": 210,
+   "name": "findRouteRules",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/rules/match.ts",
+   "line": 353,
+   "name": "toRouteRules",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/match.ts",
+   "line": 426,
+   "name": "evict",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/match.ts",
+   "line": 605,
+   "name": "pushReading",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/merge.ts",
+   "line": 82,
+   "name": "resolveLayers",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/rules/normalize.ts",
+   "line": 151,
+   "name": "assertNoHostSplat",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/tracing.ts",
+   "line": 67,
+   "name": "wrappedHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/tracing.ts",
+   "line": 156,
+   "name": "wrapHandlerWithTracing",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/auth.ts",
+   "line": 25,
+   "name": "validate",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/auth.ts",
+   "line": 48,
+   "name": "requireBasicAuth",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/body.ts",
+   "line": 174,
+   "name": "readValidatedBody",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/cookie.ts",
+   "line": 82,
+   "name": "setCookie",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/cookie.ts",
+   "line": 274,
+   "name": "_getDistinctCookieKey",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/cookie.ts",
+   "line": 287,
+   "name": "getChunkedCookieCount",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/event-stream.ts",
+   "line": 141,
+   "name": "pushComment",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/event-stream.ts",
+   "line": 255,
+   "name": "onClosed",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/event.ts",
+   "line": 20,
+   "name": "isHTTPEvent",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/event.ts",
+   "line": 27,
+   "name": "getEventContext",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/internal/body.ts",
+   "line": 8,
+   "name": "parseFormData",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/cache.ts",
+   "line": 51,
+   "name": "opaqueTag",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/dispose.ts",
+   "line": 18,
+   "name": "observe",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/dispose.ts",
+   "line": 162,
+   "name": "isStreamBody",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/event-stream.ts",
+   "line": 36,
+   "name": "formatEventStreamMessages",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/iron-crypto.ts",
+   "line": 155,
+   "name": "hmacWithPassword",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/object.ts",
+   "line": 9,
+   "name": "hasProp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/object.ts",
+   "line": 17,
+   "name": "isJSONSerializable",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/path.ts",
+   "line": 54,
+   "name": "stripBase",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/path.ts",
+   "line": 209,
+   "name": "normalizeRoute",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/internal/proxy.ts",
+   "line": 47,
+   "name": "connectionTokens",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/route.ts",
+   "line": 38,
+   "name": "createRouteMatcher",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/route.ts",
+   "line": 82,
+   "name": "trimTrailingSlash",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/internal/validate.ts",
+   "line": 40,
+   "name": "validateData",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/internal/validate.ts",
+   "line": 217,
+   "name": "createValidationError",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/json-rpc.ts",
+   "line": 202,
+   "name": "isJsonContentType",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/json-rpc.ts",
+   "line": 217,
+   "name": "assertAllowedOrigin",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/json-rpc.ts",
+   "line": 289,
+   "name": "defineJsonRpcWebSocketHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/json-rpc.ts",
+   "line": 404,
+   "name": "processJsonRpcMethod",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/json-rpc.ts",
+   "line": 564,
+   "name": "createJsonRpcError",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/utils/middleware.ts",
+   "line": 12,
+   "name": "onRequest",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/middleware.ts",
+   "line": 23,
+   "name": "onResponse",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/middleware.ts",
+   "line": 77,
+   "name": "bodyLimit",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/proxy.ts",
+   "line": 475,
+   "name": "getProxyRequestHeaders",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/request.ts",
+   "line": 184,
+   "name": "getValidatedQuery",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/request.ts",
+   "line": 320,
+   "name": "getValidatedRouterParams",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/request.ts",
+   "line": 409,
+   "name": "assertMethod",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/request.ts",
+   "line": 589,
+   "name": "applyForwardedHost",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/response.ts",
+   "line": 29,
+   "name": "onDispose",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/response.ts",
+   "line": 281,
+   "name": "html",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/route.ts",
+   "line": 92,
+   "name": "defineRoute",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/utils/static.ts",
+   "line": 292,
+   "name": "parseAcceptEncoding",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/utils/timing.ts",
+   "line": 55,
+   "name": "withServerTiming",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

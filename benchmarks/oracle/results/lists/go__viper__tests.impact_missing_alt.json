@@ -1,0 +1,22 @@
+[
+{"k":"3","member":"finder_example_test.go:12 ExampleFinder","node":"finder_example_test.go|finder_example_test.ExampleFinder","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"finder_example_test.go:12 ExampleFinder","node":"finder_example_test.go|finder_example_test.ExampleFinder","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"finder_example_test.go:40 ExampleFinders","node":"finder_example_test.go|finder_example_test.ExampleFinders","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"finder_example_test.go:40 ExampleFinders","node":"finder_example_test.go|finder_example_test.ExampleFinders","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"remote.go:171 WatchRemoteConfigOnChannel","node":"remote.go|remote.Viper.WatchRemoteConfigOnChannel","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"remote.go:171 WatchRemoteConfigOnChannel","node":"remote.go|remote.Viper.WatchRemoteConfigOnChannel","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"remote.go:176 getKeyValueConfig","node":"remote.go|remote.Viper.getKeyValueConfig","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"remote.go:176 getKeyValueConfig","node":"remote.go|remote.Viper.getKeyValueConfig","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"remote.go:234 watchKeyValueConfig","node":"remote.go|remote.Viper.watchKeyValueConfig","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"remote.go:234 watchKeyValueConfig","node":"remote.go|remote.Viper.watchKeyValueConfig","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"viper.go:1549 MergeInConfig","node":"viper.go|viper.Viper.MergeInConfig","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"viper.go:1549 MergeInConfig","node":"viper.go|viper.Viper.MergeInConfig","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"viper.go:318 WatchConfig","node":"viper.go|viper.Viper.WatchConfig","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"viper.go:318 WatchConfig","node":"viper.go|viper.Viper.WatchConfig","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"viper_test.go:1410 TestBoundCaseSensitivity","node":"viper_test.go|viper_test.TestBoundCaseSensitivity","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"viper_test.go:1410 TestBoundCaseSensitivity","node":"viper_test.go|viper_test.TestBoundCaseSensitivity","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"viper_test.go:532 TestAliasInConfigFile","node":"viper_test.go|viper_test.TestAliasInConfigFile","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"viper_test.go:532 TestAliasInConfigFile","node":"viper_test.go|viper_test.TestAliasInConfigFile","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"},
+{"k":"3","member":"viper_test.go:753 TestAllKeys","node":"viper_test.go|viper_test.TestAllKeys","seed":"internal/encoding/dotenv/codec.go:43","seed_name":"Decode"},
+{"k":"3","member":"viper_test.go:753 TestAllKeys","node":"viper_test.go|viper_test.TestAllKeys","seed":"internal/encoding/json/codec.go:15","seed_name":"Decode"}
+]

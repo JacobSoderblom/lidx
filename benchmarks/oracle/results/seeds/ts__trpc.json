@@ -1,0 +1,742 @@
+{
+ "cell": "ts/trpc",
+ "repo": "trpc",
+ "repo_sha": "10e2ef98f7842b94eb3026e4f9bcfe62cc39b088",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 295,
+  "stratum_pool": {
+   "0": 83,
+   "1-3": 193,
+   "4-10": 16,
+   ">10": 3
+  },
+  "stratum_drawn": {
+   "0": 40,
+   "1-3": 41,
+   "4-10": 16,
+   ">10": 3
+  }
+ },
+ "seeds": [
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 41,
+   "name": "getMethod",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 46,
+   "name": "getHeadersAndCookiesFromResponse",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 60,
+   "name": "getTRPCPath",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 98,
+   "name": "getHeaders",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 119,
+   "name": "getMethod",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 132,
+   "name": "toStream",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 170,
+   "name": "getHeaders",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 184,
+   "name": "toResult",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 197,
+   "name": "toStream",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/getPlanner.ts",
+   "line": 216,
+   "name": "getPlanner",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/index.ts",
+   "line": 52,
+   "name": "awsLambdaRequestHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/index.ts",
+   "line": 61,
+   "name": "createContext",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/aws-lambda/index.ts",
+   "line": 85,
+   "name": "awsLambdaStreamingRequestHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/fetch/fetchRequestHandler.ts",
+   "line": 24,
+   "name": "fetchRequestHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/fetch/fetchRequestHandler.ts",
+   "line": 29,
+   "name": "createContext",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/next-app-dir/nextAppDirCaller.ts",
+   "line": 64,
+   "name": "handleError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/next-app-dir/notFound.ts",
+   "line": 8,
+   "name": "notFound",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/next.ts",
+   "line": 33,
+   "name": "createNextApiHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/node-http/incomingMessageToRequest.ts",
+   "line": 96,
+   "name": "createHeaders",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/adapters/node-http/incomingMessageToRequest.ts",
+   "line": 121,
+   "name": "incomingMessageToRequest",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/adapters/node-http/nodeHTTPRequestHandler.ts",
+   "line": 33,
+   "name": "internal_exceptionHandler",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/adapters/node-http/writeResponse.ts",
+   "line": 14,
+   "name": "onError",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/node-http/writeResponse.ts",
+   "line": 35,
+   "name": "writeResponseBody",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/adapters/standalone.ts",
+   "line": 94,
+   "name": "createHTTPHandler",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/adapters/standalone.ts",
+   "line": 119,
+   "name": "createHTTP2Handler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/ws.ts",
+   "line": 137,
+   "name": "createCtxPromise",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/adapters/ws.ts",
+   "line": 615,
+   "name": "applyWSSHandler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/wsEncoder.ts",
+   "line": 25,
+   "name": "encode",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/adapters/wsEncoder.ts",
+   "line": 26,
+   "name": "decode",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/observable/behaviorSubject.ts",
+   "line": 20,
+   "name": "behaviorSubject",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/observable/observable.ts",
+   "line": 21,
+   "name": "observable",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/observable/observable.ts",
+   "line": 86,
+   "name": "pipeReducer",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/observable/observable.ts",
+   "line": 128,
+   "name": "observableToReadableStream",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/observable/operators.ts",
+   "line": 9,
+   "name": "map",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/observable/operators.ts",
+   "line": 32,
+   "name": "share",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/observable/operators.ts",
+   "line": 41,
+   "name": "startIfNeeded",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/observable/operators.ts",
+   "line": 117,
+   "name": "distinctUntilChanged",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/observable/operators.ts",
+   "line": 156,
+   "name": "distinctUntilDeepChanged",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/observable/types.ts",
+   "line": 2,
+   "name": "unsubscribe",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/observable/types.ts",
+   "line": 6,
+   "name": "subscribe",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/observable/types.ts",
+   "line": 52,
+   "name": "next",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/observable/types.ts",
+   "line": 53,
+   "name": "error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/observable/types.ts",
+   "line": 54,
+   "name": "complete",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/createProxy.ts",
+   "line": 9,
+   "name": "noop",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/createProxy.ts",
+   "line": 79,
+   "name": "createRecursiveProxy",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/error/TRPCError.ts",
+   "line": 43,
+   "name": "getTRPCErrorFromUnknown",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/error/formatter.ts",
+   "line": 120,
+   "name": "getFormattedErrorShape",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/error/formatter.ts",
+   "line": 130,
+   "name": "isFormattedErrorShape",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/error/getErrorShape.ts",
+   "line": 9,
+   "name": "getErrorShape",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/contentType.ts",
+   "line": 39,
+   "name": "memo",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/contentType.ts",
+   "line": 215,
+   "name": "isMatch",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/contentType.ts",
+   "line": 253,
+   "name": "isMatch",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/contentType.ts",
+   "line": 315,
+   "name": "getRequestInfo",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/formDataToObject.ts",
+   "line": 5,
+   "name": "isNumberString",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/formDataToObject.ts",
+   "line": 7,
+   "name": "set",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/formDataToObject.ts",
+   "line": 38,
+   "name": "formDataToObject",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts",
+   "line": 40,
+   "name": "combinedAbortController",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts",
+   "line": 213,
+   "name": "resolveResponse",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts",
+   "line": 360,
+   "name": "cleanup",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/http/types.ts",
+   "line": 71,
+   "name": "result",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/initTRPC.ts",
+   "line": 123,
+   "name": "context",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/initTRPC.ts",
+   "line": 134,
+   "name": "meta",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/middleware.ts",
+   "line": 195,
+   "name": "createInputMiddleware",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/middleware.ts",
+   "line": 260,
+   "name": "tryFormatThrown",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/parser.ts",
+   "line": 84,
+   "name": "getParseFn",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/procedureBuilder.ts",
+   "line": 525,
+   "name": "createNewBuilder",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/procedureBuilder.ts",
+   "line": 634,
+   "name": "createResolver",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/procedureBuilder.ts",
+   "line": 665,
+   "name": "callerWrapper",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/rootConfig.ts",
+   "line": 31,
+   "name": "isDevDefault",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/router.ts",
+   "line": 113,
+   "name": "resolve",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/router.ts",
+   "line": 137,
+   "name": "isLazy",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/router.ts",
+   "line": 370,
+   "name": "getProcedureAtPath",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/router.ts",
+   "line": 400,
+   "name": "callProcedure",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/rpc/parseTRPCMessage.ts",
+   "line": 41,
+   "name": "assertIsJSONRPC2OrUndefined",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 100,
+   "name": "isPromise",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 144,
+   "name": "registerAsync",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 216,
+   "name": "encodeAsync",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 282,
+   "name": "jsonlStreamProducer",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 406,
+   "name": "createStreamsManager",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 422,
+   "name": "createStreamController",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 456,
+   "name": "clear",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/jsonl.ts",
+   "line": 516,
+   "name": "jsonlStreamConsumer",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/sse.ts",
+   "line": 85,
+   "name": "sseStreamProducer",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/tracked.ts",
+   "line": 26,
+   "name": "isTrackedEnvelope",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/tracked.ts",
+   "line": 35,
+   "name": "tracked",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/utils/asyncIterable.ts",
+   "line": 6,
+   "name": "iteratorResource",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/stream/utils/mergeAsyncIterables.ts",
+   "line": 77,
+   "name": "mergeAsyncIterables",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/transformer.ts",
+   "line": 113,
+   "name": "transformTRPCResponse",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/utils.ts",
+   "line": 31,
+   "name": "isObject",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/utils.ts",
+   "line": 44,
+   "name": "emptyObject",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/utils.ts",
+   "line": 51,
+   "name": "isAsyncIterable",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/utils.ts",
+   "line": 62,
+   "name": "run",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "packages/server/src/unstable-core-do-not-import/utils.ts",
+   "line": 90,
+   "name": "sleep",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/vendor/unpromise/unpromise.ts",
+   "line": 182,
+   "name": "then",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/vendor/unpromise/unpromise.ts",
+   "line": 199,
+   "name": "catch",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/vendor/unpromise/unpromise.ts",
+   "line": 212,
+   "name": "finally",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/vendor/unpromise/unpromise.ts",
+   "line": 244,
+   "name": "getSubscribablePromise",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "packages/server/src/vendor/unpromise/unpromise.ts",
+   "line": 291,
+   "name": "race",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "packages/server/src/vendor/unpromise/unpromise.ts",
+   "line": 317,
+   "name": "raceReferences",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "packages/server/src/vendor/unpromise/unpromise.ts",
+   "line": 341,
+   "name": "resolveSelfTuple",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

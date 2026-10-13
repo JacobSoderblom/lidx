@@ -1,0 +1,742 @@
+{
+ "cell": "go/syft/tests",
+ "repo": "syft",
+ "repo_sha": "b15c5dbfe2bb21c9d73002c1056a829c8c411c75",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 4801,
+  "stratum_pool": {
+   "0": 187,
+   "1-3": 3676,
+   "4-10": 509,
+   ">10": 429
+  },
+  "stratum_drawn": {
+   "0": 25,
+   "1-3": 25,
+   "4-10": 25,
+   ">10": 25
+  }
+ },
+ "seeds": [
+  {
+   "file": "cmd/syft/cli/ui/handle_pull_docker_image.go",
+   "line": 192,
+   "name": "layerCap",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/syft/internal/commands/cataloger_info.go",
+   "line": 441,
+   "name": "extractStringCapability",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/syft/internal/options/cache_test.go",
+   "line": 294,
+   "name": "restoreCache",
+   "indegree": 62,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/syft/internal/options/format.go",
+   "line": 71,
+   "name": "Encoders",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cmd/syft/internal/options/output.go",
+   "line": 84,
+   "name": "SBOMWriter",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cmd/syft/internal/options/writer.go",
+   "line": 226,
+   "name": "Close",
+   "indegree": 37,
+   "stratum": ">10"
+  },
+  {
+   "file": "cmd/syft/internal/ui/no_ui.go",
+   "line": 31,
+   "name": "Setup",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/syft/internal/ui/no_ui.go",
+   "line": 45,
+   "name": "Teardown",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cmd/syft/internal/ui/ui.go",
+   "line": 73,
+   "name": "Handle",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "examples/select_catalogers/main.go",
+   "line": 19,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "internal/cache/hash_type.go",
+   "line": 11,
+   "name": "hashType",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/capabilities/generate/overrides.go",
+   "line": 148,
+   "name": "singleCPE",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "internal/cmptest/diff_reporter.go",
+   "line": 31,
+   "name": "PopStep",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "internal/file/digest.go",
+   "line": 113,
+   "name": "CleanDigestAlgorithmName",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/file/squashfs_test.go",
+   "line": 126,
+   "name": "TestWalkDiskDir_SkipDir",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/licenses/list.go",
+   "line": 7,
+   "name": "FileNames",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "internal/packagemetadata/discover_type_names.go",
+   "line": 222,
+   "name": "isMetadataTypeCandidate",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/regex_helpers.go",
+   "line": 42,
+   "name": "MatchNamedCaptureGroupsFromReader",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/relationship/index.go",
+   "line": 177,
+   "name": "All",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "internal/sourcemetadata/discover_type_names.go",
+   "line": 152,
+   "name": "isMetadataTypeCandidate",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/string_helpers.go",
+   "line": 9,
+   "name": "HasAnyOfPrefixes",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/task/expression.go",
+   "line": 86,
+   "name": "newExpression",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/task/file_tasks.go",
+   "line": 116,
+   "name": "newExecutableCatalogerTaskFactory",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/task/file_tasks.go",
+   "line": 184,
+   "name": "commonFileTags",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/unknown/coordinate_error.go",
+   "line": 56,
+   "name": "Append",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "internal/unknown/coordinate_error.go",
+   "line": 97,
+   "name": "IfEmptyf",
+   "indegree": 25,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/cataloging/archive_search.go",
+   "line": 18,
+   "name": "WithIncludeIndexedArchives",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/cataloging/pkgcataloging/config.go",
+   "line": 67,
+   "name": "WithPythonConfig",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/cataloging/relationships.go",
+   "line": 26,
+   "name": "WithPackageFileOwnership",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/create_sbom_config.go",
+   "line": 148,
+   "name": "WithoutFiles",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/file/cataloger/executable/elf_test.go",
+   "line": 162,
+   "name": "Test_elfHasEntrypoint",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/file/coordinate_set.go",
+   "line": 32,
+   "name": "Remove",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/file/coordinates.go",
+   "line": 37,
+   "name": "String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/file/location.go",
+   "line": 173,
+   "name": "NewVirtualLocationFromDirectory",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/file/mock_resolver.go",
+   "line": 116,
+   "name": "String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/format/common/spdxhelpers/to_syft_model.go",
+   "line": 32,
+   "name": "ToSyftModel",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/format/common/spdxhelpers/to_syft_model_test.go",
+   "line": 663,
+   "name": "Test_directPackageFiles",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/format/internal/cyclonedxutil/helpers/description.go",
+   "line": 17,
+   "name": "decodeDescription",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/format/internal/cyclonedxutil/helpers/property_encoder.go",
+   "line": 159,
+   "name": "Decode",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/format/internal/testutil/redactor.go",
+   "line": 138,
+   "name": "WithPatternRedactors",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/format/spdxjson/encoder_test.go",
+   "line": 297,
+   "name": "defaultFormatEncoders",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/format/spdxjson/spdx3_decoder.go",
+   "line": 60,
+   "name": "spdxContextRegex",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/format/syftjson/encoder.go",
+   "line": 24,
+   "name": "NewFormatEncoder",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/format/syftjson/encoder_test.go",
+   "line": 28,
+   "name": "TestDefaultNameAndVersion",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/format/syftjson/model/source.go",
+   "line": 48,
+   "name": "UnmarshalJSON",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/format/template/encoder.go",
+   "line": 64,
+   "name": "ID",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/get_source_config.go",
+   "line": 87,
+   "name": "DefaultGetSourceConfig",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/internal/fileresolver/chroot_context.go",
+   "line": 101,
+   "name": "ChangeRoot",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/internal/fileresolver/chroot_context_test.go",
+   "line": 12,
+   "name": "Test_ChrootContext_RequestResponse",
+   "indegree": 63,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/internal/fileresolver/container_image_deep_squash.go",
+   "line": 44,
+   "name": "HasPath",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/internal/fileresolver/container_image_squash.go",
+   "line": 22,
+   "name": "NewFromContainerImageSquash",
+   "indegree": 10,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/internal/fileresolver/directory_indexer.go",
+   "line": 472,
+   "name": "disallowByFileType",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/internal/fileresolver/excluding_file_test.go",
+   "line": 14,
+   "name": "TestExcludingResolver",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/internal/fileresolver/excluding_file_test.go",
+   "line": 155,
+   "name": "HasPath",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/internal/fileresolver/filetree_resolver_test.go",
+   "line": 700,
+   "name": "TestDirectoryResolver_MultipleFilesByPath",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/internal/fileresolver/filetree_resolver_test.go",
+   "line": 1345,
+   "name": "Mode",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/internal/fileresolver/unindexed_directory.go",
+   "line": 99,
+   "name": "HasPath",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/internal/fileresolver/unindexed_directory_test.go",
+   "line": 1273,
+   "name": "testWithTimeout",
+   "indegree": 63,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/internal/testutil/chdir.go",
+   "line": 10,
+   "name": "Chdir",
+   "indegree": 71,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/linux/release.go",
+   "line": 26,
+   "name": "String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/pkg/cataloger/binary/classifier_cataloger_test.go",
+   "line": 3257,
+   "name": "RelativeFileByPath",
+   "indegree": 18,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/binary/internal/manager/internal/cli/cli.go",
+   "line": 22,
+   "name": "New",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/binary/internal/manager/internal/download_from_image.go",
+   "line": 225,
+   "name": "copyBinariesFromDockerImage",
+   "indegree": 62,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/binary/internal/manager/internal/ui/binary_list.go",
+   "line": 16,
+   "name": "Title",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/pkg/cataloger/binary/pe_package_cataloger.go",
+   "line": 17,
+   "name": "NewPEPackageCataloger",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/debian/package.go",
+   "line": 195,
+   "name": "getAdditionalFileListing",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/dotnet/binary_cataloger.go",
+   "line": 20,
+   "name": "Name",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/githubactions/parse_workflow_test.go",
+   "line": 132,
+   "name": "Test_corruptActionWorkflow",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/golang/billy_adapter.go",
+   "line": 79,
+   "name": "Type",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/binutils/classifier.go",
+   "line": 327,
+   "name": "SupportingEvidenceMatcher",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/cpegenerate/dictionary/index-generator/generate.go",
+   "line": 57,
+   "name": "normalizeCPE",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/cpegenerate/field_candidate.go",
+   "line": 35,
+   "name": "addValue",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/cpegenerate/field_candidate_test.go",
+   "line": 320,
+   "name": "Test_cpeFieldCandidateSet_removeByCondition",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/dependency/resolver.go",
+   "line": 38,
+   "name": "Processor",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/dependency/resolver.go",
+   "line": 55,
+   "name": "Resolve",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go",
+   "line": 46,
+   "name": "getTracker",
+   "indegree": 64,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go",
+   "line": 84,
+   "name": "RecordCataloger",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/pkgtest/observing_resolver.go",
+   "line": 45,
+   "name": "ObservedPathQuery",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go",
+   "line": 88,
+   "name": "NewCatalogTester",
+   "indegree": 126,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go",
+   "line": 268,
+   "name": "ExpectsResolverContentQueries",
+   "indegree": 41,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go",
+   "line": 307,
+   "name": "TestCataloger",
+   "indegree": 86,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go",
+   "line": 595,
+   "name": "trackParserMetadata",
+   "indegree": 62,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/java/graalvm_native_image_cataloger.go",
+   "line": 96,
+   "name": "decompressSbom",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/pkg/cataloger/javascript/cataloger_test.go",
+   "line": 141,
+   "name": "Test_PackageCataloger_Globs",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/nix/cataloger_test.go",
+   "line": 77,
+   "name": "TestCataloger_Image_FilesListing",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/pkg/cataloger/nix/store_cataloger.go",
+   "line": 45,
+   "name": "Catalog",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/pkg/cataloger/php/parse_installed_json.go",
+   "line": 29,
+   "name": "UnmarshalJSON",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/pkg/cataloger/python/dependency.go",
+   "line": 76,
+   "name": "packageRef",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/pkg/cataloger/python/dependency_test.go",
+   "line": 393,
+   "name": "Test_extractPackageName",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/python/license.go",
+   "line": 21,
+   "name": "newPythonLicenseResolver",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "syft/pkg/cataloger/swipl/package_test.go",
+   "line": 9,
+   "name": "Test_swiplpackPackageURL",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/cataloger/wordpress/package.go",
+   "line": 11,
+   "name": "newWordpressPluginPackage",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "syft/pkg/license.go",
+   "line": 59,
+   "name": "Len",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/pkg/license.go",
+   "line": 63,
+   "name": "Less",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/sbom/sbom.go",
+   "line": 41,
+   "name": "RelationshipsSorted",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "syft/source/filesource/file_source.go",
+   "line": 101,
+   "name": "ID",
+   "indegree": 32,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/source/filesource/file_source.go",
+   "line": 136,
+   "name": "FileResolver",
+   "indegree": 26,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/source/snapsource/snapcraft_api_test.go",
+   "line": 577,
+   "name": "TestSnapcraftClient_GetSnapDownloadURL_DoesntExist",
+   "indegree": 53,
+   "stratum": ">10"
+  },
+  {
+   "file": "syft/source/stereoscopesource/image_source.go",
+   "line": 45,
+   "name": "ID",
+   "indegree": 31,
+   "stratum": ">10"
+  },
+  {
+   "file": "test/cli/json_schema_test.go",
+   "line": 18,
+   "name": "TestJSONSchema",
+   "indegree": 5,
+   "stratum": "4-10"
+  }
+ ]
+}

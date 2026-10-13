@@ -1,0 +1,742 @@
+{
+ "cell": "rust/nextest/path_tests_excluded",
+ "repo": "nextest",
+ "repo_sha": "c8d5aac098b5c0cd2bb74820409466922891a762",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 1495,
+  "stratum_pool": {
+   "0": 454,
+   "1-3": 935,
+   "4-10": 96,
+   ">10": 10
+  },
+  "stratum_drawn": {
+   "0": 30,
+   "1-3": 30,
+   "4-10": 30,
+   ">10": 10
+  }
+ },
+ "seeds": [
+  {
+   "file": "cargo-nextest/src/cargo_cli.rs",
+   "line": 236,
+   "name": "add_args",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cargo-nextest/src/dispatch.rs",
+   "line": 1158,
+   "name": "[`From<FinalStatusLevelOpt>`]from",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cargo-nextest/src/dispatch.rs",
+   "line": 1455,
+   "name": "load_runner",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cargo-nextest/src/dispatch.rs",
+   "line": 1528,
+   "name": "build_binary_list",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cargo-nextest/src/dispatch.rs",
+   "line": 1546,
+   "name": "load_profile",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "cargo-nextest/src/dispatch.rs",
+   "line": 1925,
+   "name": "exec",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cargo-nextest/src/dispatch.rs",
+   "line": 2418,
+   "name": "runner_for_target",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cargo-nextest/src/errors.rs",
+   "line": 295,
+   "name": "cargo_metadata_exec_failed",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "cargo-nextest/src/output.rs",
+   "line": 397,
+   "name": "[Write]flush",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "cargo-nextest/src/version.rs",
+   "line": 6,
+   "name": "short",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "fixture-data/src/models.rs",
+   "line": 143,
+   "name": "[`PartialEq<TestNameAndFilterMatch<'_>>`]eq",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "integration-tests/src/nextest_cli.rs",
+   "line": 177,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "integration-tests/test-helpers/build-seed-archive.rs",
+   "line": 15,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "integration-tests/test-helpers/cargo-nextest-dup.rs",
+   "line": 11,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "internal-test/src/main.rs",
+   "line": 5,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-filtering/src/expression.rs",
+   "line": 295,
+   "name": "new",
+   "indegree": 36,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-filtering/src/expression.rs",
+   "line": 304,
+   "name": "graph",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-filtering/src/expression.rs",
+   "line": 348,
+   "name": "compute_kind",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-filtering/src/parsing.rs",
+   "line": 334,
+   "name": "ws",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-filtering/src/parsing.rs",
+   "line": 403,
+   "name": "parse_equal_matcher",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-filtering/src/parsing.rs",
+   "line": 528,
+   "name": "set_matcher",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-filtering/src/parsing.rs",
+   "line": 1467,
+   "name": "parse_err",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-filtering/src/parsing.rs",
+   "line": 1517,
+   "name": "test_missing_close_parentheses",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-filtering/src/parsing.rs",
+   "line": 1639,
+   "name": "test_expected_expr",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-filtering/src/parsing.rs",
+   "line": 1695,
+   "name": "assert_eq_both_ways",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-filtering/src/proptest_helpers.rs",
+   "line": 67,
+   "name": "parenthesize_or_left",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-metadata/src/test_list.rs",
+   "line": 107,
+   "name": "exec_binaries_only",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-metadata/src/test_list.rs",
+   "line": 142,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-metadata/src/test_list.rs",
+   "line": 606,
+   "name": "new_const",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-metadata/src/test_list.rs",
+   "line": 689,
+   "name": "listed_status",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/cargo_config/custom_platform.rs",
+   "line": 73,
+   "name": "close",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/cargo_config/test_helpers.rs",
+   "line": 10,
+   "name": "setup_temp_dir",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/archive.rs",
+   "line": 183,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/archive.rs",
+   "line": 192,
+   "name": "[`Deserialize<'de>`]deserialize",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/config_impl.rs",
+   "line": 43,
+   "name": "unknown_config_keys",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/config/config_impl.rs",
+   "line": 173,
+   "name": "get_num_cpus",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/config_impl.rs",
+   "line": 233,
+   "name": "from_sources",
+   "indegree": 28,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-runner/src/config/config_impl.rs",
+   "line": 339,
+   "name": "profile",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-runner/src/config/config_impl.rs",
+   "line": 889,
+   "name": "apply_build_platforms",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-runner/src/config/config_impl.rs",
+   "line": 968,
+   "name": "test_group_config",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/identifier.rs",
+   "line": 149,
+   "name": "test_valid",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/identifier.rs",
+   "line": 172,
+   "name": "test_invalid",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/junit.rs",
+   "line": 60,
+   "name": "store_success_output",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/config/nextest_version.rs",
+   "line": 284,
+   "name": "accumulate",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/config/overrides.rs",
+   "line": 194,
+   "name": "retries",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/overrides.rs",
+   "line": 209,
+   "name": "test_group",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/overrides.rs",
+   "line": 224,
+   "name": "junit_store_success_output",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/config/overrides.rs",
+   "line": 229,
+   "name": "junit_store_failure_output",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/config/priority.rs",
+   "line": 30,
+   "name": "[`PartialOrd<Self>`]partial_cmp",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/priority.rs",
+   "line": 67,
+   "name": "priority_deserialize",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/retry_policy.rs",
+   "line": 55,
+   "name": "new_without_delay",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/retry_policy.rs",
+   "line": 82,
+   "name": "[`Visitor<'de2>`]expecting",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/scripts.rs",
+   "line": 533,
+   "name": "new",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/scripts.rs",
+   "line": 1445,
+   "name": "parse_scripts_invalid_defined",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/config/test_group.rs",
+   "line": 90,
+   "name": "as_identifier",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/config/test_helpers.rs",
+   "line": 21,
+   "name": "temp_workspace",
+   "indegree": 30,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-runner/src/config/test_helpers.rs",
+   "line": 55,
+   "name": "to_query",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/test_helpers.rs",
+   "line": 85,
+   "name": "build_platforms",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-runner/src/config/test_threads.rs",
+   "line": 21,
+   "name": "compute",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/config/tool_config.rs",
+   "line": 69,
+   "name": "parse_tool_config_file",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/double_spawn.rs",
+   "line": 163,
+   "name": "get_current_exe",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/errors.rs",
+   "line": 49,
+   "name": "new",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/errors.rs",
+   "line": 72,
+   "name": "kind",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-runner/src/errors.rs",
+   "line": 78,
+   "name": "provided_by_tool",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/errors.rs",
+   "line": 1116,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/helpers.rs",
+   "line": 33,
+   "name": "tests_str",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/helpers.rs",
+   "line": 171,
+   "name": "fmt_write_test_name",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/indenter.rs",
+   "line": 113,
+   "name": "[WriteStr]write_str",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/list/test_list.rs",
+   "line": 666,
+   "name": "parse_impl",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/list/test_list.rs",
+   "line": 844,
+   "name": "[IntoIterator]into_iter",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/list/test_list.rs",
+   "line": 1011,
+   "name": "test_cases",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/list/test_list.rs",
+   "line": 1076,
+   "name": "id",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/list/test_list.rs",
+   "line": 1084,
+   "name": "to_test_query",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/list/test_list.rs",
+   "line": 1206,
+   "name": "push",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/platform.rs",
+   "line": 212,
+   "name": "to_summary",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/platform.rs",
+   "line": 382,
+   "name": "new",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/reporter/displayer/progress.rs",
+   "line": 64,
+   "name": "update_progress_bar",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/reporter/displayer/status_level.rs",
+   "line": 90,
+   "name": "compute_output_on_test_finished",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "nextest-runner/src/reporter/error_description.rs",
+   "line": 28,
+   "name": "new",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/reporter/events.rs",
+   "line": 574,
+   "name": "describe",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/reporter/structured/libtest.rs",
+   "line": 609,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/reporter/structured/libtest.rs",
+   "line": 687,
+   "name": "strips_human_output",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/reuse_build/archiver.rs",
+   "line": 547,
+   "name": "append_path_recursive",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/runner/executor.rs",
+   "line": 72,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/runner/executor.rs",
+   "line": 1079,
+   "name": "info_response",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/runner/imp.rs",
+   "line": 168,
+   "name": "try_execute",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/runner/unix.rs",
+   "line": 38,
+   "name": "create",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/rustc_cli.rs",
+   "line": 41,
+   "name": "add_arg",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/show_config/test_groups.rs",
+   "line": 268,
+   "name": "new",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/target_runner.rs",
+   "line": 299,
+   "name": "source",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/target_runner.rs",
+   "line": 367,
+   "name": "test_find_config",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "nextest-runner/src/test_filter.rs",
+   "line": 144,
+   "name": "add_exact_pattern",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/test_filter.rs",
+   "line": 493,
+   "name": "logic_or",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "nextest-runner/src/test_filter.rs",
+   "line": 706,
+   "name": "is_match",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/time/pausable_sleep.rs",
+   "line": 37,
+   "name": "pause",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/time/stopwatch.rs",
+   "line": 42,
+   "name": "pause",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/time/stopwatch.rs",
+   "line": 55,
+   "name": "resume",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/write_str.rs",
+   "line": 19,
+   "name": "write_str",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "nextest-runner/src/write_str.rs",
+   "line": 73,
+   "name": "[WriteStr]write_str",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "workspace-hack/build.rs",
+   "line": 2,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

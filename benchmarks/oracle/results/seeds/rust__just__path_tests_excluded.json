@@ -1,0 +1,742 @@
+{
+ "cell": "rust/just/path_tests_excluded",
+ "repo": "just",
+ "repo_sha": "7f4ef81bd6a93faa2b28430912c8e9ab0e3dd29a",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 941,
+  "stratum_pool": {
+   "0": 333,
+   "1-3": 483,
+   "4-10": 94,
+   ">10": 31
+  },
+  "stratum_drawn": {
+   "0": 25,
+   "1-3": 25,
+   "4-10": 25,
+   ">10": 25
+  }
+ },
+ "seeds": [
+  {
+   "file": "src/analyzer.rs",
+   "line": 16,
+   "name": "analyze",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/attribute.rs",
+   "line": 82,
+   "name": "accepts_keyword_arguments",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/attribute.rs",
+   "line": 86,
+   "name": "is_enabler",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/attribute.rs",
+   "line": 503,
+   "name": "name",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/attribute.rs",
+   "line": 667,
+   "name": "name",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/attribute_set.rs",
+   "line": 11,
+   "name": "contains",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/clean.rs",
+   "line": 8,
+   "name": "[Clean]clean",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/clean.rs",
+   "line": 41,
+   "name": "case",
+   "indegree": 20,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/clean.rs",
+   "line": 51,
+   "name": "single_current_dir_is_preserved",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/color.rs",
+   "line": 40,
+   "name": "annotation",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/color.rs",
+   "line": 96,
+   "name": "indentation",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/color.rs",
+   "line": 100,
+   "name": "message",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/color.rs",
+   "line": 111,
+   "name": "paint",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/color.rs",
+   "line": 130,
+   "name": "restyle",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/color.rs",
+   "line": 150,
+   "name": "suffix",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/color_display.rs",
+   "line": 4,
+   "name": "color_display",
+   "indegree": 27,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/command_ext.rs",
+   "line": 93,
+   "name": "[CommandExt]shell_arg",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/compiler.rs",
+   "line": 6,
+   "name": "compile",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 50,
+   "name": "new",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/config.rs",
+   "line": 245,
+   "name": "from_arguments",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/datetime_format.rs",
+   "line": 3,
+   "name": "datetime_format",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/dependency.rs",
+   "line": 46,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/disabled.rs",
+   "line": 10,
+   "name": "[`Keyed<'src>`]key",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/evaluator.rs",
+   "line": 483,
+   "name": "evaluate_value",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/executor.rs",
+   "line": 52,
+   "name": "shell_kind",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/executor.rs",
+   "line": 71,
+   "name": "script_filename",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/function.rs",
+   "line": 157,
+   "name": "boolean",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/function.rs",
+   "line": 519,
+   "name": "module_directory",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/function.rs",
+   "line": 596,
+   "name": "read",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/function.rs",
+   "line": 608,
+   "name": "replace",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/function.rs",
+   "line": 672,
+   "name": "shoutysnakecase",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/function.rs",
+   "line": 845,
+   "name": "trim_end",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/invocation_parser.rs",
+   "line": 370,
+   "name": "single_unknown",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/justfile.rs",
+   "line": 497,
+   "name": "name",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/justfile.rs",
+   "line": 1046,
+   "name": "case",
+   "indegree": 31,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/justfile.rs",
+   "line": 1082,
+   "name": "parse_multiple",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/justfile.rs",
+   "line": 1133,
+   "name": "parse_export",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/justfile.rs",
+   "line": 1159,
+   "name": "parse_alias_before_target",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/justfile.rs",
+   "line": 1309,
+   "name": "parameters",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/keyword.rs",
+   "line": 55,
+   "name": "lexeme",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/lexer.rs",
+   "line": 88,
+   "name": "advance",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/lexer.rs",
+   "line": 128,
+   "name": "presume",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/lexer.rs",
+   "line": 147,
+   "name": "next_is",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/lexer.rs",
+   "line": 209,
+   "name": "internal_error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/lexer.rs",
+   "line": 695,
+   "name": "open_delimiters_or_interpolation",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/line.rs",
+   "line": 21,
+   "name": "sigils",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/list.rs",
+   "line": 9,
+   "name": "or",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/list_feature.rs",
+   "line": 49,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/loader.rs",
+   "line": 9,
+   "name": "new",
+   "indegree": 17,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/modulepath.rs",
+   "line": 63,
+   "name": "[`TryFrom<&[&str]>`]try_from",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/name.rs",
+   "line": 32,
+   "name": "[`Keyed<'src>`]key",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/namepath.rs",
+   "line": 45,
+   "name": "[`From<Name<'src>>`]from",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/node.rs",
+   "line": 106,
+   "name": "[`Node<'src>`]tree",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/node.rs",
+   "line": 283,
+   "name": "[`Node<'src>`]tree",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/node.rs",
+   "line": 292,
+   "name": "[`Node<'src>`]tree",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/parameter.rs",
+   "line": 23,
+   "name": "is_option",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parameter.rs",
+   "line": 27,
+   "name": "is_required",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parameter_kind.rs",
+   "line": 24,
+   "name": "is_variadic",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 87,
+   "name": "parse_tokens",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 104,
+   "name": "unexpected_token",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 116,
+   "name": "internal_error",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 123,
+   "name": "rest",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 140,
+   "name": "next_is",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 221,
+   "name": "expect",
+   "indegree": 16,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 314,
+   "name": "accept",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 416,
+   "name": "accepted",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 707,
+   "name": "parse_expression",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 1217,
+   "name": "parse_name",
+   "indegree": 9,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/parser.rs",
+   "line": 1744,
+   "name": "parse_attributes",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/platform_interface.rs",
+   "line": 20,
+   "name": "set_execute_permission",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/ran.rs",
+   "line": 7,
+   "name": "mutex",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/range_ext.rs",
+   "line": 12,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/recipe.rs",
+   "line": 119,
+   "name": "check_can_be_default_recipe",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/recipe.rs",
+   "line": 292,
+   "name": "run_shell",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/scope.rs",
+   "line": 66,
+   "name": "bindings",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/settings.rs",
+   "line": 55,
+   "name": "shell_command",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/settings.rs",
+   "line": 166,
+   "name": "shell_cooked",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/shebang.rs",
+   "line": 36,
+   "name": "include_shebang_line",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/shebang.rs",
+   "line": 106,
+   "name": "interpreter_filename_with_forward_slash",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/shebang.rs",
+   "line": 131,
+   "name": "dont_include_shebang_line_cmd_exe",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/signal_handler.rs",
+   "line": 50,
+   "name": "handle",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/signals.rs",
+   "line": 71,
+   "name": "set_cloexec",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/source.rs",
+   "line": 46,
+   "name": "module",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/string_context.rs",
+   "line": 13,
+   "name": "token",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/subcommand.rs",
+   "line": 573,
+   "name": "man",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/subcommand.rs",
+   "line": 1034,
+   "name": "usage",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/table.rs",
+   "line": 24,
+   "name": "get",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/table.rs",
+   "line": 36,
+   "name": "is_empty",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/table.rs",
+   "line": 40,
+   "name": "values",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/table.rs",
+   "line": 105,
+   "name": "[IntoIterator]into_iter",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/tangle.rs",
+   "line": 51,
+   "name": "case",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/tangle.rs",
+   "line": 135,
+   "name": "info_strings",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "src/testing.rs",
+   "line": 3,
+   "name": "compile",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/testing.rs",
+   "line": 7,
+   "name": "config",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "src/tree.rs",
+   "line": 75,
+   "name": "atom",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/value.rs",
+   "line": 14,
+   "name": "elements",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/value.rs",
+   "line": 26,
+   "name": "join",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/value.rs",
+   "line": 64,
+   "name": "into_elements",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "src/value.rs",
+   "line": 102,
+   "name": "[`From<&String>`]from",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "src/version.rs",
+   "line": 17,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  }
+ ]
+}

@@ -1,0 +1,742 @@
+{
+ "cell": "rust/ripgrep/no_tests",
+ "repo": "ripgrep",
+ "repo_sha": "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 2137,
+  "stratum_pool": {
+   "0": 228,
+   "1-3": 1482,
+   "4-10": 413,
+   ">10": 14
+  },
+  "stratum_drawn": {
+   "0": 28,
+   "1-3": 29,
+   "4-10": 29,
+   ">10": 14
+  }
+ },
+ "seeds": [
+  {
+   "file": "crates/cli/src/decompress.rs",
+   "line": 251,
+   "name": "matcher",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/cli/src/lib.rs",
+   "line": 170,
+   "name": "is_readable_stdin",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 248,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 350,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 359,
+   "name": "[Flag]doc_short",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 439,
+   "name": "[Flag]doc_category",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 599,
+   "name": "[Flag]doc_long",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 653,
+   "name": "[Flag]doc_short",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 697,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 1388,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 1694,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 1789,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 2253,
+   "name": "[Flag]update",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 2840,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 2907,
+   "name": "[Flag]doc_variable",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 3682,
+   "name": "[Flag]update",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 3883,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4009,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4187,
+   "name": "[Flag]update",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4285,
+   "name": "[Flag]doc_category",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4324,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4504,
+   "name": "[Flag]doc_short",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4507,
+   "name": "[Flag]doc_long",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4541,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4659,
+   "name": "[Flag]update",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4740,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 4971,
+   "name": "[Flag]name_short",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 5474,
+   "name": "[Flag]doc_long",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 5865,
+   "name": "[Flag]doc_long",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 5976,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 6219,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 6581,
+   "name": "[Flag]doc_category",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 6777,
+   "name": "[Flag]name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 6868,
+   "name": "[Flag]name_short",
+   "indegree": 7,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 7028,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 7099,
+   "name": "[Flag]doc_variable",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 7297,
+   "name": "[Flag]is_switch",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/defs.rs",
+   "line": 7580,
+   "name": "str",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/core/flags/hiargs.rs",
+   "line": 561,
+   "name": "printer",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/core/flags/mod.rs",
+   "line": 89,
+   "name": "name_long",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/core/flags/mod.rs",
+   "line": 277,
+   "name": "unwrap_switch",
+   "indegree": 69,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/core/flags/mod.rs",
+   "line": 294,
+   "name": "unwrap_value",
+   "indegree": 32,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/core/flags/parse.rs",
+   "line": 353,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/core/logger.rs",
+   "line": 31,
+   "name": "[Log]enabled",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/globset/benches/bench.rs",
+   "line": 50,
+   "name": "short_glob",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/globset/src/fnv.rs",
+   "line": 14,
+   "name": "[Default]default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/globset/src/glob.rs",
+   "line": 84,
+   "name": "[`AsRef<Self>`]as_ref",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/globset/src/glob.rs",
+   "line": 103,
+   "name": "[Debug]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/globset/src/glob.rs",
+   "line": 647,
+   "name": "empty_alternates",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/globset/src/lib.rs",
+   "line": 244,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/globset/src/lib.rs",
+   "line": 574,
+   "name": "new",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/globset/src/lib.rs",
+   "line": 880,
+   "name": "matches_all",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/ignore/src/gitignore.rs",
+   "line": 58,
+   "name": "actual",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/ignore/src/gitignore.rs",
+   "line": 141,
+   "name": "global",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/ignore/src/gitignore.rs",
+   "line": 652,
+   "name": "excludes_file_default",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/ignore/src/lib.rs",
+   "line": 261,
+   "name": "with_path",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/ignore/src/lib.rs",
+   "line": 310,
+   "name": "[Error]description",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/ignore/src/walk.rs",
+   "line": 37,
+   "name": "path",
+   "indegree": 15,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/ignore/src/walk.rs",
+   "line": 797,
+   "name": "types",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/ignore/src/walk.rs",
+   "line": 1136,
+   "name": "[Iterator]next",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/ignore/src/walk.rs",
+   "line": 1234,
+   "name": "[Iterator]next",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/matcher/src/lib.rs",
+   "line": 81,
+   "name": "new",
+   "indegree": 26,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/matcher/src/lib.rs",
+   "line": 94,
+   "name": "start",
+   "indegree": 28,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/matcher/src/lib.rs",
+   "line": 100,
+   "name": "end",
+   "indegree": 26,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/matcher/src/lib.rs",
+   "line": 162,
+   "name": "][`Index<Match>`]index",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/matcher/src/lib.rs",
+   "line": 169,
+   "name": "][`IndexMut<Match>`]index_mut",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/matcher/src/lib.rs",
+   "line": 236,
+   "name": "as_byte",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/matcher/src/lib.rs",
+   "line": 308,
+   "name": "empty",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/pcre2/src/matcher.rs",
+   "line": 115,
+   "name": "case_smart",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/pcre2/src/matcher.rs",
+   "line": 160,
+   "name": "crlf",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/color.rs",
+   "line": 314,
+   "name": "[FromStr]from_str",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/counter.rs",
+   "line": 62,
+   "name": "[Write]flush",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/counter.rs",
+   "line": 74,
+   "name": "[WriteColor]supports_hyperlinks",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/json.rs",
+   "line": 549,
+   "name": "write_message",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/printer/src/json.rs",
+   "line": 577,
+   "name": "into_inner",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/json.rs",
+   "line": 614,
+   "name": "has_match",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/printer/src/json.rs",
+   "line": 635,
+   "name": "binary_byte_offset",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/standard.rs",
+   "line": 180,
+   "name": "hyperlink",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/printer/src/standard.rs",
+   "line": 1433,
+   "name": "write_spec",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/printer/src/standard.rs",
+   "line": 1536,
+   "name": "config",
+   "indegree": 19,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/printer/src/standard.rs",
+   "line": 1541,
+   "name": "wtr",
+   "indegree": 12,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/printer/src/stats.rs",
+   "line": 77,
+   "name": "add_searches",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/printer/src/summary.rs",
+   "line": 364,
+   "name": "new",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/summary.rs",
+   "line": 454,
+   "name": "has_written",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/printer/src/util.rs",
+   "line": 238,
+   "name": "matches",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/printer/src/util.rs",
+   "line": 442,
+   "name": "as_bytes",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/regex/src/matcher.rs",
+   "line": 92,
+   "name": "build_literals",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/searcher/src/searcher/core.rs",
+   "line": 75,
+   "name": "pos",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/searcher/src/searcher/core.rs",
+   "line": 159,
+   "name": "finish",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/searcher/src/searcher/core.rs",
+   "line": 215,
+   "name": "detect_binary",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/searcher/src/searcher/core.rs",
+   "line": 240,
+   "name": "before_context_by_line",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/searcher/src/searcher/glue.rs",
+   "line": 260,
+   "name": "sink_matched_inverted",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/searcher/src/searcher/mmap.rs",
+   "line": 118,
+   "name": "is_enabled",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/searcher/src/searcher/mod.rs",
+   "line": 218,
+   "name": "line_buffer",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/searcher/src/searcher/mod.rs",
+   "line": 267,
+   "name": "[Display]fmt",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "crates/searcher/src/searcher/mod.rs",
+   "line": 836,
+   "name": "line_terminator",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/searcher/src/searcher/mod.rs",
+   "line": 896,
+   "name": "multi_line_with_matcher",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "crates/searcher/src/sink.rs",
+   "line": 21,
+   "name": "error_message",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "crates/searcher/src/sink.rs",
+   "line": 27,
+   "name": "error_io",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "crates/searcher/src/sink.rs",
+   "line": 291,
+   "name": "[Sink]context",
+   "indegree": 4,
+   "stratum": "4-10"
+  }
+ ]
+}

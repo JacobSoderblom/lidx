@@ -3627,3 +3627,585 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 - `h980ae649` implements crates/core/flags/defs.rs:578 -> crates/core/flags/mod.rs:71: **correct**, defs.rs has "impl Flag for ByteOffset" and trait Flag is at mod.rs:71.
 - `h821c5bf9` overrides crates/core/flags/defs.rs:7303 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:7303 sits inside "impl Flag for Version {" (line 7296) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
 
+
+## Impact, tests and flows
+
+**Quoting policy:** a figure from this section is quoted in `README.md` only for a language and kind whose hand spot-check artefact rate is under 10% (see "Spot-check of impact pairs" below); the Go closure without function-value edges is an upper-bound view built after the fact, not a verdict.
+
+`analyze_impact` upstream sets, its test layer and `trace_flow` stop reasons graded against the **closure** of the compiler call graph of each cell (Go RTA with dynamic calls at the concrete implementations, tsc, rust-analyzer SCIP; no compiler is re-run). 32 cells (the Rust all-features cells are diagnostics and are not graded), 3200 seeds, 100 per cell, stratified by oracle in-degree (0, 1-3, 4-10, >10) and drawn with seed 2026 from the declarations the oracle judged (`results/seeds/<cell>.json`). Definitions, the lidx calls and every exclusion: README, "Impact, tests and flows".
+
+- **Pooled** figures are pair-level: a pair is (seed, member). Intervals are 95% Wilson over pairs, which cluster by seed and are optimistic; **macro** figures average per-seed precision and recall (a seed with no members on a side has no rate for it) with a 1,000-sample bootstrap interval over seeds, so one high-fan-out seed cannot dominate.
+- A lidx member is **right** when it is in the oracle closure, **wrong** when the oracle analysed that function and it is not in the closure, **ungradable** otherwise (file or function the oracle did not analyse; counted in the `ungr.` column). Recall counts the oracle members lidx has a symbol for; seeds where lidx truncated its answer (`limit` 2,000) leave the recall figures and stay in the precision figures.
+- The graded `analyze_impact` call is `direction=up`, `include_tests=true`, the test and historical layers off, `kinds=[CALLS, DISPATCH]`, and `max_response_bytes` raised so the default 30,000-byte cut does not apply (the plain call is graded separately below). The oracle is a call graph and cannot judge a dependent reached through a reference, a `USES` or an import, so the **default call** (no `kinds`: every edge kind) is reported beside it, and the members it adds that the oracle lacks ("beyond calls") are counted, not called wrong. lidx caps `max_depth` at 10, so its "unbounded" column is depth 10 against the unbounded oracle closure.
+
+### Go
+
+**Upstream set, k = 3 (lidx default)**
+
+| Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
+|---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
+| cobra/tests | 100 | 3827 | 0 | 1 | 1.000 [0.999, 1.000] | 0.796 [0.783, 0.808] | 1.000 [1.000, 1.000] | 0.628 [0.547, 0.705] | 0 | 0.958 [0.951, 0.964] | 0.804 [0.792, 0.817] | 135 |
+| cobra/no_tests | 100 | 1783 | 0 | 1912 | 1.000 [0.997, 1.000] | 0.706 [0.684, 0.727] | 1.000 [1.000, 1.000] | 0.584 [0.505, 0.664] | 0 | 0.978 [0.969, 0.985] | 0.720 [0.699, 0.741] | 29 |
+| gitleaks/no_tests | 100 | 1812 | 0 | 167 | 1.000 [0.998, 1.000] | 0.965 [0.955, 0.972] | 1.000 [1.000, 1.000] | 0.919 [0.867, 0.962] | 0 | 0.999 [0.996, 1.000] | 0.965 [0.955, 0.972] | 2 |
+| gitleaks/tests | 100 | 3113 | 0 | 28 | 1.000 [0.999, 1.000] | 0.938 [0.929, 0.946] | 1.000 [1.000, 1.000] | 0.859 [0.798, 0.914] | 0 | 1.000 [0.998, 1.000] | 0.938 [0.929, 0.946] | 1 |
+| syft/no_tests | 100 | 5389 | 7 | 921 | 0.994 [0.988, 0.997] | 0.217 [0.206, 0.228] | 0.997 [0.990, 1.000] | 0.472 [0.388, 0.557] | 0 | 0.900 [0.882, 0.915] | 0.220 [0.209, 0.231] | 120 |
+| syft/tests | 100 | 12363 | 20 | 10 | 0.990 [0.984, 0.993] | 0.152 [0.146, 0.158] | 0.997 [0.993, 1.000] | 0.250 [0.185, 0.325] | 0 | 0.904 [0.891, 0.916] | 0.158 [0.151, 0.164] | 186 |
+| bubbletea/no_tests | 100 | 646 | 0 | 1850 | 1.000 [0.986, 1.000] | 0.426 [0.388, 0.464] | 1.000 [1.000, 1.000] | 0.405 [0.327, 0.481] | 0 | 0.972 [0.945, 0.986] | 0.426 [0.388, 0.464] | 2 |
+| bubbletea/tests | 100 | 2503 | 0 | 1049 | 1.000 [0.994, 1.000] | 0.244 [0.228, 0.262] | 1.000 [1.000, 1.000] | 0.338 [0.262, 0.410] | 0 | 0.998 [0.991, 1.000] | 0.253 [0.236, 0.270] | 1 |
+| chi/no_tests | 100 | 760 | 0 | 815 | 1.000 [0.979, 1.000] | 0.230 [0.202, 0.262] | 1.000 [1.000, 1.000] | 0.369 [0.270, 0.472] | 0 | 0.875 [0.822, 0.914] | 0.230 [0.202, 0.262] | 25 |
+| chi/tests | 100 | 3219 | 0 | 129 | 1.000 [0.996, 1.000] | 0.319 [0.303, 0.335] | 1.000 [1.000, 1.000] | 0.321 [0.240, 0.408] | 0 | 0.977 [0.966, 0.985] | 0.321 [0.305, 0.337] | 24 |
+| urfavecli/no_tests | 100 | 832 | 3 | 2274 | 0.994 [0.982, 0.998] | 0.581 [0.547, 0.614] | 0.993 [0.978, 1.000] | 0.676 [0.597, 0.756] | 0 | 0.942 [0.918, 0.959] | 0.581 [0.547, 0.614] | 15 |
+| urfavecli/tests | 100 | 5027 | 0 | 20 | 1.000 [0.998, 1.000] | 0.379 [0.366, 0.393] | 1.000 [1.000, 1.000] | 0.394 [0.313, 0.484] | 0 | 0.988 [0.982, 0.992] | 0.380 [0.366, 0.393] | 24 |
+| viper/no_tests | 100 | 552 | 0 | 1014 | 1.000 [0.991, 1.000] | 0.772 [0.735, 0.805] | 1.000 [1.000, 1.000] | 0.752 [0.636, 0.852] | 0 | 0.979 [0.961, 0.989] | 0.772 [0.735, 0.805] | 0 |
+| viper/tests | 100 | 1740 | 0 | 139 | 1.000 [0.997, 1.000] | 0.822 [0.803, 0.839] | 1.000 [1.000, 1.000] | 0.772 [0.677, 0.864] | 0 | 1.000 [0.997, 1.000] | 0.822 [0.803, 0.839] | 0 |
+
+**Upstream set, unbounded (lidx caps at 10)**
+
+| Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
+|---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
+| cobra/tests | 100 | 21763 | 0 | 2 | 1.000 [1.000, 1.000] | 0.445 [0.438, 0.452] | 1.000 [1.000, 1.000] | 0.523 [0.425, 0.611] | 0 | 0.992 [0.990, 0.994] | 0.460 [0.453, 0.466] | 79 |
+| cobra/no_tests | 100 | 4860 | 0 | 11767 | 1.000 [0.998, 1.000] | 0.351 [0.337, 0.364] | 1.000 [1.000, 1.000] | 0.359 [0.281, 0.439] | 0 | 0.974 [0.966, 0.980] | 0.398 [0.385, 0.412] | 52 |
+| gitleaks/no_tests | 100 | 4186 | 0 | 316 | 1.000 [0.999, 1.000] | 0.920 [0.912, 0.928] | 1.000 [1.000, 1.000] | 0.949 [0.910, 0.978] | 0 | 1.000 [0.998, 1.000] | 0.920 [0.912, 0.928] | 2 |
+| gitleaks/tests | 100 | 5964 | 0 | 70 | 1.000 [0.999, 1.000] | 0.948 [0.942, 0.953] | 1.000 [1.000, 1.000] | 0.866 [0.809, 0.919] | 0 | 1.000 [0.999, 1.000] | 0.948 [0.942, 0.953] | 1 |
+| syft/no_tests | 100 | 32125 | 0 | 5589 | 1.000 [0.999, 1.000] | 0.128 [0.124, 0.132] | 1.000 [1.000, 1.000] | 0.149 [0.104, 0.203] | 0 | 0.945 [0.939, 0.951] | 0.147 [0.143, 0.151] | 272 |
+| syft/tests | 100 | 81766 | 67 | 84 | 0.990 [0.987, 0.992] | 0.077 [0.075, 0.079] | 0.998 [0.996, 0.999] | 0.089 [0.055, 0.130] | 0 | 0.987 [0.985, 0.990] | 0.093 [0.091, 0.095] | 30 |
+| bubbletea/no_tests | 100 | 780 | 0 | 3872 | 1.000 [0.990, 1.000] | 0.488 [0.454, 0.523] | 1.000 [1.000, 1.000] | 0.402 [0.336, 0.466] | 0 | 0.931 [0.903, 0.952] | 0.488 [0.454, 0.523] | 8 |
+| bubbletea/tests | 100 | 3256 | 0 | 2121 | 1.000 [0.997, 1.000] | 0.342 [0.326, 0.358] | 1.000 [1.000, 1.000] | 0.347 [0.276, 0.406] | 0 | 0.980 [0.971, 0.987] | 0.351 [0.335, 0.368] | 1 |
+| chi/no_tests | 100 | 1806 | 0 | 1504 | 1.000 [0.984, 1.000] | 0.135 [0.120, 0.151] | 1.000 [1.000, 1.000] | 0.306 [0.211, 0.409] | 0 | 0.917 [0.879, 0.944] | 0.147 [0.131, 0.164] | 24 |
+| chi/tests | 100 | 10113 | 0 | 193 | 1.000 [0.997, 1.000] | 0.144 [0.137, 0.150] | 1.000 [1.000, 1.000] | 0.177 [0.113, 0.254] | 0 | 0.999 [0.995, 1.000] | 0.147 [0.140, 0.154] | 2 |
+| urfavecli/no_tests | 100 | 1207 | 9 | 13152 | 0.989 [0.979, 0.994] | 0.661 [0.634, 0.687] | 0.993 [0.979, 1.000] | 0.739 [0.664, 0.818] | 0 | 0.805 [0.779, 0.828] | 0.667 [0.640, 0.693] | 12 |
+| urfavecli/tests | 100 | 33971 | 0 | 65 | 1.000 [1.000, 1.000] | 0.289 [0.284, 0.294] | 1.000 [1.000, 1.000] | 0.335 [0.264, 0.410] | 0 | 0.997 [0.995, 0.998] | 0.290 [0.285, 0.294] | 33 |
+| viper/no_tests | 100 | 1017 | 0 | 1680 | 1.000 [0.996, 1.000] | 0.890 [0.869, 0.908] | 1.000 [1.000, 1.000] | 0.780 [0.661, 0.881] | 0 | 0.978 [0.967, 0.986] | 0.890 [0.869, 0.908] | 0 |
+| viper/tests | 100 | 2469 | 0 | 395 | 1.000 [0.998, 1.000] | 0.853 [0.839, 0.866] | 1.000 [1.000, 1.000] | 0.755 [0.661, 0.848] | 0 | 1.000 [0.998, 1.000] | 0.853 [0.839, 0.866] | 0 |
+
+**Go, without function-value edges (upper-bound view: it excludes real function-value calls that lidx cannot resolve, and was built post hoc, after seeing lidx's misses; no verdict).** The Go oracle resolves the call of a function value (`parg(cmd, args)`, `p.cancel()`, `cmd()`) to every address-taken function of that signature that RTA reaches and keys a function literal at its enclosing declaration, so such an edge names the function that built the closure (or an unrelated closure of the same signature). lidx does not resolve a call of a function value. The same grading with these edges (`closure` or `dispatch` without interface alternatives in the oracle; interface invocations stay) left out of the closure (calls-only; precision differs only through the members these edges add):
+
+| Cell | k = 3 oracle members | precision | recall | unbounded oracle members | precision | recall |
+|---|---:|---|---|---:|---|---|
+| cobra/tests | 3056 | 1.000 [0.999, 1.000] | 0.996 [0.994, 0.998] | 9715 | 1.000 [1.000, 1.000] | 0.997 [0.996, 0.998] |
+| cobra/no_tests | 1261 | 1.000 [0.997, 1.000] | 0.998 [0.994, 1.000] | 1706 | 1.000 [0.998, 1.000] | 0.999 [0.996, 1.000] |
+| gitleaks/no_tests | 1777 | 1.000 [0.998, 1.000] | 0.984 [0.977, 0.989] | 3853 | 1.000 [0.999, 1.000] | 1.000 [0.999, 1.000] |
+| gitleaks/tests | 2967 | 1.000 [0.999, 1.000] | 0.985 [0.979, 0.988] | 5662 | 1.000 [0.999, 1.000] | 0.998 [0.997, 0.999] |
+| syft/no_tests | 1652 | 0.994 [0.988, 0.997] | 0.706 [0.684, 0.728] | 4541 | 0.997 [0.995, 0.998] | 0.903 [0.894, 0.911] |
+| syft/tests | 2720 | 0.989 [0.983, 0.993] | 0.690 [0.672, 0.707] | 7782 | 0.988 [0.984, 0.990] | 0.809 [0.800, 0.818] |
+| bubbletea/no_tests | 329 | 0.993 [0.974, 0.998] | 0.830 [0.785, 0.867] | 365 | 0.958 [0.933, 0.974] | 1.000 [0.990, 1.000] |
+| bubbletea/tests | 737 | 0.998 [0.991, 1.000] | 0.829 [0.800, 0.855] | 1070 | 0.961 [0.948, 0.971] | 1.000 [0.996, 1.000] |
+| chi/no_tests | 176 | 1.000 [0.979, 1.000] | 0.994 [0.969, 0.999] | 244 | 1.000 [0.984, 1.000] | 0.996 [0.977, 0.999] |
+| chi/tests | 1042 | 1.000 [0.996, 1.000] | 0.985 [0.975, 0.991] | 1468 | 1.000 [0.997, 1.000] | 0.989 [0.982, 0.993] |
+| urfavecli/no_tests | 566 | 0.994 [0.982, 0.998] | 0.853 [0.822, 0.880] | 760 | 0.942 [0.923, 0.956] | 1.000 [0.995, 1.000] |
+| urfavecli/tests | 2706 | 1.000 [0.998, 1.000] | 0.704 [0.687, 0.721] | 9972 | 1.000 [1.000, 1.000] | 0.985 [0.982, 0.987] |
+| viper/no_tests | 440 | 1.000 [0.991, 1.000] | 0.968 [0.947, 0.981] | 905 | 1.000 [0.996, 1.000] | 1.000 [0.996, 1.000] |
+| viper/tests | 1524 | 1.000 [0.997, 1.000] | 0.938 [0.925, 0.949] | 2106 | 1.000 [0.998, 1.000] | 1.000 [0.998, 1.000] |
+
+**lidx's interface-dispatch fan-out, counted.** A member whose path to the seed crosses a hop bound by the dispatch query (`resolution_kind: interface_dispatch`) is a dispatch-derived claim; it is graded like every other member, against the oracle's concrete-implementation edges (RTA / the checker); lidx gets no credit from the oracle's interface-method alternatives. k = 3, calls-only.
+
+| Cell | Seeds with a dispatch-derived member | Dispatch-derived members | Right | Wrong |
+|---|---:|---:|---:|---:|
+| cobra/tests | 1 | 1 | 0 | 0 |
+| cobra/no_tests | 0 | 0 | 0 | 0 |
+| gitleaks/no_tests | 13 | 33 | 19 | 0 |
+| gitleaks/tests | 10 | 29 | 19 | 0 |
+| syft/no_tests | 25 | 837 | 357 | 7 |
+| syft/tests | 18 | 663 | 610 | 20 |
+| bubbletea/no_tests | 32 | 641 | 114 | 0 |
+| bubbletea/tests | 24 | 467 | 157 | 0 |
+| chi/no_tests | 27 | 61 | 0 | 0 |
+| chi/tests | 20 | 51 | 0 | 0 |
+| urfavecli/no_tests | 49 | 572 | 191 | 3 |
+| urfavecli/tests | 41 | 905 | 840 | 0 |
+| viper/no_tests | 9 | 36 | 11 | 0 |
+| viper/tests | 4 | 34 | 30 | 0 |
+
+**What the default hides and what a plain call returns**
+
+`hidden` = seeds where the depth-3 set is under half of the unbounded set (oracle closure / lidx's own answer). `plain call` = `analyze_impact(id, direction=up, max_depth=3, include_tests=true)` with every other parameter at its default (30,000-byte response cut, all layers); `beyond 10` = seeds whose oracle closure has callers farther than 10 hops.
+
+| Cell | hidden (oracle) | hidden (oracle, alt. closure) | hidden (lidx) | Plain call recall | Plain call truncated seeds | beyond 10 |
+|---|---|---|---|---:|---:|
+| cobra/tests | 55/75 = 0.733 | 25/62 = 0.403 | 25/62 = 0.403 | 0.518 [0.489, 0.546] | 18 | 37 |
+| cobra/no_tests | 51/71 = 0.718 | 6/61 = 0.098 | 42/83 = 0.506 | 0.501 [0.466, 0.537] | 19 | 23 |
+| gitleaks/no_tests | 12/76 = 0.158 | 11/75 = 0.147 | 14/75 = 0.187 | 0.851 [0.813, 0.882] | 10 | 0 |
+| gitleaks/tests | 17/72 = 0.236 | 15/71 = 0.211 | 17/71 = 0.239 | 0.749 [0.716, 0.780] | 14 | 0 |
+| syft/no_tests | 67/75 = 0.893 | 39/62 = 0.629 | 41/63 = 0.651 | 0.082 [0.074, 0.092] | 20 | 71 |
+| syft/tests | 74/75 = 0.987 | 23/59 = 0.390 | 25/59 = 0.424 | 0.050 [0.045, 0.055] | 19 | 73 |
+| bubbletea/no_tests | 6/64 = 0.094 | 1/47 = 0.021 | 29/68 = 0.426 | 0.290 [0.243, 0.342] | 26 | 0 |
+| bubbletea/tests | 13/78 = 0.167 | 13/55 = 0.236 | 21/55 = 0.382 | 0.107 [0.094, 0.123] | 20 | 0 |
+| chi/no_tests | 43/67 = 0.642 | 3/39 = 0.077 | 6/73 = 0.082 | 0.178 [0.151, 0.208] | 5 | 1 |
+| chi/tests | 52/74 = 0.703 | 5/50 = 0.100 | 5/50 = 0.100 | 0.176 [0.161, 0.191] | 6 | 5 |
+| urfavecli/no_tests | 10/65 = 0.154 | 4/58 = 0.069 | 56/84 = 0.667 | 0.386 [0.339, 0.435] | 21 | 0 |
+| urfavecli/tests | 70/75 = 0.933 | 37/58 = 0.638 | 42/58 = 0.724 | 0.173 [0.160, 0.187] | 19 | 25 |
+| viper/no_tests | 13/59 = 0.220 | 13/46 = 0.283 | 14/56 = 0.250 | 0.513 [0.453, 0.574] | 12 | 0 |
+| viper/tests | 10/71 = 0.141 | 5/62 = 0.081 | 11/67 = 0.164 | 0.629 [0.596, 0.662] | 11 | 0 |
+
+**`lower_bound` against per-seed completeness** (does `lower_bound: true` hold exactly when lidx misses an oracle caller?). Cells are `lb and incomplete / lb and complete / no lb and incomplete / no lb and complete` over seeds lidx did not truncate; the agreeing cells are the first and the last.
+
+| Cell | k = 3 | agree | unbounded | agree |
+|---|---|---:|---|---:|
+| cobra/tests | 38 / 9 / 23 / 30 | 68.0% | 40 / 7 / 23 / 30 | 70.0% |
+| cobra/no_tests | 57 / 9 / 8 / 26 | 83.0% | 63 / 9 / 4 / 24 | 87.0% |
+| gitleaks/no_tests | 14 / 76 / 0 / 10 | 24.0% | 20 / 70 / 0 / 10 | 30.0% |
+| gitleaks/tests | 30 / 51 / 1 / 18 | 48.0% | 39 / 43 / 1 / 17 | 56.0% |
+| syft/no_tests | 51 / 19 / 8 / 22 | 73.0% | 65 / 7 / 8 / 20 | 85.0% |
+| syft/tests | 51 / 10 / 17 / 22 | 73.0% | 59 / 4 / 15 / 22 | 81.0% |
+| bubbletea/no_tests | 46 / 17 / 12 / 25 | 71.0% | 51 / 12 / 12 / 25 | 76.0% |
+| bubbletea/tests | 38 / 10 / 34 / 18 | 56.0% | 44 / 6 / 32 / 18 | 62.0% |
+| chi/no_tests | 39 / 43 / 10 / 8 | 47.0% | 41 / 41 / 10 / 8 | 49.0% |
+| chi/tests | 57 / 30 / 8 / 5 | 62.0% | 64 / 23 / 8 / 5 | 69.0% |
+| urfavecli/no_tests | 31 / 45 / 6 / 18 | 49.0% | 26 / 53 / 3 / 18 | 44.0% |
+| urfavecli/tests | 56 / 10 / 14 / 20 | 76.0% | 59 / 10 / 11 / 20 | 79.0% |
+| viper/no_tests | 9 / 37 / 7 / 47 | 56.0% | 7 / 43 / 6 / 44 | 51.0% |
+| viper/tests | 23 / 38 / 8 / 31 | 54.0% | 27 / 36 / 8 / 29 | 56.0% |
+
+**Test reach** (`Tests(s)`: Go `Test*`/`Benchmark*`/`Fuzz*` in `_test.go`; lidx: the test layer of `analyze_impact` alone, `enable_direct=false`). A seed with no oracle test and no lidx test is a correct empty answer and is counted in `empty ok`. `not root` = wrong tests that are functions the oracle analysed that are not test roots (helpers); `beyond calls` = tests lidx reaches only through a reference, use or import hop (the test layer follows every edge kind and cannot be restricted), counted, not wrong; `missed Benchmark/Fuzz` = missing pairs whose test is a `Benchmark*` or `Fuzz*` function. `Upstream recall` is the recall of the same cell's upstream set at the same k (the transitive call recall; the test layer should not be lower), `edge recall` the call-edge benchmark's recall for the cell.
+
+| Cell | k | Seeds | Oracle pairs | Wrong | not root | beyond calls | Precision | Recall | Macro precision | Macro recall | Upstream recall | edge recall | missed Benchmark/Fuzz | empty ok | oracle test, lidx none |
+|---|---|---:|---:|---:|---:|---:|---|---|---|---|---|---|---:|---:|---:|
+| cobra/tests | 3 | 100 | 2184 | 23 | 23 | 115 | 0.988 [0.982, 0.992] | 0.860 [0.845, 0.874] | 0.984 [0.971, 0.995] | 0.693 [0.610, 0.774] | 0.796 | 0.994 | 51 | 27 | 11 |
+| cobra/tests | inf | 100 | 16301 | 67 | 67 | 45 | 0.992 [0.990, 0.994] | 0.500 [0.493, 0.508] | 0.994 [0.990, 0.996] | 0.575 [0.473, 0.663] | 0.445 | 0.994 | 252 | 25 | 13 |
+| gitleaks/tests | 3 | 100 | 257 | 6 | 6 | 0 | 0.971 [0.939, 0.987] | 0.786 [0.732, 0.832] | 0.988 [0.977, 0.996] | 0.691 [0.587, 0.790] | 0.938 | 0.996 | 18 | 59 | 5 |
+| gitleaks/tests | inf | 100 | 422 | 7 | 7 | 0 | 0.979 [0.958, 0.990] | 0.784 [0.743, 0.821] | 0.991 [0.985, 0.997] | 0.681 [0.594, 0.775] | 0.948 | 0.996 | 18 | 55 | 3 |
+| syft/tests | 3 | 100 | 7058 | 21 | 1 | 124 | 0.985 [0.977, 0.990] | 0.191 [0.182, 0.201] | 0.989 [0.978, 0.998] | 0.203 [0.142, 0.276] | 0.152 | 0.988 | 14 | 29 | 21 |
+| syft/tests | inf | 100 | 39656 | 68 | 1 | 0 | 0.985 [0.981, 0.988] | 0.114 [0.111, 0.117] | 0.995 [0.991, 0.999] | 0.114 [0.081, 0.145] | 0.077 | 0.988 | 74 | 26 | 18 |
+| bubbletea/tests | 3 | 100 | 1441 | 15 | 15 | 1 | 0.966 [0.945, 0.979] | 0.295 [0.272, 0.319] | 0.955 [0.921, 0.981] | 0.354 [0.267, 0.447] | 0.244 | 0.982 | 1 | 30 | 20 |
+| bubbletea/tests | inf | 100 | 1890 | 66 | 48 | 1 | 0.925 [0.906, 0.941] | 0.431 [0.408, 0.453] | 0.935 [0.901, 0.961] | 0.440 [0.359, 0.511] | 0.342 | 0.982 | 1 | 22 | 14 |
+| chi/tests | 3 | 100 | 2207 | 0 | 0 | 21 | 1.000 [0.996, 1.000] | 0.392 [0.371, 0.412] | 1.000 [1.000, 1.000] | 0.348 [0.265, 0.439] | 0.319 | 0.982 | 98 | 29 | 18 |
+| chi/tests | inf | 100 | 7043 | 0 | 0 | 2 | 1.000 [0.997, 1.000] | 0.178 [0.170, 0.187] | 1.000 [1.000, 1.000] | 0.211 [0.135, 0.289] | 0.144 | 0.982 | 148 | 27 | 18 |
+| urfavecli/tests | 3 | 100 | 3856 | 0 | 0 | 11 | 1.000 [0.997, 1.000] | 0.388 [0.373, 0.404] | 1.000 [1.000, 1.000] | 0.377 [0.287, 0.474] | 0.379 | 0.959 | 0 | 25 | 19 |
+| urfavecli/tests | inf | 100 | 23812 | 0 | 0 | 27 | 1.000 [1.000, 1.000] | 0.359 [0.353, 0.365] | 1.000 [1.000, 1.000] | 0.400 [0.320, 0.488] | 0.289 | 0.959 | 0 | 25 | 17 |
+| viper/tests | 3 | 100 | 1157 | 0 | 0 | 0 | 1.000 [0.996, 1.000] | 0.838 [0.816, 0.859] | 1.000 [1.000, 1.000] | 0.808 [0.713, 0.896] | 0.822 | 0.998 | 17 | 35 | 8 |
+| viper/tests | inf | 100 | 1662 | 0 | 0 | 0 | 1.000 [0.997, 1.000] | 0.869 [0.852, 0.884] | 1.000 [1.000, 1.000] | 0.770 [0.677, 0.862] | 0.853 | 0.998 | 24 | 34 | 8 |
+
+
+**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); **gap with no in-repo callee left** = a leaf marked `unresolved_calls` where the oracle has no in-scope callee. This is not a claim that lidx is wrong: lidx defines `unresolved_calls` as a resolution gap (pending unresolved references), and an unresolved external name is a true gap. The narrower point it supports is that lidx itself tags most of these names `external` and still reports `unresolved_calls`, so the signal says little. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
+
+| Cell | k | False leaf | Gap, no in-repo callee left | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
+|---|---|---|---|---|---|---|---|---:|
+| cobra/tests | 3 | 10/206 = 4.9% [2.7, 8.7] (10 function-literal callees only) | - | 1.000 [0.996, 1.000] | 0.497 [0.474, 0.521] | 1.000 [1.000, 1.000] | 0.782 [0.701, 0.853] | 0 |
+| cobra/tests | inf | 62/519 = 11.9% [9.4, 15.0] (62 function-literal callees only) | - | 1.000 [0.999, 1.000] | 0.275 [0.268, 0.282] | 1.000 [1.000, 1.000] | 0.478 [0.399, 0.564] | 0 |
+| cobra/no_tests | 3 | 0/119 = 0.0% [0.0, 3.1] | - | 1.000 [0.994, 1.000] | 0.592 [0.563, 0.621] | 1.000 [1.000, 1.000] | 0.875 [0.812, 0.934] | 0 |
+| cobra/no_tests | inf | 0/152 = 0.0% [0.0, 2.5] | - | 1.000 [0.996, 1.000] | 0.224 [0.212, 0.236] | 1.000 [1.000, 1.000] | 0.632 [0.532, 0.718] | 0 |
+| gitleaks/no_tests | 3 | 0/51 = 0.0% [0.0, 7.0] | - | 1.000 [0.997, 1.000] | 0.906 [0.888, 0.921] | 1.000 [1.000, 1.000] | 0.953 [0.920, 0.982] | 0 |
+| gitleaks/no_tests | inf | 0/504 = 0.0% [0.0, 0.8] | 39/39 = 100.0% [91.0, 100.0] (0 external-only) | 1.000 [0.999, 1.000] | 0.830 [0.817, 0.842] | 1.000 [1.000, 1.000] | 0.877 [0.828, 0.918] | 0 |
+| gitleaks/tests | 3 | 0/45 = 0.0% [0.0, 7.9] | 7/7 = 100.0% [64.6, 100.0] (0 external-only) | 1.000 [0.994, 1.000] | 0.802 [0.774, 0.828] | 1.000 [1.000, 1.000] | 0.919 [0.859, 0.967] | 0 |
+| gitleaks/tests | inf | 0/287 = 0.0% [0.0, 1.3] | 29/29 = 100.0% [88.3, 100.0] (0 external-only) | 1.000 [0.998, 1.000] | 0.756 [0.737, 0.774] | 1.000 [1.000, 1.000] | 0.886 [0.831, 0.937] | 0 |
+| syft/no_tests | 3 | 4/84 = 4.8% [1.9, 11.6] (4 function-literal callees only) | 32/33 = 97.0% [84.7, 99.5] (29 external-only) | 0.994 [0.980, 0.999] | 0.220 [0.201, 0.241] | 0.999 [0.996, 1.000] | 0.757 [0.655, 0.857] | 0 |
+| syft/no_tests | inf | 9/233 = 3.9% [2.1, 7.2] (9 function-literal callees only) | 56/58 = 96.5% [88.3, 99.1] (50 external-only) | 0.998 [0.993, 1.000] | 0.015 [0.013, 0.016] | 0.999 [0.997, 1.000] | 0.701 [0.584, 0.819] | 3 |
+| syft/tests | 3 | 4/274 = 1.5% [0.6, 3.7] (4 function-literal callees only) | 17/57 = 29.8% [19.5, 42.7] (11 external-only) | 0.993 [0.986, 0.997] | 0.079 [0.074, 0.083] | 0.996 [0.991, 1.000] | 0.564 [0.462, 0.674] | 0 |
+| syft/tests | inf | 16/698 = 2.3% [1.4, 3.7] (16 function-literal callees only) | 47/132 = 35.6% [28.0, 44.1] (32 external-only) | 1.000 [0.999, 1.000] | 0.021 [0.020, 0.022] | 1.000 [1.000, 1.000] | 0.514 [0.395, 0.644] | 5 |
+| bubbletea/no_tests | 3 | 0/122 = 0.0% [0.0, 3.0] | 5/6 = 83.3% [43.6, 97.0] (0 external-only) | 0.989 [0.969, 0.996] | 0.395 [0.360, 0.432] | 0.999 [0.997, 1.000] | 0.812 [0.700, 0.913] | 0 |
+| bubbletea/no_tests | inf | 0/170 = 0.0% [0.0, 2.2] | 10/11 = 90.9% [62.3, 98.4] (0 external-only) | 0.970 [0.949, 0.983] | 0.199 [0.172, 0.230] | 0.996 [0.992, 1.000] | 0.831 [0.692, 0.944] | 3 |
+| bubbletea/tests | 3 | 2/344 = 0.6% [0.2, 2.1] (2 function-literal callees only) | 8/10 = 80.0% [49.0, 94.3] (0 external-only) | 1.000 [0.997, 1.000] | 0.321 [0.306, 0.337] | 1.000 [1.000, 1.000] | 0.575 [0.477, 0.666] | 0 |
+| bubbletea/tests | inf | 2/624 = 0.3% [0.1, 1.2] (2 function-literal callees only) | 28/30 = 93.3% [78.7, 98.2] (0 external-only) | 1.000 [0.998, 1.000] | 0.089 [0.078, 0.102] | 1.000 [1.000, 1.000] | 0.649 [0.497, 0.783] | 18 |
+| chi/no_tests | 3 | 11/85 = 12.9% [7.4, 21.7] (11 function-literal callees only) | 16/19 = 84.2% [62.4, 94.5] (1 external-only) | 1.000 [0.987, 1.000] | 0.388 [0.353, 0.423] | 1.000 [1.000, 1.000] | 0.427 [0.337, 0.520] | 0 |
+| chi/no_tests | inf | 15/132 = 11.4% [7.0, 17.9] (15 function-literal callees only) | 16/22 = 72.7% [51.8, 86.9] (1 external-only) | 1.000 [0.991, 1.000] | 0.194 [0.178, 0.212] | 1.000 [1.000, 1.000] | 0.279 [0.216, 0.355] | 0 |
+| chi/tests | 3 | 15/159 = 9.4% [5.8, 15.0] (15 function-literal callees only) | 32/34 = 94.1% [80.9, 98.4] (0 external-only) | 1.000 [0.994, 1.000] | 0.345 [0.325, 0.367] | 1.000 [1.000, 1.000] | 0.436 [0.358, 0.506] | 0 |
+| chi/tests | inf | 36/339 = 10.6% [7.8, 14.3] (36 function-literal callees only) | 34/46 = 73.9% [59.7, 84.4] (0 external-only) | 1.000 [0.997, 1.000] | 0.125 [0.119, 0.133] | 1.000 [1.000, 1.000] | 0.253 [0.194, 0.320] | 0 |
+| urfavecli/no_tests | 3 | 2/160 = 1.2% [0.3, 4.4] (2 function-literal callees only) | 36/46 = 78.3% [64.4, 87.7] (8 external-only) | 0.997 [0.986, 1.000] | 0.686 [0.647, 0.723] | 0.999 [0.996, 1.000] | 0.796 [0.718, 0.861] | 0 |
+| urfavecli/no_tests | inf | 2/430 = 0.5% [0.1, 1.7] (2 function-literal callees only) | 54/78 = 69.2% [58.3, 78.4] (18 external-only) | 0.846 [0.823, 0.867] | 0.828 [0.792, 0.859] | 0.973 [0.955, 0.987] | 0.830 [0.751, 0.900] | 4 |
+| urfavecli/tests | 3 | 0/330 = 0.0% [0.0, 1.1] | 23/69 = 33.3% [23.4, 45.1] (18 external-only) | 0.977 [0.966, 0.984] | 0.324 [0.309, 0.340] | 0.995 [0.989, 1.000] | 0.612 [0.517, 0.706] | 0 |
+| urfavecli/tests | inf | 0/2423 = 0.0% [0.0, 0.2] | 75/289 = 25.9% [21.2, 31.3] (42 external-only) | 1.000 [0.999, 1.000] | 0.087 [0.083, 0.091] | 1.000 [0.999, 1.000] | 0.412 [0.297, 0.537] | 16 |
+| viper/no_tests | 3 | 2/62 = 3.2% [0.9, 11.0] (2 function-literal callees only) | 24/24 = 100.0% [86.2, 100.0] (19 external-only) | 0.965 [0.940, 0.980] | 0.815 [0.775, 0.850] | 0.987 [0.970, 1.000] | 0.874 [0.803, 0.941] | 0 |
+| viper/no_tests | inf | 2/114 = 1.8% [0.5, 6.2] (2 function-literal callees only) | 56/56 = 100.0% [93.6, 100.0] (51 external-only) | 0.972 [0.958, 0.982] | 0.908 [0.886, 0.926] | 0.986 [0.973, 0.997] | 0.894 [0.824, 0.955] | 0 |
+| viper/tests | 3 | 4/129 = 3.1% [1.2, 7.7] (4 function-literal callees only) | 13/53 = 24.5% [14.9, 37.6] (7 external-only) | 0.992 [0.984, 0.996] | 0.807 [0.783, 0.830] | 0.989 [0.977, 0.998] | 0.806 [0.740, 0.870] | 0 |
+| viper/tests | inf | 4/215 = 1.9% [0.7, 4.7] (4 function-literal callees only) | 32/98 = 32.6% [24.2, 42.4] (26 external-only) | 0.987 [0.980, 0.991] | 0.811 [0.793, 0.829] | 0.987 [0.977, 0.998] | 0.817 [0.752, 0.879] | 0 |
+
+### TypeScript
+
+**Upstream set, k = 3 (lidx default)**
+
+| Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
+|---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
+| zod | 100 | 2342 | 7 | 99 | 0.994 [0.988, 0.997] | 0.506 [0.486, 0.526] | 0.989 [0.974, 0.999] | 0.618 [0.537, 0.702] | 0 | 0.452 [0.433, 0.470] | 0.535 [0.515, 0.556] | 1515 |
+| hono | 100 | 621 | 6 | 596 | 0.989 [0.977, 0.995] | 0.899 [0.872, 0.920] | 0.994 [0.985, 1.000] | 0.881 [0.817, 0.938] | 0 | 0.932 [0.908, 0.949] | 0.899 [0.872, 0.920] | 35 |
+| h3 | 100 | 300 | 0 | 394 | 1.000 [0.987, 1.000] | 0.937 [0.903, 0.959] | 1.000 [1.000, 1.000] | 0.942 [0.879, 0.987] | 0 | 0.886 [0.847, 0.917] | 0.937 [0.903, 0.959] | 36 |
+| immer | 100 | 777 | 0 | 176 | 1.000 [0.995, 1.000] | 0.887 [0.863, 0.907] | 1.000 [1.000, 1.000] | 0.837 [0.750, 0.924] | 0 | 0.844 [0.818, 0.868] | 0.887 [0.863, 0.907] | 127 |
+| ky | 100 | 574 | 0 | 71 | 1.000 [0.993, 1.000] | 0.984 [0.971, 0.992] | 1.000 [1.000, 1.000] | 0.971 [0.942, 0.992] | 0 | 0.979 [0.964, 0.988] | 0.984 [0.971, 0.992] | 12 |
+| trpc | 100 | 526 | 4 | 1167 | 0.991 [0.978, 0.997] | 0.863 [0.831, 0.890] | 0.978 [0.935, 1.000] | 0.883 [0.810, 0.948] | 0 | 0.854 [0.821, 0.881] | 0.867 [0.835, 0.893] | 72 |
+
+**Upstream set, unbounded (lidx caps at 10)**
+
+| Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
+|---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
+| zod | 100 | 4812 | 16 | 274 | 0.988 [0.980, 0.992] | 0.264 [0.252, 0.276] | 0.983 [0.968, 0.994] | 0.560 [0.474, 0.657] | 0 | 0.191 [0.182, 0.200] | 0.286 [0.274, 0.299] | 5815 |
+| hono | 100 | 863 | 7 | 1087 | 0.991 [0.981, 0.996] | 0.867 [0.842, 0.888] | 0.995 [0.986, 1.000] | 0.896 [0.836, 0.950] | 0 | 0.791 [0.764, 0.815] | 0.867 [0.842, 0.888] | 191 |
+| h3 | 100 | 413 | 0 | 723 | 1.000 [0.990, 1.000] | 0.886 [0.852, 0.913] | 1.000 [1.000, 1.000] | 0.929 [0.866, 0.975] | 0 | 0.895 [0.861, 0.921] | 0.886 [0.852, 0.913] | 43 |
+| immer | 100 | 1030 | 0 | 209 | 1.000 [0.996, 1.000] | 0.879 [0.857, 0.897] | 1.000 [1.000, 1.000] | 0.837 [0.750, 0.925] | 0 | 0.847 [0.824, 0.867] | 0.879 [0.857, 0.897] | 164 |
+| ky | 100 | 911 | 0 | 91 | 1.000 [0.995, 1.000] | 0.902 [0.881, 0.920] | 1.000 [1.000, 1.000] | 0.874 [0.848, 0.892] | 0 | 0.973 [0.960, 0.982] | 0.902 [0.881, 0.920] | 23 |
+| trpc | 100 | 769 | 35 | 6490 | 0.950 [0.931, 0.964] | 0.862 [0.836, 0.885] | 0.968 [0.916, 1.000] | 0.885 [0.810, 0.950] | 0 | 0.857 [0.831, 0.880] | 0.871 [0.846, 0.893] | 75 |
+
+**TypeScript, the compiler's edges as stated.** The graded closure expands an edge to a abstract / interface member to the members the compiler's own hierarchy lists as overriding it (what RTA does for Go, without allocation analysis). The same grading without that expansion, i.e. the call graph exactly as the oracle emits it (calls-only):
+
+| Cell | k = 3 oracle members | precision | recall | unbounded oracle members | precision | recall |
+|---|---:|---|---|---:|---|---|
+| zod | 2088 | 0.967 [0.956, 0.976] | 0.552 [0.531, 0.573] | 2607 | 0.901 [0.884, 0.916] | 0.444 [0.425, 0.463] |
+| hono | 565 | 0.949 [0.927, 0.964] | 0.947 [0.925, 0.963] | 696 | 0.878 [0.853, 0.900] | 0.953 [0.934, 0.966] |
+| h3 | 300 | 1.000 [0.987, 1.000] | 0.937 [0.903, 0.959] | 413 | 1.000 [0.990, 1.000] | 0.886 [0.852, 0.913] |
+| immer | 777 | 1.000 [0.995, 1.000] | 0.887 [0.863, 0.907] | 1030 | 1.000 [0.996, 1.000] | 0.879 [0.857, 0.897] |
+| ky | 574 | 1.000 [0.993, 1.000] | 0.984 [0.971, 0.992] | 911 | 1.000 [0.995, 1.000] | 0.902 [0.881, 0.920] |
+| trpc | 525 | 0.989 [0.975, 0.995] | 0.863 [0.831, 0.890] | 768 | 0.948 [0.929, 0.963] | 0.862 [0.836, 0.885] |
+
+**lidx's interface-dispatch fan-out, counted.** A member whose path to the seed crosses a hop bound by the dispatch query (`resolution_kind: interface_dispatch`) is a dispatch-derived claim; it is graded like every other member, against the oracle's concrete-implementation edges (RTA / the checker); lidx gets no credit from the oracle's interface-method alternatives. k = 3, calls-only.
+
+| Cell | Seeds with a dispatch-derived member | Dispatch-derived members | Right | Wrong |
+|---|---:|---:|---:|---:|
+| zod | 12 | 44 | 32 | 12 |
+| hono | 10 | 42 | 23 | 9 |
+| h3 | 1 | 1 | 0 | 0 |
+| immer | 18 | 26 | 0 | 0 |
+| ky | 0 | 0 | 0 | 0 |
+| trpc | 3 | 4 | 1 | 1 |
+
+**What the default hides and what a plain call returns**
+
+`hidden` = seeds where the depth-3 set is under half of the unbounded set (oracle closure / lidx's own answer). `plain call` = `analyze_impact(id, direction=up, max_depth=3, include_tests=true)` with every other parameter at its default (30,000-byte response cut, all layers); `beyond 10` = seeds whose oracle closure has callers farther than 10 hops.
+
+| Cell | hidden (oracle) | hidden (oracle, alt. closure) | hidden (lidx) | Plain call recall | Plain call truncated seeds | beyond 10 |
+|---|---|---|---|---:|---:|
+| zod | 13/76 = 0.171 | 3/75 = 0.040 | 9/73 = 0.123 | 0.289 [0.265, 0.315] | 21 | 0 |
+| hono | 7/70 = 0.100 | 3/65 = 0.046 | 10/89 = 0.112 | 0.884 [0.849, 0.912] | 9 | 0 |
+| h3 | 4/56 = 0.071 | 4/56 = 0.071 | 13/72 = 0.181 | 0.929 [0.891, 0.955] | 5 | 0 |
+| immer | 4/62 = 0.065 | 4/62 = 0.065 | 3/60 = 0.050 | 0.785 [0.743, 0.822] | 10 | 0 |
+| ky | 24/89 = 0.270 | 24/89 = 0.270 | 11/90 = 0.122 | 0.984 [0.971, 0.992] | 0 | 0 |
+| trpc | 10/61 = 0.164 | 10/60 = 0.167 | 40/74 = 0.540 | 0.788 [0.740, 0.829] | 15 | 0 |
+
+**`lower_bound` against per-seed completeness** (does `lower_bound: true` hold exactly when lidx misses an oracle caller?). Cells are `lb and incomplete / lb and complete / no lb and incomplete / no lb and complete` over seeds lidx did not truncate; the agreeing cells are the first and the last.
+
+| Cell | k = 3 | agree | unbounded | agree |
+|---|---|---:|---|---:|
+| zod | 31 / 41 / 7 / 21 | 52.0% | 33 / 39 / 7 / 21 | 54.0% |
+| hono | 19 / 78 / 1 / 2 | 21.0% | 18 / 79 / 1 / 2 | 20.0% |
+| h3 | 4 / 80 / 2 / 14 | 18.0% | 7 / 77 / 2 / 14 | 21.0% |
+| immer | 3 / 83 / 9 / 5 | 8.0% | 3 / 83 / 9 / 5 | 8.0% |
+| ky | 9 / 87 / 0 / 4 | 13.0% | 89 / 7 / 0 / 4 | 93.0% |
+| trpc | 10 / 84 / 2 / 4 | 14.0% | 6 / 88 / 2 / 4 | 10.0% |
+
+**Test reach**: void for TypeScript. Test files are out of scope on both sides (the oracle does not analyse them, lidx's test layer would be graded against nothing), so no figure is reported.
+
+**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); **gap with no in-repo callee left** = a leaf marked `unresolved_calls` where the oracle has no in-scope callee. This is not a claim that lidx is wrong: lidx defines `unresolved_calls` as a resolution gap (pending unresolved references), and an unresolved external name is a true gap. The narrower point it supports is that lidx itself tags most of these names `external` and still reports `unresolved_calls`, so the signal says little. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
+
+| Cell | k | False leaf | Gap, no in-repo callee left | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
+|---|---|---|---|---|---|---|---|---:|
+| zod | 3 | 7/91 = 7.7% [3.8, 15.0] | 104/109 = 95.4% [89.7, 98.0] (85 external-only) | 0.795 [0.754, 0.831] | 0.548 [0.508, 0.588] | 0.983 [0.933, 1.000] | 0.716 [0.635, 0.794] | 0 |
+| zod | inf | 7/109 = 6.4% [3.1, 12.7] | 118/124 = 95.2% [89.8, 97.8] (95 external-only) | 0.822 [0.785, 0.854] | 0.224 [0.205, 0.244] | 0.983 [0.933, 1.000] | 0.661 [0.560, 0.757] | 0 |
+| hono | 3 | 0/56 = 0.0% [0.0, 6.4] | 132/134 = 98.5% [94.7, 99.6] (124 external-only) | 0.984 [0.963, 0.993] | 0.765 [0.722, 0.804] | 0.995 [0.985, 1.000] | 0.892 [0.838, 0.940] | 0 |
+| hono | inf | 0/93 = 0.0% [0.0, 4.0] | 198/203 = 97.5% [94.4, 98.9] (188 external-only) | 0.990 [0.976, 0.996] | 0.723 [0.688, 0.756] | 0.995 [0.985, 1.000] | 0.887 [0.829, 0.935] | 0 |
+| h3 | 3 | 1/67 = 1.5% [0.3, 8.0] | 121/123 = 98.4% [94.3, 99.6] (100 external-only) | 0.864 [0.819, 0.898] | 0.864 [0.819, 0.898] | 0.847 [0.766, 0.925] | 0.817 [0.740, 0.892] | 0 |
+| h3 | inf | 1/95 = 1.1% [0.2, 5.7] | 166/168 = 98.8% [95.8, 99.7] (139 external-only) | 0.886 [0.851, 0.913] | 0.868 [0.832, 0.898] | 0.844 [0.757, 0.922] | 0.817 [0.741, 0.892] | 0 |
+| immer | 3 | 0/305 = 0.0% [0.0, 1.2] | 22/24 = 91.7% [74.2, 97.7] (15 external-only) | 0.916 [0.892, 0.935] | 0.884 [0.857, 0.906] | 0.907 [0.877, 0.937] | 0.913 [0.860, 0.957] | 0 |
+| immer | inf | 0/419 = 0.0% [0.0, 0.9] | 22/24 = 91.7% [74.2, 97.7] (15 external-only) | 0.915 [0.895, 0.932] | 0.879 [0.856, 0.899] | 0.902 [0.872, 0.931] | 0.910 [0.858, 0.952] | 0 |
+| ky | 3 | 0/80 = 0.0% [0.0, 4.6] | 228/228 = 100.0% [98.3, 100.0] (194 external-only) | 1.000 [0.994, 1.000] | 0.934 [0.913, 0.951] | 1.000 [1.000, 1.000] | 0.946 [0.918, 0.969] | 0 |
+| ky | inf | 0/104 = 0.0% [0.0, 3.6] | 338/338 = 100.0% [98.9, 100.0] (280 external-only) | 1.000 [0.996, 1.000] | 0.939 [0.922, 0.952] | 1.000 [1.000, 1.000] | 0.947 [0.920, 0.970] | 0 |
+| trpc | 3 | 0/79 = 0.0% [0.0, 4.6] | 118/147 = 80.3% [73.1, 85.9] (97 external-only) | 0.962 [0.941, 0.975] | 0.764 [0.729, 0.796] | 0.950 [0.904, 0.985] | 0.735 [0.654, 0.811] | 0 |
+| trpc | inf | 0/142 = 0.0% [0.0, 2.6] | 262/333 = 78.7% [74.0, 82.7] (211 external-only) | 0.878 [0.856, 0.896] | 0.776 [0.751, 0.799] | 0.921 [0.867, 0.962] | 0.734 [0.654, 0.810] | 0 |
+
+### Rust
+
+**Upstream set, k = 3 (lidx default)**
+
+| Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
+|---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
+| ripgrep/path_tests_excluded | 100 | 4886 | 0 | 7 | 1.000 [0.996, 1.000] | 0.199 [0.188, 0.211] | 1.000 [1.000, 1.000] | 0.358 [0.254, 0.462] | 0 | 0.222 [0.210, 0.234] | 0.199 [0.188, 0.211] | 3416 |
+| ripgrep/no_tests | 100 | 1300 | 11 | 1100 | 0.985 [0.974, 0.992] | 0.561 [0.534, 0.588] | 0.910 [0.820, 0.998] | 0.382 [0.281, 0.484] | 0 | 0.170 [0.160, 0.182] | 0.580 [0.553, 0.607] | 3663 |
+| ripgrep/tests | 100 | 4667 | 10 | 3 | 0.984 [0.971, 0.992] | 0.135 [0.125, 0.145] | 0.936 [0.841, 1.000] | 0.376 [0.267, 0.483] | 0 | 0.169 [0.157, 0.181] | 0.137 [0.128, 0.147] | 3148 |
+| fd/path_tests_excluded | 100 | 359 | 0 | 98 | 1.000 [0.989, 1.000] | 0.964 [0.939, 0.979] | 1.000 [1.000, 1.000] | 0.982 [0.963, 1.000] | 0 | 0.935 [0.905, 0.956] | 0.964 [0.939, 0.979] | 24 |
+| fd/no_tests | 100 | 379 | 2 | 183 | 0.995 [0.981, 0.999] | 0.971 [0.949, 0.984] | 0.987 [0.962, 1.000] | 0.976 [0.948, 0.995] | 0 | 0.932 [0.902, 0.953] | 0.971 [0.949, 0.984] | 25 |
+| fd/tests | 100 | 701 | 96 | 19 | 0.878 [0.853, 0.899] | 0.983 [0.970, 0.990] | 0.970 [0.921, 1.000] | 0.972 [0.929, 1.000] | 0 | 0.851 [0.824, 0.874] | 0.983 [0.970, 0.990] | 25 |
+| bat/path_tests_excluded | 100 | 675 | 6 | 9 | 0.990 [0.977, 0.995] | 0.834 [0.804, 0.860] | 0.990 [0.976, 0.999] | 0.844 [0.758, 0.922] | 0 | 0.943 [0.921, 0.959] | 0.834 [0.804, 0.860] | 28 |
+| just/path_tests_excluded | 100 | 1552 | 37 | 7 | 0.971 [0.961, 0.979] | 0.808 [0.788, 0.827] | 0.960 [0.911, 0.998] | 0.824 [0.750, 0.895] | 0 | 0.832 [0.812, 0.850] | 0.814 [0.794, 0.832] | 219 |
+| lidx/path_tests_excluded | 100 | 1892 | 0 | 735 | 1.000 [0.998, 1.000] | 0.960 [0.950, 0.968] | 1.000 [1.000, 1.000] | 0.933 [0.887, 0.970] | 0 | 0.892 [0.878, 0.905] | 0.960 [0.951, 0.968] | 219 |
+| nextest/path_tests_excluded | 100 | 660 | 12 | 134 | 0.979 [0.963, 0.988] | 0.826 [0.795, 0.853] | 0.966 [0.926, 0.995] | 0.809 [0.719, 0.888] | 0 | 0.932 [0.909, 0.950] | 0.833 [0.803, 0.860] | 28 |
+| tokei/path_tests_excluded | 100 | 213 | 48 | 6 | 0.788 [0.730, 0.836] | 0.836 [0.780, 0.879] | 0.806 [0.708, 0.889] | 0.883 [0.795, 0.955] | 0 | 0.754 [0.696, 0.805] | 0.836 [0.780, 0.879] | 10 |
+| xsv/path_tests_excluded | 100 | 631 | 0 | 0 | 1.000 [0.993, 1.000] | 0.899 [0.873, 0.920] | 1.000 [1.000, 1.000] | 0.887 [0.826, 0.941] | 0 | 1.000 [0.993, 1.000] | 0.899 [0.873, 0.920] | 0 |
+
+**Upstream set, unbounded (lidx caps at 10)**
+
+| Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
+|---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
+| ripgrep/path_tests_excluded | 100 | 7218 | 4 | 20 | 0.998 [0.995, 0.999] | 0.262 [0.252, 0.272] | 0.998 [0.996, 1.000] | 0.283 [0.182, 0.386] | 0 | 0.356 [0.344, 0.369] | 0.266 [0.256, 0.276] | 3466 |
+| ripgrep/no_tests | 100 | 2009 | 16 | 2038 | 0.984 [0.975, 0.990] | 0.499 [0.477, 0.521] | 0.910 [0.821, 0.998] | 0.333 [0.236, 0.425] | 0 | 0.233 [0.221, 0.245] | 0.568 [0.546, 0.590] | 3744 |
+| ripgrep/tests | 100 | 6770 | 17 | 7 | 0.986 [0.977, 0.991] | 0.172 [0.164, 0.182] | 0.933 [0.840, 0.997] | 0.321 [0.220, 0.427] | 0 | 0.270 [0.257, 0.284] | 0.176 [0.167, 0.185] | 3199 |
+| fd/path_tests_excluded | 100 | 519 | 0 | 109 | 1.000 [0.992, 1.000] | 0.971 [0.953, 0.982] | 1.000 [1.000, 1.000] | 0.989 [0.977, 1.000] | 0 | 0.951 [0.929, 0.966] | 0.971 [0.953, 0.982] | 26 |
+| fd/no_tests | 100 | 661 | 2 | 204 | 0.997 [0.989, 0.999] | 0.974 [0.959, 0.984] | 0.987 [0.962, 1.000] | 0.981 [0.954, 0.997] | 0 | 0.956 [0.937, 0.969] | 0.974 [0.959, 0.984] | 28 |
+| fd/tests | 100 | 927 | 107 | 22 | 0.895 [0.874, 0.912] | 0.982 [0.971, 0.989] | 0.970 [0.921, 1.000] | 0.977 [0.937, 1.000] | 0 | 0.869 [0.847, 0.888] | 0.982 [0.971, 0.989] | 30 |
+| bat/path_tests_excluded | 100 | 1118 | 20 | 11 | 0.979 [0.967, 0.986] | 0.820 [0.797, 0.842] | 0.982 [0.967, 0.992] | 0.844 [0.755, 0.921] | 0 | 0.952 [0.937, 0.964] | 0.820 [0.797, 0.842] | 26 |
+| just/path_tests_excluded | 100 | 4776 | 259 | 1884 | 0.937 [0.929, 0.944] | 0.809 [0.798, 0.820] | 0.959 [0.916, 0.991] | 0.829 [0.751, 0.899] | 0 | 0.754 [0.742, 0.765] | 0.851 [0.841, 0.861] | 1058 |
+| lidx/path_tests_excluded | 100 | 7882 | 4 | 21563 | 0.999 [0.998, 1.000] | 0.618 [0.607, 0.628] | 1.000 [1.000, 1.000] | 0.740 [0.654, 0.815] | 0 | 0.702 [0.691, 0.713] | 0.618 [0.607, 0.629] | 2063 |
+| nextest/path_tests_excluded | 100 | 1153 | 58 | 345 | 0.937 [0.920, 0.951] | 0.754 [0.728, 0.778] | 0.949 [0.902, 0.985] | 0.804 [0.721, 0.881] | 0 | 0.825 [0.800, 0.846] | 0.758 [0.733, 0.782] | 128 |
+| tokei/path_tests_excluded | 100 | 217 | 105 | 7 | 0.634 [0.577, 0.688] | 0.839 [0.784, 0.882] | 0.710 [0.609, 0.806] | 0.886 [0.799, 0.957] | 0 | 0.613 [0.556, 0.666] | 0.839 [0.784, 0.882] | 10 |
+| xsv/path_tests_excluded | 100 | 711 | 0 | 0 | 1.000 [0.994, 1.000] | 0.899 [0.874, 0.919] | 1.000 [1.000, 1.000] | 0.885 [0.823, 0.942] | 0 | 1.000 [0.994, 1.000] | 0.899 [0.874, 0.919] | 0 |
+
+**Rust, the compiler's edges as stated.** The graded closure expands an edge to a trait member to the members the compiler's own hierarchy lists as overriding it (what RTA does for Go, without allocation analysis). The same grading without that expansion, i.e. the call graph exactly as the oracle emits it (calls-only):
+
+| Cell | k = 3 oracle members | precision | recall | unbounded oracle members | precision | recall |
+|---|---:|---|---|---:|---|---|
+| ripgrep/path_tests_excluded | 4886 | 1.000 [0.996, 1.000] | 0.199 [0.188, 0.211] | 7218 | 0.998 [0.995, 0.999] | 0.262 [0.252, 0.272] |
+| ripgrep/no_tests | 1300 | 0.985 [0.974, 0.992] | 0.561 [0.534, 0.588] | 2009 | 0.984 [0.975, 0.990] | 0.499 [0.477, 0.521] |
+| ripgrep/tests | 4667 | 0.984 [0.971, 0.992] | 0.135 [0.125, 0.145] | 6770 | 0.986 [0.977, 0.991] | 0.172 [0.164, 0.182] |
+| fd/path_tests_excluded | 359 | 1.000 [0.989, 1.000] | 0.964 [0.939, 0.979] | 519 | 1.000 [0.992, 1.000] | 0.971 [0.953, 0.982] |
+| fd/no_tests | 379 | 0.995 [0.981, 0.999] | 0.971 [0.949, 0.984] | 661 | 0.997 [0.989, 0.999] | 0.974 [0.959, 0.984] |
+| fd/tests | 701 | 0.878 [0.853, 0.899] | 0.983 [0.970, 0.990] | 927 | 0.895 [0.874, 0.912] | 0.982 [0.971, 0.989] |
+| bat/path_tests_excluded | 675 | 0.990 [0.977, 0.995] | 0.834 [0.804, 0.860] | 1118 | 0.979 [0.967, 0.986] | 0.820 [0.797, 0.842] |
+| just/path_tests_excluded | 1552 | 0.971 [0.961, 0.979] | 0.808 [0.788, 0.827] | 4776 | 0.937 [0.929, 0.944] | 0.809 [0.798, 0.820] |
+| lidx/path_tests_excluded | 1892 | 1.000 [0.998, 1.000] | 0.960 [0.950, 0.968] | 7882 | 0.999 [0.998, 1.000] | 0.618 [0.607, 0.628] |
+| nextest/path_tests_excluded | 660 | 0.979 [0.963, 0.988] | 0.826 [0.795, 0.853] | 1153 | 0.937 [0.920, 0.951] | 0.754 [0.728, 0.778] |
+| tokei/path_tests_excluded | 213 | 0.788 [0.730, 0.836] | 0.836 [0.780, 0.879] | 217 | 0.634 [0.577, 0.688] | 0.839 [0.784, 0.882] |
+| xsv/path_tests_excluded | 631 | 1.000 [0.993, 1.000] | 0.899 [0.873, 0.920] | 711 | 1.000 [0.994, 1.000] | 0.899 [0.874, 0.919] |
+
+**What the default hides and what a plain call returns**
+
+`hidden` = seeds where the depth-3 set is under half of the unbounded set (oracle closure / lidx's own answer). `plain call` = `analyze_impact(id, direction=up, max_depth=3, include_tests=true)` with every other parameter at its default (30,000-byte response cut, all layers); `beyond 10` = seeds whose oracle closure has callers farther than 10 hops.
+
+| Cell | hidden (oracle) | hidden (oracle, alt. closure) | hidden (lidx) | Plain call recall | Plain call truncated seeds | beyond 10 |
+|---|---|---|---|---:|---:|
+| ripgrep/path_tests_excluded | 14/75 = 0.187 | 14/75 = 0.187 | 6/31 = 0.194 | 0.513 [0.468, 0.558] | 43 | 8 |
+| ripgrep/no_tests | 13/72 = 0.181 | 13/72 = 0.181 | 6/34 = 0.176 | 0.726 [0.668, 0.777] | 52 | 5 |
+| ripgrep/tests | 15/73 = 0.205 | 15/73 = 0.205 | 4/33 = 0.121 | 0.632 [0.591, 0.672] | 38 | 8 |
+| fd/path_tests_excluded | 7/57 = 0.123 | 7/57 = 0.123 | 9/57 = 0.158 | 0.962 [0.935, 0.977] | 1 | 0 |
+| fd/no_tests | 18/79 = 0.228 | 18/79 = 0.228 | 19/81 = 0.235 | 0.969 [0.946, 0.983] | 1 | 0 |
+| fd/tests | 8/61 = 0.131 | 8/61 = 0.131 | 8/61 = 0.131 | 0.970 [0.949, 0.983] | 4 | 0 |
+| bat/path_tests_excluded | 17/68 = 0.250 | 17/68 = 0.250 | 14/59 = 0.237 | 0.834 [0.804, 0.860] | 0 | 0 |
+| just/path_tests_excluded | 46/75 = 0.613 | 46/75 = 0.613 | 44/72 = 0.611 | 0.789 [0.765, 0.812] | 8 | 1 |
+| lidx/path_tests_excluded | 40/75 = 0.533 | 40/75 = 0.533 | 35/75 = 0.467 | 0.943 [0.923, 0.958] | 22 | 35 |
+| nextest/path_tests_excluded | 18/70 = 0.257 | 18/70 = 0.257 | 22/62 = 0.355 | 0.806 [0.771, 0.836] | 3 | 4 |
+| tokei/path_tests_excluded | 0/54 = 0.000 | 0/54 = 0.000 | 10/55 = 0.182 | 0.836 [0.780, 0.879] | 0 | 0 |
+| xsv/path_tests_excluded | 1/80 = 0.013 | 1/80 = 0.013 | 1/74 = 0.013 | 0.899 [0.873, 0.920] | 0 | 0 |
+
+**`lower_bound` against per-seed completeness** (does `lower_bound: true` hold exactly when lidx misses an oracle caller?). Cells are `lb and incomplete / lb and complete / no lb and incomplete / no lb and complete` over seeds lidx did not truncate; the agreeing cells are the first and the last.
+
+| Cell | k = 3 | agree | unbounded | agree |
+|---|---|---:|---|---:|
+| ripgrep/path_tests_excluded | 26 / 44 / 26 / 4 | 30.0% | 34 / 36 / 26 / 4 | 38.0% |
+| ripgrep/no_tests | 27 / 28 / 28 / 17 | 44.0% | 30 / 25 / 28 / 17 | 47.0% |
+| ripgrep/tests | 22 / 48 / 27 / 3 | 25.0% | 27 / 43 / 27 / 3 | 30.0% |
+| fd/path_tests_excluded | 3 / 79 / 0 / 18 | 21.0% | 3 / 79 / 0 / 18 | 21.0% |
+| fd/no_tests | 7 / 87 / 0 / 6 | 13.0% | 6 / 88 / 0 / 6 | 12.0% |
+| fd/tests | 3 / 76 / 0 / 21 | 24.0% | 3 / 76 / 0 / 21 | 24.0% |
+| bat/path_tests_excluded | 12 / 79 / 2 / 7 | 19.0% | 11 / 80 / 2 / 7 | 18.0% |
+| just/path_tests_excluded | 33 / 56 / 0 / 11 | 44.0% | 30 / 58 / 0 / 11 | 41.4% |
+| lidx/path_tests_excluded | 15 / 84 / 0 / 1 | 16.0% | 40 / 59 / 0 / 1 | 41.0% |
+| nextest/path_tests_excluded | 23 / 67 / 3 / 7 | 30.0% | 28 / 62 / 3 / 7 | 35.0% |
+| tokei/path_tests_excluded | 6 / 83 / 2 / 9 | 15.0% | 6 / 83 / 2 / 9 | 15.0% |
+| xsv/path_tests_excluded | 15 / 76 / 1 / 8 | 23.0% | 16 / 75 / 1 / 8 | 24.0% |
+
+**Test reach** (`Tests(s)`: Rust `#[test]` functions; lidx: the test layer of `analyze_impact` alone, `enable_direct=false`). A seed with no oracle test and no lidx test is a correct empty answer and is counted in `empty ok`. `not root` = wrong tests that are functions the oracle analysed that are not test roots (helpers); `beyond calls` = tests lidx reaches only through a reference, use or import hop (the test layer follows every edge kind and cannot be restricted), counted, not wrong; `missed Benchmark/Fuzz` = missing pairs whose test is a `Benchmark*` or `Fuzz*` function. `Upstream recall` is the recall of the same cell's upstream set at the same k (the transitive call recall; the test layer should not be lower), `edge recall` the call-edge benchmark's recall for the cell.
+
+| Cell | k | Seeds | Oracle pairs | Wrong | not root | beyond calls | Precision | Recall | Macro precision | Macro recall | Upstream recall | edge recall | missed Benchmark/Fuzz | empty ok | oracle test, lidx none |
+|---|---|---:|---:|---:|---:|---:|---|---|---|---|---|---|---:|---:|---:|
+| ripgrep/tests | 3 | 100 | 3784 | 0 | 0 | 0 | 1.000 [0.991, 1.000] | 0.107 [0.098, 0.117] | 1.000 [1.000, 1.000] | 0.312 [0.188, 0.442] | 0.135 | 0.942 | 0 | 46 | 36 |
+| ripgrep/tests | inf | 100 | 5413 | 0 | 0 | 20 | 1.000 [0.995, 1.000] | 0.148 [0.139, 0.158] | 1.000 [1.000, 1.000] | 0.254 [0.155, 0.355] | 0.172 | 0.942 | 0 | 36 | 44 |
+| fd/tests | 3 | 100 | 448 | 96 | 10 | 3 | 0.822 [0.788, 0.852] | 0.991 [0.977, 0.997] | 0.963 [0.893, 0.999] | 0.956 [0.889, 1.000] | 0.983 | 0.992 | 0 | 68 | 0 |
+| fd/tests | inf | 100 | 538 | 108 | 11 | 3 | 0.832 [0.801, 0.859] | 0.993 [0.981, 0.997] | 0.964 [0.897, 0.999] | 0.956 [0.889, 1.000] | 0.982 | 0.992 | 0 | 68 | 0 |
+
+
+**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); **gap with no in-repo callee left** = a leaf marked `unresolved_calls` where the oracle has no in-scope callee. This is not a claim that lidx is wrong: lidx defines `unresolved_calls` as a resolution gap (pending unresolved references), and an unresolved external name is a true gap. The narrower point it supports is that lidx itself tags most of these names `external` and still reports `unresolved_calls`, so the signal says little. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
+
+| Cell | k | False leaf | Gap, no in-repo callee left | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
+|---|---|---|---|---|---|---|---|---:|
+| ripgrep/path_tests_excluded | 3 | 0/229 = 0.0% [0.0, 1.7] | 83/110 = 75.4% [66.6, 82.5] (2 external-only) | 0.999 [0.992, 1.000] | 0.191 [0.178, 0.205] | 0.996 [0.987, 1.000] | 0.772 [0.666, 0.876] | 0 |
+| ripgrep/path_tests_excluded | inf | 0/416 = 0.0% [0.0, 0.9] | 205/254 = 80.7% [75.4, 85.1] (2 external-only) | 0.994 [0.989, 0.997] | 0.238 [0.228, 0.249] | 0.992 [0.979, 0.999] | 0.698 [0.593, 0.813] | 0 |
+| ripgrep/no_tests | 3 | 0/230 = 0.0% [0.0, 1.6] | 31/43 = 72.1% [57.3, 83.2] (2 external-only) | 0.650 [0.595, 0.702] | 0.577 [0.524, 0.628] | 0.933 [0.837, 1.000] | 0.775 [0.663, 0.885] | 0 |
+| ripgrep/no_tests | inf | 0/281 = 0.0% [0.0, 1.4] | 96/112 = 85.7% [78.0, 91.0] (3 external-only) | 0.760 [0.724, 0.793] | 0.393 [0.365, 0.422] | 0.928 [0.832, 0.998] | 0.744 [0.618, 0.865] | 0 |
+| ripgrep/tests | 3 | 1/249 = 0.4% [0.1, 2.2] | 83/134 = 61.9% [53.5, 69.7] (8 external-only) | 0.991 [0.982, 0.996] | 0.247 [0.232, 0.263] | 0.920 [0.838, 0.979] | 0.720 [0.601, 0.818] | 0 |
+| ripgrep/tests | inf | 1/463 = 0.2% [0.0, 1.2] | 247/323 = 76.5% [71.5, 80.8] (8 external-only) | 0.991 [0.986, 0.995] | 0.240 [0.231, 0.250] | 0.921 [0.837, 0.979] | 0.593 [0.471, 0.704] | 0 |
+| fd/path_tests_excluded | 3 | 0/30 = 0.0% [0.0, 11.3] | 78/80 = 97.5% [91.3, 99.3] (2 external-only) | 0.996 [0.978, 0.999] | 0.947 [0.914, 0.968] | 1.000 [0.999, 1.000] | 0.976 [0.940, 0.999] | 0 |
+| fd/path_tests_excluded | inf | 0/46 = 0.0% [0.0, 7.7] | 123/125 = 98.4% [94.3, 99.6] (6 external-only) | 0.998 [0.986, 1.000] | 0.951 [0.926, 0.968] | 1.000 [1.000, 1.000] | 0.972 [0.936, 0.999] | 0 |
+| fd/no_tests | 3 | 0/33 = 0.0% [0.0, 10.4] | 132/132 = 100.0% [97.2, 100.0] (8 external-only) | 0.995 [0.981, 0.999] | 0.974 [0.953, 0.986] | 0.999 [0.997, 1.000] | 0.987 [0.967, 0.999] | 0 |
+| fd/no_tests | inf | 0/59 = 0.0% [0.0, 6.1] | 232/232 = 100.0% [98.4, 100.0] (18 external-only) | 0.997 [0.990, 0.999] | 0.977 [0.963, 0.985] | 1.000 [0.999, 1.000] | 0.988 [0.971, 0.999] | 0 |
+| fd/tests | 3 | 0/30 = 0.0% [0.0, 11.3] | 116/117 = 99.2% [95.3, 99.9] (26 external-only) | 0.948 [0.925, 0.964] | 0.973 [0.955, 0.984] | 0.958 [0.943, 0.971] | 0.985 [0.963, 1.000] | 0 |
+| fd/tests | inf | 0/47 = 0.0% [0.0, 7.6] | 170/171 = 99.4% [96.8, 99.9] (32 external-only) | 0.962 [0.946, 0.974] | 0.977 [0.963, 0.986] | 0.964 [0.950, 0.976] | 0.986 [0.964, 1.000] | 0 |
+| bat/path_tests_excluded | 3 | 0/65 = 0.0% [0.0, 5.6] | 84/89 = 94.4% [87.5, 97.6] (19 external-only) | 0.871 [0.832, 0.902] | 0.881 [0.843, 0.911] | 0.929 [0.859, 0.983] | 0.909 [0.837, 0.969] | 0 |
+| bat/path_tests_excluded | inf | 0/107 = 0.0% [0.0, 3.5] | 158/167 = 94.6% [90.1, 97.1] (28 external-only) | 0.924 [0.902, 0.942] | 0.689 [0.658, 0.718] | 0.930 [0.860, 0.983] | 0.879 [0.801, 0.944] | 0 |
+| just/path_tests_excluded | 3 | 0/58 = 0.0% [0.0, 6.2] | 145/162 = 89.5% [83.8, 93.3] (34 external-only) | 0.962 [0.941, 0.975] | 0.812 [0.778, 0.841] | 0.940 [0.891, 0.977] | 0.826 [0.742, 0.898] | 0 |
+| just/path_tests_excluded | inf | 0/352 = 0.0% [0.0, 1.1] | 554/628 = 88.2% [85.5, 90.5] (103 external-only) | 0.956 [0.948, 0.963] | 0.840 [0.826, 0.852] | 0.931 [0.883, 0.970] | 0.805 [0.725, 0.882] | 0 |
+| lidx/path_tests_excluded | 3 | 0/40 = 0.0% [0.0, 8.8] | 268/268 = 100.0% [98.6, 100.0] (75 external-only) | 0.957 [0.941, 0.969] | 0.957 [0.941, 0.969] | 0.976 [0.952, 0.995] | 0.967 [0.938, 0.988] | 0 |
+| lidx/path_tests_excluded | inf | 0/120 = 0.0% [0.0, 3.1] | 759/759 = 100.0% [99.5, 100.0] (230 external-only) | 0.976 [0.969, 0.981] | 0.954 [0.942, 0.964] | 0.980 [0.963, 0.994] | 0.963 [0.931, 0.987] | 4 |
+| nextest/path_tests_excluded | 3 | 0/100 = 0.0% [0.0, 3.7] | 90/98 = 91.8% [84.7, 95.8] (4 external-only) | 0.819 [0.779, 0.853] | 0.929 [0.898, 0.951] | 0.920 [0.843, 0.986] | 0.938 [0.882, 0.984] | 0 |
+| nextest/path_tests_excluded | inf | 0/188 = 0.0% [0.0, 2.0] | 218/230 = 94.8% [91.1, 97.0] (17 external-only) | 0.849 [0.823, 0.871] | 0.786 [0.753, 0.816] | 0.912 [0.829, 0.981] | 0.922 [0.865, 0.971] | 1 |
+| tokei/path_tests_excluded | 3 | 0/52 = 0.0% [0.0, 6.9] | 99/108 = 91.7% [84.9, 95.5] (5 external-only) | 0.833 [0.776, 0.878] | 0.854 [0.798, 0.897] | 0.922 [0.841, 0.987] | 0.823 [0.718, 0.922] | 0 |
+| tokei/path_tests_excluded | inf | 0/56 = 0.0% [0.0, 6.4] | 115/126 = 91.3% [85.0, 95.1] (5 external-only) | 0.697 [0.638, 0.751] | 0.858 [0.803, 0.899] | 0.903 [0.812, 0.975] | 0.824 [0.719, 0.923] | 0 |
+| xsv/path_tests_excluded | 3 | 0/67 = 0.0% [0.0, 5.4] | 89/89 = 100.0% [95.9, 100.0] (19 external-only) | 1.000 [0.992, 1.000] | 0.915 [0.888, 0.936] | 1.000 [1.000, 1.000] | 0.937 [0.879, 0.977] | 0 |
+| xsv/path_tests_excluded | inf | 0/83 = 0.0% [0.0, 4.4] | 108/108 = 100.0% [96.6, 100.0] (20 external-only) | 1.000 [0.993, 1.000] | 0.894 [0.868, 0.916] | 1.000 [1.000, 1.000] | 0.933 [0.875, 0.975] | 0 |
+
+Per-seed outliers (worst 10 seeds per cell and k with their missing and extra symbols): [impact-outliers.md](impact-outliers.md). Committed pairs: `results/lists/<cell>.impact_extra.json`, `.impact_missing.json` (up to 10 per seed and k).
+
+### Spot-check of impact pairs
+
+Every pair below was read against the source along the whole chain (seed 451; cells go/bubbletea/no_tests, go/bubbletea/tests, go/chi/no_tests, go/chi/tests, go/cobra/no_tests, go/cobra/tests, go/gitleaks/no_tests, go/gitleaks/tests, go/syft/no_tests, go/syft/tests, go/urfavecli/no_tests, go/urfavecli/tests, go/viper/no_tests, go/viper/tests, rust/bat/path_tests_excluded, rust/fd/no_tests, rust/fd/path_tests_excluded, rust/fd/tests, rust/just/path_tests_excluded, rust/lidx/path_tests_excluded, rust/nextest/path_tests_excluded, rust/ripgrep/no_tests, rust/ripgrep/path_tests_excluded, rust/ripgrep/tests, rust/tokei/path_tests_excluded, rust/xsv/path_tests_excluded, ts/h3, ts/hono, ts/immer, ts/ky, ts/trpc, ts/zod). An *extra* pair is a lidx member the oracle closure lacks, an *missing* pair an oracle caller lidx lacks, both from the committed lists (`results/lists/<cell>.impact_{extra,missing,missing_alt}.json`), k = 3 pairs first, at most 3 per seed, 20 per language and kind (Go has only 18 extra pairs). Verdicts: `lidx_error` (lidx is wrong or misses a real chain), `oracle_artefact` (the compiler closure is not the right judge: the chain is real and the oracle cannot show it, or the oracle's chain is not real), `matching_artefact` (our matching or keying mis-states the pair). A number is quoted in `README.md` only for a language and kind whose artefact rate is under 10%.
+
+| Language | Sample | lidx_error | oracle_artefact | matching_artefact | artefact rate [95% Wilson CI] | quoted |
+|---|---|---:|---:|---:|---|---|
+| go | extra (precision) (n=18) | 15 | 3 | 0 | 3/18 = 16.7% [5.8%, 39.2%] | no |
+| go | missing (recall) (n=20) | 6 | 14 | 0 | 14/20 = 70.0% [48.1%, 85.5%] | no |
+| go | missing, Go closure without function-value edges (recall, diagnostic) (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] | yes |
+| rust | extra (precision) (n=20) | 7 | 13 | 0 | 13/20 = 65.0% [43.3%, 81.9%] | no |
+| rust | missing (recall) (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] | yes |
+| ts | extra (precision) (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] | yes |
+| ts | missing (recall) (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] | yes |
+
+Artefact rates: TypeScript 0/40 (0.0%), Rust 13/40 (32.5%; extra 13/20, 11 of them tokei, whose build.rs-generated `LanguageType` rust-analyzer cannot resolve with build scripts off, and 2 in nextest; missing 0/20), Go 17/58 (29.3%; extra 3/18, missing 14/20 on the full closure, 0/20 on the closure without function-value edges). The wrong extra pairs that were lidx errors: TypeScript 20/20 `bare_name` joins of a standard-library method to an in-repo method of the same name; Go 15/18 interface-dispatch fan-out to implementers that cannot be the receiver's dynamic type; Rust 7/20 `bare_name`. Every sampled missing pair of TypeScript, Rust and the Go diagnostic closure was a real chain lidx lacks (calls through typed members, trait dispatch, function values, an interface hop that costs a depth level).
+
+#### go impact samples
+
+**extra (precision)**
+
+- `68b7aa87` seed `internal/task/relationship_tasks.go:22 ID` k=3, `examples/select_catalogers/main.go:55 getSBOM`: **lidx_error**, `src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge.
+- `dcfd730d` seed `syft/file/location.go:173 NewVirtualLocationFromDirectory` k=3, `syft/internal/fileresolver/unindexed_directory_test.go:604 Test_UnindexedDirectoryResolver_FilesByPath_absoluteRoot`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `9eb77a4d` seed `syft/file/location.go:173 NewVirtualLocationFromDirectory` k=3, `syft/internal/fileresolver/unindexed_directory_test.go:532 Test_UnindexedDirectoryResolver_Basic`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `9f949cb0` seed `flag_ext.go:26 IsVisible` k=3, `category.go:101 newFlagCategoriesFromFlags`: **oracle_artefact**, The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`.
+- `81bcd14a` seed `syft/file/location.go:173 NewVirtualLocationFromDirectory` k=3, `syft/internal/fileresolver/unindexed_directory_test.go:51 Test_UnindexDirectoryResolver_FilesByPath_request_response`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `6ef42224` seed `internal/task/relationship_tasks.go:22 ID` k=3, `examples/create_custom_sbom/main.go:57 getSBOM`: **lidx_error**, `src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge.
+- `4199878b` seed `syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath` k=3, `syft/internal/fileresolver/unindexed_directory_test.go:659 Test_UnindexedDirectoryResolver_FilesByPath`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `859897a6` seed `internal/task/relationship_tasks.go:22 ID` k=3, `syft/create_sbom_config.go:474 Create`: **lidx_error**, `src.ID()` on a `source.Source` fans out to `sourceIdentifierAdapter.ID`, which implements only `artifact.Identifiable` (Source embeds Identifiable and adds FileResolver, Describe, Close), so it can never be the dynamic type of `src`; lidx dispatches at the embedded interface that declares the method, not the receiver's interface. RTA correctly has no edge.
+- `9ba14b55` seed `flag_ext.go:26 IsVisible` k=3, `app.go:165 Setup`: **oracle_artefact**, The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`.
+- `d5c3223f` seed `flag_ext.go:26 IsVisible` k=3, `command.go:382 VisibleFlagCategories`: **oracle_artefact**, The chain is real Go: `cf.IsVisible()` on a `VisibleFlag` can reach `extFlag.IsVisible` (extFlag implements the interface). RTA has no edge because nothing in the non-test program allocates an `extFlag`.
+- `e0b66126` seed `syft/internal/fileresolver/excluding_file_test.go:155 HasPath` k=3, `syft/internal/fileresolver/unindexed_directory_test.go:659 Test_UnindexedDirectoryResolver_FilesByPath`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `75e95c22` seed `syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath` k=inf, `syft/internal/fileresolver/unindexed_directory_test.go:26 Test_UnindexDirectoryResolver_RequestRelativePathWithinSymlink`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `3f20fe30` seed `syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath` k=inf, `syft/internal/fileresolver/unindexed_directory_test.go:778 Test_UnindexedDirectoryResolver_FilesByGlobSingle`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `ee09a241` seed `syft/internal/fileresolver/unindexed_directory.go:99 HasPath` k=inf, `syft/internal/fileresolver/unindexed_directory_test.go:771 Test_UnindexedDirectoryResolver_FilesByGlobRecursive`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `51894fec` seed `syft/internal/fileresolver/excluding_file_test.go:155 HasPath` k=inf, `syft/internal/fileresolver/unindexed_directory_test.go:771 Test_UnindexedDirectoryResolver_FilesByGlobRecursive`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `a8c2d0a7` seed `syft/internal/fileresolver/excluding_file_test.go:155 HasPath` k=inf, `syft/internal/fileresolver/unindexed_directory_test.go:825 Test_UnindexedDirectoryResolverDoesNotIgnoreRelativeSystemPaths`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `772ad6a7` seed `syft/internal/fileresolver/unindexed_directory.go:99 HasPath` k=inf, `syft/internal/fileresolver/unindexed_directory_test.go:763 Test_UnindexedDirectoryResolver_FilesByGlobMultiple`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+- `e4565da7` seed `syft/internal/fileresolver/unindexed_directory.go:99 HasPath` k=inf, `syft/internal/fileresolver/unindexed_directory_test.go:825 Test_UnindexedDirectoryResolverDoesNotIgnoreRelativeSystemPaths`: **lidx_error**, The test's `resolver` comes from `NewFromUnindexedDirectory`, whose static type is `file.WritableResolver` (adds `Write`); only `UnindexedDirectory` implements it, so FiletreeResolver / ContainerImageDeepSquash / the mock can never be the dynamic type. lidx fans the call out to every implementer of the declaring interface `PathResolver`. RTA correctly has no edge.
+
+**missing (recall)**
+
+- `284c30c5` seed `options.go:177 WithoutRenderer` k=3, `screen_test.go:8 TestClearMsg`: **oracle_artefact**, `opt(p)` calls the functional options the caller passed (WithInput, WithOutput); RTA resolves a call of a function value to every address-taken function of the signature, so WithoutRenderer is not reachable from this test.
+- `2a079e99` seed `command.go:1541 Name` k=3, `command.go:478 Usage`: **lidx_error**, `c.UsageFunc()(c)` runs the closure UsageFunc returns, which calls `fn := c.getUsageTemplateFunc(); fn(...)` where fn is `defaultUsageFunc`: the chain is real; lidx does not follow a function value returned by a function.
+- `8460cca2` seed `cmd/syft/internal/options/writer.go:226 Close` k=3, `cmd/syft/internal/commands/cataloger_list_test.go:76 Test_catalogerListReport`: **oracle_artefact**, `tt.wantErr(t, err)` is a field of type assert.ErrorAssertionFunc; the oracle resolves it to an unrelated test that happens to be address-taken. No such flow exists.
+- `4966378a` seed `standard_renderer.go:127 execute` k=3, `tea.go:852 recoverFromGoPanic`: **oracle_artefact**, `p.cancel()` is a context.CancelFunc; RTA resolves the func() call to an unrelated closure in `kill`/`execBatchMsg`. The chain does not exist at run time.
+- `e682ca72` seed `tea_test.go:323 TestTeaContextBatchDeadlock` k=3, `commands_test.go:29 TestSequentially`: **oracle_artefact**, `Sequentially(cmds...)()` calls the closure Sequentially returns; the oracle resolves the Cmd call to a closure inside an unrelated test.
+- `84a6bc71` seed `app.go:391 Command` k=3, `help_test.go:201 Test_helpSubcommand_Action_ErrorIfNoTopic`: **oracle_artefact**, `helpCommand.Action(c)` is a function-valued field; the oracle resolves it to a closure inside TestApp_VisibleCommands, which cannot flow there.
+- `701d594e` seed `middleware/content_charset.go:12 ContentCharset` k=3, `middleware/logger_test.go:38 TestRequestLoggerReadFrom`: **oracle_artefact**, `DefaultLogger(testHandler)` calls a func(http.Handler) http.Handler value built by RequestLogger; ContentCharset has the same signature but is not that value.
+- `60bc832c` seed `syft/internal/fileresolver/filetree_resolver_test.go:700 TestDirectoryResolver_MultipleFilesByPath` k=3, `cmd/syft/internal/options/cache_test.go:76 Test_cacheOptions`: **oracle_artefact**, `test.test(t)` is a table field; the oracle resolves it to a test of another package that cannot be in this table.
+- `22d1c362` seed `zz_generated.flags.go:238 Names` k=3, `docs.go:68 prepareCommands`: **lidx_error**, `prepareFlags` calls `flag.Names()` on a `DocGenerationFlag` obtained by a type assertion; PathFlag implements it. The call is real and lidx records no dispatch from a variable typed by a comma-ok assertion.
+- `aaca4db9` seed `syft/pkg/cataloger/golang/billy_adapter.go:56 Read` k=3, `internal/buffered_seek_reader.go:29 Read`: **lidx_error**, `bs.r.Read(tmp)` is an interface call on an `io.Reader` field; billyFile implements io.Reader and is allocated, so RTA lists it. lidx does not dispatch through the standard-library interface.
+- `d38aea14` seed `commands.go:218 WindowSize` k=3, `tea.go:852 recoverFromGoPanic`: **oracle_artefact**, `p.cancel()` again resolved to an unrelated closure (`execBatchMsg`'s `cmd()`); not a real flow.
+- `df0e3e1d` seed `syft/pkg/cataloger/javascript/cataloger_test.go:141 Test_PackageCataloger_Globs` k=3, `cmd/syft/internal/commands/update.go:92 fetchLatestApplicationVersion`: **oracle_artefact**, `resp.Body.Close()` resolved to an unrelated Close that calls `t.cleanup()`, then to `testWithTimeout`'s `test(t)`: three function-value conflations, not a real chain.
+- `91af5e80` seed `options.go:38 WithInput` k=3, `commands_test.go:84 TestBatch`: **oracle_artefact**, `createFn(...)()` calls a generic function value; the oracle resolves it to TestClearMsg (an unrelated test).
+- `46aaa9c5` seed `middleware/strip.go:73 StripPrefix` k=3, `middleware/logger_test.go:21 TestRequestLogger`: **oracle_artefact**, `DefaultLogger(testHandler)` resolved to StripPrefix, which has the signature but is not the logger.
+- `92679c04` seed `middleware/request_id.go:83 GetReqID` k=3, `middleware/maybe.go:8 Maybe`: **oracle_artefact**, `mw(next)` is the middleware the caller passes to Maybe; the oracle picks RequestLogger, which Maybe never receives in this repository.
+- `97bf4f99` seed `command.go:1907 updateParentsPflags` k=3, `command.go:884 VisitParents`: **lidx_error**, `VisitParents(fn)` calls `fn`, which is the closure literal updateParentsPflags passes it: the closure is part of updateParentsPflags, so VisitParents does execute it. lidx does not link a function-valued argument to the callee that invokes it.
+- `2f189a70` seed `flag_ext.go:30 TakesValue` k=3, `zz_generated.flags.go:687 String`: **lidx_error**, `FlagStringer(f)` is the package variable defaulting to `stringifyFlag`, which calls `df.TakesValue()` on a DocGenerationFlag (a type-assertion variable). Both hops are calls lidx records no edge for (function-valued variable, dispatch through an asserted interface).
+- `708cd662` seed `syft/internal/fileresolver/container_image_model.go:101 FilesByPath` k=3, `cmd/syft/internal/options/writer.go:226 Close`: **oracle_artefact**, `closer.Close()` resolved to an unrelated Close which calls `t.cleanup()` (a function value); no real chain to Catalog.
+- `fdcc7bd3` seed `mux.go:63 ServeHTTP` k=3, `middleware/client_ip.go:121 ClientIPFromXFF`: **lidx_error**, `h.ServeHTTP(w, r)` on an `http.Handler` parameter; `Mux` implements http.Handler and is allocated, so RTA lists it. lidx does not dispatch through the standard-library interface.
+- `370c1854` seed `middleware/strip_test.go:56 TestStripSlashesInRoute` k=3, `middleware/get_head_test.go:11 TestGetHead`: **oracle_artefact**, `fn(subRouter)` calls the closure passed to `Route`; the oracle resolves it to another test's closure.
+
+**missing, Go closure without function-value edges (recall, diagnostic)**
+
+- `f8ab0560` seed `flag_uint64.go:91 Uint64` k=3, `command.go:147 Run`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `67e3dcf4` seed `sources/file.go:90 extractorFragments` k=3, `cmd/git.go:29 runGit`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `5d83e9b2` seed `syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:240 fetchPkgs` k=3, `syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:550 Catalog`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `c895b93c` seed `context.go:11 URLParam` k=3, `middleware/strip_test.go:241 TestStripPrefix`: **lidx_error**, `chi.URLParam(r, "accountID")` is called inside a function literal passed to `r.Get`; lidx records no edge for it (no CALLS row at that line).
+- `6e5a54fc` seed `zz_generated.flags.go:536 IsSet` k=3, `altsrc/json_command_test.go:285 TestCommandJSONFileFlagHasDefaultGlobalEnvJSONSetGlobalEnvWinsNested`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `ae99f1a8` seed `syft/pkg/cataloger/binary/classifier_cataloger_test.go:3257 RelativeFileByPath` k=3, `syft/pkg/cataloger/gentoo/license_test.go:17 Test_extractLicenses`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `e593a976` seed `syft/internal/fileresolver/container_image_deep_squash.go:44 HasPath` k=3, `syft/file/cataloger/executable/cataloger.go:55 CatalogCtx`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `254c29d7` seed `internal/task/relationship_tasks.go:22 ID` k=3, `syft/create_sbom_config.go:408 scopeTasks`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `9282117e` seed `syft/source/filesource/file_source.go:136 FileResolver` k=3, `cmd/syft/internal/test/integration/utils_test.go:19 catalogFixtureImage`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `8eb1180b` seed `standard_renderer.go:103 stop` k=3, `exec_test.go:50 TestTeaExec`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `6cf42b9c` seed `internal/task/relationship_tasks.go:22 ID` k=3, `internal/relationship/index.go:157 Coordinates`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `c5933fc4` seed `zz_generated.flags.go:35 IsSet` k=3, `altsrc/json_command_test.go:187 TestCommandJSONFileTestDefaultValueFileWins`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `e22b4cf2` seed `syft/source/filesource/file_source.go:136 FileResolver` k=3, `syft/pkg/cataloger/dotnet/cataloger_test.go:1384 TestParseDotnetDeps`: **lidx_error**, The first hop `pkgtest.TestCataloger(t, ...)` has no lidx edge, and the later `s.FileResolver` call is an interface dispatch that costs an extra depth level, so the member is out of reach at max_depth 3.
+- `c9f1605e` seed `syft/source/stereoscopesource/image_source.go:45 ID` k=3, `cmd/syft/internal/test/integration/files_test.go:36 TestFileCataloging_AllFiles`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `0b356718` seed `altsrc/flag.go:343 ApplyInputSourceValue` k=3, `altsrc/json_command_test.go:88 TestCommandJSONFileTestGlobalEnvVarWinsNested`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `371d3b52` seed `internal/encoding/json/codec.go:15 Decode` k=3, `viper.go:318 WatchConfig`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `3e1d90f6` seed `syft/source/stereoscopesource/image_source.go:45 ID` k=3, `cmd/syft/internal/commands/scan.go:173 runScan`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `a3c867dd` seed `config/allowlist.go:117 CommitAllowed` k=3, `detect/detect_test.go:1529 TestDetectWithArchives`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `002f84d7` seed `cmd/syft/internal/options/writer.go:226 Close` k=3, `cmd/syft/internal/commands/packages.go:11 Packages`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+- `5a925031` seed `zz_generated.flags.go:437 Names` k=3, `altsrc/json_command_test.go:251 TestCommandJSONFileFlagHasDefaultGlobalEnvJSONSetGlobalEnvWins`: **lidx_error**, The chain is real: one hop is a call through an interface (RTA names the implementation). lidx reaches the member only at depth 4 because the interface method counts as an extra hop (seed <- interface method <- caller ...), so analyze_impact at max_depth 3 misses a caller that is 3 calls away.
+
+#### rust impact samples
+
+**extra (precision)**
+
+- `cc3f3702` seed `src/controller.rs:38 run` k=3, `src/bin/bat/main.rs:281 invoke_bugreport`: **lidx_error**, `report.print::<Markdown>()` is the bugreport crate's Report::print; the bare_name tier resolves it to `PrettyPrinter::print`.
+- `fc7ca0b2` seed `src/language/language_type.rs:124 parse_lines` k=3, `src/language/language_type.rs:201 parse_jupyter`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `f366da69` seed `src/language/syntax.rs:205 perform_multi_line_analysis` k=3, `src/language/language_type.rs:28 parse`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `3c992ed4` seed `src/language/syntax.rs:127 new` k=3, `src/language/syntax.rs:345 parse_context`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `13e24c82` seed `src/dir_entry.rs:42 path` k=3, `tests/tests.rs:49 get_test_env_with_abs_path`: **lidx_error**, `create_working_directory` calls std/tempfile `.path()`; bare_name resolves it to `DirEntry::path`.
+- `c339628b` seed `src/language/syntax.rs:285 line_is_comment` k=3, `src/language/language_type.rs:56 parse_from_slice`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `14f81439` seed `src/list.rs:9 or` k=3, `src/parser.rs:1254 parse_recipe`: **lidx_error**, `max.or(min)` is Option::or; bare_name resolves it to `List::or`.
+- `bbf5fd1d` seed `src/language/syntax.rs:590 parse_end_of_quote` k=3, `src/language/language_type.rs:56 parse_from_slice`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `4df0909c` seed `src/language/syntax.rs:645 parse_end_of_multi_line` k=3, `src/language/language_type.rs:56 parse_from_slice`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `6d74d7c5` seed `src/language/syntax.rs:542 parse_quote` k=3, `src/language/language_type.rs:56 parse_from_slice`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `4b968229` seed `nextest-runner/src/errors.rs:78 provided_by_tool` k=3, `cargo-nextest/src/main.rs:8 main`: **oracle_artefact**, `error.display_to_stderr(...)` on the `ExpectedError` returned by `opts.exec(...)` is a real call in `main`; the SCIP oracle has no edge for it (no resolved call occurrence from the binary's main).
+- `cadd641b` seed `src/list.rs:9 or` k=3, `src/config.rs:458 test`: **lidx_error**, `.or(arguments.subcommand.usage.as_deref())` is Option::or; bare_name resolves it to `List::or`.
+- `8426d309` seed `src/language/language_type.rs:56 parse_from_slice` k=3, `src/language/language_type.rs:201 parse_jupyter`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `7532048c` seed `src/list.rs:9 or` k=3, `src/config.rs:1329 default_config_matches_parsed_config`: **lidx_error**, `.or(arguments.subcommand.usage.as_deref())` is Option::or; bare_name resolves it to `List::or`.
+- `2c0051a9` seed `src/language/language_type.rs:56 parse_from_slice` k=3, `src/language/syntax.rs:205 perform_multi_line_analysis`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `349a01c4` seed `crates/ignore/src/walk.rs:2143 mkdirp` k=3, `crates/ignore/src/walk.rs:1095 skip_entry`: **lidx_error**, `filter(ent)` in `Walk::skip_entry` calls a local closure/variable named filter; bare_name resolves it to the test function `walk::tests::filter`.
+- `9061cf08` seed `nextest-runner/src/errors.rs:72 kind` k=3, `integration-tests/test-helpers/cargo-nextest-dup.rs:11 main`: **oracle_artefact**, `error.process_exit_code()` is a real call in the binary's `main` and `process_exit_code` calls `err.kind()`; the SCIP oracle has no edge from `main`.
+- `530b808a` seed `src/language/mod.rs:148 sort_by` k=3, `src/main.rs:14 main`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+- `45a576fe` seed `src/pretty_printer.rs:283 print` k=3, `src/bin/bat/main.rs:339 run`: **lidx_error**, `report.print::<Markdown>()` is the bugreport crate's Report::print; bare_name resolves it to `PrettyPrinter::print`.
+- `20e2d964` seed `src/language/language_type.rs:124 parse_lines` k=3, `src/language/syntax.rs:345 parse_context`: **oracle_artefact**, The chain is real source (`self.parse_lines(...)`, `self.parse_from_slice(...)`, `language.sort_by(...)` ...): tokei's LanguageType is generated by build.rs, which the sandbox does not run, so rust-analyzer cannot resolve calls on it and the oracle has no edge; lidx's edges are right.
+
+**missing (recall)**
+
+- `71ffb583` seed `src/printer.rs:92 print_footer` k=3, `src/controller.rs:199 print_file`: **lidx_error**, `printer.print_footer(writer, input)` is a call on a trait object; lidx records no dispatch for Rust traits.
+- `2541e667` seed `crates/matcher/src/lib.rs:94 start` k=3, `crates/searcher/src/searcher/core.rs:276 after_context_by_line`: **lidx_error**, `range.start()` with `type Range = Match` is `Match::start`; lidx does not resolve through the type alias.
+- `d285bb72` seed `crates/core/flags/defs.rs:7415 [Flag]name_long` k=3, `crates/core/flags/complete/fish.rs:13 generate`: **lidx_error**, `flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust.
+- `f295180b` seed `src/indexer/csharp.rs:416 [LanguageExtractor]extract` k=3, `src/indexer/mod.rs:541 reindex_locked`: **lidx_error**, `.extract(source, &module_name)` is a call on a `dyn LanguageExtractor`; lidx has no trait dispatch for Rust.
+- `65ea4096` seed `crates/core/flags/defs.rs:820 [Flag]name_long` k=3, `crates/core/flags/defs.rs:561 test_block_buffered`: **lidx_error**, `flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust.
+- `ee1f272c` seed `src/theme.rs:312 [ColorSchemeDetector]detect` k=3, `src/theme.rs:328 not_called_for_dark_or_light`: **lidx_error**, `detector.detect()` is a call on a `&dyn ColorSchemeDetector`; lidx has no trait dispatch for Rust.
+- `4b374a5e` seed `crates/core/flags/defs.rs:347 [Flag]name_short` k=3, `crates/core/flags/defs.rs:561 test_block_buffered`: **lidx_error**, `flag.name_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust.
+- `bd407c4c` seed `crates/core/flags/defs.rs:820 [Flag]name_long` k=3, `crates/core/flags/defs.rs:619 test_byte_offset`: **lidx_error**, `flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust.
+- `bcc8ccbd` seed `crates/core/flags/defs.rs:4336 [Flag]doc_short` k=3, `crates/core/main.rs:383 special`: **lidx_error**, `flag.doc_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust.
+- `a1447788` seed `src/input.rs:156 from_reader` k=3, `src/pretty_printer.rs:101 input_from_bytes`: **lidx_error**, `Input::from_reader(reader)` in pretty_printer.rs is PrettyPrinter's own wrapper `from_reader`; lidx has no edge to it.
+- `1ec3247b` seed `src/indexer/python.rs:3260 [DeclarationIndex]declarations` k=3, `src/indexer/python.rs:1144 deferred_class`: **lidx_error**, `index.declarations(...)` is a call on `&dyn DeclarationIndex`; lidx has no trait dispatch for Rust.
+- `4df4a773` seed `crates/core/flags/defs.rs:7415 [Flag]name_long` k=3, `crates/core/flags/complete/bash.rs:63 generate`: **lidx_error**, `flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust.
+- `374cc69b` seed `crates/core/flags/defs.rs:3439 [Flag]is_switch` k=3, `crates/core/flags/defs.rs:493 test_binary`: **lidx_error**, `flag.is_switch()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust.
+- `1cc91dd4` seed `crates/core/flags/defs.rs:5773 [Flag]doc_variable` k=3, `crates/core/flags/doc/man.rs:46 generate_flag`: **lidx_error**, `flag.doc_variable()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust.
+- `c7af339f` seed `crates/core/flags/defs.rs:4740 [Flag]is_switch` k=3, `crates/core/main.rs:77 run`: **lidx_error**, `flag.is_switch()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust.
+- `53041a5f` seed `crates/core/flags/defs.rs:6777 [Flag]name_long` k=3, `crates/core/flags/defs.rs:493 test_binary`: **lidx_error**, `flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust.
+- `7851921a` seed `src/name.rs:32 [`Keyed<'src>`]key` k=3, `src/recipe_resolver.rs:16 resolve_recipes`: **lidx_error**, `value.key()` is a call on a generic `T: Keyed`; lidx has no trait dispatch for Rust.
+- `f79d5c79` seed `crates/core/flags/mod.rs:89 name_long` k=3, `crates/core/flags/parse.rs:176 new`: **lidx_error**, `flag.name_long()` is a call on a `&dyn Flag` (impl in defs.rs); lidx has no trait dispatch for Rust.
+- `2a3ae478` seed `crates/core/flags/defs.rs:7099 [Flag]doc_variable` k=3, `crates/core/main.rs:383 special`: **lidx_error**, `flag.doc_variable()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust.
+- `345cd32c` seed `crates/core/flags/defs.rs:6637 [Flag]name_short` k=3, `crates/core/flags/defs.rs:493 test_binary`: **lidx_error**, `flag.name_short()` is a call on a `&dyn Flag`; lidx has no trait dispatch for Rust.
+
+#### ts impact samples
+
+**extra (precision)**
+
+- `92b7efc8` seed `packages/server/src/vendor/unpromise/unpromise.ts:199 catch` k=3, `packages/server/src/unstable-core-do-not-import/stream/jsonl.ts:216 encodeAsync`: **lidx_error**, `promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`.
+- `f0cf0dc8` seed `packages/server/src/vendor/unpromise/unpromise.ts:199 catch` k=3, `packages/server/src/unstable-core-do-not-import/stream/jsonl.ts:234 encode`: **lidx_error**, `promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`.
+- `997a811d` seed `src/jsx/children.ts:3 toArray` k=3, `src/middleware/combine/index.ts:141 except`: **lidx_error**, `middleware.map(...)` is Array.prototype.map; the bare_name tier resolves it to `Children.map`.
+- `339dc462` seed `packages/server/src/vendor/unpromise/unpromise.ts:199 catch` k=3, `packages/server/src/unstable-core-do-not-import/stream/jsonl.ts:155 encodePromise`: **lidx_error**, `promise.catch((cause) => ...)` is the native Promise.catch (`promise` is a Promise); the bare_name tier resolves it to the vendored `Unpromise.catch`.
+- `2d74b4b9` seed `packages/zod/src/v3/types.ts:170 _parse` k=3, `packages/zod/src/v4/classic/schemas.ts:215 ZodType`: **lidx_error**, v4 `ZodType` has no call to the v3 `ZodType.safeParse`; the bare_name tier joins `inst.safeParse` (a property assignment in v4) to the v3 class method of the same name.
+- `d62785ce` seed `packages/zod/src/v3/helpers/parseUtil.ts:174 isValid` k=3, `packages/zod/src/v4/classic/schemas.ts:215 ZodType`: **lidx_error**, v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4.
+- `623b13ef` seed `packages/zod/src/v4/core/registries.ts:60 get` k=3, `packages/zod/src/v4/classic/schemas.ts:1063 ZodNumber`: **lidx_error**, `_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`.
+- `da0f8d80` seed `packages/zod/src/v3/types.ts:229 safeParse` k=3, `packages/zod/src/v4/classic/schemas.ts:215 ZodType`: **lidx_error**, v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4.
+- `51918517` seed `src/jsx/context.ts:69 getCurrentStore` k=3, `src/client/client.ts:133 hc`: **lidx_error**, `proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`.
+- `af85142c` seed `src/jsx/children.ts:3 toArray` k=3, `src/middleware/combine/index.ts:99 every`: **lidx_error**, `middleware.map(...)` is Array.prototype.map; the bare_name tier resolves it to `Children.map`.
+- `ce233445` seed `packages/server/src/vendor/unpromise/unpromise.ts:244 getSubscribablePromise` k=3, `packages/server/src/unstable-core-do-not-import/stream/utils/mergeAsyncIterables.ts:100 initIterable`: **lidx_error**, `flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name.
+- `4338dbce` seed `packages/zod/src/v3/helpers/util.ts:175 getParsedType` k=3, `packages/zod/src/v4/classic/schemas.ts:215 ZodType`: **lidx_error**, v4 `ZodType` does not call the v3 `safeParse`; bare_name joins the same-named method across zod v3 and v4.
+- `7c54a8cd` seed `packages/zod/src/v4/core/registries.ts:60 get` k=3, `packages/zod/src/v4/classic/schemas.ts:33 _installLazyMethods`: **lidx_error**, `_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`.
+- `7e026b82` seed `src/jsx/context.ts:69 getCurrentStore` k=3, `src/middleware/cors/index.ts:63 cors`: **lidx_error**, `proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`.
+- `04990b23` seed `packages/zod/src/v4/core/registries.ts:60 get` k=3, `packages/zod/src/v4/classic/schemas.ts:395 _ZodString`: **lidx_error**, `_installedGroups.get(proto)` is a WeakMap.get; the bare_name tier resolves it to `$ZodRegistry.get`.
+- `f8983d0b` seed `src/context.ts:546 set` k=3, `src/middleware/cors/index.ts:63 cors`: **lidx_error**, `c.res.headers.set(key, value)` is Headers.set; bare_name resolves it to `Context.set`.
+- `f70ebd3a` seed `src/context.ts:546 set` k=3, `src/middleware/cors/index.ts:97 set`: **lidx_error**, `c.res.headers.set(key, value)` is Headers.set; bare_name resolves it to `Context.set`.
+- `8bc58a61` seed `packages/server/src/vendor/unpromise/unpromise.ts:244 getSubscribablePromise` k=inf, `packages/server/src/adapters/fastify/fastifyRequestHandler.ts:43 fastifyRequestHandler`: **lidx_error**, `flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name.
+- `8d4da084` seed `packages/server/src/vendor/unpromise/unpromise.ts:244 getSubscribablePromise` k=inf, `packages/server/src/adapters/standalone.ts:94 createHTTPHandler`: **lidx_error**, `flushSignal.resolve()` is the resolve of a `createDeferred()` object, not `Unpromise.resolve`; bare_name resolves it by name.
+- `38c31994` seed `src/jsx/context.ts:69 getCurrentStore` k=inf, `src/helper/testing/index.ts:16 testClient`: **lidx_error**, `proxyCallback.toString()` / `opts.maxAge.toString()` are Function/Number toString; bare_name resolves them to `JSXNode.toString`.
+
+**missing (recall)**
+
+- `d82bc390` seed `packages/zod/src/v3/helpers/util.ts:175 getParsedType` k=3, `packages/zod/src/v3/types.ts:2321 min`: **lidx_error**, `new ZodArray(...)` reaches the inherited ZodType constructor, whose `validate: (data) => this["~validate"](data)` calls getParsedType; lidx links neither the inherited constructor nor the element-access call.
+- `0600e3a8` seed `packages/zod/src/v3/types.ts:1455 create` k=3, `packages/zod/src/v3/benchmarks/object.ts:13 long`: **lidx_error**, `z.number()` is `ZodNumber.create` re-exported under another name; lidx does not follow the alias.
+- `cf7657e8` seed `packages/zod/src/v4/core/util.ts:259 defineLazy` k=3, `packages/zod/src/v4/mini/schemas.ts:882 looseObject`: **lidx_error**, `new ZodMiniObject({...})` (a `core.$constructor` const) is recorded as USES, not CALLS, so the chain to the constructor body (`util.defineLazy`) is missing from the call graph.
+- `4d328717` seed `packages/zod/src/v3/types.ts:172 _getType` k=3, `packages/zod/src/v3/types.ts:2241 _parse`: **lidx_error**, `def.type._parseAsync(...)` and `this._parse(input)` are calls on typed members; lidx has no edge for the first and no dispatch for the second, so ZodArray._parse never reaches ZodString._parse's `_getType`.
+- `0b4209bf` seed `src/utils/internal/dispose.ts:18 observe` k=3, `src/h3.ts:73 "~request"`: **lidx_error**, `((event as any)[kEventDispose] as DisposeState | undefined)?.observe(...)` is a call on a type-asserted receiver; lidx records no edge.
+- `b010a093` seed `src/jsx/context.ts:69 getCurrentStore` k=3, `src/jsx/streaming.ts:30 StreamingContext`: **lidx_error**, the call `createContext(...)` is in the initialiser of the const `StreamingContext`; lidx attributes module-level initialiser calls to the module symbol, which impact answers drop.
+- `0b8a4621` seed `packages/zod/src/v3/types.ts:2376 shape` k=3, `packages/zod/src/v3/types.ts:4748 _parse`: **lidx_error**, `this._def.type._parse(...)` and `this._def.shape()` are calls through typed fields (`_def.type`, a function-valued `shape`); lidx records no edge for either.
+- `fa799dbd` seed `packages/zod/src/v3/types.ts:3979 _parse` k=3, `packages/zod/src/v3/types.ts:3120 _parse`: **lidx_error**, `option._parseAsync(...)` then `this._parse(input)`: calls on typed members and a dispatch to the override; lidx records neither.
+- `01ba2fd0` seed `packages/server/src/unstable-core-do-not-import/http/types.ts:71 result` k=3, `packages/server/src/adapters/express.ts:25 createExpressMiddleware`: **lidx_error**, `call.result()` calls a function-typed member of an interface; lidx records no edge.
+- `513695df` seed `packages/zod/src/v4/classic/schemas.ts:1387 max` k=3, `packages/zod/src/v4/classic/from-json-schema.ts:533 convertSchema`: **lidx_error**, `arraySchema.max(schema.maxItems)` is a call on a `let` variable holding a ZodArray; lidx does not resolve the receiver.
+- `7cac828e` seed `packages/zod/src/v3/helpers/util.ts:175 getParsedType` k=3, `packages/zod/src/v3/types.ts:2335 length`: **lidx_error**, `new ZodArray(...)` reaches the inherited constructor whose arrow calls `this["~validate"]`; lidx links neither.
+- `6390606b` seed `packages/zod/src/v4/core/core.ts:150 config` k=3, `packages/zod/src/v4/classic/parse.ts:66 safeDecode`: **lidx_error**, `const safeDecode = core._safeDecode(ZodRealError)` is a module-level initialiser call returning the function that later calls `_safeParse(...)` and `core.config()`; lidx attributes the initialiser to the module.
+- `7673bede` seed `packages/zod/src/v3/helpers/parseUtil.ts:72 addIssueToContext` k=3, `packages/zod/src/v3/types.ts:4569 _parse`: **lidx_error**, `this._def.innerType._parse({...})` is a call through a typed field to an override; lidx records no edge.
+- `9357db44` seed `packages/zod/src/v4/core/to-json-schema.ts:139 process` k=3, `packages/zod/src/v4/classic/schemas.ts:2220 _default`: **lidx_error**, `new ZodDefault({...})` (a `core.$constructor` const) is recorded as USES, not CALLS.
+- `01b33a71` seed `source/index.ts:33 createInstance` k=3, `source/index.ts:58 ky`: **lidx_error**, `const ky = createInstance();` is a module-level initialiser call; lidx attributes it to the module symbol.
+- `1d37e1bc` seed `src/rules/cache.ts:257 variableHeaderNames` k=3, `src/rules/cache.ts:353 cache`: **lidx_error**, `export const cache = createOcacheRuleHandler();` is a module-level initialiser call; lidx attributes it to the module symbol.
+- `ad772c0a` seed `src/utils/internal/dispose.ts:18 observe` k=3, `src/rules/cache.ts:353 cache`: **lidx_error**, module-level initialiser call (`export const cache = createOcacheRuleHandler()`) and a `?.observe(...)` call on a type-asserted receiver; lidx records neither.
+- `221e74fe` seed `packages/zod/src/v4/core/to-json-schema.ts:139 process` k=3, `packages/zod/src/v4/classic/schemas.ts:1716 intersection`: **lidx_error**, `new ZodIntersection({...})` (a `core.$constructor` const) is recorded as USES, not CALLS.
+- `bfafa216` seed `src/core/immerClass.ts:201 shouldUseStrictIteration` k=3, `src/core/current.ts:21 currentImpl`: **lidx_error**, `state.scope_.immer_.shouldUseStrictIteration()` is a call along a typed property chain; lidx records no edge.
+- `fcfd1162` seed `src/router/smart-router/router.ts:21 match` k=3, `src/adapter/aws-lambda/handler.ts:138 streamHandle`: **lidx_error**, `this.router.match(method, path)` is a call on a field typed by the `Router` interface; SmartRouter is the default router, so the chain is real, and lidx has no dispatch for a field-typed receiver.
+

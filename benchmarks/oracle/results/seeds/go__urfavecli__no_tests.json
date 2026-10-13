@@ -1,0 +1,742 @@
+{
+ "cell": "go/urfavecli/no_tests",
+ "repo": "urfavecli",
+ "repo_sha": "19b951ab78929023a9a670722b26ffb1d67c733a",
+ "rng_seed": 2026,
+ "per_cell": 100,
+ "strata": {
+  "0": [
+   0,
+   0
+  ],
+  "1-3": [
+   1,
+   3
+  ],
+  "4-10": [
+   4,
+   10
+  ],
+  ">10": [
+   11,
+   null
+  ]
+ },
+ "draw": {
+  "pool": 300,
+  "stratum_pool": {
+   "0": 56,
+   "1-3": 215,
+   "4-10": 19,
+   ">10": 10
+  },
+  "stratum_drawn": {
+   "0": 35,
+   "1-3": 36,
+   "4-10": 19,
+   ">10": 10
+  }
+ },
+ "seeds": [
+  {
+   "file": "app.go",
+   "line": 138,
+   "name": "compileTime",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "app.go",
+   "line": 300,
+   "name": "useShortOptionHandling",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "app.go",
+   "line": 306,
+   "name": "Run",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "app.go",
+   "line": 313,
+   "name": "RunContext",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "app.go",
+   "line": 403,
+   "name": "VisibleCategories",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "app.go",
+   "line": 430,
+   "name": "VisibleFlagCategories",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "app.go",
+   "line": 442,
+   "name": "appendFlag",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "app.go",
+   "line": 454,
+   "name": "handleExitCoder",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "app.go",
+   "line": 500,
+   "name": "String",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "args.go",
+   "line": 50,
+   "name": "Slice",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "category.go",
+   "line": 15,
+   "name": "newCommandCategories",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "category.go",
+   "line": 28,
+   "name": "Swap",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "category.go",
+   "line": 164,
+   "name": "Name",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "category.go",
+   "line": 168,
+   "name": "Flags",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command.go",
+   "line": 96,
+   "name": "FullName",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command.go",
+   "line": 103,
+   "name": "Command",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 339,
+   "name": "Names",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "command.go",
+   "line": 355,
+   "name": "VisibleCategories",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "command.go",
+   "line": 382,
+   "name": "VisibleFlagCategories",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 49,
+   "name": "Set",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 148,
+   "name": "Count",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 166,
+   "name": "Args",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "context.go",
+   "line": 172,
+   "name": "NArg",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "context.go",
+   "line": 204,
+   "name": "lookupFlagSet",
+   "indegree": 21,
+   "stratum": ">10"
+  },
+  {
+   "file": "context.go",
+   "line": 246,
+   "name": "onInvalidFlag",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "docs.go",
+   "line": 19,
+   "name": "ToMarkdown",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "docs.go",
+   "line": 53,
+   "name": "writeDocTemplate",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "docs.go",
+   "line": 105,
+   "name": "prepareArgsWithValues",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "docs.go",
+   "line": 109,
+   "name": "prepareArgsSynopsis",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "errors.go",
+   "line": 32,
+   "name": "Error",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "errors.go",
+   "line": 42,
+   "name": "Errors",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "errors.go",
+   "line": 59,
+   "name": "Error",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "errors.go",
+   "line": 103,
+   "name": "Exit",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "errors.go",
+   "line": 121,
+   "name": "Error",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "fish.go",
+   "line": 13,
+   "name": "ToFishCompletion",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag.go",
+   "line": 264,
+   "name": "prefixedNames",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag.go",
+   "line": 303,
+   "name": "FlagNames",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag.go",
+   "line": 329,
+   "name": "stringifyFlag",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag.go",
+   "line": 378,
+   "name": "flagFromEnvOrFile",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 30,
+   "name": "Set",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 45,
+   "name": "String",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 52,
+   "name": "IsBoolFlag",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 54,
+   "name": "Count",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 62,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 155,
+   "name": "Get",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_bool.go",
+   "line": 161,
+   "name": "Bool",
+   "indegree": 8,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_duration.go",
+   "line": 91,
+   "name": "Duration",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_ext.go",
+   "line": 14,
+   "name": "Names",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_ext.go",
+   "line": 26,
+   "name": "IsVisible",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_ext.go",
+   "line": 30,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_float64_slice.go",
+   "line": 79,
+   "name": "Value",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_float64_slice.go",
+   "line": 201,
+   "name": "Float64Slice",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_float64_slice.go",
+   "line": 208,
+   "name": "lookupFloat64Slice",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_generic.go",
+   "line": 119,
+   "name": "Generic",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_int.go",
+   "line": 92,
+   "name": "Int",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_int64.go",
+   "line": 91,
+   "name": "Int64",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_int64_slice.go",
+   "line": 200,
+   "name": "Int64Slice",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_int_slice.go",
+   "line": 91,
+   "name": "Value",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_int_slice.go",
+   "line": 211,
+   "name": "IntSlice",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_int_slice.go",
+   "line": 218,
+   "name": "lookupIntSlice",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_path.go",
+   "line": 11,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_path.go",
+   "line": 47,
+   "name": "GetEnvVars",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_path.go",
+   "line": 79,
+   "name": "RunAction",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_path.go",
+   "line": 89,
+   "name": "Path",
+   "indegree": 13,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_string.go",
+   "line": 9,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_string.go",
+   "line": 14,
+   "name": "GetUsage",
+   "indegree": 3,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_string.go",
+   "line": 30,
+   "name": "GetDefaultText",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_string.go",
+   "line": 88,
+   "name": "String",
+   "indegree": 5,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 63,
+   "name": "String",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 90,
+   "name": "TakesValue",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 106,
+   "name": "GetValue",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 137,
+   "name": "Apply",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 186,
+   "name": "Get",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_string_slice.go",
+   "line": 191,
+   "name": "RunAction",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_timestamp.go",
+   "line": 199,
+   "name": "lookupTimestamp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_uint64.go",
+   "line": 91,
+   "name": "Uint64",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_uint64_slice.go",
+   "line": 204,
+   "name": "Uint64Slice",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "flag_uint_slice.go",
+   "line": 95,
+   "name": "Value",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "flag_uint_slice.go",
+   "line": 222,
+   "name": "lookupUintSlice",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "help.go",
+   "line": 122,
+   "name": "ShowAppHelp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "help.go",
+   "line": 210,
+   "name": "DefaultCompleteWithFlags",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "help.go",
+   "line": 299,
+   "name": "ShowSubcommandHelp",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "help.go",
+   "line": 423,
+   "name": "checkHelp",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "help.go",
+   "line": 479,
+   "name": "subtract",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "help.go",
+   "line": 488,
+   "name": "nindent",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "help.go",
+   "line": 516,
+   "name": "wrapLine",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "help.go",
+   "line": 560,
+   "name": "offsetCommands",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "internal/build/build.go",
+   "line": 43,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "internal/build/build.go",
+   "line": 170,
+   "name": "sh",
+   "indegree": 4,
+   "stratum": "4-10"
+  },
+  {
+   "file": "internal/build/build.go",
+   "line": 180,
+   "name": "topRunAction",
+   "indegree": 2,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/build/build.go",
+   "line": 190,
+   "name": "runCmd",
+   "indegree": 11,
+   "stratum": ">10"
+  },
+  {
+   "file": "internal/build/build.go",
+   "line": 599,
+   "name": "EnsureMkdocsActionFunc",
+   "indegree": 1,
+   "stratum": "1-3"
+  },
+  {
+   "file": "internal/example-cli/example-cli.go",
+   "line": 9,
+   "name": "main",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "sliceflag.go",
+   "line": 220,
+   "name": "unwrapFlagValue",
+   "indegree": 6,
+   "stratum": "4-10"
+  },
+  {
+   "file": "sliceflag.go",
+   "line": 277,
+   "name": "SetValue",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "sliceflag.go",
+   "line": 281,
+   "name": "SetDestination",
+   "indegree": 0,
+   "stratum": "0"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 238,
+   "name": "Names",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 289,
+   "name": "Names",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 491,
+   "name": "Names",
+   "indegree": 14,
+   "stratum": ">10"
+  },
+  {
+   "file": "zz_generated.flags.go",
+   "line": 697,
+   "name": "Names",
+   "indegree": 14,
+   "stratum": ">10"
+  }
+ ]
+}
