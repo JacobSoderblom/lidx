@@ -145,6 +145,30 @@ def section(meta, cells, results_dir):
             b = pooled([cells[cid]["dead"]["columns"][col]["no_exported"] for cid in lid])
             w("| %s | %s | %d | %d | %s | %s | %s | %s |" % (name, COL_NAMES[col], a["dead"], a["graded"], pr(a), rec(lang, a), pr(b), rec(lang, b)))
     w("")
+    # ---- confidence tiers and the public_api group -----------------------------------------------------
+    w("### Confidence tiers and the `public_api` group")
+    w("")
+    w("`dead_symbols` tags each claim `high` / `medium` (see CONTEXT.md, \"Dead-symbol confidence tier\") and, by default, leaves public-API declarations "
+      "out, counting them in `counts.public_api`. Precision per tier, pooled per language and column (tp/graded); `untiered` is a binary that "
+      "predates the tiers. The last column is the size of the opt-in `public_api` group and how many of its declarations the oracle calls dead.")
+    w("")
+    w("| Language | Column | high | medium | low | untiered | public_api group | of them oracle-dead |")
+    w("|---|---|---|---|---|---|---|---|")
+    for lang, name in LANGS:
+        lid = [cid for cid in ids if cells[cid]["lang"] == lang]
+        for col in match_dead.COLUMNS:
+            if not lid:
+                continue
+            tiers = {}
+            for t in ("high", "medium", "low", "untiered"):
+                parts = [cells[cid]["dead"]["columns"][col].get("by_tier", {}).get(t) for cid in lid]
+                parts = [x for x in parts if x]
+                tp, g = sum(x["tp"] for x in parts), sum(x["graded"] for x in parts)
+                tiers[t] = "-" if not g else "%s (%d/%d)" % (pct(match_dead.ratio(tp, g)), tp, g)
+            group = sum(cells[cid]["dead"].get("public_api_group", 0) for cid in lid)
+            withheld = sum(len(cells[cid]["dead"]["columns"][col].get("public_api_oracle_dead", [])) for cid in lid)
+            w("| %s | %s | %s | %s | %s | %s | %d | %d |" % (name, COL_NAMES[col], tiers["high"], tiers["medium"], tiers["low"], tiers["untiered"], group, withheld))
+    w("")
     # ---- per kind ------------------------------------------------------------------------------------
     w("### Per symbol kind")
     w("")

@@ -1,9 +1,11 @@
 use super::overview::module_prefix;
-use super::resolver::qualname_trailing_name;
+use super::public_api::{Candidate, Exposure, PublicApi};
+use super::resolver::{ImplicitRootFacts, profile_for, qualname_trailing_name};
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::edge_views;
 use crate::model::{
-    DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling, UnresolvedSample,
+    DeadConfidence, DeadSymbol, DeadSymbols, DuplicateGroup, Edge, Symbol, SymbolComplexity,
+    SymbolCoupling, UnresolvedSample,
 };
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -616,7 +618,9 @@ impl Db {
         languages: Option<&[String]>,
         paths: Option<&[String]>,
         graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
+        repo_root: &Path,
+        include_public_api: bool,
+    ) -> Result<DeadSymbols> {
         // Issue #122: impl methods called only through their interface are live.
         let dispatch_from = super::graph_query::dispatch_pairs_from(
             graph_version,
@@ -636,7 +640,8 @@ impl Db {
         let entrypoint = edge_views::sql_list(edge_views::ENTRYPOINT);
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                          s.graph_version, s.commit_sha, s.stable_id
+                          s.graph_version, s.commit_sha, s.stable_id,
+                          f.language, s.visibility
                    FROM symbols s
                    JOIN files f ON s.file_id = f.id
                    WHERE s.graph_version = ?
@@ -755,18 +760,147 @@ impl Db {
         let mut path_params = Vec::new();
         append_path_filters(&mut full_sql, &mut params, &mut path_params, paths, "f");
 
-        full_sql.push_str(" ORDER BY s.qualname LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
+        // No SQL `LIMIT`: public-API candidates are set aside afterwards, so
+        // the limit applies to what is reported.
+        full_sql.push_str(" ORDER BY s.qualname");
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
-        let rows = stmt.query_map(&*params, symbol_from_row)?;
-        let mut results = Vec::new();
+        let rows = stmt.query_map(&*params, |row| {
+            Ok((
+                symbol_from_row(row)?,
+                row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                row.get::<_, String>(16)?,
+                row.get::<_, Option<String>>(17)?,
+            ))
+        })?;
+        let mut candidates = Vec::new();
         for row in rows {
-            results.push(row?);
+            candidates.push(row?);
         }
-        Ok(results)
+        drop(stmt);
+
+        let mut js_files = HashSet::new();
+        let mut rust_libs = HashSet::new();
+        let paths_of = |sql: &str| -> Result<HashSet<String>> {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map([graph_version], |r| r.get::<_, String>(0))?;
+            let mut out = HashSet::new();
+            for row in rows {
+                out.insert(row?);
+            }
+            Ok(out)
+        };
+        let has_language =
+            |names: &[&str]| candidates.iter().any(|c| names.contains(&c.2.as_str()));
+        if has_language(&["javascript", "typescript", "tsx"]) {
+            js_files = paths_of(
+                "SELECT path FROM files WHERE language IN ('javascript', 'typescript', 'tsx')
+                   AND (deleted_version IS NULL OR deleted_version > ?1)",
+            )?;
+        }
+        if has_language(&["rust"]) {
+            rust_libs = paths_of(
+                "SELECT path FROM files WHERE language = 'rust'
+                   AND (path = 'src/lib.rs' OR path LIKE '%/src/lib.rs')
+                   AND (deleted_version IS NULL OR deleted_version > ?1)",
+            )?;
+        }
+        // Names some unresolved reference points at, with the lowest and
+        // highest id of the symbols making them (-1: none), computed once.
+        let unresolved_names: HashMap<String, (i64, i64)> = {
+            let sql = format!(
+                "SELECT name_tail, MIN(COALESCE(source_symbol_id, -1)),
+                        MAX(COALESCE(source_symbol_id, -1))
+                 FROM unresolved_references
+                 WHERE graph_version = ?1 AND edge_kind IN ({reachability})
+                 GROUP BY name_tail"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([graph_version], |r| {
+                Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut api = PublicApi::new(repo_root, js_files, rust_libs);
+
+        let mut out = DeadSymbols::default();
+        for (symbol, signature, language, visibility) in candidates {
+            let profile = profile_for(&language);
+            if let Some(is_root) = profile.implicit_root
+                && is_root(&ImplicitRootFacts {
+                    kind: &symbol.kind,
+                    name: &symbol.name,
+                    path: &symbol.file_path,
+                    signature: &signature,
+                    visibility: visibility.as_deref(),
+                })
+            {
+                continue;
+            }
+            // A reference the symbol makes to itself does not count.
+            let unresolved = unresolved_names
+                .get(&symbol.name)
+                .is_some_and(|&(lo, hi)| !(lo == symbol.id && hi == symbol.id));
+            let parent_visibility = if symbol.kind == "method" {
+                parent_visibility_of(&conn, &symbol, graph_version)?
+            } else {
+                None
+            };
+            let exposure = api.classify(&Candidate {
+                language: &language,
+                path: &symbol.file_path,
+                kind: &symbol.kind,
+                name: &symbol.name,
+                qualname: &symbol.qualname,
+                visibility: visibility.as_deref(),
+                parent_visibility: parent_visibility.as_deref(),
+            });
+            let named = if unresolved {
+                "; an unresolved reference names it"
+            } else {
+                ""
+            };
+            let (confidence, reason, public) = match exposure {
+                Exposure::PublicApi(why) => {
+                    (DeadConfidence::Low, format!("public API: {why}"), true)
+                }
+                Exposure::Internal(why) if unresolved => (
+                    DeadConfidence::Medium,
+                    format!("{why}, no incoming reference{named}"),
+                    false,
+                ),
+                Exposure::Internal(why) => (
+                    DeadConfidence::High,
+                    format!("{why}, no incoming reference, no unresolved reference names it"),
+                    false,
+                ),
+                Exposure::ExportedUnimportable(why) => (
+                    DeadConfidence::Medium,
+                    format!("{why}, no incoming reference{named}"),
+                    false,
+                ),
+                Exposure::Unmodelled => (
+                    DeadConfidence::Medium,
+                    format!("visibility not modelled for {language}, no incoming reference{named}"),
+                    false,
+                ),
+            };
+            let claim = DeadSymbol {
+                symbol,
+                confidence,
+                reason,
+            };
+            if public {
+                out.public_api_total += 1;
+                if include_public_api && out.public_api.len() < limit {
+                    out.public_api.push(claim);
+                }
+            } else if out.dead.len() < limit {
+                out.dead.push(claim);
+            }
+        }
+        Ok(out)
     }
 
     /// Issue #79: an IMPORTS reference the write path never resolved (an
@@ -1240,6 +1374,31 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
     signature
         .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .any(|token| token == alias)
+}
+
+/// The `visibility` modifiers of the symbol(s) a method's qualname hangs
+/// under (`Type::method` or `pkg.Type.method`), joined by spaces.
+fn parent_visibility_of(
+    conn: &rusqlite::Connection,
+    method: &Symbol,
+    graph_version: i64,
+) -> Result<Option<String>> {
+    let Some(stem) = method.qualname.strip_suffix(method.name.as_str()) else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare_cached(
+        "SELECT group_concat(COALESCE(visibility, ''), ' ') FROM symbols
+         WHERE graph_version = ?1 AND qualname IN (?2, ?3)",
+    )?;
+    let parent: Option<String> = stmt.query_row(
+        rusqlite::params![
+            graph_version,
+            stem.strip_suffix("::").unwrap_or(""),
+            stem.strip_suffix('.').unwrap_or("")
+        ],
+        |r| r.get(0),
+    )?;
+    Ok(parent)
 }
 
 #[cfg(test)]

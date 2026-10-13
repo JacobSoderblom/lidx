@@ -535,6 +535,41 @@ pub(crate) struct LanguageProfile {
     /// constant is no declaration (`HelpPrinter(..)` runs whatever it holds).
     /// Such a call stays unresolved. Empty for most languages.
     pub call_refused_kinds: &'static [&'static str],
+    /// How `dead_symbols` tells this language's public API (declarations other
+    /// code may use, so nothing in the repository can prove them dead) from
+    /// its internals. `PublicApiRule::None`: visibility is not modelled.
+    pub public_api: PublicApiRule,
+    /// Declarations the toolchain or runtime calls by convention (test
+    /// entry points, `init`): never dead. `None`: no such convention here.
+    pub implicit_root: Option<fn(&ImplicitRootFacts<'_>) -> bool>,
+}
+
+/// See `LanguageProfile::public_api`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicApiRule {
+    /// Visibility is not modelled: every declaration is judged and carries
+    /// the `medium` tier unless the extractor recorded it `private`.
+    None,
+    /// Go: an exported identifier (and an exported method of any type) in a
+    /// package other code can import: not `package main`, not under an
+    /// `internal` directory, not a `_test.go` file.
+    GoExported,
+    /// Rust: an unrestricted `pub` item (the `public` modifier) of a crate
+    /// that has a library target (`src/lib.rs`).
+    RustPub,
+    /// TypeScript/JavaScript: a declaration the package entry exports
+    /// (`package.json` main/module/types/exports/bin, followed through
+    /// barrels); with no `package.json`, every exported declaration.
+    EntryExports,
+}
+
+/// What `LanguageProfile::implicit_root` sees of a declaration.
+pub(crate) struct ImplicitRootFacts<'a> {
+    pub kind: &'a str,
+    pub name: &'a str,
+    pub path: &'a str,
+    pub signature: &'a str,
+    pub visibility: Option<&'a str>,
 }
 
 /// See `LanguageProfile::same_file_twins`.
@@ -675,6 +710,8 @@ impl LanguageProfile {
         package_dir: None,
         two_segment: true,
         call_refused_kinds: &[],
+        public_api: PublicApiRule::None,
+        implicit_root: None,
     };
 }
 
@@ -862,7 +899,7 @@ fn is_fixture_path(path: &str) -> bool {
 /// (`Resolver::is_repo_python_import`, below) that only this module can
 /// do, but the *choice* of that variant is `python::PROFILE`'s, same as
 /// Rust's.
-fn profile_for(lang: &str) -> LanguageProfile {
+pub(crate) fn profile_for(lang: &str) -> LanguageProfile {
     match lang {
         "rust" => crate::indexer::rust::PROFILE,
         "python" => crate::indexer::python::PROFILE,

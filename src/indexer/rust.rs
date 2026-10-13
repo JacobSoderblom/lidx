@@ -45,8 +45,19 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
         classify: classify_twin,
     },
     package_dir: Some(cargo_package_dir),
+    public_api: crate::db::resolver::PublicApiRule::RustPub,
+    implicit_root: Some(rust_implicit_root),
     ..LanguageProfile::DEFAULT
 };
+
+/// `LanguageProfile::implicit_root` for Rust: `#[bench]` functions and the
+/// functions of a `benches/` target (criterion groups; the
+/// `#[test]` family is excluded by `dead_symbols` through the signature).
+fn rust_implicit_root(f: &crate::db::resolver::ImplicitRootFacts<'_>) -> bool {
+    f.signature.contains("#[bench]")
+        || (f.kind == "function"
+            && (f.path.starts_with("benches/") || f.path.contains("/benches/")))
+}
 
 /// What a cfg-gated declaration's signature starts with.
 const CFG_SIGNATURE_MARKER: &str = "#[cfg(";
@@ -685,6 +696,9 @@ fn handle_named_item(
         return;
     };
     let qualname = format!("{}::{}", ctx.module, name);
+    if has_plain_pub(node, source) {
+        output.public_qualnames.push(qualname.clone());
+    }
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
@@ -726,6 +740,9 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         return;
     };
     let qualname = format!("{}::{}", ctx.module, name);
+    if has_plain_pub(node, source) {
+        output.public_qualnames.push(qualname.clone());
+    }
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
     output.symbols.push(SymbolInput {
         kind: "trait".to_string(),
@@ -939,6 +956,11 @@ fn handle_function(
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
     if !ctx.in_trait_scope && !has_pub_visibility(node) {
         output.private_qualnames.push(qualname.clone());
+    }
+    // A trait's own methods and a trait impl's are as visible as the trait
+    // (`dead_symbols` then asks whether the trait or type is `pub`).
+    if ctx.in_trait_scope || has_plain_pub(node, source) {
+        output.public_qualnames.push(qualname.clone());
     }
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
@@ -5088,6 +5110,16 @@ fn qualify_type_name(module: &str, type_name: &str) -> String {
 /// `pub(crate)`/`pub(super)`/etc. are all treated as public here — lidx
 /// doesn't model crate boundaries, so the distinction between them doesn't
 /// change which calls should be allowed to bind.
+/// Whether `node` is declared with an unrestricted `pub` (not `pub(crate)`,
+/// `pub(super)`, `pub(in ..)`). Recorded as the `public` modifier for
+/// `dead_symbols`. The module path is not checked: a `pub` item in a private
+/// module counts as public API (an over-approximation, like the oracle's).
+fn has_plain_pub(node: Node<'_>, source: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .any(|c| c.kind() == "visibility_modifier" && node_text(c, source).trim() == "pub")
+}
+
 fn has_pub_visibility(node: Node<'_>) -> bool {
     let mut cursor = node.walk();
     node.children(&mut cursor)
@@ -5099,7 +5131,7 @@ fn has_pub_visibility(node: Node<'_>) -> bool {
 /// `signature` is the only place a Rust attribute reaches
 /// `test_detection::is_test_symbol` -- see `test_attribute_prefix` and
 /// issue #67 finding 1.
-const TEST_ATTRIBUTE_NAMES: &[&str] = &["test", "rstest", "test_case"];
+const TEST_ATTRIBUTE_NAMES: &[&str] = &["test", "rstest", "test_case", "bench"];
 
 /// Renders any test-marking attribute in `attributes` (see
 /// `TEST_ATTRIBUTE_NAMES`) back out as `#[full_name]\n...` so

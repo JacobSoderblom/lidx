@@ -1578,3 +1578,50 @@ mod rust_marker_tests {
         assert_eq!(public_signature(Some(stored)), None);
     }
 }
+
+/// How sure `dead_symbols` is that a claim is right (see its schema text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeadConfidence {
+    /// Not part of any public API, no incoming reachability edge, and no
+    /// unresolved reference names it.
+    High,
+    /// Not public API, but something is unproven: an unresolved reference
+    /// with the same name exists, the declaration is exported from a place
+    /// nobody can import it from, or the language's visibility is not modelled.
+    Medium,
+    /// Public API (only returned with `include_public_api`): other code
+    /// outside the repository may use it.
+    Low,
+}
+
+impl DeadConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeadConfidence::High => "high",
+            DeadConfidence::Medium => "medium",
+            DeadConfidence::Low => "low",
+        }
+    }
+}
+
+/// One `dead_symbols` claim: the symbol, how sure the claim is, and why.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeadSymbol {
+    #[serde(flatten)]
+    pub symbol: Symbol,
+    pub confidence: DeadConfidence,
+    pub reason: String,
+}
+
+/// The result of `Db::dead_symbols`.
+#[derive(Debug, Clone, Default)]
+pub struct DeadSymbols {
+    /// Claims on declarations that are not public API.
+    pub dead: Vec<DeadSymbol>,
+    /// Public-API declarations with nothing referencing them in the
+    /// repository; empty unless asked for (`include_public_api`).
+    pub public_api: Vec<DeadSymbol>,
+    /// How many such public-API declarations exist (whether or not returned).
+    pub public_api_total: usize,
+}

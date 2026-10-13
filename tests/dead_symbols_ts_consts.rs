@@ -66,13 +66,15 @@ fn dead() -> Vec<String> {
     let result = rpc::handle_method(
         &mut indexer,
         "dead_symbols",
-        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false}),
+        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false, "include_public_api": true}),
     )
     .unwrap();
+    // These tests judge the liveness rules, not the public-API policy: both groups.
     result["dead_symbols"]
         .as_array()
         .unwrap()
         .iter()
+        .chain(result["public_api"].as_array().unwrap())
         .filter_map(|s| s["qualname"].as_str().map(str::to_string))
         .collect()
 }
