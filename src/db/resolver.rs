@@ -3696,8 +3696,9 @@ impl<'c> Resolver<'c> {
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
-                // A bare `Name()` never dispatches to a method.
-                .filter(|(_, _, kind, _)| !(bare && kind == "method"))
+                // A bare `Name` and a package-qualified `pkg.Name` never
+                // denote a method; only a `Type.Method` member does.
+                .filter(|(_, _, kind, _)| !((bare || !member.contains('.')) && kind == "method"))
                 .collect();
             let dot_member = format!(".{member}");
             let hits: Vec<(i64, String, String, Option<String>)> = rows

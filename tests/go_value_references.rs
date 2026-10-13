@@ -307,3 +307,168 @@ fn a_nested_module_maps_import_paths_below_its_own_directory() {
         ["services/api/store/store.Open"]
     );
 }
+
+const SHAPES: &[(&str, &str)] = &[
+    ("go.mod", "module example.com/app\n"),
+    (
+        "pkg/pkg.go",
+        r#"package pkg
+
+type Package struct{}
+
+func Less(i, j Package) bool { return false }
+
+type Licenses []int
+
+func (l Licenses) Less(i, j int) bool { return false }
+"#,
+    ),
+    (
+        "lock/lock.go",
+        r#"package lock
+
+type Parser func(string) int
+
+type adapter struct{ cfg int }
+
+func newAdapter(cfg int) adapter { return adapter{cfg: cfg} }
+
+func newPtrAdapter(cfg int) *adapter { return &adapter{cfg: cfg} }
+
+func (a adapter) parseYarn(s string) int { return a.cfg }
+
+func (a *adapter) parsePnpm(s string) int { return a.cfg }
+
+func parseCargo(s string) int { return 1 }
+
+func parseOther(s string) int { return 2 }
+
+func parseMapped(s string) int { return 3 }
+
+func parseShadowed(s string) int { return 4 }
+
+func register(p Parser, glob string) {}
+
+var _ Parser = parseCargo
+
+var (
+	_ Parser = parseOther
+)
+
+func Catalog() {
+	yarn := newAdapter(1)
+	pnpm := newPtrAdapter(2)
+	register(yarn.parseYarn, "**/yarn.lock")
+	register(pnpm.parsePnpm, "**/pnpm-lock.yaml")
+}
+
+func ChainedCatalog() {
+	yarn := newAdapter(1)
+	register(yarn.parseYarn, "a")
+	register(yarn.parseYarn, "b")
+}
+
+func Pick() Parser { return parseCargo }
+
+func PickTwo() (Parser, error) { return parseOther, nil }
+
+func (a adapter) Method() Parser { return a.parseYarn }
+
+var Hook Parser
+
+func Assign() {
+	Hook = parseCargo
+}
+
+func Mapped() map[string]any {
+	return map[string]any{
+		"parse": parseMapped,
+		"shift": func(in string, parseShadowed int) int { return parseShadowed },
+	}
+}
+
+func Shadowed() map[string]any {
+	return map[string]any{
+		"shift": func(in string, parseShadowed int) int { return parseShadowed },
+		"keep":  parseShadowed,
+	}
+}
+
+func ShadowedHere(parseShadowed Parser) Parser {
+	return parseShadowed
+}
+"#,
+    ),
+    (
+        "cmp/cmp.go",
+        r#"package cmp
+
+import "example.com/app/pkg"
+
+func sortSlices(f func(i, j pkg.Package) bool) {}
+
+func Build() {
+	sortSlices(pkg.Less)
+}
+"#,
+    ),
+];
+
+#[test]
+fn method_values_on_constructor_built_locals() {
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.Catalog"),
+        ["lock/lock.adapter.parsePnpm", "lock/lock.adapter.parseYarn"]
+    );
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.ChainedCatalog"),
+        ["lock/lock.adapter.parseYarn", "lock/lock.adapter.parseYarn"]
+    );
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.adapter.Method"),
+        ["lock/lock.adapter.parseYarn"]
+    );
+}
+
+#[test]
+fn package_level_blank_var_initialisers_are_references_from_the_module() {
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock"),
+        ["lock/lock.parseCargo", "lock/lock.parseOther"]
+    );
+}
+
+#[test]
+fn returns_and_assignments_are_references() {
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.Pick"),
+        ["lock/lock.parseCargo"]
+    );
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.PickTwo"),
+        ["lock/lock.parseOther"]
+    );
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.Assign"),
+        ["lock/lock.parseCargo"]
+    );
+}
+
+#[test]
+fn a_closure_parameter_shadows_only_inside_the_closure() {
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.Mapped"),
+        ["lock/lock.parseMapped"]
+    );
+    assert_eq!(
+        ref_targets(SHAPES, "lock/lock.Shadowed"),
+        ["lock/lock.parseShadowed"]
+    );
+    // A parameter of the declaration itself shadows everywhere in it.
+    assert!(ref_targets(SHAPES, "lock/lock.ShadowedHere").is_empty());
+}
+
+#[test]
+fn a_package_function_is_not_ambiguous_with_a_same_named_method() {
+    assert_eq!(ref_targets(SHAPES, "cmp/cmp.Build"), ["pkg/pkg.Less"]);
+}
