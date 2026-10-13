@@ -333,6 +333,11 @@ def build(results_dir):
     if dead:
         w("")
         w(dead)
+    import report_hierarchy  # the type hierarchy section (issue #449) is appended after everything above
+    hier = report_hierarchy.section(meta, results_dir)
+    if hier:
+        w("")
+        w(hier)
     w("")
     open(os.path.join(results_dir, "report.md"), "w").write("\n".join(L))
     print("wrote", os.path.join(results_dir, "report.md"))

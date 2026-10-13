@@ -1399,5 +1399,201 @@
   "verdict": "misbucketed",
   "note": "The oracle resolved 99 SCIP references (live) and tests call dir.create_dir everywhere, so the withheld flag is unnecessary and the item is gradable as live."
  },
- "_notes": "**How to read this.** Each item was read against the source by a Sonnet subagent per language (one pass per language, the Rust draw repeated after the Rust oracle was fixed), with the cell's scope and the column's definition in hand; the main agent changed three Go verdicts (staticcheck's U1000 is transitive: a helper whose only caller is itself unused is dead by the tool's definition, so those are not oracle errors). **What the first draw found and what changed.** The first Rust draw had 19 oracle artefacts among 20 FN: trait-impl names were parsed with their `[Trait]` prefix so trait-declared methods lost their impls, serde/clap attribute uses inside strings were invisible, and bench / macro-registered tests were not roots. All three were fixed and the Rust sample re-drawn. **Known remaining oracle artefacts (listed in the samples above).** TypeScript: a helper reached only through dynamic indexing of a namespace import (`ns[tag]`) is reported unreachable (hono, 5 items). Rust: extension-trait methods called on foreign types (`SliceExt` on `&[u8]` in tokei, `Ordinal`/`Clean`/`CommandExt` in just) and helpers called only from `rgtest!`-generated tests are reported dead, because rust-analyzer's SCIP carries no occurrence for those calls (11 of the 20 Rust FN). Rust recall in the dead cells is therefore an upper-bound-of-the-oracle figure: some of its dead declarations are alive. Go: two buckets are conservative by rule (an exported method of an unexported type counts as public API; an exported symbol of an internal package is `exported_used_by_rule` in the unreferenced column)."
+ "_notes": "**How to read this.** Each item was read against the source by a Sonnet subagent per language (one pass per language, the Rust draw repeated after the Rust oracle was fixed), with the cell's scope and the column's definition in hand; the main agent changed three Go verdicts (staticcheck's U1000 is transitive: a helper whose only caller is itself unused is dead by the tool's definition, so those are not oracle errors). **What the first draw found and what changed.** The first Rust draw had 19 oracle artefacts among 20 FN: trait-impl names were parsed with their `[Trait]` prefix so trait-declared methods lost their impls, serde/clap attribute uses inside strings were invisible, and bench / macro-registered tests were not roots. All three were fixed and the Rust sample re-drawn. **Known remaining oracle artefacts (listed in the samples above).** TypeScript: a helper reached only through dynamic indexing of a namespace import (`ns[tag]`) is reported unreachable (hono, 5 items). Rust: extension-trait methods called on foreign types (`SliceExt` on `&[u8]` in tokei, `Ordinal`/`Clean`/`CommandExt` in just) and helpers called only from `rgtest!`-generated tests are reported dead, because rust-analyzer's SCIP carries no occurrence for those calls (11 of the 20 Rust FN). Rust recall in the dead cells is therefore an upper-bound-of-the-oracle figure: some of its dead declarations are alive. Go: two buckets are conservative by rule (an exported method of an unexported type counts as public API; an exported symbol of an internal package is `exported_used_by_rule` in the unreferenced column).",
+ "da0aff18": {
+  "verdict": "lidx_error",
+  "note": "Used: fmt.Formatter: fmt calls Format when the value is printed; the oracle is right."
+ },
+ "652d5081": {
+  "verdict": "lidx_error",
+  "note": "Used: implements the UI interface of the event loop, called through it; the oracle is right."
+ },
+ "02febcf9": {
+  "verdict": "lidx_error",
+  "note": "Used: implements the clio flag-adder interface, called through it; the oracle is right."
+ },
+ "54c04f38": {
+  "verdict": "lidx_error",
+  "note": "Used: implements partybus handler interface, called through it; the oracle is right."
+ },
+ "9b799937": {
+  "verdict": "lidx_error",
+  "note": "Used: implements cmp.Reporter, called by cmp.Equal; the oracle is right."
+ },
+ "1ec9308c": {
+  "verdict": "lidx_error",
+  "note": "Used: returned as a function value at command.go:514 and called through it; the oracle is right."
+ },
+ "b3eb8e33": {
+  "verdict": "lidx_error",
+  "note": "Used: test double for the file.Resolver interface, called through it; the oracle is right."
+ },
+ "420767a3": {
+  "verdict": "lidx_error",
+  "note": "Used: io.Reader implementation, called by the reader consumer; the oracle is right."
+ },
+ "5ea726b7": {
+  "verdict": "lidx_error",
+  "note": "Used: json.Unmarshaler, called by encoding/json; the oracle is right."
+ },
+ "df041667": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "a106d6cb": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "8bfb7556": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "36b9ca51": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "b4027573": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "6e58cb15": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "ce3eac52": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "1879275c": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "c0731e67": {
+  "verdict": "lidx_error",
+  "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
+ },
+ "9b4d1abf": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "b0fa9a02": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "a3281430": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "431982e8": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "95d7b3f3": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "8ba96f28": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "2ecf830b": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "fe2c0278": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "45746554": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "b13f4ad4": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "13db7343": {
+  "verdict": "correct_exclusion",
+  "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
+ },
+ "12ac2273": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "334bdb83": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "8e127e13": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "5eadc90d": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "be366ecc": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "65c86ba4": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "c4e2e43d": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "4ef798ac": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "f6334fd6": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "228b99e1": {
+  "verdict": "correct_exclusion",
+  "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
+ },
+ "4a08ae2f": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "f97ec624": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "4745b21e": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "8e324c20": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "7d7ccb16": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "5517ae1a": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "dbed8146": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "fabf2acc": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "d9425fea": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "5d6fe196": {
+  "verdict": "correct_exclusion",
+  "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ }
 }

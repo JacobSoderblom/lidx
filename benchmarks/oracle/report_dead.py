@@ -26,6 +26,17 @@ def pr(r, k="precision"):
     return "-" if r.get(k) is None else "%s %s" % (pct(r.get(k)), ci(r.get(k + "_ci")))
 
 
+NOT_REPORTED = "not reported"
+# Rust recall is not reported: against the noisy SCIP dead set, 2 of the 5 missed declarations that exist in the corpus
+# (every one of them was read) were oracle artefacts (40%), above the 20% bar; precision is unaffected.
+RECALL_NOT_REPORTED = {"rust"}
+
+
+def rec(lang, r, key="recall"):
+    """Recall cell: `not reported` for the languages in RECALL_NOT_REPORTED, else the usual figure."""
+    return NOT_REPORTED if lang in RECALL_NOT_REPORTED else pr(r, key)
+
+
 def pooled(readings):
     """Pool several readings (dicts with graded/tp/dead/found) into one precision and recall with Wilson intervals."""
     tp = sum(r["tp"] for r in readings)
@@ -103,8 +114,8 @@ def section(meta, cells, results_dir):
             c = cells[cid]
             x = c["dead"]["columns"][col]
             lib = kind_of_cell(c)
-            w("| %s | %s | %d | %d | %d | %s | %s | %s | %s |" % (cid, lib, x["universe"], x["dead"], x["all"]["graded"], pr(x["all"]), pr(x["all"], "recall"),
-                                                                pr(x["no_exported"]), pr(x["no_exported"], "recall")))
+            w("| %s | %s | %d | %d | %d | %s | %s | %s | %s |" % (cid, lib, x["universe"], x["dead"], x["all"]["graded"], pr(x["all"]), rec(c["lang"], x["all"]),
+                                                                pr(x["no_exported"]), rec(c["lang"], x["no_exported"])))
         w("")
     w("### Library or binary, and the universe that applies")
     w("")
@@ -118,6 +129,11 @@ def section(meta, cells, results_dir):
     w("Sums over the cells of a language (the `tests` and `no_tests` cells of one repository overlap, so the pooled interval is narrower than the "
       "evidence supports; per-cell rows are the figures to quote).")
     w("")
+    w("Rust recall is **not reported** (shown as `not reported`): the spot-check read all 5 missed Rust declarations the corpus has and 2 of them "
+      "(40%) were oracle artefacts, calls inside `rgtest!`-generated tests that SCIP does not resolve, above the 20% bar. Precision is unaffected. "
+      "Methods of impls for foreign or primitive self types (`impl Logic for bool`) and trait items are named buckets (`impl_for_foreign_type`, "
+      "`trait_declaration`) and are not in the Rust universe.")
+    w("")
     w("| Language | Column | Oracle-dead | Claims graded | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] | R without exported [95% CI] |")
     w("|---|---|---:|---:|---|---|---|---|")
     for lang, name in LANGS:
@@ -127,7 +143,7 @@ def section(meta, cells, results_dir):
         for col in match_dead.COLUMNS:
             a = pooled([cells[cid]["dead"]["columns"][col]["all"] for cid in lid])
             b = pooled([cells[cid]["dead"]["columns"][col]["no_exported"] for cid in lid])
-            w("| %s | %s | %d | %d | %s | %s | %s | %s |" % (name, COL_NAMES[col], a["dead"], a["graded"], pr(a), pr(a, "recall"), pr(b), pr(b, "recall")))
+            w("| %s | %s | %d | %d | %s | %s | %s | %s |" % (name, COL_NAMES[col], a["dead"], a["graded"], pr(a), rec(lang, a), pr(b), rec(lang, b)))
     w("")
     # ---- per kind ------------------------------------------------------------------------------------
     w("### Per symbol kind")
@@ -142,6 +158,8 @@ def section(meta, cells, results_dir):
         kinds = [k for k in ("function", "method", "type", "const") if k in cols["unref"]["by_kind"] or k in cols["reach"]["by_kind"]]
         for k in kinds:
             def cellfmt(col, key):
+                if key == "recall" and cells[cid]["lang"] in RECALL_NOT_REPORTED:
+                    return NOT_REPORTED
                 bk = cols[col]["by_kind"].get(k)
                 if not bk:
                     return "-"

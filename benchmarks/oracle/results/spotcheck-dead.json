@@ -97,57 +97,48 @@
      "bucket_size": null
     },
     {
-     "id": "9de2ce46",
-     "decl": "method AddFlags (cmd/syft/internal/options/attest.go:20)",
+     "id": "da0aff18",
+     "decl": "method Format (errors_test.go:118)",
+     "cell": "go/urfavecli/tests",
+     "column": "reach",
+     "verdict": "lidx_error",
+     "note": "Used: fmt.Formatter: fmt calls Format when the value is printed; the oracle is right.",
+     "bucket_size": null
+    },
+    {
+     "id": "652d5081",
+     "decl": "method Setup (cmd/syft/internal/ui/no_ui.go:31)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "AddFlags is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
+     "note": "Used: implements the UI interface of the event loop, called through it; the oracle is right.",
      "bucket_size": null
     },
     {
-     "id": "3435977c",
-     "decl": "method Mode (syft/internal/fileresolver/filetree_resolver_test.go:1345)",
-     "cell": "go/syft/tests",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "Mode is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
-     "bucket_size": null
-    },
-    {
-     "id": "ec77ef73",
-     "decl": "method parsePnpmLock (syft/pkg/cataloger/javascript/parse_pnpm_lock.go:185)",
+     "id": "02febcf9",
+     "decl": "method AddFlags (cmd/syft/internal/options/catalog.go:218)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "parsePnpmLock is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
+     "note": "Used: implements the clio flag-adder interface, called through it; the oracle is right.",
      "bucket_size": null
     },
     {
-     "id": "fdde5e70",
-     "decl": "method Sys (syft/internal/fileresolver/unindexed_directory.go:547)",
-     "cell": "go/syft/tests",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "Sys is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
-     "bucket_size": null
-    },
-    {
-     "id": "f396809f",
-     "decl": "method Close (internal/file/getter.go:135)",
+     "id": "54c04f38",
+     "decl": "method RespondsTo (cmd/syft/internal/ui/ui.go:123)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "Close is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
+     "note": "Used: implements partybus handler interface, called through it; the oracle is right.",
      "bucket_size": null
     },
     {
-     "id": "56f61740",
-     "decl": "method AllPathQueries (syft/pkg/cataloger/internal/pkgtest/observing_resolver.go:84)",
+     "id": "9b799937",
+     "decl": "method Report (internal/cmptest/diff_reporter.go:24)",
      "cell": "go/syft/tests",
      "column": "reach",
-     "verdict": "oracle_artefact",
-     "note": "AllPathQueries has no caller or interface use anywhere (git grep -w shows only its declaration and doc comment), so it is dead in both columns.",
+     "verdict": "lidx_error",
+     "note": "Used: implements cmp.Reporter, called by cmp.Equal; the oracle is right.",
      "bucket_size": null
     },
     {
@@ -160,30 +151,39 @@
      "bucket_size": null
     },
     {
-     "id": "ec786a39",
-     "decl": "method Tracef (cmd/syft/internal/ui/log_writer_test.go:39)",
+     "id": "1ec9308c",
+     "decl": "function defaultHelpFunc (command.go:2047)",
+     "cell": "go/cobra/no_tests",
+     "column": "reach",
+     "verdict": "lidx_error",
+     "note": "Used: returned as a function value at command.go:514 and called through it; the oracle is right.",
+     "bucket_size": null
+    },
+    {
+     "id": "b3eb8e33",
+     "decl": "method FilesByBasenameGlob (syft/pkg/cataloger/binary/classifier_cataloger_test.go:3223)",
      "cell": "go/syft/tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "Tracef is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
+     "note": "Used: test double for the file.Resolver interface, called through it; the oracle is right.",
      "bucket_size": null
     },
     {
-     "id": "342e589c",
-     "decl": "method DescribeFields (cmd/syft/internal/options/cache.go:26)",
-     "cell": "go/syft/no_tests",
+     "id": "420767a3",
+     "decl": "method Read (internal/file/copy_test.go:20)",
+     "cell": "go/syft/tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "DescribeFields is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
+     "note": "Used: io.Reader implementation, called by the reader consumer; the oracle is right.",
      "bucket_size": null
     },
     {
-     "id": "88045e4c",
-     "decl": "method fetchPkgs (syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:465)",
+     "id": "5ea726b7",
+     "decl": "method UnmarshalJSON (syft/pkg/cataloger/internal/cpegenerate/dictionary/types.go:44)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "fetchPkgs is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.",
+     "note": "Used: json.Unmarshaler, called by encoding/json; the oracle is right.",
      "bucket_size": null
     }
    ],
@@ -234,12 +234,57 @@
      "bucket_size": null
     },
     {
-     "id": "23e86dc0",
-     "decl": "function NewFromUnindexedDirectoryFS (syft/internal/fileresolver/unindexed_directory.go:44)",
+     "id": "df041667",
+     "decl": "function hasFileDigests (syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go:382)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "Only callers are NewFromUnindexedDirectory and NewFromRootedUnindexedDirectory, which have no non-test callers, so unreachable in the production cell.",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
+     "bucket_size": null
+    },
+    {
+     "id": "a106d6cb",
+     "decl": "method WithLinuxRelease (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:169)",
+     "cell": "go/syft/no_tests",
+     "column": "reach",
+     "verdict": "lidx_error",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
+     "bucket_size": null
+    },
+    {
+     "id": "8bfb7556",
+     "decl": "method Empty (internal/set.go:66)",
+     "cell": "go/syft/no_tests",
+     "column": "reach",
+     "verdict": "lidx_error",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
+     "bucket_size": null
+    },
+    {
+     "id": "36b9ca51",
+     "decl": "function EvaluateCapabilities (internal/capabilities/evaluation.go:8)",
+     "cell": "go/syft/no_tests",
+     "column": "reach",
+     "verdict": "lidx_error",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
+     "bucket_size": null
+    },
+    {
+     "id": "b4027573",
+     "decl": "method WithError (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:182)",
+     "cell": "go/syft/no_tests",
+     "column": "reach",
+     "verdict": "lidx_error",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
+     "bucket_size": null
+    },
+    {
+     "id": "6e58cb15",
+     "decl": "function Packages (internal/capabilities/capabilities.go:96)",
+     "cell": "go/syft/no_tests",
+     "column": "reach",
+     "verdict": "lidx_error",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
      "bucket_size": null
     },
     {
@@ -252,75 +297,30 @@
      "bucket_size": null
     },
     {
-     "id": "d030b012",
-     "decl": "function DirectoryInput (syft/format/internal/testutil/directory_input.go:19)",
+     "id": "ce3eac52",
+     "decl": "function mockMavenHandler (syft/pkg/cataloger/java/internal/maven/test/mock_repo.go:47)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "testutil.DirectoryInput is only called from _test.go files in an internal package, unreachable with tests excluded.",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
      "bucket_size": null
     },
     {
-     "id": "e3bd9b18",
-     "decl": "method WithPatternRedactors (syft/format/internal/testutil/redactor.go:138)",
+     "id": "1879275c",
+     "decl": "function diffPackages (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:433)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "WithPatternRedactors is only called from encoder tests, unreachable with tests excluded.",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
      "bucket_size": null
     },
     {
-     "id": "ff5a27c5",
-     "decl": "method isRegularFile (syft/internal/fileresolver/unindexed_directory.go:109)",
+     "id": "c0731e67",
+     "decl": "method IgnoreUnfulfilledPathResponses (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:273)",
      "cell": "go/syft/no_tests",
      "column": "reach",
      "verdict": "lidx_error",
-     "note": "isRegularFile is only called by UnindexedDirectory methods whose constructors have no production callers, so unreachable.",
-     "bucket_size": null
-    },
-    {
-     "id": "e2370220",
-     "decl": "function dereferenceToStruct (syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go:404)",
-     "cell": "go/syft/no_tests",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "dereferenceToStruct is only used inside pkgtest MetadataTracker, which has no production users, so unreachable.",
-     "bucket_size": null
-    },
-    {
-     "id": "5243901b",
-     "decl": "method FilesByMIMEType (syft/internal/fileresolver/deferred.go:68)",
-     "cell": "go/syft/no_tests",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "Deferred is only constructed (NewDeferred) in deferred_test.go, so its FilesByMIMEType is unreachable from production roots.",
-     "bucket_size": null
-    },
-    {
-     "id": "0023ba67",
-     "decl": "method RecordParser (syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go:59)",
-     "cell": "go/syft/no_tests",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "RecordParser is only called inside the pkgtest MetadataTracker, which no production code uses, so unreachable.",
-     "bucket_size": null
-    },
-    {
-     "id": "d9ecfbe8",
-     "decl": "function DefaultLicenseComparer (internal/cmptest/license.go:12)",
-     "cell": "go/syft/no_tests",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "DefaultLicenseComparer is only used by internal/cmptest and pkgtest test helpers, unreachable from production roots.",
-     "bucket_size": null
-    },
-    {
-     "id": "857181f8",
-     "decl": "method AllLocations (syft/pkg/cataloger/internal/pkgtest/observing_resolver.go:238)",
-     "cell": "go/syft/no_tests",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "ObservingResolver exists only in the pkgtest helper, so its AllLocations is unreachable from production roots.",
+     "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.",
      "bucket_size": null
     }
    ]
@@ -876,120 +876,12 @@
    ],
    "fn": [
     {
-     "id": "a4d721dc",
-     "decl": "method logic_or (nextest-filtering/src/expression.rs:504)",
-     "cell": "rust/nextest/path_tests_excluded",
-     "column": "unref",
-     "verdict": "lidx_error",
-     "note": "Logic is only ever used with Option<bool>; the bool impl's logic_or is never called, so it is really dead.",
-     "bucket_size": null
-    },
-    {
      "id": "a289dc86",
      "decl": "type IgnoreOverridesOpt (cargo-nextest/src/dispatch.rs:953)",
      "cell": "rust/nextest/path_tests_excluded",
      "column": "unref",
      "verdict": "lidx_error",
      "note": "IgnoreOverridesOpt has no use anywhere except its own declaration and derives, so it is really dead.",
-     "bucket_size": null
-    },
-    {
-     "id": "1095b4f5",
-     "decl": "method top (nextest-filtering/src/expression.rs:489)",
-     "cell": "rust/nextest/path_tests_excluded",
-     "column": "unref",
-     "verdict": "lidx_error",
-     "note": "Logic::top() at expression.rs:269 resolves to Option<bool>; the bool impl's top is never used, so it is really dead.",
-     "bucket_size": null
-    },
-    {
-     "id": "828745e9",
-     "decl": "method is_not_line_ending_whitespace (src/utils/ext.rs:5)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
-     "verdict": "lidx_error",
-     "note": "AsciiExt::is_not_line_ending_whitespace has no caller anywhere, so it is really dead.",
-     "bucket_size": null
-    },
-    {
-     "id": "2734b26d",
-     "decl": "method trim (src/utils/ext.rs:26)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
-     "verdict": "oracle_artefact",
-     "note": "SliceExt::trim is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.",
-     "bucket_size": null
-    },
-    {
-     "id": "ebb11c41",
-     "decl": "type Ordinal (src/ordinal.rs:1)",
-     "cell": "rust/just/path_tests_excluded",
-     "column": "unref",
-     "verdict": "oracle_artefact",
-     "note": "The Ordinal trait is needed for the .ordinal() calls in token.rs and compile_error.rs.",
-     "bucket_size": null
-    },
-    {
-     "id": "222490b4",
-     "decl": "method logic_and (nextest-filtering/src/expression.rs:499)",
-     "cell": "rust/nextest/path_tests_excluded",
-     "column": "unref",
-     "verdict": "lidx_error",
-     "note": "The bool impl's logic_and is never called (all callers use Option<bool> or FilterBinaryMatch), so it is really dead.",
-     "bucket_size": null
-    },
-    {
-     "id": "ff3cb322",
-     "decl": "type CommandExt (src/command_ext.rs:3)",
-     "cell": "rust/just/path_tests_excluded",
-     "column": "unref",
-     "verdict": "oracle_artefact",
-     "note": "CommandExt is used: output_guard_stdout() is called via the trait in load_dotenv.rs, evaluator.rs and windows.rs; SCIP records no trait-name reference for method calls.",
-     "bucket_size": null
-    },
-    {
-     "id": "8056eeaa",
-     "decl": "type Clean (src/clean.rs:3)",
-     "cell": "rust/just/path_tests_excluded",
-     "column": "unref",
-     "verdict": "oracle_artefact",
-     "note": "compiler.rs:89/164/187 call .clean() from the Clean trait.",
-     "bucket_size": null
-    },
-    {
-     "id": "ba9b80ca",
-     "decl": "method trim_first_and_last_line_of_whitespace (src/utils/ext.rs:24)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
-     "verdict": "oracle_artefact",
-     "note": "SliceExt::trim_first_and_last_line_of_whitespace is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.",
-     "bucket_size": null
-    },
-    {
-     "id": "7270b19d",
-     "decl": "method trim_start (src/utils/ext.rs:25)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "verdict": "oracle_artefact",
-     "note": "SliceExt::trim_start is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.",
-     "bucket_size": null
-    },
-    {
-     "id": "d07139c8",
-     "decl": "method trim_first_and_last_line_of_whitespace (src/utils/ext.rs:24)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "verdict": "oracle_artefact",
-     "note": "SliceExt::trim_first_and_last_line_of_whitespace is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.",
-     "bucket_size": null
-    },
-    {
-     "id": "6c3513ca",
-     "decl": "method is_not_line_ending_whitespace (src/utils/ext.rs:5)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "grep of tokei src finds only the trait declaration and impl at ext.rs:5/14, so the method is never called.",
      "bucket_size": null
     },
     {
@@ -1011,33 +903,6 @@
      "bucket_size": null
     },
     {
-     "id": "0cd664e3",
-     "decl": "method contains_slice (src/utils/ext.rs:27)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "verdict": "oracle_artefact",
-     "note": "SliceExt::contains_slice is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.",
-     "bucket_size": null
-    },
-    {
-     "id": "6c86302a",
-     "decl": "function cmd_exists (tests/util.rs:47)",
-     "cell": "rust/ripgrep/tests",
-     "column": "reach",
-     "verdict": "oracle_artefact",
-     "note": "cmd_exists is called from rgtest!-generated #[test] fns in misc.rs, which the oracle cannot see as roots.",
-     "bucket_size": null
-    },
-    {
-     "id": "727fa4a6",
-     "decl": "method is_not_line_ending_whitespace (src/utils/ext.rs:14)",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "verdict": "lidx_error",
-     "note": "The u8 impl of is_not_line_ending_whitespace has no caller anywhere, so it is really dead.",
-     "bucket_size": null
-    },
-    {
      "id": "e273c306",
      "decl": "function __nextest_external_symbol_that_does_not_exist (nextest-runner/src/helpers.rs:396)",
      "cell": "rust/nextest/path_tests_excluded",
@@ -1047,12 +912,12 @@
      "bucket_size": null
     },
     {
-     "id": "726d99c3",
-     "decl": "method trim (src/utils/ext.rs:26)",
-     "cell": "rust/tokei/path_tests_excluded",
+     "id": "6c86302a",
+     "decl": "function cmd_exists (tests/util.rs:47)",
+     "cell": "rust/ripgrep/tests",
      "column": "reach",
      "verdict": "oracle_artefact",
-     "note": "SliceExt::trim is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.",
+     "note": "cmd_exists is called from rgtest!-generated #[test] fns in misc.rs, which the oracle cannot see as roots.",
      "bucket_size": null
     }
    ]
@@ -1068,7 +933,7 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "Swap is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
      "id": "78b91603",
@@ -1077,7 +942,7 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "LicenseInfo is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
      "id": "9bf1f1a9",
@@ -1086,7 +951,7 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "MarshalJSON is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
      "id": "194e9cda",
@@ -1095,7 +960,7 @@
      "column": "unref",
      "verdict": "misbucketed",
      "note": "Exported Info in internal/log has no caller anywhere (only its own declaration; internal package is not public API), so it should be judged.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
      "id": "98c47e62",
@@ -1104,7 +969,7 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "ConvertOptions is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
      "id": "bddc4884",
@@ -1113,7 +978,7 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "PostLoad is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
      "id": "2758276a",
@@ -1122,7 +987,7 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "Warnf is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
      "id": "024c5479",
@@ -1131,16 +996,16 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "Infof is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     },
     {
-     "id": "5272b3ac",
-     "decl": "method DescribeFields (cmd/syft/internal/options/linux_kernel.go:23)",
+     "id": "9b4d1abf",
+     "decl": "method View (syft/pkg/cataloger/binary/internal/manager/internal/ui/binary_list.go:100)",
      "cell": "go/syft/no_tests",
      "column": "unref",
      "verdict": "correct_exclusion",
-     "note": "DescribeFields is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 306
     },
     {
      "id": "0b4fd80b",
@@ -1149,7 +1014,7 @@
      "column": "unref",
      "verdict": "correct_exclusion",
      "note": "String is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.",
-     "bucket_size": 304
+     "bucket_size": 306
     }
    ],
    "policy:library_root": [
@@ -1430,94 +1295,94 @@
    ],
    "policy:test_root": [
     {
-     "id": "2a97959a",
-     "decl": "function Test_corruptStackYaml (syft/pkg/cataloger/haskell/parse_stack_yaml_test.go:114)",
+     "id": "b0fa9a02",
+     "decl": "function TestHandleExitCoder_MultiErrorWithFormat (errors_test.go:144)",
+     "cell": "go/urfavecli/tests",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
+    },
+    {
+     "id": "a3281430",
+     "decl": "function TestDigestsCataloger (syft/file/cataloger/filedigest/cataloger_test.go:51)",
      "cell": "go/syft/tests",
      "column": "unref",
      "verdict": "correct_exclusion",
-     "note": "Test_corruptStackYaml is a Test function in a _test.go file.",
-     "bucket_size": 4596
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
     },
     {
-     "id": "c17ea1c8",
-     "decl": "function TestIntSliceApplyInputSourceValue_Alias (altsrc/flag_test.go:193)",
-     "cell": "go/urfavecli/tests",
-     "column": "reach",
-     "verdict": "correct_exclusion",
-     "note": "TestIntSliceApplyInputSourceValue_Alias is a Test function in a _test.go file.",
-     "bucket_size": 4596
-    },
-    {
-     "id": "a7323916",
-     "decl": "function TestHelpflagCommandExecutedWithoutVersionSet (command_test.go:2779)",
+     "id": "431982e8",
+     "decl": "function TestActiveHelpForFlag (active_help_test.go:231)",
      "cell": "go/cobra/tests",
-     "column": "reach",
-     "verdict": "correct_exclusion",
-     "note": "TestHelpflagCommandExecutedWithoutVersionSet is a Test function in a _test.go file.",
-     "bucket_size": 4596
-    },
-    {
-     "id": "7bd9d74a",
-     "decl": "function TestExtractReceiverTypeName (internal/capabilities/generate/cataloger_config_linking_test.go:244)",
-     "cell": "go/syft/tests",
-     "column": "reach",
-     "verdict": "correct_exclusion",
-     "note": "TestExtractReceiverTypeName is a Test function in a _test.go file.",
-     "bucket_size": 4596
-    },
-    {
-     "id": "eb28244d",
-     "decl": "function TestClientIPFromXFFTrustedProxies (middleware/client_ip_test.go:242)",
-     "cell": "go/chi/tests",
      "column": "unref",
      "verdict": "correct_exclusion",
-     "note": "TestClientIPFromXFFTrustedProxies is a Test function in a _test.go file.",
-     "bucket_size": 4596
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
     },
     {
-     "id": "5b44d268",
-     "decl": "function Test_IndexingNestedSymLinksOutsideOfRoot (syft/internal/fileresolver/filetree_resolver_test.go:931)",
-     "cell": "go/syft/tests",
-     "column": "unref",
-     "verdict": "correct_exclusion",
-     "note": "Test_IndexingNestedSymLinksOutsideOfRoot is a Test function in a _test.go file.",
-     "bucket_size": 4596
-    },
-    {
-     "id": "b5ef43c0",
-     "decl": "function TestPkgCoverageImage (cmd/syft/internal/test/integration/catalog_packages_test.go:41)",
-     "cell": "go/syft/tests",
-     "column": "unref",
-     "verdict": "correct_exclusion",
-     "note": "TestPkgCoverageImage is a Test function in a _test.go file.",
-     "bucket_size": 4596
-    },
-    {
-     "id": "9b4bb269",
-     "decl": "function TestGetClientIPAddr_RoundTrip (middleware/client_ip_test.go:392)",
-     "cell": "go/chi/tests",
-     "column": "reach",
-     "verdict": "correct_exclusion",
-     "note": "TestGetClientIPAddr_RoundTrip is a Test function in a _test.go file.",
-     "bucket_size": 4596
-    },
-    {
-     "id": "67c0ffb6",
-     "decl": "function TestCustomizedSliceFlagSeparator (flag_test.go:3711)",
+     "id": "95d7b3f3",
+     "decl": "function TestApp_OnUsageError_WithWrongFlagValue (app_test.go:2408)",
      "cell": "go/urfavecli/tests",
      "column": "unref",
      "verdict": "correct_exclusion",
-     "note": "TestCustomizedSliceFlagSeparator is a Test function in a _test.go file.",
-     "bucket_size": 4596
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
     },
     {
-     "id": "ea317322",
-     "decl": "function TestNormalizeGitleaksIgnorePaths (detect/detect_test.go:2461)",
-     "cell": "go/gitleaks/tests",
+     "id": "8ba96f28",
+     "decl": "function Test_parseBitnamiPURL (syft/pkg/cataloger/bitnami/package_test.go:10)",
+     "cell": "go/syft/tests",
      "column": "reach",
      "verdict": "correct_exclusion",
-     "note": "TestNormalizeGitleaksIgnorePaths is a Test function in a _test.go file.",
-     "bucket_size": 4596
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
+    },
+    {
+     "id": "2ecf830b",
+     "decl": "function Test_attestCommand (cmd/syft/internal/commands/attest_test.go:101)",
+     "cell": "go/syft/tests",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
+    },
+    {
+     "id": "fe2c0278",
+     "decl": "function TestParsePnpmLock_ExcludeDevDependencies (syft/pkg/cataloger/javascript/parse_pnpm_lock_test.go:72)",
+     "cell": "go/syft/tests",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
+    },
+    {
+     "id": "45746554",
+     "decl": "function Test_newSBOMMultiWriter (cmd/syft/internal/options/writer_test.go:79)",
+     "cell": "go/syft/tests",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
+    },
+    {
+     "id": "b13f4ad4",
+     "decl": "function Test_PackageCataloger_IgnorePackage (syft/pkg/cataloger/python/cataloger_test.go:460)",
+     "cell": "go/syft/tests",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
+    },
+    {
+     "id": "13db7343",
+     "decl": "function Test_newSBOMWriterDescription (cmd/syft/internal/options/writer_test.go:230)",
+     "cell": "go/syft/tests",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.",
+     "bucket_size": 4592
     }
    ],
    "ungradable:file_not_in_program": [
@@ -2392,6 +2257,98 @@
      "bucket_size": 2
     }
    ],
+   "excluded:impl_for_foreign_type": [
+    {
+     "id": "12ac2273",
+     "decl": "method index (crates/matcher/src/lib.rs:178)",
+     "cell": "rust/ripgrep/no_tests",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "334bdb83",
+     "decl": "method output_guard (src/command_ext.rs:4)",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "8e127e13",
+     "decl": "method trim (src/utils/ext.rs:26)",
+     "cell": "rust/tokei/path_tests_excluded",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "5eadc90d",
+     "decl": "method index (crates/matcher/src/lib.rs:162)",
+     "cell": "rust/ripgrep/no_tests",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "be366ecc",
+     "decl": "method is_whitespace (src/utils/ext.rs:4)",
+     "cell": "rust/tokei/path_tests_excluded",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "65c86ba4",
+     "decl": "method bottom (nextest-filtering/src/expression.rs:474)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "c4e2e43d",
+     "decl": "method is_whitespace (src/utils/ext.rs:10)",
+     "cell": "rust/tokei/path_tests_excluded",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "4ef798ac",
+     "decl": "method resolve (src/command_ext.rs:8)",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "f6334fd6",
+     "decl": "method is_line_ending_whitespace (src/utils/ext.rs:18)",
+     "cell": "rust/tokei/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    },
+    {
+     "id": "228b99e1",
+     "decl": "method logic_not (nextest-filtering/src/expression.rs:554)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "column": "reach",
+     "verdict": "correct_exclusion",
+     "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.",
+     "bucket_size": 124
+    }
+   ],
    "excluded:macro_generated": [
     {
      "id": "fba77adc",
@@ -2574,6 +2531,98 @@
      "verdict": "correct_exclusion",
      "note": "Referenced only via serde deserialize_with attribute string.",
      "bucket_size": 82
+    }
+   ],
+   "excluded:trait_declaration": [
+    {
+     "id": "4a08ae2f",
+     "decl": "type WithNameOnly (src/indexer/csharp.rs:7788)",
+     "cell": "rust/lidx/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "f97ec624",
+     "decl": "type ColorSchemeDetector (src/theme.rs:246)",
+     "cell": "rust/bat/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "4745b21e",
+     "decl": "type Ordinal (src/ordinal.rs:1)",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "8e324c20",
+     "decl": "type Node (src/node.rs:4)",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "7d7ccb16",
+     "decl": "type Flag (crates/core/flags/mod.rs:71)",
+     "cell": "rust/ripgrep/no_tests",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "5517ae1a",
+     "decl": "type RangeExt (src/range_ext.rs:3)",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "dbed8146",
+     "decl": "type TrackSource (nextest-runner/src/config/overrides.rs:112)",
+     "cell": "rust/nextest/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "fabf2acc",
+     "decl": "type Printer (src/printer.rs:85)",
+     "cell": "rust/bat/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "d9425fea",
+     "decl": "type PlatformInterface (src/platform_interface.rs:3)",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
+    },
+    {
+     "id": "5d6fe196",
+     "decl": "type ColorDisplay (src/color_display.rs:3)",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "unref",
+     "verdict": "correct_exclusion",
+     "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.",
+     "bucket_size": 19
     }
    ],
    "policy:public_api": [

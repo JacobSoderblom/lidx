@@ -83,6 +83,14 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&overview)?);
             Ok(())
         }
+        cli::Command::DispatchPairs { repo, db } => {
+            let db_path = db.unwrap_or_else(|| default_db_path(&repo));
+            let db = db::Db::new(&db_path)?;
+            let graph_version = db.current_graph_version()?;
+            let pairs = db.all_dispatch_pairs(graph_version)?;
+            println!("{}", serde_json::to_string(&pairs)?);
+            Ok(())
+        }
         cli::Command::Request {
             repo,
             db,

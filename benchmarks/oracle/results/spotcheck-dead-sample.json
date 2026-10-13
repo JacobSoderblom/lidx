@@ -3644,130 +3644,6 @@
    ],
    "fn": [
     {
-     "id": "ac480d4d",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
-     "kind": "fn",
-     "decl": "method contains_slice (src/utils/ext.rs:27)",
-     "name": "contains_slice",
-     "file": "src/utils/ext.rs",
-     "line": 27,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {",
-      "31:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self {",
-      "32:         let start = self",
-      "33:             .iter()"
-     ],
-     "mentions": [
-      "src/language/syntax.rs:331: .any(|(_, e)| line.contains_slice(e.as_bytes()))",
-      "src/language/syntax.rs:366: if !lines[start..end].contains_slice(b\"```\") {",
-      "src/utils/ext.rs:93: fn contains_slice(&self, needle: &Self) -> bool {",
-      "src/utils/ext.rs:139: assert!([1, 2, 3, 4, 5].contains_slice(&[1, 2, 3, 4, 5]));",
-      "src/utils/ext.rs:140: assert!([1, 2, 3, 4, 5].contains_slice(&[1, 2, 3]));",
-      "src/utils/ext.rs:141: assert!([1, 2, 3, 4, 5].contains_slice(&[3, 4, 5]));",
-      "src/utils/ext.rs:142: assert!([1, 2, 3, 4, 5].contains_slice(&[2, 3, 4]));"
-     ]
-    },
-    {
-     "id": "2734b26d",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
-     "kind": "fn",
-     "decl": "method trim (src/utils/ext.rs:26)",
-     "name": "trim",
-     "file": "src/utils/ext.rs",
-     "line": 26,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "25:     fn trim_start(&self) -> &Self;",
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {",
-      "31:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self {",
-      "32:         let start = self"
-     ],
-     "mentions": [
-      "src/language/language_type.rs:98: let line = if is_fortran { line } else { line.trim() };",
-      "src/language/language_type.rs:99: if line.trim().is_empty() {",
-      "src/language/language_type.rs:141: line.trim()",
-      "src/language/syntax.rs:177: if line.trim().is_empty() {",
-      "src/language/syntax.rs:228: if window.trim().is_empty() {",
-      "src/language/syntax.rs:292: let trimmed = line.trim();",
-      "src/language/syntax.rs:383: let identifier = &opening_fence.as_bytes().trim()[3..];",
-      "src/language/syntax.rs:395: language.parse_from_slice(&lines[start_of_code..end_of_code].trim(), config);"
-     ]
-    },
-    {
-     "id": "47bd09f9",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
-     "kind": "fn",
-     "decl": "method trim_start (src/utils/ext.rs:25)",
-     "name": "trim_start",
-     "file": "src/utils/ext.rs",
-     "line": 25,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "24:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self;",
-      "25:     fn trim_start(&self) -> &Self;",
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {",
-      "31:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self {"
-     ],
-     "mentions": [
-      "src/language/syntax.rs:405: let comment_syntax = if rest.trim_start().starts_with(b\"///\") {",
-      "src/language/syntax.rs:407: } else if rest.trim_start().starts_with(b\"//!\") {",
-      "src/language/syntax.rs:420: let line = lines[start..end].trim_start();",
-      "src/utils/ext.rs:58: fn trim_start(&self) -> &Self {"
-     ]
-    },
-    {
      "id": "a289dc86",
      "cell": "rust/nextest/path_tests_excluded",
      "column": "unref",
@@ -3799,45 +3675,6 @@
       "959: enum MessageFormat {"
      ],
      "mentions": []
-    },
-    {
-     "id": "ba9b80ca",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
-     "kind": "fn",
-     "decl": "method trim_first_and_last_line_of_whitespace (src/utils/ext.rs:24)",
-     "name": "trim_first_and_last_line_of_whitespace",
-     "file": "src/utils/ext.rs",
-     "line": 24,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "23: pub(crate) trait SliceExt {",
-      "24:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self;",
-      "25:     fn trim_start(&self) -> &Self;",
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {"
-     ],
-     "mentions": [
-      "src/language/syntax.rs:471: script_contents.trim_first_and_last_line_of_whitespace(),",
-      "src/language/syntax.rs:498: style_contents.trim_first_and_last_line_of_whitespace(),",
-      "src/language/syntax.rs:525: template_contents.trim_first_and_last_line_of_whitespace(),",
-      "src/utils/ext.rs:31: fn trim_first_and_last_line_of_whitespace(&self) -> &Self {"
-     ]
     },
     {
      "id": "782d252c",
@@ -3959,130 +3796,6 @@
      ]
     },
     {
-     "id": "0cd664e3",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "kind": "fn",
-     "decl": "method contains_slice (src/utils/ext.rs:27)",
-     "name": "contains_slice",
-     "file": "src/utils/ext.rs",
-     "line": 27,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {",
-      "31:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self {",
-      "32:         let start = self",
-      "33:             .iter()"
-     ],
-     "mentions": [
-      "src/language/syntax.rs:331: .any(|(_, e)| line.contains_slice(e.as_bytes()))",
-      "src/language/syntax.rs:366: if !lines[start..end].contains_slice(b\"```\") {",
-      "src/utils/ext.rs:93: fn contains_slice(&self, needle: &Self) -> bool {",
-      "src/utils/ext.rs:139: assert!([1, 2, 3, 4, 5].contains_slice(&[1, 2, 3, 4, 5]));",
-      "src/utils/ext.rs:140: assert!([1, 2, 3, 4, 5].contains_slice(&[1, 2, 3]));",
-      "src/utils/ext.rs:141: assert!([1, 2, 3, 4, 5].contains_slice(&[3, 4, 5]));",
-      "src/utils/ext.rs:142: assert!([1, 2, 3, 4, 5].contains_slice(&[2, 3, 4]));"
-     ]
-    },
-    {
-     "id": "726d99c3",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "kind": "fn",
-     "decl": "method trim (src/utils/ext.rs:26)",
-     "name": "trim",
-     "file": "src/utils/ext.rs",
-     "line": 26,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "25:     fn trim_start(&self) -> &Self;",
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {",
-      "31:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self {",
-      "32:         let start = self"
-     ],
-     "mentions": [
-      "src/language/language_type.rs:98: let line = if is_fortran { line } else { line.trim() };",
-      "src/language/language_type.rs:99: if line.trim().is_empty() {",
-      "src/language/language_type.rs:141: line.trim()",
-      "src/language/syntax.rs:177: if line.trim().is_empty() {",
-      "src/language/syntax.rs:228: if window.trim().is_empty() {",
-      "src/language/syntax.rs:292: let trimmed = line.trim();",
-      "src/language/syntax.rs:383: let identifier = &opening_fence.as_bytes().trim()[3..];",
-      "src/language/syntax.rs:395: language.parse_from_slice(&lines[start_of_code..end_of_code].trim(), config);"
-     ]
-    },
-    {
-     "id": "7270b19d",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "kind": "fn",
-     "decl": "method trim_start (src/utils/ext.rs:25)",
-     "name": "trim_start",
-     "file": "src/utils/ext.rs",
-     "line": 25,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "24:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self;",
-      "25:     fn trim_start(&self) -> &Self;",
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {",
-      "31:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self {"
-     ],
-     "mentions": [
-      "src/language/syntax.rs:405: let comment_syntax = if rest.trim_start().starts_with(b\"///\") {",
-      "src/language/syntax.rs:407: } else if rest.trim_start().starts_with(b\"//!\") {",
-      "src/language/syntax.rs:420: let line = lines[start..end].trim_start();",
-      "src/utils/ext.rs:58: fn trim_start(&self) -> &Self {"
-     ]
-    },
-    {
      "id": "6c86302a",
      "cell": "rust/ripgrep/tests",
      "column": "reach",
@@ -4121,45 +3834,6 @@
       "tests/misc.rs:943: if !cmd_exists(\"gzip\") {",
       "tests/misc.rs:958: if !cmd_exists(\"bzip2\") {",
       "tests/misc.rs:973: if !cmd_exists(\"xz\") {"
-     ]
-    },
-    {
-     "id": "d07139c8",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "kind": "fn",
-     "decl": "method trim_first_and_last_line_of_whitespace (src/utils/ext.rs:24)",
-     "name": "trim_first_and_last_line_of_whitespace",
-     "file": "src/utils/ext.rs",
-     "line": 24,
-     "decl_kind": "method",
-     "subkind": "trait_method",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "dead",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "incoming_type_edge_from_live_code",
-     "source": [
-      "23: pub(crate) trait SliceExt {",
-      "24:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self;",
-      "25:     fn trim_start(&self) -> &Self;",
-      "26:     fn trim(&self) -> &Self;",
-      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
-      "28: }",
-      "29: ",
-      "30: impl SliceExt for [u8] {"
-     ],
-     "mentions": [
-      "src/language/syntax.rs:471: script_contents.trim_first_and_last_line_of_whitespace(),",
-      "src/language/syntax.rs:498: style_contents.trim_first_and_last_line_of_whitespace(),",
-      "src/language/syntax.rs:525: template_contents.trim_first_and_last_line_of_whitespace(),",
-      "src/utils/ext.rs:31: fn trim_first_and_last_line_of_whitespace(&self) -> &Self {"
      ]
     }
    ]
@@ -9759,51 +9433,6 @@
    ],
    "excluded:impl_for_foreign_type": [
     {
-     "id": "c894fc08",
-     "cell": "rust/just/path_tests_excluded",
-     "column": "unref",
-     "kind": "bucket",
-     "decl": "method shell_arg (src/command_ext.rs:93)",
-     "name": "shell_arg",
-     "file": "src/command_ext.rs",
-     "line": 93,
-     "decl_kind": "method",
-     "subkind": "trait_impl",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "live",
-      "reach": "live",
-      "unref_how": "scip_references",
-      "refs": 6
-     },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "impl_for_foreign_type",
-     "source": [
-      "92: ",
-      "93:   fn shell_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Command {",
-      "94:     #[cfg(windows)]",
-      "95:     if ShellKind::from(&*self) == ShellKind::Cmd {",
-      "96:       use std::os::windows::process::CommandExt;",
-      "97:       return self.raw_arg(arg);",
-      "98:     }",
-      "99: "
-     ],
-     "mentions": [
-      "src/arguments.rs:72: #[arg(help = \"Clear shell arguments\", long, overrides_with = \"shell_arg\")]",
-      "src/arguments.rs:291: pub(crate) shell_arg: Vec<String>,",
-      "src/command_ext.rs:10: fn shell_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Command;",
-      "src/config.rs:352: } else if arguments.shell_arg.is_empty() {",
-      "src/config.rs:355: Some(arguments.shell_arg)",
-      "src/evaluator.rs:688: cmd.shell_arg(command);",
-      "src/justfile.rs:276: command.shell_arg(binary);",
-      "src/load_dotenv.rs:108: .shell_arg(command)"
-     ],
-     "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
-    },
-    {
      "id": "12ac2273",
      "cell": "rust/ripgrep/no_tests",
      "column": "unref",
@@ -9845,17 +9474,101 @@
       "crates/core/flags/parse.rs:311: FlagLookup::Match(&self.info[index])"
      ],
      "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
+     "bucket_size": 124
     },
     {
-     "id": "5d938de1",
+     "id": "334bdb83",
+     "cell": "rust/just/path_tests_excluded",
+     "column": "reach",
+     "kind": "bucket",
+     "decl": "method output_guard (src/command_ext.rs:4)",
+     "name": "output_guard",
+     "file": "src/command_ext.rs",
+     "line": 4,
+     "decl_kind": "method",
+     "subkind": "trait_method",
+     "exported": false,
+     "api": false,
+     "oracle": {
+      "unref": "live",
+      "reach": "live",
+      "unref_how": "scip_references",
+      "refs": 1
+     },
+     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
+     "cell_scope": "production code only (tests are not part of the program)",
+     "category": "impl_for_foreign_type",
+     "source": [
+      "3: pub(crate) trait CommandExt {",
+      "4:   fn output_guard(self) -> (io::Result<process::Output>, Option<Signal>);",
+      "5: ",
+      "6:   fn output_guard_stdout(self) -> Result<String, OutputError>;",
+      "7: ",
+      "8:   fn resolve(program: impl AsRef<OsStr>) -> Command;",
+      "9: ",
+      "10:   fn shell_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Command;"
+     ],
+     "mentions": [
+      "src/command_ext.rs:16: fn output_guard(self) -> (io::Result<process::Output>, Option<Signal>) {",
+      "src/command_ext.rs:21: let (result, caught) = self.output_guard();"
+     ],
+     "bucket": "excluded:impl_for_foreign_type",
+     "bucket_size": 124
+    },
+    {
+     "id": "8e127e13",
      "cell": "rust/tokei/path_tests_excluded",
      "column": "reach",
      "kind": "bucket",
-     "decl": "method ][SliceExt]trim_start (src/utils/ext.rs:58)",
-     "name": "][SliceExt]trim_start",
+     "decl": "method trim (src/utils/ext.rs:26)",
+     "name": "trim",
      "file": "src/utils/ext.rs",
-     "line": 58,
+     "line": 26,
+     "decl_kind": "method",
+     "subkind": "trait_method",
+     "exported": false,
+     "api": false,
+     "oracle": {
+      "unref": "live",
+      "reach": "live",
+      "unref_how": "scip_references",
+      "refs": 24
+     },
+     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
+     "cell_scope": "production code only (tests are not part of the program)",
+     "category": "impl_for_foreign_type",
+     "source": [
+      "25:     fn trim_start(&self) -> &Self;",
+      "26:     fn trim(&self) -> &Self;",
+      "27:     fn contains_slice(&self, needle: &Self) -> bool;",
+      "28: }",
+      "29: ",
+      "30: impl SliceExt for [u8] {",
+      "31:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self {",
+      "32:         let start = self"
+     ],
+     "mentions": [
+      "src/language/language_type.rs:98: let line = if is_fortran { line } else { line.trim() };",
+      "src/language/language_type.rs:99: if line.trim().is_empty() {",
+      "src/language/language_type.rs:141: line.trim()",
+      "src/language/syntax.rs:177: if line.trim().is_empty() {",
+      "src/language/syntax.rs:228: if window.trim().is_empty() {",
+      "src/language/syntax.rs:292: let trimmed = line.trim();",
+      "src/language/syntax.rs:383: let identifier = &opening_fence.as_bytes().trim()[3..];",
+      "src/language/syntax.rs:395: language.parse_from_slice(&lines[start_of_code..end_of_code].trim(), config);"
+     ],
+     "bucket": "excluded:impl_for_foreign_type",
+     "bucket_size": 124
+    },
+    {
+     "id": "5eadc90d",
+     "cell": "rust/ripgrep/no_tests",
+     "column": "reach",
+     "kind": "bucket",
+     "decl": "method index (crates/matcher/src/lib.rs:162)",
+     "name": "index",
+     "file": "crates/matcher/src/lib.rs",
+     "line": 162,
      "decl_kind": "method",
      "subkind": "trait_impl",
      "exported": false,
@@ -9869,145 +9582,119 @@
      "cell_scope": "production code only (tests are not part of the program)",
      "category": "impl_for_foreign_type",
      "source": [
-      "57: ",
-      "58:     fn trim_start(&self) -> &Self {",
-      "59:         let length = self.len();",
-      "60: ",
-      "61:         if length == 0 {",
-      "62:             return &self;",
-      "63:         }",
-      "64: "
+      "161:     #[inline]",
+      "162:     fn index(&self, index: Match) -> &[u8] {",
+      "163:         &self[index.start..index.end]",
+      "164:     }",
+      "165: }",
+      "166: ",
+      "167: impl std::ops::IndexMut<Match> for [u8] {",
+      "168:     #[inline]"
      ],
-     "mentions": [],
+     "mentions": [
+      "crates/cli/src/pattern.rs:18: /// Returns the index in the given string up to which valid UTF-8 was",
+      "crates/core/flags/defs.rs:6008: group at index \\fI1\\fP. If the group's name contains characters that aren't",
+      "crates/core/flags/defs.rs:6011: \\fB${\\fP\\fI1\\fP\\fB}\\fP\\fIa\\fP will take the content of the group at index",
+      "crates/core/flags/defs.rs:6014: If an index or name does not refer to a valid capture group, it will be",
+      "crates/core/flags/parse.rs:298: let Some(index) = self.map.find(&[byte]) else {",
+      "crates/core/flags/parse.rs:301: FlagLookup::Match(&self.info[index])",
+      "crates/core/flags/parse.rs:308: let Some(index) = self.map.find(name.as_bytes()) else {",
+      "crates/core/flags/parse.rs:311: FlagLookup::Match(&self.info[index])"
+     ],
      "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
+     "bucket_size": 124
     },
     {
-     "id": "0060cd08",
-     "cell": "rust/nextest/path_tests_excluded",
-     "column": "unref",
+     "id": "be366ecc",
+     "cell": "rust/tokei/path_tests_excluded",
+     "column": "reach",
      "kind": "bucket",
-     "decl": "method bottom (nextest-filtering/src/expression.rs:494)",
-     "name": "bottom",
-     "file": "nextest-filtering/src/expression.rs",
-     "line": 494,
+     "decl": "method is_whitespace (src/utils/ext.rs:4)",
+     "name": "is_whitespace",
+     "file": "src/utils/ext.rs",
+     "line": 4,
      "decl_kind": "method",
-     "subkind": "trait_impl",
+     "subkind": "trait_method",
      "exported": false,
      "api": false,
      "oracle": {
-      "unref": "dead",
+      "unref": "live",
       "reach": "live",
       "unref_how": "scip_references",
-      "refs": 0
+      "refs": 9
      },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
+     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
      "cell_scope": "production code only (tests are not part of the program)",
      "category": "impl_for_foreign_type",
      "source": [
-      "493:     #[inline]",
-      "494:     fn bottom() -> Self {",
-      "495:         false",
-      "496:     }",
-      "497: ",
-      "498:     #[inline]",
-      "499:     fn logic_and(self, other: Self) -> Self {",
-      "500:         self && other"
+      "3: pub(crate) trait AsciiExt {",
+      "4:     fn is_whitespace(self) -> bool;",
+      "5:     fn is_not_line_ending_whitespace(self) -> bool;",
+      "6:     fn is_line_ending_whitespace(self) -> bool;",
+      "7: }",
+      "8: ",
+      "9: impl AsciiExt for u8 {",
+      "10:     fn is_whitespace(self) -> bool {"
+     ],
+     "mentions": [
+      "src/utils/ext.rs:10: fn is_whitespace(self) -> bool {",
+      "src/utils/ext.rs:15: self.is_whitespace() && !self.is_line_ending_whitespace()",
+      "src/utils/ext.rs:34: .position(|c| c.is_line_ending_whitespace() || !c.is_whitespace())",
+      "src/utils/ext.rs:39: .rposition(|c| c.is_line_ending_whitespace() || !c.is_whitespace())",
+      "src/utils/ext.rs:65: let start = match self.iter().position(|c| !c.is_whitespace()) {"
+     ],
+     "bucket": "excluded:impl_for_foreign_type",
+     "bucket_size": 124
+    },
+    {
+     "id": "65c86ba4",
+     "cell": "rust/nextest/path_tests_excluded",
+     "column": "reach",
+     "kind": "bucket",
+     "decl": "method bottom (nextest-filtering/src/expression.rs:474)",
+     "name": "bottom",
+     "file": "nextest-filtering/src/expression.rs",
+     "line": 474,
+     "decl_kind": "method",
+     "subkind": "trait_method",
+     "exported": false,
+     "api": false,
+     "oracle": {
+      "unref": "live",
+      "reach": "live",
+      "unref_how": "scip_references",
+      "refs": 1
+     },
+     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
+     "cell_scope": "production code only (tests are not part of the program)",
+     "category": "impl_for_foreign_type",
+     "source": [
+      "473:     /// The result of an `any` operation with no operands, akin to Boolean `false`.",
+      "474:     fn bottom() -> Self;",
+      "475: ",
+      "476:     /// `AND`, which corresponds to the `all` operator.",
+      "477:     fn logic_and(self, other: Self) -> Self;",
+      "478: ",
+      "479:     /// `OR`, which corresponds to the `any` operator.",
+      "480:     fn logic_or(self, other: Self) -> Self;"
      ],
      "mentions": [
       "nextest-filtering/src/expression.rs:270: Self::None => Logic::bottom(),",
-      "nextest-filtering/src/expression.rs:474: fn bottom() -> Self;",
+      "nextest-filtering/src/expression.rs:494: fn bottom() -> Self {",
       "nextest-filtering/src/expression.rs:525: fn bottom() -> Self {"
      ],
      "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
+     "bucket_size": 124
     },
     {
-     "id": "029c73c9",
+     "id": "c4e2e43d",
      "cell": "rust/tokei/path_tests_excluded",
-     "column": "unref",
+     "column": "reach",
      "kind": "bucket",
-     "decl": "method ][SliceExt]contains_slice (src/utils/ext.rs:93)",
-     "name": "][SliceExt]contains_slice",
+     "decl": "method is_whitespace (src/utils/ext.rs:10)",
+     "name": "is_whitespace",
      "file": "src/utils/ext.rs",
-     "line": 93,
-     "decl_kind": "method",
-     "subkind": "trait_impl",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "live",
-      "reach": "live",
-      "unref_how": "external_trait_impl"
-     },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "impl_for_foreign_type",
-     "source": [
-      "92: ",
-      "93:     fn contains_slice(&self, needle: &Self) -> bool {",
-      "94:         let self_length = self.len();",
-      "95:         let needle_length = needle.len();",
-      "96: ",
-      "97:         if needle_length == 0 || needle_length > self_length {",
-      "98:             return false;",
-      "99:         } else if needle_length == self_length {"
-     ],
-     "mentions": [],
-     "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
-    },
-    {
-     "id": "0181414a",
-     "cell": "rust/nextest/path_tests_excluded",
-     "column": "unref",
-     "kind": "bucket",
-     "decl": "method logic_or (nextest-filtering/src/expression.rs:504)",
-     "name": "logic_or",
-     "file": "nextest-filtering/src/expression.rs",
-     "line": 504,
-     "decl_kind": "method",
-     "subkind": "trait_impl",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "dead",
-      "reach": "live",
-      "unref_how": "scip_references",
-      "refs": 0
-     },
-     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "impl_for_foreign_type",
-     "source": [
-      "503:     #[inline]",
-      "504:     fn logic_or(self, other: Self) -> Self {",
-      "505:         self || other",
-      "506:     }",
-      "507: ",
-      "508:     #[inline]",
-      "509:     fn logic_not(self) -> Self {",
-      "510:         !self"
-     ],
-     "mentions": [
-      "nextest-filtering/src/expression.rs:219: Union(a, b) => a.logic_or(b),",
-      "nextest-filtering/src/expression.rs:480: fn logic_or(self, other: Self) -> Self;",
-      "nextest-filtering/src/expression.rs:542: fn logic_or(self, other: Self) -> Self {",
-      "nextest-runner/src/test_filter.rs:422: acc.logic_or(FilterBinaryMatch::from_result(",
-      "nextest-runner/src/test_filter.rs:493: fn logic_or(self, other: Self) -> Self {"
-     ],
-     "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
-    },
-    {
-     "id": "f6aea2f5",
-     "cell": "rust/nextest/path_tests_excluded",
-     "column": "reach",
-     "kind": "bucket",
-     "decl": "method track_script (nextest-runner/src/config/overrides.rs:132)",
-     "name": "track_script",
-     "file": "nextest-runner/src/config/overrides.rs",
-     "line": 132,
+     "line": 10,
      "decl_kind": "method",
      "subkind": "trait_impl",
      "exported": false,
@@ -10016,81 +9703,85 @@
       "unref": "live",
       "reach": "live",
       "unref_how": "scip_references",
-      "refs": 2
+      "refs": 9
      },
      "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
      "cell_scope": "production code only (tests are not part of the program)",
      "category": "impl_for_foreign_type",
      "source": [
-      "131: ",
-      "132:     fn track_script<T>(value: T, _source: &'p CompiledProfileScripts<FinalConfig>) -> (T, Self) {",
-      "133:         (value, ())",
-      "134:     }",
-      "135: }",
-      "136: ",
-      "137: #[derive(Copy, Clone, Debug)]",
-      "138: pub(crate) enum SettingSource<'p> {"
+      "9: impl AsciiExt for u8 {",
+      "10:     fn is_whitespace(self) -> bool {",
+      "11:         self == b' ' || (b'\\x09'..=b'\\x0d').contains(&self)",
+      "12:     }",
+      "13: ",
+      "14:     fn is_not_line_ending_whitespace(self) -> bool {",
+      "15:         self.is_whitespace() && !self.is_line_ending_whitespace()",
+      "16:     }"
      ],
      "mentions": [
-      "nextest-runner/src/config/overrides.rs:49: Source::track_script(wrapper.clone(), override_),",
-      "nextest-runner/src/config/overrides.rs:116: fn track_script<T>(value: T, source: &'p CompiledProfileScripts<FinalConfig>) -> (T, Self);",
-      "nextest-runner/src/config/overrides.rs:167: fn track_script<T>(value: T, source: &'p CompiledProfileScripts<FinalConfig>) -> (T, Self) {",
-      "nextest-runner/src/config/overrides.rs:339: run_wrapper = Some(Source::track_script(wrapper.clone(), override_));"
+      "src/utils/ext.rs:4: fn is_whitespace(self) -> bool;",
+      "src/utils/ext.rs:15: self.is_whitespace() && !self.is_line_ending_whitespace()",
+      "src/utils/ext.rs:34: .position(|c| c.is_line_ending_whitespace() || !c.is_whitespace())",
+      "src/utils/ext.rs:39: .rposition(|c| c.is_line_ending_whitespace() || !c.is_whitespace())",
+      "src/utils/ext.rs:65: let start = match self.iter().position(|c| !c.is_whitespace()) {"
      ],
      "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
+     "bucket_size": 124
     },
     {
-     "id": "07983459",
-     "cell": "rust/tokei/path_tests_excluded",
-     "column": "reach",
-     "kind": "bucket",
-     "decl": "method from (src/sort.rs:53)",
-     "name": "from",
-     "file": "src/sort.rs",
-     "line": 53,
-     "decl_kind": "method",
-     "subkind": "trait_impl",
-     "exported": false,
-     "api": false,
-     "oracle": {
-      "unref": "live",
-      "reach": "live",
-      "unref_how": "external_trait_impl"
-     },
-     "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
-     "cell_scope": "production code only (tests are not part of the program)",
-     "category": "impl_for_foreign_type",
-     "source": [
-      "52: impl<'a> From<&'a Sort> for Cow<'a, Sort> {",
-      "53:     fn from(from: &'a Sort) -> Self {",
-      "54:         Cow::Borrowed(from)",
-      "55:     }",
-      "56: }",
-      "57: "
-     ],
-     "mentions": [
-      "build.rs:86: let root = std::path::PathBuf::from(std::env::var(\"CARGO_MANIFEST_DIR\").unwrap());",
-      "src/cli.rs:52: \"Gives statistics from a previous tokei run. Can be given a file path, \\",
-      "src/cli.rs:53: or \\\"stdin\\\" to read from stdin.\")",
-      "src/cli_utils.rs:419: let mut formatted = String::from(\"|\");",
-      "src/cli_utils.rs:421: let from = find_char_boundary(&name, name_length + 1 - self.path_length);",
-      "src/cli_utils.rs:422: formatted.push_str(&name[from..]);",
-      "src/config.rs:52: /// Constructs a new `Config` from either `$base/tokei.toml` or",
-      "src/config.rs:63: /// Creates a `Config` from three configuration files if they are available."
-     ],
-     "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
-    },
-    {
-     "id": "e39a6781",
+     "id": "4ef798ac",
      "cell": "rust/just/path_tests_excluded",
      "column": "unref",
      "kind": "bucket",
-     "decl": "method status_guard (src/command_ext.rs:103)",
-     "name": "status_guard",
+     "decl": "method resolve (src/command_ext.rs:8)",
+     "name": "resolve",
      "file": "src/command_ext.rs",
-     "line": 103,
+     "line": 8,
+     "decl_kind": "method",
+     "subkind": "trait_method",
+     "exported": false,
+     "api": false,
+     "oracle": {
+      "unref": "live",
+      "reach": "live",
+      "unref_how": "scip_references",
+      "refs": 5
+     },
+     "column_means": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the impl blocks of its own type)",
+     "cell_scope": "production code only (tests are not part of the program)",
+     "category": "impl_for_foreign_type",
+     "source": [
+      "7: ",
+      "8:   fn resolve(program: impl AsRef<OsStr>) -> Command;",
+      "9: ",
+      "10:   fn shell_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Command;",
+      "11: ",
+      "12:   fn status_guard(self) -> (io::Result<ExitStatus>, Option<Signal>);",
+      "13: }",
+      "14: "
+     ],
+     "mentions": [
+      "src/alias.rs:16: pub(crate) fn resolve(self, target: Arc<Recipe<'src>>) -> RecipeAlias<'src> {",
+      "src/analyzer.rs:401: recipe_aliases.insert(alias.resolve(target));",
+      "src/command_ext.rs:42: fn resolve(program: impl AsRef<OsStr>) -> Self {",
+      "src/executor.rs:20: let mut command = Command::resolve(&interpreter.command);",
+      "src/function.rs:487: \"could not resolve justfile directory, justfile `{}` had no parent\",",
+      "src/justfile.rs:279: Command::resolve(binary)",
+      "src/platform/unix.rs:11: let mut command = Command::resolve(path);",
+      "src/platform/windows.rs:15: let mut cygpath = Command::resolve(&config.cygpath);"
+     ],
+     "bucket": "excluded:impl_for_foreign_type",
+     "bucket_size": 124
+    },
+    {
+     "id": "f6334fd6",
+     "cell": "rust/tokei/path_tests_excluded",
+     "column": "unref",
+     "kind": "bucket",
+     "decl": "method is_line_ending_whitespace (src/utils/ext.rs:18)",
+     "name": "is_line_ending_whitespace",
+     "file": "src/utils/ext.rs",
+     "line": 18,
      "decl_kind": "method",
      "subkind": "trait_impl",
      "exported": false,
@@ -10105,31 +9796,33 @@
      "cell_scope": "production code only (tests are not part of the program)",
      "category": "impl_for_foreign_type",
      "source": [
-      "102: ",
-      "103:   fn status_guard(self) -> (io::Result<ExitStatus>, Option<Signal>) {",
-      "104:     SignalHandler::spawn(self, |mut child| child.wait())",
-      "105:   }",
-      "106: }",
-      "107: "
+      "17: ",
+      "18:     fn is_line_ending_whitespace(self) -> bool {",
+      "19:         self == b'\\n'",
+      "20:     }",
+      "21: }",
+      "22: ",
+      "23: pub(crate) trait SliceExt {",
+      "24:     fn trim_first_and_last_line_of_whitespace(&self) -> &Self;"
      ],
      "mentions": [
-      "src/command_ext.rs:12: fn status_guard(self) -> (io::Result<ExitStatus>, Option<Signal>);",
-      "src/justfile.rs:306: let (result, caught) = command.status_guard();",
-      "src/recipe.rs:411: let (result, caught) = cmd.status_guard();",
-      "src/recipe.rs:676: let (result, caught) = command.status_guard();"
+      "src/utils/ext.rs:6: fn is_line_ending_whitespace(self) -> bool;",
+      "src/utils/ext.rs:15: self.is_whitespace() && !self.is_line_ending_whitespace()",
+      "src/utils/ext.rs:34: .position(|c| c.is_line_ending_whitespace() || !c.is_whitespace())",
+      "src/utils/ext.rs:39: .rposition(|c| c.is_line_ending_whitespace() || !c.is_whitespace())"
      ],
      "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
+     "bucket_size": 124
     },
     {
-     "id": "d62bc9c8",
-     "cell": "rust/just/path_tests_excluded",
+     "id": "228b99e1",
+     "cell": "rust/nextest/path_tests_excluded",
      "column": "reach",
      "kind": "bucket",
-     "decl": "method into_iter (src/attribute_set.rs:141)",
-     "name": "into_iter",
-     "file": "src/attribute_set.rs",
-     "line": 141,
+     "decl": "method logic_not (nextest-filtering/src/expression.rs:554)",
+     "name": "logic_not",
+     "file": "nextest-filtering/src/expression.rs",
+     "line": 554,
      "decl_kind": "method",
      "subkind": "trait_impl",
      "exported": false,
@@ -10137,33 +9830,30 @@
      "oracle": {
       "unref": "live",
       "reach": "live",
-      "unref_how": "external_trait_impl"
+      "unref_how": "scip_references",
+      "refs": 2
      },
      "column_means": "unreachable: no chain of references (calls, `new`, callbacks, any mention) leads to it from the roots (main/init, test functions, the package entry / public API)",
      "cell_scope": "production code only (tests are not part of the program)",
      "category": "impl_for_foreign_type",
      "source": [
-      "140: ",
-      "141:   fn into_iter(self) -> Self::IntoIter {",
-      "142:     self.0.keys()",
-      "143:   }",
-      "144: }",
-      "145: ",
-      "146: impl<'src> IntoIterator for AttributeSet<'src> {",
-      "147:   type Item = Attribute<'src>;"
+      "553:     #[inline]",
+      "554:     fn logic_not(self) -> Self {",
+      "555:         self.map(|v| !v)",
+      "556:     }",
+      "557: }",
+      "558: ",
+      "559: pub(crate) enum ExprFrame<Set, A> {",
+      "560:     Not(A),"
      ],
      "mentions": [
-      "src/attribute.rs:194: arguments.into_iter().next().map(|(_, expr)| expr),",
-      "src/attribute.rs:197: arguments.into_iter().next().map(|(_, expr)| expr),",
-      "src/attribute.rs:200: let mut arguments = arguments.into_iter();",
-      "src/attribute.rs:206: arguments.into_iter().next().map(|(_, expr)| expr),",
-      "src/attribute.rs:209: arguments.into_iter().next().map(|(_, expr)| expr).unwrap(),",
-      "src/attribute.rs:216: .into_iter()",
-      "src/attribute_set.rs:81: self.0.into_iter()",
-      "src/attribute_set.rs:132: Self(iter.into_iter().collect())"
+      "nextest-filtering/src/expression.rs:217: Not(a) => a.logic_not(),",
+      "nextest-filtering/src/expression.rs:221: Difference(a, b) => a.logic_and(b.logic_not()),",
+      "nextest-filtering/src/expression.rs:483: fn logic_not(self) -> Self;",
+      "nextest-filtering/src/expression.rs:509: fn logic_not(self) -> Self {"
      ],
      "bucket": "excluded:impl_for_foreign_type",
-     "bucket_size": 126
+     "bucket_size": 124
     }
    ],
    "excluded:macro_generated": [

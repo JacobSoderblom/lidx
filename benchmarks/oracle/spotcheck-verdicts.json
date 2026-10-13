@@ -827,5 +827,946 @@
  "29971731": {
   "verdict": "lidx_error",
   "note": "attest.go:96 syftjson.ID.String(): ID is const of type sbom.FormatID (syftjson/encoder.go:13) so this is a real call to FormatID.String (format.go:10) that lidx missed."
+ },
+ "h2ca04355": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_string_slice.go with receiver StringSliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "hbae08f9a": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_bool.go with receiver BoolFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "h8bfd5ca5": {
+  "verdict": "lidx_error",
+  "note": "Source line cmd/syft/internal/options/catalog.go:33 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct."
+ },
+ "he0c165e3": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_uint64.go with receiver Uint64Flag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "h2c8294c2": {
+  "verdict": "lidx_error",
+  "note": "Source line syft/testutil/completion_testing.go:14 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct."
+ },
+ "h9ba50444": {
+  "verdict": "lidx_error",
+  "note": "middleware/wrap_writer.go:237 embeds http.ResponseWriter (and/or basicWriter) and gets the interface's methods by promotion; the compiler fact is correct (basicWriter defines Status/Tee/Unwrap/Discard, Header is promoted) but lidx has no IMPLEMENTS edge since it cannot see promotion through embedding of an external/embedded type."
+ },
+ "hacbde44d": {
+  "verdict": "lidx_error",
+  "note": "Source line cmd/syft/internal/commands/cataloger_list.go:31 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct."
+ },
+ "hb0e35061": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_float64_slice.go with receiver Float64SliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "hfaaa99ff": {
+  "verdict": "lidx_error",
+  "note": "Source line syft/internal/fileresolver/unindexed_directory.go:460 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct."
+ },
+ "h3cfbfcdb": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_float64.go with receiver Float64Flag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "he20339a4": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_int_slice.go with receiver IntSliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "ha10994d7": {
+  "verdict": "lidx_error",
+  "note": "Source line syft/format/cyclonedxjson/encoder.go:21 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct."
+ },
+ "h1b68768d": {
+  "verdict": "lidx_error",
+  "note": "basicWriter.Unwrap (wrap_writer.go:142) really implements WrapResponseWriter.Unwrap (line 63); both symbols exist in lidx but basicWriter has no IMPLEMENTS edge to WrapResponseWriter (promoted http.ResponseWriter methods unseen), so the override is missing."
+ },
+ "hf2f7d8f4": {
+  "verdict": "lidx_error",
+  "note": "Source line cmd/syft/internal/commands/attest.go:41 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct."
+ },
+ "h6be6b61f": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_string.go with receiver StringFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "h788733cd": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_string.go with receiver StringFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "hc94b18e6": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_uint64.go with receiver Uint64Flag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "hbdadc10f": {
+  "verdict": "lidx_error",
+  "note": "Source line cmd/syft/internal/commands/attest.go:41 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct."
+ },
+ "h40bacd65": {
+  "verdict": "lidx_error",
+  "note": "Method declared in flag_uint64_slice.go with receiver Uint64SliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct."
+ },
+ "hf8144969": {
+  "verdict": "lidx_error",
+  "note": "middleware/wrap_writer.go:74 embeds http.ResponseWriter (and/or basicWriter) and gets the interface's methods by promotion; the compiler fact is correct (basicWriter defines Status/Tee/Unwrap/Discard, Header is promoted) but lidx has no IMPLEMENTS edge since it cannot see promotion through embedding of an external/embedded type."
+ },
+ "h95c8a0b6": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds os.File, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "hc2df0e0b": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds io.ReaderAt, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "h2c26fdf5": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds net/http.ResponseWriter, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "hb1b7727c": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds io.Reader, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "h4e89cf52": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds bytes.Buffer, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "hc3e023f5": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds github.com/anchore/bubbly.EventHandler, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "hf4cd2bd9": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds github.com/nix-community/go-nix/pkg/derivation.Derivation, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "ha23a37c9": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds net/http/httptest.ResponseRecorder, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "hcccd7e2a": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds net/http/httptest.ResponseRecorder, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "h75fbd90f": {
+  "verdict": "correct_exclusion",
+  "note": "Source embeds github.com/wagoodman/go-progress.Manual, imported from outside the repo (stdlib/third-party import verified in file); no in-repo target for lidx."
+ },
+ "h8a7736bb": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h10aa9d78": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h940bb574": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h9275754d": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h91bfce36": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h6289b929": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h1e68e20a": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h2a9f4fb6": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h1254d55a": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "hb1d20250": {
+  "verdict": "correct_exclusion",
+  "note": "Receiver is the generic SliceFlag[T,S,E]/errorResolver[T] (sliceflag.go / error_resolver.go), whose type the oracle never judged; the method pair is real but exclusion follows the generic-type rule."
+ },
+ "h190caa75": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h4b4ea54b": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h4f0d9a56": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h981b525e": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h68224c69": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h6f58777f": {
+  "verdict": "correct_exclusion",
+  "note": "remote/ has its own go.mod (separate module from viper root) so remote/remote.go is outside the analysed program."
+ },
+ "h858e259b": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h05f3cc1d": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h42a6988e": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "h7ed4f1ef": {
+  "verdict": "correct_exclusion",
+  "note": "examples/ is its own module (examples/go.mod, 'module examples') and tea.Model comes from the root module, so the file is outside the analysed program."
+ },
+ "hc7807528": {
+  "verdict": "correct_exclusion",
+  "note": "internal/cache/resolver.go is a generic type declaration (type parameters in the source) whose compiler judgement needs instantiation; exclusion matches the rule (lidx does emit this IMPLEMENTS edge, source supports it)."
+ },
+ "hbf39acfc": {
+  "verdict": "correct_exclusion",
+  "note": "internal/cache/error_resolver.go is a generic type declaration (type parameters in the source) whose compiler judgement needs instantiation; exclusion matches the rule (lidx does emit this IMPLEMENTS edge, source supports it)."
+ },
+ "hc91c6fb1": {
+  "verdict": "correct_exclusion",
+  "note": "sliceflag.go is a generic type declaration (type parameters in the source) whose compiler judgement needs instantiation; exclusion matches the rule (lidx does emit this IMPLEMENTS edge, source supports it)."
+ },
+ "h15fe5563": {
+  "verdict": "correct_exclusion",
+  "note": "sliceflag.go is a generic type declaration (type parameters in the source) whose compiler judgement needs instantiation; exclusion matches the rule (lidx does emit this IMPLEMENTS edge, source supports it)."
+ },
+ "hfe3a02fc": {
+  "verdict": "correct_exclusion",
+  "note": "sliceflag.go is a generic type declaration (type parameters in the source) whose compiler judgement needs instantiation; exclusion matches the rule (lidx does emit this IMPLEMENTS edge, source supports it)."
+ },
+ "h91354a34": {
+  "verdict": "correct_exclusion",
+  "note": "sliceflag.go is a generic type declaration (type parameters in the source) whose compiler judgement needs instantiation; exclusion matches the rule (lidx does emit this IMPLEMENTS edge, source supports it)."
+ },
+ "hb41d2eea": {
+  "verdict": "correct_exclusion",
+  "note": "sliceflag.go is a generic type declaration (type parameters in the source) whose compiler judgement needs instantiation; exclusion matches the rule (lidx does emit this IMPLEMENTS edge, source supports it)."
+ },
+ "hcb6ba1d3": {
+  "verdict": "lidx_error",
+  "note": "hono src/adapter/service-worker/types.ts:1 `interface ExtendableEvent extends Event` has no import of Event, so it is the global DOM Event; lidx resolved the bare name to the unrelated alias `type Event` at src/jsx/types.ts:29."
+ },
+ "h0bbff936": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `getCookies` at src/adapter/aws-lambda/handler.ts:287 by `getCookies` at src/adapter/aws-lambda/handler.ts:417 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h97f683b6": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:1636 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h8200dce5": {
+  "verdict": "lidx_error",
+  "note": "ForceRetryError.ts:12 `override name = ...` overrides KyError.ts:9 `override name = ...` (class extends KyError); both carry the override keyword yet lidx has no pairing, so property-member overrides are missed."
+ },
+ "h7fcf58c0": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:4530 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "hb9694e7c": {
+  "verdict": "lidx_error",
+  "note": "Class member `path` at packages/zod/src/v3/types.ts:74 implements interface/type-literal/declare-class member `path` at packages/zod/src/v3/helpers/parseUtil.ts:68 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design."
+ },
+ "h45d7f03a": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `getPath` at src/adapter/aws-lambda/handler.ts:279 by `getPath` at src/adapter/aws-lambda/handler.ts:526 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "ha14fee18": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:3514 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h0faf9744": {
+  "verdict": "lidx_error",
+  "note": "Class member `data` at packages/zod/src/v3/types.ts:64 implements interface/type-literal/declare-class member `data` at packages/zod/src/v3/helpers/parseUtil.ts:67 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design."
+ },
+ "hda98d402": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:4782 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h041e4f13": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `getHeaders` at src/adapter/aws-lambda/handler.ts:285 by `getHeaders` at src/adapter/aws-lambda/handler.ts:504 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "hb71a05c3": {
+  "verdict": "lidx_error",
+  "note": "Class member `match` at src/router/pattern-router/router.ts:44 implements interface/type-literal/declare-class member `match` at src/router.ts:51 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design."
+ },
+ "h57dcf655": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:1370 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "ha969484d": {
+  "verdict": "lidx_error",
+  "note": "Class member `name` at src/router/reg-exp-router/router.ts:123 implements interface/type-literal/declare-class member `name` at src/router.ts:33 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design."
+ },
+ "hec9ec442": {
+  "verdict": "lidx_error",
+  "note": "Class member `handler` at src/h3.ts:64 implements interface/type-literal/declare-class member `handler` at src/types/h3.ts:136 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design."
+ },
+ "he9d39e79": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:2241 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h4307dd27": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `getMethod` at src/adapter/aws-lambda/handler.ts:281 by `getMethod` at src/adapter/aws-lambda/handler.ts:530 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h0f95af1b": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `getCookies` at src/adapter/aws-lambda/handler.ts:287 by `getCookies` at src/adapter/aws-lambda/handler.ts:470 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h526c97e4": {
+  "verdict": "lidx_error",
+  "note": "Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:4322 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation."
+ },
+ "h05800233": {
+  "verdict": "lidx_error",
+  "note": "Class member `match` at src/router/reg-exp-router/router.ts:206 implements interface/type-literal/declare-class member `match` at src/router.ts:51 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design."
+ },
+ "h06904be1": {
+  "verdict": "lidx_error",
+  "note": "Class member `\"~request\"` at src/h3.ts:73 implements interface/type-literal/declare-class member `\"~request\"` at src/types/h3.ts:139 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design."
+ },
+ "h6678ed9d": {
+  "verdict": "correct_exclusion",
+  "note": "Base `parent` at packages/zod/src/v3/helpers/parseUtil.ts:69 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h32d7f1db": {
+  "verdict": "correct_exclusion",
+  "note": "Base `add` at src/router.ts:42 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h7fe0a776": {
+  "verdict": "correct_exclusion",
+  "note": "Base `status` at src/error.ts:34 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "hd1ececbe": {
+  "verdict": "correct_exclusion",
+  "note": "Base `add` at src/router.ts:42 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h61cf92f6": {
+  "verdict": "correct_exclusion",
+  "note": "Base `\"~addRoute\"` at src/types/h3.ts:154 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h3ea96dab": {
+  "verdict": "correct_exclusion",
+  "note": "Base `add` at src/router.ts:42 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h00ffe917": {
+  "verdict": "correct_exclusion",
+  "note": "Base `match` at src/router.ts:51 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h3d312be7": {
+  "verdict": "correct_exclusion",
+  "note": "Base `isEscaped` at src/utils/html.ts:18 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "hc78f14cd": {
+  "verdict": "correct_exclusion",
+  "note": "Base `fetch` at src/types/h3.ts:131 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h22cde2dc": {
+  "verdict": "correct_exclusion",
+  "note": "Base `name` at src/router.ts:33 is a member of an interface or type-literal (not a lidx symbol), confirmed in source; no symbol exists for that end."
+ },
+ "h874f0829": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "hb8cd859c": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Promise` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h590dfdbf": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Partial` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h1a7bb14d": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h1dd87b27": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h4e7e31c6": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h2ee078a9": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h9a682372": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h43aa9705": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h728d50c0": {
+  "verdict": "correct_exclusion",
+  "note": "Base `Error` is a lib/global type (not declared in the analysed program), so the checker has no in-repo target; correctly excluded."
+ },
+ "h13558ea3": {
+  "verdict": "correct_exclusion",
+  "note": "`extends Map` names the global lib class declared outside the analysed program (immer mapset.ts); no in-repo declaration."
+ },
+ "h5ee18e1d": {
+  "verdict": "correct_exclusion",
+  "note": "`extends Set` names the global lib class declared outside the analysed program (immer mapset.ts); no in-repo declaration."
+ },
+ "h354eb3ae": {
+  "verdict": "correct_exclusion",
+  "note": "zod core.ts:55 `class Definition extends Parent` where Parent is a local const (`params?.Parent ?? Object`), not a declaration in the program; no graph target exists."
+ },
+ "h865baa3e": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/openapi/test/routers/mongoEjsonRouter-heyapi/sdk.gen.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "h09ab9917": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/openapi/test/routers/errorFormatterRouter-heyapi/client/types.gen.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "h86fb069a": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/openapi/test/routers/nodeModulesJsDocRouter-heyapi/core/pathSerializer.gen.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "h055f692e": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/openapi/test/routers/edgeCaseRouter-heyapi/client/types.gen.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "he208e08e": {
+  "verdict": "correct_exclusion",
+  "note": "ky oracle scope is subdirs [source]; test/main.ts is outside it."
+ },
+ "hbfca44cf": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/openapi/test/routers/edgeCaseRouter-heyapi/sdk.gen.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "hced7f6e2": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/tanstack-react-query/src/internals/queryOptions.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "h79aa5e85": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/react-query/src/shared/hooks/types.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "h26337960": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/openapi/test/routers/appRouter-heyapi/sdk.gen.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "h92e123ef": {
+  "verdict": "correct_exclusion",
+  "note": "trpc oracle scope is packages/server/src; packages/react-query/src/shared/types.ts is in another package or test fixture, outside the analysed scope."
+ },
+ "hf8d21ea1": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Line<'src>` in src/node.rs:276 while the type is declared in its own file; lidx has only the method-level edge crate::node::Line::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Line), which is no symbol."
+ },
+ "h541c010f": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Ast<'src>` in src/node.rs:10 while the type is declared in its own file; lidx has only the method-level edge crate::node::Ast::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Ast), which is no symbol."
+ },
+ "hdeba57d2": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Item<'src>` in src/node.rs:24 while the type is declared in its own file; lidx has only the method-level edge crate::node::Item::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Item), which is no symbol."
+ },
+ "h8889124f": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Fragment<'src>` in src/node.rs:282 while the type is declared in its own file; lidx has only the method-level edge crate::node::Fragment::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Fragment), which is no symbol."
+ },
+ "hc47015c2": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Set<'src>` in src/node.rs:291 while the type is declared in its own file; lidx has only the method-level edge crate::node::Set::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Set), which is no symbol."
+ },
+ "h6dae8ce9": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Parameter<'src>` in src/node.rs:264 while the type is declared in its own file; lidx has only the method-level edge crate::node::Parameter::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Parameter), which is no symbol."
+ },
+ "h3dde8606": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Alias<'src>` in src/node.rs:95 while the type is declared in its own file; lidx has only the method-level edge crate::node::Alias::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Alias), which is no symbol."
+ },
+ "h3a2ef39c": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Expression<'src>` in src/node.rs:119 while the type is declared in its own file; lidx has only the method-level edge crate::node::Expression::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Expression), which is no symbol."
+ },
+ "hceda3b51": {
+  "verdict": "lidx_error",
+  "note": "Impl is `impl<'src> Node<'src> for Warning<'src>` in src/node.rs:342 while the type is declared in its own file; lidx has only the method-level edge crate::node::Warning::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Warning), which is no symbol."
+ },
+ "h58fab199": {
+  "verdict": "lidx_error",
+  "note": "`impl PlatformInterface for Platform` lives in src/platform/unix.rs:3 (and windows.rs) while struct Platform is in src/platform.rs; lidx only has method edges crate::platform::unix::Platform::* and no type-level edge (source qualname is the impl's module)."
+ },
+ "h003dd093": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for JSONSink` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_searcher::Sink` instead of the in-repo trait (crates/searcher/src/sink.rs:102), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "h15ddd372": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for SummarySink` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_searcher::Sink` instead of the in-repo trait (searcher sink.rs:102), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "h118e6325": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for StandardSink` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_searcher::Sink` instead of the in-repo trait (searcher sink.rs:102), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "hba95e67c": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for RegexCaptures (regex)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Captures` instead of the in-repo trait (matcher lib.rs:379), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "h5d975e96": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for RegexCaptures (pcre2)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Captures` instead of the in-repo trait (matcher lib.rs:379), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "h239ac260": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for RegexMatcher (searcher testutil)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Matcher` instead of the in-repo trait (matcher lib.rs:546), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "h622fe208": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for RegexMatcher (regex)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Matcher` instead of the in-repo trait (matcher lib.rs:546), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "h5c55b9db": {
+  "verdict": "lidx_error",
+  "note": "Source has `impl ... for RegexMatcher (pcre2)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Matcher` instead of the in-repo trait (matcher lib.rs:546), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate)."
+ },
+ "h736904be": {
+  "verdict": "lidx_error",
+  "note": "`impl<'g> ListProfile for EvaluatableProfile<'g>` is at test_list.rs:808 while the struct is in config/config_impl.rs:929; lidx has only method-level edges under crate::list::test_list::EvaluatableProfile::* and no type-level edge (cross-file impl)."
+ },
+ "h3ff1caf7": {
+  "verdict": "lidx_error",
+  "note": "`impl WithNameOnly for ReceiverType` at csharp.rs:7792 (in mod tests) for an enum declared in extract.rs; lidx has only the method edge crate::indexer::csharp::tests::ReceiverType::with_name_only and no type-level edge (cross-file impl, source qualified into the impl's module)."
+ },
+ "hf93a4488": {
+  "verdict": "correct_exclusion",
+  "note": "`impl From<FinalStatusLevelOpt> for FinalStatusLevel` is at cargo-nextest/src/dispatch.rs:1157, enum declared in another crate; lidx has the method edge ...dispatch::FinalStatusLevel::from but the type-level From edge has NULL source symbol, so no edge from the enum (cross-file impl limitation)."
+ },
+ "hf90df338": {
+  "verdict": "correct_exclusion",
+  "note": "Impl is `impl Display/Serialize for TokenKind` in the same file (via `use super::*` glob), lidx emits only the method edge (token_kind.rs:49 TokenKind::fmt -> Display::fmt) with unresolved bare target and no type-level IMPLEMENTS row naming it, while PartialEq/Ord on other types are emitted; external trait so exclusion is right but it is a glob-imported-trait miss."
+ },
+ "hb398b38b": {
+  "verdict": "correct_exclusion",
+  "note": "Impl is `impl Display/Serialize for Pattern` in the same file (via `use super::*` glob), lidx emits only the method edge (Pattern::serialize -> Serialize::serialize) with unresolved bare target and no type-level IMPLEMENTS row naming it, while PartialEq/Ord on other types are emitted; external trait so exclusion is right but it is a glob-imported-trait miss."
+ },
+ "hefd599a4": {
+  "verdict": "correct_exclusion",
+  "note": "Impl is `impl Display/Serialize for ConstEvalError` in the same file (via `use super::*` glob), lidx emits only the method edge (bare Display::fmt) with unresolved bare target and no type-level IMPLEMENTS row naming it, while PartialEq/Ord on other types are emitted; external trait so exclusion is right but it is a glob-imported-trait miss."
+ },
+ "hef2d1111": {
+  "verdict": "correct_exclusion",
+  "note": "Impl is `impl Display/Serialize for OutputError` in the same file (via `use super::*` glob), lidx emits only the method edge (bare Display::fmt) with unresolved bare target and no type-level IMPLEMENTS row naming it, while PartialEq/Ord on other types are emitted; external trait so exclusion is right but it is a glob-imported-trait miss."
+ },
+ "h55568552": {
+  "verdict": "correct_exclusion",
+  "note": "Impl is `impl Display/Serialize for Namepath` in the same file (via `use super::*` glob), lidx emits only the method edge (namepath.rs:50) with unresolved bare target and no type-level IMPLEMENTS row naming it, while PartialEq/Ord on other types are emitted; external trait so exclusion is right but it is a glob-imported-trait miss."
+ },
+ "h4a1e74b8": {
+  "verdict": "correct_exclusion",
+  "note": "Impl is `impl Display/Serialize for CompileError` in the same file (via `use super::*` glob), lidx emits only the method edge (bare Display::fmt) with unresolved bare target and no type-level IMPLEMENTS row naming it, while PartialEq/Ord on other types are emitted; external trait so exclusion is right but it is a glob-imported-trait miss."
+ },
+ "h584a7445": {
+  "verdict": "correct_exclusion",
+  "note": "Impl is `impl Display/Serialize for UnstableFeature` in the same file (via `use super::*` glob), lidx emits only the method edge (bare Display::fmt) with unresolved bare target and no type-level IMPLEMENTS row naming it, while PartialEq/Ord on other types are emitted; external trait so exclusion is right but it is a glob-imported-trait miss."
+ },
+ "hccaacabd": {
+  "verdict": "correct_exclusion",
+  "note": "attribute_set.rs:130 `impl FromIterator<..> for AttributeSet` has no lidx IMPLEMENTS row (IntoIterator and PartialEq from the same file do), so FromIterator (a 2021-prelude trait) is not recognised."
+ },
+ "hf7ecca53": {
+  "verdict": "correct_exclusion",
+  "note": "ignore lib.rs:308 `impl std::error::Error for Error` yields no type-level or method-level IMPLEMENTS from crate::Error (Clone/Display/From do), likely dropped because the trait name equals the type name."
+ },
+ "h35870851": {
+  "verdict": "correct_exclusion",
+  "note": "`impl Future for PausableSleep` at pausable_sleep.rs:105 but the struct is declared inside a pin_project! macro so lidx has no PausableSleep symbol (only the method edge PausableSleep::poll -> Future::poll)."
+ },
+ "h49ccb6e3": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at matcher lib.rs:1133 is on a foreign/blanket self type (`impl<'a, M: Matcher> Matcher for &'a M`), which the oracle excludes; trait method declared at base line."
+ },
+ "hd3005326": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at ordinal.rs:6 is on a foreign/blanket self type (`impl Ordinal for usize`), which the oracle excludes; trait method declared at base line."
+ },
+ "h85106ae7": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at expression.rs:517 is on a foreign/blanket self type (`impl Logic for Option<bool>`), which the oracle excludes; trait method declared at base line."
+ },
+ "h90a77dd8": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at overrides.rs:121 is on a foreign/blanket self type (`impl<'p> TrackSource<'p> for ()`), which the oracle excludes; trait method declared at base line."
+ },
+ "h9379b0ba": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at matcher lib.rs:1133 is on a foreign/blanket self type (`impl Matcher for &'a M`), which the oracle excludes; trait method declared at base line."
+ },
+ "hf57de7b8": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at write_str.rs:~70-82 is on a foreign/blanket self type (`impl WriteStr for String` (override of default method write_char)), which the oracle excludes; trait method declared at base line."
+ },
+ "haf60bfb7": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at sink.rs:225 is on a foreign/blanket self type (`impl<'a, S: Sink> Sink for &'a mut S`), which the oracle excludes; trait method declared at base line."
+ },
+ "h1259a8a1": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at matcher lib.rs:1133 is on a foreign/blanket self type (`impl Matcher for &'a M`), which the oracle excludes; trait method declared at base line."
+ },
+ "hc99ce2b8": {
+  "verdict": "correct_exclusion",
+  "note": "Impl at matcher lib.rs:1133 is on a foreign/blanket self type (`impl Matcher for &'a M`), which the oracle excludes; trait method declared at base line."
+ },
+ "hb5e0c09d": {
+  "verdict": "misbucketed",
+  "note": "pcre2/src/error.rs:34 `impl std::error::Error for Error` is wrongly resolved by lidx to the in-repo struct crates/regex/src/error.rs `Error` (name collision), a false struct->struct IMPLEMENTS that the end_not_judged exclusion hides from precision."
+ },
+ "h358e5d54": {
+  "verdict": "correct_exclusion",
+  "note": "File tests/fixtures/py_mvp/pkg/core.py is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (class Greeter(Base))."
+ },
+ "h741d9ce0": {
+  "verdict": "correct_exclusion",
+  "note": "File tests/syntax-tests/.../example.ts is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (interface Point3d extends Point)."
+ },
+ "h60e0d2fb": {
+  "verdict": "correct_exclusion",
+  "note": "File crates/matcher/tests/util.rs is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (impl Captures for RegexCaptures)."
+ },
+ "hda3c1d4d": {
+  "verdict": "correct_exclusion",
+  "note": "File tests/tests.rs is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (impl Csv for CsvVecs, a type alias)."
+ },
+ "h1be95f45": {
+  "verdict": "correct_exclusion",
+  "note": "File tests/tests.rs is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (impl Csv for CsvVecs)."
+ },
+ "h0f55ed0a": {
+  "verdict": "correct_exclusion",
+  "note": "File nextest-runner/tests/integration/fixtures.rs is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (impl ListProfile for FakeListProfile)."
+ },
+ "h824b4133": {
+  "verdict": "correct_exclusion",
+  "note": "File tests/fixtures/dead_symbols_rust/src/lib.rs is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (impl Customizer for PoolCustomizer)."
+ },
+ "ha59a9afa": {
+  "verdict": "correct_exclusion",
+  "note": "File tests/fixtures/golden/csharp/Animals.cs is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (class Dog : Animal)."
+ },
+ "h034501dd": {
+  "verdict": "correct_exclusion",
+  "note": "File tests/tests.rs is under a tests/ (or fixture) directory excluded by the cell; the pair itself is real in source (impl Csv for CsvData)."
+ },
+ "hdeeef781": {
+  "verdict": "correct_exclusion",
+  "note": "src/platform/windows.rs is not under tests/ but is `#[cfg(windows)] mod windows`, so rust-analyzer on this host never analysed it; the impl PlatformInterface for Platform is real and lidx does index it."
+ },
+ "_hierarchy_notes": "Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where fewer wrong pairs exist every one is read (Go and Rust have none: lidx's precision is 1.00 on the pairs the oracle judges; TypeScript has one), plus up to 10 items from every exclusion bucket. Read against the source by Sonnet subagents with access to the checked-out corpus and lidx's index. The first TypeScript sample found 12 of 61 items to be matching artefacts (a type alias named in an `extends` clause was keyed at its target, and the bases of merged interface declarations were all attributed to the first declaration); the oracle now reads each `extends` clause where it is written and the sample was redrawn.",
+ "h408b747d": {
+  "verdict": "correct",
+  "note": "customBoolFlag.Apply (app_test.go:2497) is the pointer-receiver implementer of Flag.Apply(*flag.FlagSet) error at flag.go:106."
+ },
+ "hfc0eedda": {
+  "verdict": "correct",
+  "note": "(*Deferred).FilesByGlob(patterns ...string) matches PathResolver.FilesByGlob at resolver.go:45 with identical signature."
+ },
+ "h49adb017": {
+  "verdict": "correct",
+  "note": "HashiGoGetter.GetFile (value receiver, variadic monitors) implements Getter.GetFile at getter.go:24; parameter-name difference is irrelevant."
+ },
+ "hc36e369f": {
+  "verdict": "correct",
+  "note": "altsrc.DurationFlag embeds *cli.DurationFlag (promoting IsVisible/GetCategory/Names/IsSet/String) and defines Apply on *DurationFlag, so *DurationFlag satisfies CategorizableFlag."
+ },
+ "haa5a694d": {
+  "verdict": "correct",
+  "note": "*excluding defines AllLocations(ctx) <-chan file.Location (excluding_file.go:73), the sole method of LocationResolver."
+ },
+ "hf095d732": {
+  "verdict": "correct",
+  "note": "*Int64Slice has WithSeparatorSpec(spec separatorSpec) at flag_int64_slice.go:33, the sole method of customizedSeparator."
+ },
+ "hbba172d6": {
+  "verdict": "correct",
+  "note": "*directorySource.FileResolver(Scope)(file.Resolver,error) at directory_source.go:92 implements Source.FileResolver at source.go:18."
+ },
+ "h2583164f": {
+  "verdict": "correct",
+  "note": "*genericType.String() string (flag_test.go:3004) implements Generic.String at flag_generic.go:11 (Set also present)."
+ },
+ "hc540c7a7": {
+  "verdict": "correct",
+  "note": "*extFlag.IsVisible (flag_ext.go:26) implements VisibleFlag.IsVisible at flag.go:153."
+ },
+ "h7264c79b": {
+  "verdict": "correct",
+  "note": "request embeds file.Location (Location->LocationData->Coordinates, which has ID() artifact.ID at coordinates.go:26) and the method-less func type Parser, so ID() is promoted and Identifiable is satisfied."
+ },
+ "hcf2dad1b": {
+  "verdict": "correct",
+  "note": "*ContainerImageAllLayers.FilesByPath(paths ...string) matches PathResolver.FilesByPath at resolver.go:38."
+ },
+ "hf06c025b": {
+  "verdict": "correct",
+  "note": "LocationReadCloser embeds Location, promoting Coordinates.ID() artifact.ID; io.ReadCloser adds no conflicting ID, so Identifiable is satisfied."
+ },
+ "h0e58ff81": {
+  "verdict": "correct",
+  "note": "*mockFileGetter.GetFile (snap_test.go:623) overrides the embedded file.Getter's GetFile and implements Getter.GetFile at getter.go:24 with identical signature."
+ },
+ "hbeb69c8d": {
+  "verdict": "correct",
+  "note": "*Int64SliceFlag.IsVisible (zz_generated.flags.go:149) implements VisibleFlag.IsVisible at flag.go:153."
+ },
+ "h0d2a9955": {
+  "verdict": "correct",
+  "note": "*IntSliceFlag has WithSeparatorSpec at zz_generated... flag_int_slice.go:191 (pointer receiver), satisfying customizedSeparator."
+ },
+ "h66e0966e": {
+  "verdict": "correct",
+  "note": "ActionableFlag (flag.go:95) embeds Flag (flag.go:103); the single embedded identifier Flag resolves to that interface despite bare_name resolution."
+ },
+ "hff83d6b5": {
+  "verdict": "correct",
+  "note": "(*Mux).Mount(pattern string, handler http.Handler) at mux.go:295 implements Router.Mount(pattern string, h http.Handler) at chi.go:86."
+ },
+ "hb0623519": {
+  "verdict": "correct",
+  "note": "*StringSliceFlag.IsRequired (zz_generated.flags.go:294) implements RequiredFlag.IsRequired at flag.go:116."
+ },
+ "h506a10e9": {
+  "verdict": "correct",
+  "note": "Empty (value receivers) defines every method of Resolver (Content/Path/Location/Metadata) plus Write; empty.go even asserts var _ file.WritableResolver = (*Empty)(nil)."
+ },
+ "h5b9dca5a": {
+  "verdict": "correct",
+  "note": "spyReturningFileResolver has value-receiver FileContentsByLocation(file.Location)(io.ReadCloser,error), the only ContentResolver method."
+ },
+ "hfdf2e7b0": {
+  "verdict": "correct_exclusion",
+  "note": "Generic SliceFlag[T,S,E].TakesValue is a real implementation of DocGenerationFlag.TakesValue (flag.go:124): lidx's relation is TRUE, the oracle just does not judge generic receivers."
+ },
+ "h70b5ad0a": {
+  "verdict": "correct_exclusion",
+  "note": "Generic cacheResolver[T].Resolve (resolver.go:45) really implements Resolver[T].Resolve (resolver.go:18; compile-time assert at line 38-40): lidx's relation is TRUE, ends are generic so ungradable."
+ },
+ "h5875285e": {
+  "verdict": "correct_exclusion",
+  "note": "Generic SliceFlag[T,S,E].GetCategory returns x.Target.GetCategory() and implements CategorizableFlag.GetCategory (flag.go:161): lidx's relation is TRUE, generic receiver not judged."
+ },
+ "h69a9717b": {
+  "verdict": "correct",
+  "note": "schemas.ts:928 declares extends $ZodStringFormatInternals<\"base64\">, base at :385."
+ },
+ "h6ad657d6": {
+  "verdict": "correct",
+  "note": "hono jsx/base.ts:140 JSXNode implements HtmlEscaped, a type alias at utils/html.ts:17."
+ },
+ "h29440d77": {
+  "verdict": "correct",
+  "note": "$ZodCIDRv4Internals extends $ZodStringFormatInternals<\"cidrv4\"> at l.852."
+ },
+ "h8a7dcb94": {
+  "verdict": "correct",
+  "note": "StandardJSONSchemaV1.Props (l.103) extends StandardTypedV1.Props, whose Props is at l.9 in the other namespace."
+ },
+ "hb6b60be4": {
+  "verdict": "correct",
+  "note": "ScriptHTMLAttributes extends HTMLAttributes at l.671; single HTMLAttributes decl at l.152 in JSX namespace."
+ },
+ "he432aa3a": {
+  "verdict": "correct",
+  "note": "NetworkError extends KyError (source/errors/NetworkError.ts:11), KyError at KyError.ts:8."
+ },
+ "hb86008bc": {
+  "verdict": "correct",
+  "note": "$ZodUndefined extends $ZodType at l.1356; $ZodType declared l.179."
+ },
+ "h0e60ab50": {
+  "verdict": "correct",
+  "note": "AnchorHTMLAttributes extends HTMLAttributes at l.208; base is the l.152 decl."
+ },
+ "hdf168247": {
+  "verdict": "correct",
+  "note": "SmartRouter implements Router<T> (router.ts:4), Router imported from ../../router, declared at router.ts:29."
+ },
+ "h8e3c8c36": {
+  "verdict": "correct",
+  "note": "QueryProcedure extends Procedure<'query',TDef> at l.59; Procedure at l.23."
+ },
+ "h85e4a8e3": {
+  "verdict": "correct",
+  "note": "$ZSFString extends $ZSF at zsf.ts:14; base at :5."
+ },
+ "hc8538845": {
+  "verdict": "correct",
+  "note": "$ZodGUIDDef extends $ZodStringFormatDef<\"guid\"> at l.404; base at l.381."
+ },
+ "h10a13e3e": {
+  "verdict": "correct",
+  "note": "$ZodMACInternals extends $ZodStringFormatInternals<\"mac\"> at l.831."
+ },
+ "h5260c541": {
+  "verdict": "correct",
+  "note": "SSEStreamingApi extends StreamingApi (sse.ts:13), class at utils/stream.ts:6."
+ },
+ "he39df74d": {
+  "verdict": "correct",
+  "note": "OutputDataTransformer extends DataTransformer (transformer.ts:29), base l.13."
+ },
+ "hfe4e5c9e": {
+  "verdict": "correct",
+  "note": "ZodMiniNever extends _ZodMiniType<...> at l.753; _ZodMiniType at l.40."
+ },
+ "h8b812332": {
+  "verdict": "correct",
+  "note": "$ZodNonOptionalDef extends $ZodTypeDef at l.3728; base l.50."
+ },
+ "h9c403c80": {
+  "verdict": "correct",
+  "note": "classic ZodTuple lists core.$ZodTuple<T,Rest> in its extends clause; $ZodTuple is core/schemas.ts:2659."
+ },
+ "h0ecaca27": {
+  "verdict": "correct",
+  "note": "ZodFunction extends _ZodType<...> (l.2546), _ZodType at classic/schemas.ts:212."
+ },
+ "h3c234d88": {
+  "verdict": "correct",
+  "note": "_ZodNumber extends _ZodType<Internals> (l.1028); _ZodType at l.212."
+ },
+ "h2342b046": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:7246 sits inside \"impl Flag for Unrestricted {\" (line 7212) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:177."
+ },
+ "h48ecf8e2": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:2350 sits inside \"impl Flag for Follow {\" (line 2343) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "h375bed81": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4285 sits inside \"impl Flag for NoConfig {\" (line 4278) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:132."
+ },
+ "h28e88b2d": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3976 sits inside \"impl Flag for MaxDepth {\" (line 3940) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:177."
+ },
+ "hd6ef2f65": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:6408 sits inside \"impl Flag for Sortr {\" (line 6404) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "hdb222fca": {
+  "verdict": "correct",
+  "note": "Source confirms method at cargo-nextest/src/output.rs:407 sits inside \"impl WriteStr for StdoutWriter<'_> {\" (line 406) and overrides/implements the same-named method of \"pub trait WriteStr {\" at nextest-runner/src/write_str.rs:19."
+ },
+ "h1bd00e4a": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3657 sits inside \"impl Flag for LineNumberNo {\" (line 3656) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:74."
+ },
+ "h102bf975": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4232 sits inside \"impl Flag for MultilineDotall {\" (line 4216) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:143."
+ },
+ "ha1d6ac13": {
+  "verdict": "correct",
+  "note": "javascript.rs has \"impl crate::indexer::extract::LanguageExtractor for TypescriptExtractor\"; trait at extract.rs:632."
+ },
+ "ha2fbcf4a": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4507 sits inside \"impl Flag for NoIgnoreFiles {\" (line 4491) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:143."
+ },
+ "hfa4db138": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:5462 sits inside \"impl Flag for Pre {\" (line 5455) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:111."
+ },
+ "h755b7b0c": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3572 sits inside \"impl Flag for LineBuffered {\" (line 3539) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:177."
+ },
+ "he8c2c103": {
+  "verdict": "correct",
+  "note": "Source confirms method at nextest-runner/src/indenter.rs:136 sits inside \"impl<T> WriteStr for Indented<'_, T>\" (line 109) and overrides/implements the same-named method of \"pub trait WriteStr {\" at nextest-runner/src/write_str.rs:23."
+ },
+ "h5a752869": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:2606 sits inside \"impl Flag for GlobCaseInsensitive {\" (line 2596) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:132."
+ },
+ "h4af6d129": {
+  "verdict": "correct",
+  "note": "Source confirms method at src/printer.rs:596 sits inside \"impl<'a> Printer for InteractivePrinter<'a> {\" (line 451) and overrides/implements the same-named method of \"pub(crate) trait Printer {\" at src/printer.rs:96."
+ },
+ "h0423a5e5": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3613 sits inside \"impl Flag for LineNumber {\" (line 3603) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:132."
+ },
+ "h8bc4a223": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:7297 sits inside \"impl Flag for Version {\" (line 7296) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:74."
+ },
+ "hc820086a": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4892 sits inside \"impl Flag for NoUnicode {\" (line 4888) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "h980ae649": {
+  "verdict": "correct",
+  "note": "defs.rs has \"impl Flag for ByteOffset\" and trait Flag is at mod.rs:71."
+ },
+ "h821c5bf9": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:7303 sits inside \"impl Flag for Version {\" (line 7296) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "h6f56a092": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at nextest-filtering/src/expression.rs:525 is in \"impl Logic for Option<bool> {\" (line 518), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at nextest-filtering/src/expression.rs:474 (\"trait Logic {\")."
+ },
+ "h75128a6c": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/command_ext.rs:42 is in \"impl CommandExt for Command {\" (line 15), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/command_ext.rs:8 (\"pub(crate) trait CommandExt {\")."
+ },
+ "h4b392e8c": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at crates/matcher/src/lib.rs:1263 is in \"impl<'a, M: Matcher> Matcher for &'a M {\" (line 1133), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at crates/matcher/src/lib.rs:796 (\"pub trait Matcher {\")."
+ },
+ "h1ae84745": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at nextest-runner/src/config/overrides.rs:124 is in \"impl<'p> TrackSource<'p> for () {\" (line 119), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at nextest-runner/src/config/overrides.rs:114 (\"pub(crate) trait TrackSource<'\")."
+ },
+ "hc806c25b": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/keyed.rs:8 is in \"impl<'key, T: Keyed<'key>> Keyed<'key> for Arc<T> {\" (line 7), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/keyed.rs:4 (\"pub(crate) trait Keyed<'key> {\")."
+ },
+ "h107e6083": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at crates/matcher/src/lib.rs:1138 is in \"impl<'a, M: Matcher> Matcher for &'a M {\" (line 1133), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at crates/matcher/src/lib.rs:571 (\"pub trait Matcher {\")."
+ },
+ "h3f6bd930": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/node.rs:349 is in \"impl<'src> Node<'src> for str {\" (line 348), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/node.rs:7 (\"pub(crate) trait Node<'src> {\")."
+ },
+ "hbf7c42cb": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at crates/searcher/src/sink.rs:300 is in \"impl<S: Sink + ?Sized> Sink for Box<S> {\" (line 278), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at crates/searcher/src/sink.rs:167 (\"pub trait Sink {\")."
+ },
+ "heca3cc84": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at nextest-runner/src/write_str.rs:78 is in \"impl WriteStr for String {\" (line 72), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at nextest-runner/src/write_str.rs:23 (\"pub trait WriteStr {\")."
+ },
+ "hfd4b6f50": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/command_ext.rs:93 is in \"impl CommandExt for Command {\" (line 15), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/command_ext.rs:10 (\"pub(crate) trait CommandExt {\")."
  }
 }

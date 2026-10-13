@@ -1,0 +1,3 @@
+[
+{"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"src/input.rs:94"}
+]

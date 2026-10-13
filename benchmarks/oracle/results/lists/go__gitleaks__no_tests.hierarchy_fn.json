@@ -1,0 +1,6 @@
+[
+{"base":"config/config.go:71","base_name":"viperRuleAllowlist","category":"no_edge","relation":"embeds","sub":"config/config.go:81","sub_name":"viperGlobalAllowlist"},
+{"base":"detect/codec/start_end.go:9","base_name":"startEnd","category":"no_edge","relation":"embeds","sub":"detect/codec/encodings.go:88","sub_name":"encodingMatch"},
+{"base":"io.ReadCloser","bucket":"external_base","category":"no_edge","relation":"embeds","sub":"sources/git.go:38"},
+{"base":"report/sarif.go:135","base_name":"PartialFingerPrints","category":"no_edge","relation":"embeds","sub":"report/sarif.go:206","sub_name":"Results"}
+]

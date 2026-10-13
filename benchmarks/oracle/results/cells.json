@@ -9,7 +9,7 @@
  "generated": "2026-10-13",
  "lidx_version": "lidx 0.7.0",
  "main_commit": "1358f656643faa07c3d64c62e90eaedb6fb12d0e",
- "head_commit": "1358f656643faa07c3d64c62e90eaedb6fb12d0e",
+ "head_commit": "75ca49947b2f6d32e8fc7e5f2717db8efc310e12",
  "corpus": {
   "cobra": {
    "lang": "go",
@@ -164,7 +164,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.1
+    "seconds": 2.1
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 28,
@@ -432,7 +432,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.0,
-     "peak_rss_mb": 444,
+     "peak_rss_mb": 473,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -442,7 +442,7 @@
     "oracle_stats": {
      "api_roots": 354,
      "decls": 613,
-     "load_seconds": 0.6,
+     "load_seconds": 0.5,
      "rta_reachable_functions": 9675,
      "rta_seconds": 0.2,
      "strict_roots_unreachable_functions": 5,
@@ -808,6 +808,110 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 1,
+      "graded": 1,
+      "tp": 1,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.2065,
+       1.0
+      ],
+      "oracle_pairs": 1,
+      "matched": 1,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.2065,
+       1.0
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 1,
+      "graded": 1,
+      "tp": 1,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.2065,
+       1.0
+      ],
+      "oracle_pairs": 1,
+      "matched": 1,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.2065,
+       1.0
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 16,
+    "judged_interfaces": 1,
+    "external_base": {
+     "oracle": 0,
+     "found": 0,
+     "recall": null,
+     "recall_ci": [
+      null,
+      null
+     ]
+    }
    }
   },
   "go/cobra/no_tests": {
@@ -1081,8 +1185,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 0.8,
-     "peak_rss_mb": 332,
+     "seconds": 0.6,
+     "peak_rss_mb": 189,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -1444,6 +1548,114 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 1,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 1,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 14,
+    "judged_interfaces": 1,
+    "external_base": {
+     "oracle": 0,
+     "found": 0,
+     "recall": null,
+     "recall_ci": [
+      null,
+      null
+     ]
+    }
    }
   },
   "go/gitleaks/tests": {
@@ -1457,7 +1669,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.24.11",
-    "seconds": 3.2
+    "seconds": 4.0
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 49,
@@ -1723,8 +1935,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.24.11",
-     "seconds": 3.1,
-     "peak_rss_mb": 1439,
+     "seconds": 2.4,
+     "peak_rss_mb": 1387,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -1736,7 +1948,7 @@
      "decls": 553,
      "load_seconds": 1.3,
      "rta_reachable_functions": 23018,
-     "rta_seconds": 1.1,
+     "rta_seconds": 0.9,
      "strict_roots_unreachable_functions": 7,
      "u1000_objects": {
       "quiet": 2,
@@ -2087,6 +2299,110 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 8,
+      "graded": 8,
+      "tp": 8,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.6756,
+       1.0
+      ],
+      "oracle_pairs": 8,
+      "matched": 8,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6756,
+       1.0
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 3,
+      "matched": 0,
+      "fn": 3,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.5615
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 8,
+      "graded": 8,
+      "tp": 8,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.6756,
+       1.0
+      ],
+      "oracle_pairs": 8,
+      "matched": 8,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6756,
+       1.0
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 62,
+    "judged_interfaces": 3,
+    "external_base": {
+     "oracle": 4,
+     "found": 2,
+     "recall": 0.5,
+     "recall_ci": [
+      0.15,
+      0.85
+     ]
+    }
    }
   },
   "go/gitleaks/no_tests": {
@@ -2100,7 +2416,7 @@
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "go1.24.11",
-    "seconds": 2.9
+    "seconds": 2.3
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 2,
@@ -2364,8 +2680,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.24.11",
-     "seconds": 2.3,
-     "peak_rss_mb": 1252,
+     "seconds": 2.0,
+     "peak_rss_mb": 1231,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -2375,7 +2691,7 @@
     "oracle_stats": {
      "api_roots": 341,
      "decls": 494,
-     "load_seconds": 1.4,
+     "load_seconds": 1.1,
      "rta_reachable_functions": 21305,
      "rta_seconds": 0.8,
      "strict_roots_unreachable_functions": 16,
@@ -2723,6 +3039,110 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 8,
+      "graded": 8,
+      "tp": 8,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.6756,
+       1.0
+      ],
+      "oracle_pairs": 8,
+      "matched": 8,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6756,
+       1.0
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 3,
+      "matched": 0,
+      "fn": 3,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.5615
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 8,
+      "graded": 8,
+      "tp": 8,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.6756,
+       1.0
+      ],
+      "oracle_pairs": 8,
+      "matched": 8,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6756,
+       1.0
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 59,
+    "judged_interfaces": 3,
+    "external_base": {
+     "oracle": 3,
+     "found": 2,
+     "recall": 0.6667,
+     "recall_ci": [
+      0.2077,
+      0.9385
+     ]
+    }
    }
   },
   "go/syft/tests": {
@@ -2732,11 +3152,11 @@
    "repo": "syft",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 11.1,
+   "index_seconds": 11.9,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.26.3",
-    "seconds": 83.0
+    "seconds": 86.0
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 3416,
@@ -3008,8 +3428,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.26.3",
-     "seconds": 21.6,
-     "peak_rss_mb": 6475,
+     "seconds": 35.1,
+     "peak_rss_mb": 6409,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -3019,9 +3439,9 @@
     "oracle_stats": {
      "api_roots": 1254,
      "decls": 5751,
-     "load_seconds": 3.4,
+     "load_seconds": 6,
      "rta_reachable_functions": 116215,
-     "rta_seconds": 17.5,
+     "rta_seconds": 28.7,
      "strict_roots_unreachable_functions": 60,
      "u1000_objects": {
       "quiet": 46,
@@ -3041,8 +3461,8 @@
       },
       "dead": 11,
       "dead_by_kind": {
-       "method": 2,
-       "function": 9
+       "function": 9,
+       "method": 2
       },
       "live": 2561,
       "oracle_buckets": {
@@ -3232,8 +3652,8 @@
       },
       "dead": 34,
       "dead_by_kind": {
-       "method": 17,
-       "function": 17
+       "function": 17,
+       "method": 17
       },
       "live": 2956,
       "oracle_buckets": {
@@ -3393,6 +3813,122 @@
      ]
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 216,
+      "graded": 212,
+      "tp": 212,
+      "fp": 0,
+      "ungradable": 4,
+      "ungradable_reasons": {
+       "generic_type": 2,
+       "file_not_analysed": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9822,
+       1.0
+      ],
+      "oracle_pairs": 223,
+      "matched": 212,
+      "fn": 11,
+      "capture_gap": 0,
+      "recall": 0.9507,
+      "recall_ci": [
+       0.9138,
+       0.9722
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 5,
+      "graded": 5,
+      "tp": 5,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.5655,
+       1.0
+      ],
+      "oracle_pairs": 6,
+      "matched": 5,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.8333,
+      "recall_ci": [
+       0.4365,
+       0.9699
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 67,
+      "matched": 0,
+      "fn": 67,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.0542
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 314,
+      "graded": 308,
+      "tp": 308,
+      "fp": 0,
+      "ungradable": 6,
+      "ungradable_reasons": {
+       "end_not_judged": 2,
+       "file_not_analysed": 4
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9877,
+       1.0
+      ],
+      "oracle_pairs": 310,
+      "matched": 308,
+      "fn": 2,
+      "capture_gap": 0,
+      "recall": 0.9935,
+      "recall_ci": [
+       0.9768,
+       0.9982
+      ]
+     }
+    },
+    "excluded": {
+     "empty_or_constraint_interface": 1,
+     "generic_interface": 2,
+     "generic_type": 6,
+     "override_impl_is_embedded_interface_method": 30,
+     "override_interface_method_outside_repo": 42
+    },
+    "judged_types": 837,
+    "judged_interfaces": 34,
+    "external_base": {
+     "oracle": 24,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.138
+     ]
+    }
    }
   },
   "go/syft/no_tests": {
@@ -3402,11 +3938,11 @@
    "repo": "syft",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 11.1,
+   "index_seconds": 11.9,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "go1.26.3",
-    "seconds": 67.9
+    "seconds": 69.3
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 832,
@@ -3678,8 +4214,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.26.3",
-     "seconds": 20.1,
-     "peak_rss_mb": 6281,
+     "seconds": 17.5,
+     "peak_rss_mb": 6075,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -3689,9 +4225,9 @@
     "oracle_stats": {
      "api_roots": 718,
      "decls": 4135,
-     "load_seconds": 3.5,
+     "load_seconds": 2.8,
      "rta_reachable_functions": 106256,
-     "rta_seconds": 16.3,
+     "rta_seconds": 14.4,
      "strict_roots_unreachable_functions": 310,
      "u1000_objects": {
       "quiet": 0,
@@ -4091,6 +4627,121 @@
      ]
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 216,
+      "graded": 174,
+      "tp": 174,
+      "fp": 0,
+      "ungradable": 42,
+      "ungradable_reasons": {
+       "file_not_analysed": 40,
+       "generic_type": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9784,
+       1.0
+      ],
+      "oracle_pairs": 178,
+      "matched": 174,
+      "fn": 4,
+      "capture_gap": 0,
+      "recall": 0.9775,
+      "recall_ci": [
+       0.9437,
+       0.9912
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 5,
+      "graded": 5,
+      "tp": 5,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.5655,
+       1.0
+      ],
+      "oracle_pairs": 6,
+      "matched": 5,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.8333,
+      "recall_ci": [
+       0.4365,
+       0.9699
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 63,
+      "matched": 0,
+      "fn": 63,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.0575
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 314,
+      "graded": 252,
+      "tp": 252,
+      "fp": 0,
+      "ungradable": 62,
+      "ungradable_reasons": {
+       "file_not_analysed": 60,
+       "end_not_judged": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.985,
+       1.0
+      ],
+      "oracle_pairs": 254,
+      "matched": 252,
+      "fn": 2,
+      "capture_gap": 0,
+      "recall": 0.9921,
+      "recall_ci": [
+       0.9717,
+       0.9978
+      ]
+     }
+    },
+    "excluded": {
+     "empty_or_constraint_interface": 1,
+     "generic_interface": 2,
+     "generic_type": 6,
+     "override_interface_method_outside_repo": 34
+    },
+    "judged_types": 790,
+    "judged_interfaces": 34,
+    "external_base": {
+     "oracle": 21,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.1546
+     ]
+    }
    }
   },
   "go/chi/tests": {
@@ -4372,7 +5023,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.2,
-     "peak_rss_mb": 666,
+     "peak_rss_mb": 679,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -4772,6 +5423,112 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 6,
+      "graded": 6,
+      "tp": 6,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.6097,
+       1.0
+      ],
+      "oracle_pairs": 12,
+      "matched": 6,
+      "fn": 6,
+      "capture_gap": 0,
+      "recall": 0.5,
+      "recall_ci": [
+       0.2538,
+       0.7462
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 1,
+      "matched": 0,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.7935
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 6,
+      "matched": 0,
+      "fn": 6,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.3903
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 29,
+      "graded": 29,
+      "tp": 29,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.883,
+       1.0
+      ],
+      "oracle_pairs": 34,
+      "matched": 29,
+      "fn": 5,
+      "capture_gap": 0,
+      "recall": 0.8529,
+      "recall_ci": [
+       0.6987,
+       0.9355
+      ]
+     }
+    },
+    "excluded": {
+     "override_interface_method_outside_repo": 19
+    },
+    "judged_types": 39,
+    "judged_interfaces": 8,
+    "external_base": {
+     "oracle": 7,
+     "found": 2,
+     "recall": 0.2857,
+     "recall_ci": [
+      0.0822,
+      0.6411
+     ]
+    }
    }
   },
   "go/chi/no_tests": {
@@ -5046,7 +5803,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.0,
-     "peak_rss_mb": 671,
+     "peak_rss_mb": 590,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -5435,6 +6192,116 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 6,
+      "graded": 5,
+      "tp": 5,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.5655,
+       1.0
+      ],
+      "oracle_pairs": 11,
+      "matched": 5,
+      "fn": 6,
+      "capture_gap": 0,
+      "recall": 0.4545,
+      "recall_ci": [
+       0.2127,
+       0.7199
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 1,
+      "matched": 0,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.7935
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 6,
+      "matched": 0,
+      "fn": 6,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.3903
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 29,
+      "graded": 28,
+      "tp": 28,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8794,
+       1.0
+      ],
+      "oracle_pairs": 33,
+      "matched": 28,
+      "fn": 5,
+      "capture_gap": 0,
+      "recall": 0.8485,
+      "recall_ci": [
+       0.6908,
+       0.9335
+      ]
+     }
+    },
+    "excluded": {
+     "override_interface_method_outside_repo": 19
+    },
+    "judged_types": 34,
+    "judged_interfaces": 8,
+    "external_base": {
+     "oracle": 5,
+     "found": 2,
+     "recall": 0.4,
+     "recall_ci": [
+      0.1176,
+      0.7693
+     ]
+    }
    }
   },
   "go/urfavecli/tests": {
@@ -5444,7 +6311,7 @@
    "repo": "urfavecli",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 0.9,
+   "index_seconds": 0.8,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
@@ -5718,7 +6585,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.4,
-     "peak_rss_mb": 790,
+     "peak_rss_mb": 767,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -6097,6 +6964,119 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 275,
+      "graded": 270,
+      "tp": 270,
+      "fp": 0,
+      "ungradable": 5,
+      "ungradable_reasons": {
+       "generic_type": 5
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.986,
+       1.0
+      ],
+      "oracle_pairs": 270,
+      "matched": 270,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.986,
+       1.0
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 12,
+      "graded": 12,
+      "tp": 12,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.7575,
+       1.0
+      ],
+      "oracle_pairs": 12,
+      "matched": 12,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.7575,
+       1.0
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 17,
+      "matched": 0,
+      "fn": 17,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.1843
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 200,
+      "graded": 189,
+      "tp": 189,
+      "fp": 0,
+      "ungradable": 11,
+      "ungradable_reasons": {
+       "end_not_judged": 11
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9801,
+       1.0
+      ],
+      "oracle_pairs": 351,
+      "matched": 189,
+      "fn": 162,
+      "capture_gap": 0,
+      "recall": 0.5385,
+      "recall_ci": [
+       0.4862,
+       0.5899
+      ]
+     }
+    },
+    "excluded": {
+     "generic_interface": 1,
+     "generic_type": 1,
+     "override_impl_is_embedded_interface_method": 3,
+     "override_interface_method_outside_repo": 219
+    },
+    "judged_types": 95,
+    "judged_interfaces": 23,
+    "external_base": {
+     "oracle": 6,
+     "found": 1,
+     "recall": 0.1667,
+     "recall_ci": [
+      0.0301,
+      0.5635
+     ]
+    }
    }
   },
   "go/urfavecli/no_tests": {
@@ -6106,11 +7086,11 @@
    "repo": "urfavecli",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 0.9,
+   "index_seconds": 0.8,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.0
+    "seconds": 1.1
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 8,
@@ -6376,8 +7356,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.2,
-     "peak_rss_mb": 672,
+     "seconds": 1.0,
+     "peak_rss_mb": 694,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -6759,6 +7739,120 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 275,
+      "graded": 259,
+      "tp": 259,
+      "fp": 0,
+      "ungradable": 16,
+      "ungradable_reasons": {
+       "file_not_analysed": 11,
+       "generic_type": 5
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9854,
+       1.0
+      ],
+      "oracle_pairs": 259,
+      "matched": 259,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9854,
+       1.0
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 12,
+      "graded": 12,
+      "tp": 12,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.7575,
+       1.0
+      ],
+      "oracle_pairs": 12,
+      "matched": 12,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.7575,
+       1.0
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 14,
+      "matched": 0,
+      "fn": 14,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.2153
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 200,
+      "graded": 176,
+      "tp": 176,
+      "fp": 0,
+      "ungradable": 24,
+      "ungradable_reasons": {
+       "file_not_analysed": 13,
+       "end_not_judged": 11
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9786,
+       1.0
+      ],
+      "oracle_pairs": 338,
+      "matched": 176,
+      "fn": 162,
+      "capture_gap": 0,
+      "recall": 0.5207,
+      "recall_ci": [
+       0.4675,
+       0.5734
+      ]
+     }
+    },
+    "excluded": {
+     "generic_interface": 1,
+     "generic_type": 1,
+     "override_interface_method_outside_repo": 216
+    },
+    "judged_types": 81,
+    "judged_interfaces": 23,
+    "external_base": {
+     "oracle": 5,
+     "found": 1,
+     "recall": 0.2,
+     "recall_ci": [
+      0.0362,
+      0.6245
+     ]
+    }
    }
   },
   "go/viper/tests": {
@@ -7037,8 +8131,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.4,
-     "peak_rss_mb": 777,
+     "seconds": 1.2,
+     "peak_rss_mb": 871,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -7048,9 +8142,9 @@
     "oracle_stats": {
      "api_roots": 349,
      "decls": 407,
-     "load_seconds": 0.9,
+     "load_seconds": 0.7,
      "rta_reachable_functions": 15990,
-     "rta_seconds": 0.5,
+     "rta_seconds": 0.4,
      "strict_roots_unreachable_functions": 71,
      "u1000_objects": {
       "quiet": 0,
@@ -7409,6 +8503,114 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 24,
+      "graded": 23,
+      "tp": 23,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8569,
+       1.0
+      ],
+      "oracle_pairs": 24,
+      "matched": 23,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.9583,
+      "recall_ci": [
+       0.7976,
+       0.9926
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 2,
+      "graded": 2,
+      "tp": 2,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.3424,
+       1.0
+      ],
+      "oracle_pairs": 4,
+      "matched": 2,
+      "fn": 2,
+      "capture_gap": 0,
+      "recall": 0.5,
+      "recall_ci": [
+       0.15,
+       0.85
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 26,
+      "graded": 23,
+      "tp": 23,
+      "fp": 0,
+      "ungradable": 3,
+      "ungradable_reasons": {
+       "file_not_analysed": 3
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8569,
+       1.0
+      ],
+      "oracle_pairs": 24,
+      "matched": 23,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.9583,
+      "recall_ci": [
+       0.7976,
+       0.9926
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 26,
+    "judged_interfaces": 13,
+    "external_base": {
+     "oracle": 0,
+     "found": 0,
+     "recall": null,
+     "recall_ci": [
+      null,
+      null
+     ]
+    }
    }
   },
   "go/viper/no_tests": {
@@ -7422,7 +8624,7 @@
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.2
+    "seconds": 1.1
    },
    "oracle_dropped": {
     "caller_package_initializer": 1985,
@@ -7654,7 +8856,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.0,
-     "peak_rss_mb": 734,
+     "peak_rss_mb": 766,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -8024,6 +9226,114 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 24,
+      "graded": 19,
+      "tp": 19,
+      "fp": 0,
+      "ungradable": 5,
+      "ungradable_reasons": {
+       "file_not_analysed": 5
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8318,
+       1.0
+      ],
+      "oracle_pairs": 20,
+      "matched": 19,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.95,
+      "recall_ci": [
+       0.7639,
+       0.9911
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 2,
+      "graded": 2,
+      "tp": 2,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.3424,
+       1.0
+      ],
+      "oracle_pairs": 4,
+      "matched": 2,
+      "fn": 2,
+      "capture_gap": 0,
+      "recall": 0.5,
+      "recall_ci": [
+       0.15,
+       0.85
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 26,
+      "graded": 20,
+      "tp": 20,
+      "fp": 0,
+      "ungradable": 6,
+      "ungradable_reasons": {
+       "file_not_analysed": 6
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8389,
+       1.0
+      ],
+      "oracle_pairs": 21,
+      "matched": 20,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.9524,
+      "recall_ci": [
+       0.7733,
+       0.9915
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 21,
+    "judged_interfaces": 13,
+    "external_base": {
+     "oracle": 0,
+     "found": 0,
+     "recall": null,
+     "recall_ci": [
+      null,
+      null
+     ]
+    }
    }
   },
   "go/bubbletea/tests": {
@@ -8033,7 +9343,7 @@
    "repo": "bubbletea",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.5,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
@@ -8273,8 +9583,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 0.8,
-     "peak_rss_mb": 436,
+     "seconds": 1.7,
+     "peak_rss_mb": 447,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -8284,9 +9594,9 @@
     "oracle_stats": {
      "api_roots": 161,
      "decls": 297,
-     "load_seconds": 0.5,
+     "load_seconds": 1.1,
      "rta_reachable_functions": 7555,
-     "rta_seconds": 0.2,
+     "rta_seconds": 0.4,
      "strict_roots_unreachable_functions": 24,
      "u1000_objects": {
       "quiet": 0,
@@ -8653,6 +9963,118 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 54,
+      "graded": 5,
+      "tp": 5,
+      "fp": 0,
+      "ungradable": 49,
+      "ungradable_reasons": {
+       "file_not_analysed": 49
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.5655,
+       1.0
+      ],
+      "oracle_pairs": 6,
+      "matched": 5,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.8333,
+      "recall_ci": [
+       0.4365,
+       0.9699
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 1,
+      "matched": 0,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.7935
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 204,
+      "graded": 57,
+      "tp": 57,
+      "fp": 0,
+      "ungradable": 147,
+      "ungradable_reasons": {
+       "file_not_analysed": 147
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9369,
+       1.0
+      ],
+      "oracle_pairs": 60,
+      "matched": 57,
+      "fn": 3,
+      "capture_gap": 0,
+      "recall": 0.95,
+      "recall_ci": [
+       0.863,
+       0.9829
+      ]
+     }
+    },
+    "excluded": {
+     "empty_or_constraint_interface": 1,
+     "override_impl_is_embedded_interface_method": 24,
+     "override_impl_method_outside_repo": 1
+    },
+    "judged_types": 59,
+    "judged_interfaces": 4,
+    "external_base": {
+     "oracle": 1,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.7935
+     ]
+    }
    }
   },
   "go/bubbletea/no_tests": {
@@ -8662,11 +10084,11 @@
    "repo": "bubbletea",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.5,
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.7
+    "seconds": 1.4
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 4,
@@ -8896,7 +10318,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 0.8,
-     "peak_rss_mb": 349,
+     "peak_rss_mb": 207,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -8905,9 +10327,9 @@
     "load_errors": 0,
     "oracle_stats": {
      "decls": 234,
-     "load_seconds": 0.5,
+     "load_seconds": 0.4,
      "rta_reachable_functions": 5066,
-     "rta_seconds": 0.2,
+     "rta_seconds": 0.1,
      "u1000_objects": {
       "quiet": 0,
       "unused": 0,
@@ -9278,6 +10700,117 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 54,
+      "graded": 2,
+      "tp": 2,
+      "fp": 0,
+      "ungradable": 52,
+      "ungradable_reasons": {
+       "file_not_analysed": 52
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.3424,
+       1.0
+      ],
+      "oracle_pairs": 3,
+      "matched": 2,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.6667,
+      "recall_ci": [
+       0.2077,
+       0.9385
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "embeds": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 204,
+      "graded": 50,
+      "tp": 50,
+      "fp": 0,
+      "ungradable": 154,
+      "ungradable_reasons": {
+       "file_not_analysed": 154
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9286,
+       1.0
+      ],
+      "oracle_pairs": 53,
+      "matched": 50,
+      "fn": 3,
+      "capture_gap": 0,
+      "recall": 0.9434,
+      "recall_ci": [
+       0.8463,
+       0.9806
+      ]
+     }
+    },
+    "excluded": {
+     "empty_or_constraint_interface": 1,
+     "override_impl_method_outside_repo": 1
+    },
+    "judged_types": 50,
+    "judged_interfaces": 4,
+    "external_base": {
+     "oracle": 1,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.7935
+     ]
+    }
    }
   },
   "ts/zod": {
@@ -9287,10 +10820,10 @@
    "repo": "zod",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 5.4,
+   "index_seconds": 5.7,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 2.9
+    "seconds": 3.1
    },
    "oracle_dropped": {
     "callee_external": 1393,
@@ -9534,8 +11067,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.0,
-     "peak_rss_mb": 504,
+     "seconds": 3.1,
+     "peak_rss_mb": 507,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -9543,7 +11076,7 @@
     "lidx_claims": 800,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 2.7,
+     "seconds": 2.8,
      "find_references_calls": 68,
      "diagnostics_6133_6196": 0,
      "api_declarations": 1932,
@@ -9934,6 +11467,98 @@
      ]
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 1,
+      "graded": 1,
+      "tp": 1,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.2065,
+       1.0
+      ],
+      "oracle_pairs": 1,
+      "matched": 1,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.2065,
+       1.0
+      ],
+      "fp_structural_only": 0,
+      "precision_incl_structural": 1.0
+     },
+     "extends": {
+      "lidx_pairs": 659,
+      "graded": 652,
+      "tp": 652,
+      "fp": 0,
+      "ungradable": 7,
+      "ungradable_reasons": {
+       "file_not_analysed": 7
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9941,
+       1.0
+      ],
+      "oracle_pairs": 652,
+      "matched": 652,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9941,
+       1.0
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 39,
+      "matched": 0,
+      "fn": 39,
+      "capture_gap": 3,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.0897
+      ]
+     }
+    },
+    "excluded": {
+     "override_base_external": 2
+    },
+    "judged_types": 1110,
+    "judged_interfaces": 1110,
+    "external_base": {
+     "oracle": 5,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.4345
+     ]
+    },
+    "structural_implements": {
+     "oracle_pairs": 5,
+     "of_lidx_implements_fp": 0
+    }
    }
   },
   "ts/hono": {
@@ -9943,10 +11568,10 @@
    "repo": "hono",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 6.6,
+   "index_seconds": 5.3,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 2.3
+    "seconds": 3.8
    },
    "oracle_dropped": {
     "callee_external": 1833,
@@ -10190,8 +11815,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
-     "peak_rss_mb": 394,
+     "seconds": 5.7,
+     "peak_rss_mb": 401,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -10199,7 +11824,7 @@
     "lidx_claims": 143,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 2.1,
+     "seconds": 5,
      "find_references_calls": 247,
      "diagnostics_6133_6196": 0,
      "api_declarations": 492,
@@ -10585,6 +12210,100 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 8,
+      "graded": 7,
+      "tp": 7,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.6457,
+       1.0
+      ],
+      "oracle_pairs": 7,
+      "matched": 7,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6457,
+       1.0
+      ],
+      "fp_structural_only": 0,
+      "precision_incl_structural": 1.0
+     },
+     "extends": {
+      "lidx_pairs": 76,
+      "graded": 75,
+      "tp": 74,
+      "fp": 1,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 0.9867,
+      "precision_ci": [
+       0.9283,
+       0.9976
+      ],
+      "oracle_pairs": 74,
+      "matched": 74,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9506,
+       1.0
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 45,
+      "matched": 0,
+      "fn": 45,
+      "capture_gap": 19,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.0787
+      ]
+     }
+    },
+    "excluded": {
+     "override_base_external": 1
+    },
+    "judged_types": 607,
+    "judged_interfaces": 607,
+    "external_base": {
+     "oracle": 23,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.1431
+     ]
+    },
+    "structural_implements": {
+     "oracle_pairs": 4,
+     "of_lidx_implements_fp": 0
+    }
    }
   },
   "ts/trpc": {
@@ -10594,10 +12313,10 @@
    "repo": "trpc",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 15.0,
+   "index_seconds": 11.5,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 2.3
+    "seconds": 1.2
    },
    "oracle_dropped": {
     "callee_parameter": 33,
@@ -10806,8 +12525,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.3,
-     "peak_rss_mb": 252,
+     "seconds": 1.3,
+     "peak_rss_mb": 261,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -10815,7 +12534,7 @@
     "lidx_claims": 1509,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 2.6,
+     "seconds": 0.9,
      "find_references_calls": 19,
      "diagnostics_6133_6196": 0,
      "api_declarations": 338,
@@ -11183,6 +12902,100 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 3,
+      "graded": 1,
+      "tp": 1,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "file_not_analysed": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.2065,
+       1.0
+      ],
+      "oracle_pairs": 1,
+      "matched": 1,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.2065,
+       1.0
+      ],
+      "fp_structural_only": 0,
+      "precision_incl_structural": 1.0
+     },
+     "extends": {
+      "lidx_pairs": 213,
+      "graded": 33,
+      "tp": 33,
+      "fp": 0,
+      "ungradable": 180,
+      "ungradable_reasons": {
+       "file_not_analysed": 180
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8957,
+       1.0
+      ],
+      "oracle_pairs": 33,
+      "matched": 33,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.8957,
+       1.0
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 4,
+      "matched": 0,
+      "fn": 4,
+      "capture_gap": 4,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.4899
+      ]
+     }
+    },
+    "excluded": {
+     "override_base_external": 4
+    },
+    "judged_types": 343,
+    "judged_interfaces": 343,
+    "external_base": {
+     "oracle": 12,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.2425
+     ]
+    },
+    "structural_implements": {
+     "oracle_pairs": 11,
+     "of_lidx_implements_fp": 0
+    }
    }
   },
   "ts/ky": {
@@ -11192,10 +13005,10 @@
    "repo": "ky",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 2.9,
+   "index_seconds": 1.8,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 0.9
+    "seconds": 0.8
    },
    "oracle_dropped": {
     "callee_anonymous": 6,
@@ -11385,8 +13198,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.2,
-     "peak_rss_mb": 246,
+     "seconds": 0.9,
+     "peak_rss_mb": 237,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -11755,6 +13568,98 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ],
+      "fp_structural_only": 0,
+      "precision_incl_structural": null
+     },
+     "extends": {
+      "lidx_pairs": 8,
+      "graded": 7,
+      "tp": 7,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.6457,
+       1.0
+      ],
+      "oracle_pairs": 7,
+      "matched": 7,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6457,
+       1.0
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 5,
+      "matched": 0,
+      "fn": 5,
+      "capture_gap": 0,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.4345
+      ]
+     }
+    },
+    "excluded": {
+     "override_base_external": 8
+    },
+    "judged_types": 65,
+    "judged_interfaces": 65,
+    "external_base": {
+     "oracle": 4,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.4899
+     ]
+    },
+    "structural_implements": {
+     "oracle_pairs": 0,
+     "of_lidx_implements_fp": 0
+    }
    }
   },
   "ts/immer": {
@@ -11764,10 +13669,10 @@
    "repo": "immer",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 1.3,
+   "index_seconds": 0.9,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 1.0
+    "seconds": 0.8
    },
    "oracle_dropped": {
     "callee_external": 201,
@@ -11950,8 +13855,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.3,
-     "peak_rss_mb": 231,
+     "seconds": 0.9,
+     "peak_rss_mb": 233,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -11959,7 +13864,7 @@
     "lidx_claims": 39,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 0.9,
+     "seconds": 0.6,
      "find_references_calls": 77,
      "diagnostics_6133_6196": 8,
      "api_declarations": 32,
@@ -12338,6 +14243,96 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 1,
+      "graded": 1,
+      "tp": 1,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.2065,
+       1.0
+      ],
+      "oracle_pairs": 1,
+      "matched": 1,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.2065,
+       1.0
+      ],
+      "fp_structural_only": 0,
+      "precision_incl_structural": 1.0
+     },
+     "extends": {
+      "lidx_pairs": 5,
+      "graded": 5,
+      "tp": 5,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.5655,
+       1.0
+      ],
+      "oracle_pairs": 5,
+      "matched": 5,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.5655,
+       1.0
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 2,
+      "matched": 0,
+      "fn": 2,
+      "capture_gap": 2,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.6576
+      ]
+     }
+    },
+    "excluded": {
+     "override_base_external": 19
+    },
+    "judged_types": 54,
+    "judged_interfaces": 54,
+    "external_base": {
+     "oracle": 2,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.6576
+     ]
+    },
+    "structural_implements": {
+     "oracle_pairs": 0,
+     "of_lidx_implements_fp": 0
+    }
    }
   },
   "ts/h3": {
@@ -12347,10 +14342,10 @@
    "repo": "h3",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 3.2,
+   "index_seconds": 2.8,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 1.2
+    "seconds": 1.1
    },
    "oracle_dropped": {
     "callee_external": 1101,
@@ -12579,8 +14574,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.9,
-     "peak_rss_mb": 270,
+     "seconds": 1.5,
+     "peak_rss_mb": 276,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -12588,7 +14583,7 @@
     "lidx_claims": 94,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 1.6,
+     "seconds": 1.1,
      "find_references_calls": 159,
      "diagnostics_6133_6196": 0,
      "api_declarations": 287,
@@ -12964,6 +14959,98 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 3,
+      "graded": 3,
+      "tp": 3,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.4385,
+       1.0
+      ],
+      "oracle_pairs": 3,
+      "matched": 3,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.4385,
+       1.0
+      ],
+      "fp_structural_only": 0,
+      "precision_incl_structural": 1.0
+     },
+     "extends": {
+      "lidx_pairs": 9,
+      "graded": 8,
+      "tp": 8,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.6756,
+       1.0
+      ],
+      "oracle_pairs": 8,
+      "matched": 8,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6756,
+       1.0
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 21,
+      "matched": 0,
+      "fn": 21,
+      "capture_gap": 14,
+      "recall": 0.0,
+      "recall_ci": [
+       0.0,
+       0.1546
+      ]
+     }
+    },
+    "excluded": {
+     "override_base_external": 6
+    },
+    "judged_types": 164,
+    "judged_interfaces": 164,
+    "external_base": {
+     "oracle": 4,
+     "found": 0,
+     "recall": 0.0,
+     "recall_ci": [
+      0.0,
+      0.4899
+     ]
+    },
+    "structural_implements": {
+     "oracle_pairs": 0,
+     "of_lidx_implements_fp": 0
+    }
    }
   },
   "rust/ripgrep/path_tests_excluded": {
@@ -12973,13 +15060,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 3.6,
+   "index_seconds": 3.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.1
+    "seconds": 15.0
    },
    "oracle_dropped": {
     "caller_not_in_function": 1539,
@@ -13114,7 +15201,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.9,
+     "seconds": 2.0,
      "peak_rss_mb": 99,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -13493,6 +15580,96 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 113,
+      "graded": 111,
+      "tp": 111,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "end_not_judged": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9665,
+       1.0
+      ],
+      "oracle_pairs": 119,
+      "matched": 111,
+      "fn": 8,
+      "capture_gap": 0,
+      "recall": 0.9328,
+      "recall_ci": [
+       0.8729,
+       0.9655
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 860,
+      "graded": 810,
+      "tp": 810,
+      "fp": 0,
+      "ungradable": 50,
+      "ungradable_reasons": {
+       "end_not_judged": 41,
+       "file_not_analysed": 9
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9953,
+       1.0
+      ],
+      "oracle_pairs": 810,
+      "matched": 810,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9953,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 6,
+     "impl_for_foreign_type": 7
+    },
+    "judged_types": 350,
+    "judged_interfaces": 7,
+    "external_base": {
+     "oracle": 211,
+     "found": 195,
+     "recall": 0.9242,
+     "recall_ci": [
+      0.8804,
+      0.9528
+     ]
+    }
    }
   },
   "rust/ripgrep/no_tests": {
@@ -13502,13 +15679,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "no_tests",
-   "index_seconds": 3.6,
+   "index_seconds": 3.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 7.6
+    "seconds": 20.6
    },
    "oracle_dropped": {
     "caller_not_in_function": 1391,
@@ -13640,7 +15817,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.1,
+     "seconds": 1.9,
      "peak_rss_mb": 95,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -14014,6 +16191,97 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 113,
+      "graded": 110,
+      "tp": 110,
+      "fp": 0,
+      "ungradable": 3,
+      "ungradable_reasons": {
+       "end_not_judged": 2,
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9663,
+       1.0
+      ],
+      "oracle_pairs": 117,
+      "matched": 110,
+      "fn": 7,
+      "capture_gap": 0,
+      "recall": 0.9402,
+      "recall_ci": [
+       0.8816,
+       0.9707
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 860,
+      "graded": 802,
+      "tp": 802,
+      "fp": 0,
+      "ungradable": 58,
+      "ungradable_reasons": {
+       "end_not_judged": 41,
+       "file_not_analysed": 17
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9952,
+       1.0
+      ],
+      "oracle_pairs": 802,
+      "matched": 802,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9952,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 6,
+     "impl_for_foreign_type": 7
+    },
+    "judged_types": 343,
+    "judged_interfaces": 7,
+    "external_base": {
+     "oracle": 209,
+     "found": 193,
+     "recall": 0.9234,
+     "recall_ci": [
+      0.8793,
+      0.9523
+     ]
+    }
    }
   },
   "rust/ripgrep/tests": {
@@ -14023,13 +16291,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "with_tests",
-   "index_seconds": 3.6,
+   "index_seconds": 3.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 7.9
+    "seconds": 8.3
    },
    "oracle_dropped": {
     "caller_not_in_function": 1606,
@@ -14173,8 +16441,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.1,
-     "peak_rss_mb": 108,
+     "seconds": 1.9,
+     "peak_rss_mb": 106,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -14557,6 +16825,95 @@
      ]
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 113,
+      "graded": 111,
+      "tp": 111,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "end_not_judged": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9665,
+       1.0
+      ],
+      "oracle_pairs": 122,
+      "matched": 111,
+      "fn": 11,
+      "capture_gap": 0,
+      "recall": 0.9098,
+      "recall_ci": [
+       0.8457,
+       0.9489
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 860,
+      "graded": 819,
+      "tp": 819,
+      "fp": 0,
+      "ungradable": 41,
+      "ungradable_reasons": {
+       "end_not_judged": 41
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9953,
+       1.0
+      ],
+      "oracle_pairs": 819,
+      "matched": 819,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9953,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 6,
+     "impl_for_foreign_type": 7
+    },
+    "judged_types": 366,
+    "judged_interfaces": 7,
+    "external_base": {
+     "oracle": 211,
+     "found": 195,
+     "recall": 0.9242,
+     "recall_ci": [
+      0.8804,
+      0.9528
+     ]
+    }
    }
   },
   "rust/ripgrep/path_tests_excluded_all_features": {
@@ -14566,13 +16923,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 3.6,
+   "index_seconds": 3.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 9.1
+    "seconds": 22.1
    },
    "oracle_dropped": {
     "caller_not_in_function": 1552,
@@ -14708,8 +17065,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.1,
-     "peak_rss_mb": 98,
+     "seconds": 1.9,
+     "peak_rss_mb": 100,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -15085,6 +17442,96 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 113,
+      "graded": 111,
+      "tp": 111,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "end_not_judged": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9665,
+       1.0
+      ],
+      "oracle_pairs": 119,
+      "matched": 111,
+      "fn": 8,
+      "capture_gap": 0,
+      "recall": 0.9328,
+      "recall_ci": [
+       0.8729,
+       0.9655
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 860,
+      "graded": 810,
+      "tp": 810,
+      "fp": 0,
+      "ungradable": 50,
+      "ungradable_reasons": {
+       "end_not_judged": 41,
+       "file_not_analysed": 9
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9953,
+       1.0
+      ],
+      "oracle_pairs": 810,
+      "matched": 810,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9953,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 6,
+     "impl_for_foreign_type": 7
+    },
+    "judged_types": 352,
+    "judged_interfaces": 7,
+    "external_base": {
+     "oracle": 223,
+     "found": 204,
+     "recall": 0.9148,
+     "recall_ci": [
+      0.8708,
+      0.9448
+     ]
+    }
    }
   },
   "rust/fd/path_tests_excluded": {
@@ -15100,7 +17547,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 5.3
+    "seconds": 5.4
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -15578,6 +18025,90 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 1
+    },
+    "judged_types": 32,
+    "judged_interfaces": 0,
+    "external_base": {
+     "oracle": 27,
+     "found": 27,
+     "recall": 1.0,
+     "recall_ci": [
+      0.8754,
+      1.0
+     ]
+    }
    }
   },
   "rust/fd/no_tests": {
@@ -15593,7 +18124,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 10.4
+    "seconds": 5.3
    },
    "oracle_dropped": {
     "caller_not_in_function": 134,
@@ -15720,8 +18251,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.4,
-     "peak_rss_mb": 10,
+     "seconds": 0.2,
+     "peak_rss_mb": 0,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -16070,6 +18601,90 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 1
+    },
+    "judged_types": 30,
+    "judged_interfaces": 0,
+    "external_base": {
+     "oracle": 23,
+     "found": 23,
+     "recall": 1.0,
+     "recall_ci": [
+      0.8569,
+      1.0
+     ]
+    }
    }
   },
   "rust/fd/tests": {
@@ -16085,7 +18700,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 16.1
+    "seconds": 5.4
    },
    "oracle_dropped": {
     "callee_external": 1629,
@@ -16211,8 +18826,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.9,
-     "peak_rss_mb": 12,
+     "seconds": 0.4,
+     "peak_rss_mb": 6,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -16564,6 +19179,90 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 1
+    },
+    "judged_types": 33,
+    "judged_interfaces": 0,
+    "external_base": {
+     "oracle": 27,
+     "found": 27,
+     "recall": 1.0,
+     "recall_ci": [
+      0.8754,
+      1.0
+     ]
+    }
    }
   },
   "rust/fd/path_tests_excluded_all_features": {
@@ -16579,7 +19278,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 25.2
+    "seconds": 5.5
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -17058,6 +19757,90 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {
+     "blanket_impl": 1
+    },
+    "judged_types": 32,
+    "judged_interfaces": 0,
+    "external_base": {
+     "oracle": 27,
+     "found": 27,
+     "recall": 1.0,
+     "recall_ci": [
+      0.8754,
+      1.0
+     ]
+    }
    }
   },
   "rust/bat/path_tests_excluded": {
@@ -17067,13 +19850,13 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.8,
+   "index_seconds": 5.4,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 18.6
+    "seconds": 7.0
    },
    "oracle_dropped": {
     "callee_external": 2966,
@@ -17201,8 +19984,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.0,
-     "peak_rss_mb": 39,
+     "seconds": 0.4,
+     "peak_rss_mb": 38,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -17226,8 +20009,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 241,
       "oracle_buckets": {
@@ -17413,8 +20196,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 209,
       "oracle_buckets": {
@@ -17577,6 +20360,94 @@
      ]
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 8,
+      "graded": 8,
+      "tp": 8,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.6756,
+       1.0
+      ],
+      "oracle_pairs": 8,
+      "matched": 8,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6756,
+       1.0
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 4,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 4,
+      "ungradable_reasons": {
+       "file_not_analysed": 4
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 22,
+      "graded": 20,
+      "tp": 20,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "end_not_judged": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8389,
+       1.0
+      ],
+      "oracle_pairs": 20,
+      "matched": 20,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.8389,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 2
+    },
+    "judged_types": 78,
+    "judged_interfaces": 3,
+    "external_base": {
+     "oracle": 57,
+     "found": 56,
+     "recall": 0.9825,
+     "recall_ci": [
+      0.9071,
+      0.9969
+     ]
+    }
    }
   },
   "rust/bat/path_tests_excluded_all_features": {
@@ -17586,13 +20457,13 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.8,
+   "index_seconds": 5.4,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 32.6
+    "seconds": 7.3
    },
    "oracle_dropped": {
     "callee_external": 3074,
@@ -17745,8 +20616,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 252,
       "oracle_buckets": {
@@ -17932,8 +20803,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 217,
       "oracle_buckets": {
@@ -18096,6 +20967,94 @@
      ]
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 8,
+      "graded": 8,
+      "tp": 8,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.6756,
+       1.0
+      ],
+      "oracle_pairs": 8,
+      "matched": 8,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.6756,
+       1.0
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 4,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 4,
+      "ungradable_reasons": {
+       "file_not_analysed": 4
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 22,
+      "graded": 20,
+      "tp": 20,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "end_not_judged": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.8389,
+       1.0
+      ],
+      "oracle_pairs": 20,
+      "matched": 20,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.8389,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 2
+    },
+    "judged_types": 82,
+    "judged_interfaces": 3,
+    "external_base": {
+     "oracle": 63,
+     "found": 62,
+     "recall": 0.9841,
+     "recall_ci": [
+      0.9154,
+      0.9972
+     ]
+    }
    }
   },
   "rust/tokei/path_tests_excluded": {
@@ -18111,7 +21070,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.3
+    "seconds": 5.1
    },
    "oracle_dropped": {
     "callee_external": 1349,
@@ -18242,7 +21201,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 0,
+     "peak_rss_mb": 6,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -18252,28 +21211,28 @@
     "load_errors": 0,
     "oracle_stats": {
      "definitions": 149,
-     "reference_edges": 2223,
-     "roots": 82
+     "reference_edges": 2233,
+     "roots": 76
     },
     "decls": 149,
     "columns": {
      "unref": {
-      "universe": 60,
+      "universe": 58,
       "universe_by_kind": {
        "function": 6,
-       "method": 44,
+       "method": 42,
        "type": 10
       },
-      "dead": 7,
+      "dead": 3,
       "dead_by_kind": {
-       "method": 5,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
-      "live": 53,
+      "live": 55,
       "oracle_buckets": {
        "public_api": 53,
        "test_root": 16,
-       "impl_for_foreign_type": 14,
+       "impl_for_foreign_type": 16,
        "oracle_unresolved_site": 3,
        "trait_declaration": 2,
        "main_init": 1
@@ -18292,15 +21251,15 @@
         0.1368,
         0.6943
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ],
-       "recall_claimable_kinds": 0.4286,
-       "dead_claimable_kinds": 7
+       "recall_claimable_kinds": 1.0,
+       "dead_claimable_kinds": 3
       },
       "no_exported": {
        "graded": 3,
@@ -18311,12 +21270,12 @@
         0.4385,
         1.0
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ]
       },
       "by_kind": {
@@ -18367,12 +21326,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
         "no_exported": {
@@ -18384,15 +21343,15 @@
           0.2065,
           1.0
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
-        "universe": 44
+        "universe": 42
        },
        "type": {
         "all": {
@@ -18436,27 +21395,25 @@
        "public_api": 5
       },
       "fp_categories_no_exported": {},
-      "fn_categories": {
-       "incoming_type_edge_from_live_code": 4
-      }
+      "fn_categories": {}
      },
      "reach": {
-      "universe": 53,
+      "universe": 51,
       "universe_by_kind": {
        "function": 7,
-       "method": 46
+       "method": 44
       },
-      "dead": 7,
+      "dead": 3,
       "dead_by_kind": {
-       "method": 5,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
-      "live": 46,
+      "live": 48,
       "oracle_buckets": {
        "public_api": 44,
        "not_a_function": 21,
        "test_root": 16,
-       "impl_for_foreign_type": 14,
+       "impl_for_foreign_type": 16,
        "main_init": 1
       },
       "claims": 16,
@@ -18472,15 +21429,15 @@
         0.1206,
         0.6458
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ],
-       "recall_claimable_kinds": 0.4286,
-       "dead_claimable_kinds": 7
+       "recall_claimable_kinds": 1.0,
+       "dead_claimable_kinds": 3
       },
       "no_exported": {
        "graded": 4,
@@ -18491,12 +21448,12 @@
         0.3006,
         0.9544
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ]
       },
       "by_kind": {
@@ -18547,12 +21504,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
         "no_exported": {
@@ -18564,15 +21521,15 @@
           0.2065,
           1.0
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
-        "universe": 46
+        "universe": 44
        }
       },
       "fp_categories": {
@@ -18582,9 +21539,7 @@
       "fp_categories_no_exported": {
        "reachable_function": 1
       },
-      "fn_categories": {
-       "incoming_type_edge_from_live_code": 4
-      }
+      "fn_categories": {}
      }
     },
     "crate_kinds": {
@@ -18600,6 +21555,93 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 7,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 7,
+      "ungradable_reasons": {
+       "end_not_judged": 7
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 2,
+     "blanket_impl": 2
+    },
+    "judged_types": 18,
+    "judged_interfaces": 2,
+    "external_base": {
+     "oracle": 32,
+     "found": 32,
+     "recall": 1.0,
+     "recall_ci": [
+      0.8928,
+      1.0
+     ]
+    }
    }
   },
   "rust/tokei/path_tests_excluded_all_features": {
@@ -18615,7 +21657,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 9.3
+    "seconds": 4.9
    },
    "oracle_dropped": {
     "callee_external": 1360,
@@ -18757,28 +21799,28 @@
     "load_errors": 0,
     "oracle_stats": {
      "definitions": 149,
-     "reference_edges": 2240,
-     "roots": 82
+     "reference_edges": 2250,
+     "roots": 76
     },
     "decls": 149,
     "columns": {
      "unref": {
-      "universe": 60,
+      "universe": 58,
       "universe_by_kind": {
        "function": 6,
-       "method": 44,
+       "method": 42,
        "type": 10
       },
-      "dead": 7,
+      "dead": 3,
       "dead_by_kind": {
-       "method": 5,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
-      "live": 53,
+      "live": 55,
       "oracle_buckets": {
        "public_api": 53,
        "test_root": 16,
-       "impl_for_foreign_type": 14,
+       "impl_for_foreign_type": 16,
        "oracle_unresolved_site": 3,
        "trait_declaration": 2,
        "main_init": 1
@@ -18797,15 +21839,15 @@
         0.1368,
         0.6943
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ],
-       "recall_claimable_kinds": 0.4286,
-       "dead_claimable_kinds": 7
+       "recall_claimable_kinds": 1.0,
+       "dead_claimable_kinds": 3
       },
       "no_exported": {
        "graded": 3,
@@ -18816,12 +21858,12 @@
         0.4385,
         1.0
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ]
       },
       "by_kind": {
@@ -18872,12 +21914,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
         "no_exported": {
@@ -18889,15 +21931,15 @@
           0.2065,
           1.0
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
-        "universe": 44
+        "universe": 42
        },
        "type": {
         "all": {
@@ -18941,27 +21983,25 @@
        "public_api": 5
       },
       "fp_categories_no_exported": {},
-      "fn_categories": {
-       "incoming_type_edge_from_live_code": 4
-      }
+      "fn_categories": {}
      },
      "reach": {
-      "universe": 53,
+      "universe": 51,
       "universe_by_kind": {
        "function": 7,
-       "method": 46
+       "method": 44
       },
-      "dead": 7,
+      "dead": 3,
       "dead_by_kind": {
-       "method": 5,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
-      "live": 46,
+      "live": 48,
       "oracle_buckets": {
        "public_api": 44,
        "not_a_function": 21,
        "test_root": 16,
-       "impl_for_foreign_type": 14,
+       "impl_for_foreign_type": 16,
        "main_init": 1
       },
       "claims": 16,
@@ -18977,15 +22017,15 @@
         0.1206,
         0.6458
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ],
-       "recall_claimable_kinds": 0.4286,
-       "dead_claimable_kinds": 7
+       "recall_claimable_kinds": 1.0,
+       "dead_claimable_kinds": 3
       },
       "no_exported": {
        "graded": 4,
@@ -18996,12 +22036,12 @@
         0.3006,
         0.9544
        ],
-       "dead": 7,
+       "dead": 3,
        "found": 3,
-       "recall": 0.4286,
+       "recall": 1.0,
        "recall_ci": [
-        0.1582,
-        0.7495
+        0.4385,
+        1.0
        ]
       },
       "by_kind": {
@@ -19052,12 +22092,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
         "no_exported": {
@@ -19069,15 +22109,15 @@
           0.2065,
           1.0
          ],
-         "dead": 5,
+         "dead": 1,
          "found": 1,
-         "recall": 0.2,
+         "recall": 1.0,
          "recall_ci": [
-          0.0362,
-          0.6245
+          0.2065,
+          1.0
          ]
         },
-        "universe": 46
+        "universe": 44
        }
       },
       "fp_categories": {
@@ -19087,9 +22127,7 @@
       "fp_categories_no_exported": {
        "reachable_function": 1
       },
-      "fn_categories": {
-       "incoming_type_edge_from_live_code": 4
-      }
+      "fn_categories": {}
      }
     },
     "crate_kinds": {
@@ -19105,6 +22143,93 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 7,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 7,
+      "ungradable_reasons": {
+       "end_not_judged": 7
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 2,
+     "blanket_impl": 2
+    },
+    "judged_types": 18,
+    "judged_interfaces": 2,
+    "external_base": {
+     "oracle": 32,
+     "found": 32,
+     "recall": 1.0,
+     "recall_ci": [
+      0.8928,
+      1.0
+     ]
+    }
    }
   },
   "rust/xsv/path_tests_excluded": {
@@ -19114,13 +22239,13 @@
    "repo": "xsv",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 0.6,
+   "index_seconds": 0.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 7.8
+    "seconds": 3.8
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -19238,7 +22363,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 4,
+     "peak_rss_mb": 6,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -19583,6 +22708,92 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 2,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "file_not_analysed": 2
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 6,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 6,
+      "ungradable_reasons": {
+       "file_not_analysed": 6
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 41,
+    "judged_interfaces": 0,
+    "external_base": {
+     "oracle": 47,
+     "found": 47,
+     "recall": 1.0,
+     "recall_ci": [
+      0.9244,
+      1.0
+     ]
+    }
    }
   },
   "rust/xsv/path_tests_excluded_all_features": {
@@ -19592,13 +22803,13 @@
    "repo": "xsv",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 0.6,
+   "index_seconds": 0.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 7.1
+    "seconds": 3.8
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -19717,7 +22928,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 11,
+     "peak_rss_mb": 0,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -20062,6 +23273,92 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 2,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 2,
+      "ungradable_reasons": {
+       "file_not_analysed": 2
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 6,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 6,
+      "ungradable_reasons": {
+       "file_not_analysed": 6
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 41,
+    "judged_interfaces": 0,
+    "external_base": {
+     "oracle": 47,
+     "found": 47,
+     "recall": 1.0,
+     "recall_ci": [
+      0.9244,
+      1.0
+     ]
+    }
    }
   },
   "rust/lidx/path_tests_excluded": {
@@ -20071,13 +23368,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 11.9,
+   "index_seconds": 10.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 29.0
+    "seconds": 23.9
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -20207,8 +23504,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.9,
-     "peak_rss_mb": 199,
+     "seconds": 3.5,
+     "peak_rss_mb": 197,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -20575,6 +23872,94 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 27,
+      "graded": 14,
+      "tp": 14,
+      "fp": 0,
+      "ungradable": 13,
+      "ungradable_reasons": {
+       "file_not_analysed": 13
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.7847,
+       1.0
+      ],
+      "oracle_pairs": 15,
+      "matched": 14,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.9333,
+      "recall_ci": [
+       0.7018,
+       0.9881
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 8,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 8,
+      "ungradable_reasons": {
+       "file_not_analysed": 8
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 47,
+      "graded": 46,
+      "tp": 46,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9229,
+       1.0
+      ],
+      "oracle_pairs": 46,
+      "matched": 46,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9229,
+       1.0
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 376,
+    "judged_interfaces": 4,
+    "external_base": {
+     "oracle": 46,
+     "found": 45,
+     "recall": 0.9783,
+     "recall_ci": [
+      0.8866,
+      0.9962
+     ]
+    }
    }
   },
   "rust/lidx/path_tests_excluded_all_features": {
@@ -20584,13 +23969,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 11.9,
+   "index_seconds": 10.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 27.4
+    "seconds": 25.4
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -20721,7 +24106,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.3,
+     "seconds": 5.1,
      "peak_rss_mb": 196,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
@@ -21089,6 +24474,94 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 27,
+      "graded": 14,
+      "tp": 14,
+      "fp": 0,
+      "ungradable": 13,
+      "ungradable_reasons": {
+       "file_not_analysed": 13
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.7847,
+       1.0
+      ],
+      "oracle_pairs": 15,
+      "matched": 14,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.9333,
+      "recall_ci": [
+       0.7018,
+       0.9881
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 8,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 8,
+      "ungradable_reasons": {
+       "file_not_analysed": 8
+      },
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 47,
+      "graded": 46,
+      "tp": 46,
+      "fp": 0,
+      "ungradable": 1,
+      "ungradable_reasons": {
+       "file_not_analysed": 1
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9229,
+       1.0
+      ],
+      "oracle_pairs": 46,
+      "matched": 46,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9229,
+       1.0
+      ]
+     }
+    },
+    "excluded": {},
+    "judged_types": 376,
+    "judged_interfaces": 4,
+    "external_base": {
+     "oracle": 46,
+     "found": 45,
+     "recall": 0.9783,
+     "recall_ci": [
+      0.8866,
+      0.9962
+     ]
+    }
    }
   },
   "rust/just/path_tests_excluded": {
@@ -21098,13 +24571,13 @@
    "repo": "just",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.5,
+   "index_seconds": 4.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.2
+    "seconds": 12.5
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -21249,8 +24722,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.9,
-     "peak_rss_mb": 69,
+     "seconds": 0.8,
+     "peak_rss_mb": 72,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -21260,26 +24733,26 @@
     "load_errors": 0,
     "oracle_stats": {
      "definitions": 1551,
-     "reference_edges": 20509,
-     "roots": 170
+     "reference_edges": 20512,
+     "roots": 167
     },
     "decls": 1551,
     "columns": {
      "unref": {
-      "universe": 914,
+      "universe": 917,
       "universe_by_kind": {
        "type": 148,
        "function": 117,
-       "method": 649
+       "method": 652
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 914,
+      "live": 917,
       "oracle_buckets": {
        "macro_generated": 441,
        "test_root": 134,
        "oracle_unresolved_site": 22,
-       "impl_for_foreign_type": 22,
+       "impl_for_foreign_type": 19,
        "trait_declaration": 9,
        "public_api": 5,
        "main_init": 3,
@@ -21399,7 +24872,7 @@
           null
          ]
         },
-        "universe": 649
+        "universe": 652
        },
        "type": {
         "all": {
@@ -21452,19 +24925,19 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 787,
+      "universe": 790,
       "universe_by_kind": {
        "function": 128,
-       "method": 659
+       "method": 662
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 787,
+      "live": 790,
       "oracle_buckets": {
        "macro_generated": 441,
        "not_a_function": 161,
        "test_root": 134,
-       "impl_for_foreign_type": 22,
+       "impl_for_foreign_type": 19,
        "main_init": 3,
        "public_api": 2,
        "ffi_or_macro_entry": 1
@@ -21583,7 +25056,7 @@
           null
          ]
         },
-        "universe": 659
+        "universe": 662
        }
       },
       "fp_categories": {
@@ -21611,6 +25084,95 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 21,
+      "graded": 21,
+      "tp": 21,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.8454,
+       1.0
+      ],
+      "oracle_pairs": 32,
+      "matched": 21,
+      "fn": 11,
+      "capture_gap": 0,
+      "recall": 0.6562,
+      "recall_ci": [
+       0.4831,
+       0.7959
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 53,
+      "graded": 36,
+      "tp": 36,
+      "fp": 0,
+      "ungradable": 17,
+      "ungradable_reasons": {
+       "end_not_judged": 12,
+       "file_not_analysed": 5
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9036,
+       1.0
+      ],
+      "oracle_pairs": 36,
+      "matched": 36,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9036,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 6,
+     "blanket_impl": 3,
+     "impl_for_type_alias": 4
+    },
+    "judged_types": 139,
+    "judged_interfaces": 9,
+    "external_base": {
+     "oracle": 170,
+     "found": 114,
+     "recall": 0.6706,
+     "recall_ci": [
+      0.5968,
+      0.7368
+     ]
+    }
    }
   },
   "rust/just/path_tests_excluded_all_features": {
@@ -21620,13 +25182,13 @@
    "repo": "just",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.5,
+   "index_seconds": 4.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 9.7
+    "seconds": 13.2
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -21772,8 +25334,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.7,
-     "peak_rss_mb": 71,
+     "seconds": 0.8,
+     "peak_rss_mb": 72,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -21783,26 +25345,26 @@
     "load_errors": 0,
     "oracle_stats": {
      "definitions": 1551,
-     "reference_edges": 20509,
-     "roots": 170
+     "reference_edges": 20512,
+     "roots": 167
     },
     "decls": 1551,
     "columns": {
      "unref": {
-      "universe": 914,
+      "universe": 917,
       "universe_by_kind": {
        "type": 148,
        "function": 117,
-       "method": 649
+       "method": 652
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 914,
+      "live": 917,
       "oracle_buckets": {
        "macro_generated": 441,
        "test_root": 134,
        "oracle_unresolved_site": 22,
-       "impl_for_foreign_type": 22,
+       "impl_for_foreign_type": 19,
        "trait_declaration": 9,
        "public_api": 5,
        "main_init": 3,
@@ -21922,7 +25484,7 @@
           null
          ]
         },
-        "universe": 649
+        "universe": 652
        },
        "type": {
         "all": {
@@ -21975,19 +25537,19 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 787,
+      "universe": 790,
       "universe_by_kind": {
        "function": 128,
-       "method": 659
+       "method": 662
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 787,
+      "live": 790,
       "oracle_buckets": {
        "macro_generated": 441,
        "not_a_function": 161,
        "test_root": 134,
-       "impl_for_foreign_type": 22,
+       "impl_for_foreign_type": 19,
        "main_init": 3,
        "public_api": 2,
        "ffi_or_macro_entry": 1
@@ -22106,7 +25668,7 @@
           null
          ]
         },
-        "universe": 659
+        "universe": 662
        }
       },
       "fp_categories": {
@@ -22134,6 +25696,95 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 21,
+      "graded": 21,
+      "tp": 21,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.8454,
+       1.0
+      ],
+      "oracle_pairs": 32,
+      "matched": 21,
+      "fn": 11,
+      "capture_gap": 0,
+      "recall": 0.6562,
+      "recall_ci": [
+       0.4831,
+       0.7959
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 53,
+      "graded": 36,
+      "tp": 36,
+      "fp": 0,
+      "ungradable": 17,
+      "ungradable_reasons": {
+       "end_not_judged": 12,
+       "file_not_analysed": 5
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.9036,
+       1.0
+      ],
+      "oracle_pairs": 36,
+      "matched": 36,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.9036,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 6,
+     "blanket_impl": 3,
+     "impl_for_type_alias": 4
+    },
+    "judged_types": 139,
+    "judged_interfaces": 9,
+    "external_base": {
+     "oracle": 170,
+     "found": 114,
+     "recall": 0.6706,
+     "recall_ci": [
+      0.5968,
+      0.7368
+     ]
+    }
    }
   },
   "rust/nextest/path_tests_excluded": {
@@ -22143,13 +25794,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 3.9,
+   "index_seconds": 3.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 15.1
+    "seconds": 14.6
    },
    "oracle_dropped": {
     "callee_external": 8747,
@@ -22286,7 +25937,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 1.1,
-     "peak_rss_mb": 99,
+     "peak_rss_mb": 98,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -22310,8 +25961,8 @@
       },
       "dead": 26,
       "dead_by_kind": {
-       "function": 17,
        "method": 7,
+       "function": 17,
        "type": 2
       },
       "live": 1132,
@@ -22502,8 +26153,8 @@
       },
       "dead": 28,
       "dead_by_kind": {
-       "function": 18,
-       "method": 10
+       "method": 10,
+       "function": 18
       },
       "live": 907,
       "oracle_buckets": {
@@ -22666,6 +26317,94 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 9,
+      "graded": 9,
+      "tp": 9,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.7008,
+       1.0
+      ],
+      "oracle_pairs": 10,
+      "matched": 9,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.9,
+      "recall_ci": [
+       0.5958,
+       0.9821
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 47,
+      "graded": 24,
+      "tp": 24,
+      "fp": 0,
+      "ungradable": 23,
+      "ungradable_reasons": {
+       "end_not_judged": 21,
+       "file_not_analysed": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.862,
+       1.0
+      ],
+      "oracle_pairs": 24,
+      "matched": 24,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.862,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 3,
+     "blanket_impl": 3
+    },
+    "judged_types": 519,
+    "judged_interfaces": 7,
+    "external_base": {
+     "oracle": 336,
+     "found": 326,
+     "recall": 0.9702,
+     "recall_ci": [
+      0.9461,
+      0.9838
+     ]
+    }
    }
   },
   "rust/nextest/path_tests_excluded_all_features": {
@@ -22675,13 +26414,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 3.9,
+   "index_seconds": 3.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 16.1
+    "seconds": 44.3
    },
    "oracle_dropped": {
     "callee_external": 8752,
@@ -22820,7 +26559,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 1.1,
-     "peak_rss_mb": 97,
+     "peak_rss_mb": 98,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -22844,8 +26583,8 @@
       },
       "dead": 26,
       "dead_by_kind": {
-       "function": 17,
        "method": 7,
+       "function": 17,
        "type": 2
       },
       "live": 1132,
@@ -23036,8 +26775,8 @@
       },
       "dead": 28,
       "dead_by_kind": {
-       "function": 18,
-       "method": 10
+       "method": 10,
+       "function": 18
       },
       "live": 907,
       "oracle_buckets": {
@@ -23200,6 +26939,94 @@
      "unreachable_files": []
     },
     "cached_oracle": false
+   },
+   "hierarchy": {
+    "relations": {
+     "implements": {
+      "lidx_pairs": 9,
+      "graded": 9,
+      "tp": 9,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": 1.0,
+      "precision_ci": [
+       0.7008,
+       1.0
+      ],
+      "oracle_pairs": 10,
+      "matched": 9,
+      "fn": 1,
+      "capture_gap": 0,
+      "recall": 0.9,
+      "recall_ci": [
+       0.5958,
+       0.9821
+      ]
+     },
+     "extends": {
+      "lidx_pairs": 0,
+      "graded": 0,
+      "tp": 0,
+      "fp": 0,
+      "ungradable": 0,
+      "ungradable_reasons": {},
+      "precision": null,
+      "precision_ci": [
+       null,
+       null
+      ],
+      "oracle_pairs": 0,
+      "matched": 0,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": null,
+      "recall_ci": [
+       null,
+       null
+      ]
+     },
+     "overrides": {
+      "lidx_pairs": 47,
+      "graded": 24,
+      "tp": 24,
+      "fp": 0,
+      "ungradable": 23,
+      "ungradable_reasons": {
+       "end_not_judged": 21,
+       "file_not_analysed": 2
+      },
+      "precision": 1.0,
+      "precision_ci": [
+       0.862,
+       1.0
+      ],
+      "oracle_pairs": 24,
+      "matched": 24,
+      "fn": 0,
+      "capture_gap": 0,
+      "recall": 1.0,
+      "recall_ci": [
+       0.862,
+       1.0
+      ]
+     }
+    },
+    "excluded": {
+     "impl_for_foreign_type": 3,
+     "blanket_impl": 3
+    },
+    "judged_types": 519,
+    "judged_interfaces": 7,
+    "external_base": {
+     "oracle": 336,
+     "found": 326,
+     "recall": 0.9702,
+     "recall_ci": [
+      0.9461,
+      0.9838
+     ]
+    }
    }
   }
  },

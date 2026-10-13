@@ -1,0 +1,6 @@
+[
+{"base":"remote.go:18","evidence_file":"remote/remote.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"remote/remote.go:20"},
+{"base":"remote.go:19","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"remote/remote.go:22"},
+{"base":"remote.go:20","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"remote/remote.go:34"},
+{"base":"remote.go:21","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"remote/remote.go:47"}
+]

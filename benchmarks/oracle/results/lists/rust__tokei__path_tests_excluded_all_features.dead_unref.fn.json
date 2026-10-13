@@ -1,6 +1,3 @@
 [
-{"category":"incoming_type_edge_from_live_code","exported":false,"file":"src/utils/ext.rs","incoming":["IMPLEMENTS:live"],"key":"src/utils/ext.rs:24","kind":"method","line":24,"name":"trim_first_and_last_line_of_whitespace","subkind":"trait_method"},
-{"category":"incoming_type_edge_from_live_code","exported":false,"file":"src/utils/ext.rs","incoming":["IMPLEMENTS:live"],"key":"src/utils/ext.rs:25","kind":"method","line":25,"name":"trim_start","subkind":"trait_method"},
-{"category":"incoming_type_edge_from_live_code","exported":false,"file":"src/utils/ext.rs","incoming":["IMPLEMENTS:live"],"key":"src/utils/ext.rs:26","kind":"method","line":26,"name":"trim","subkind":"trait_method"},
-{"category":"incoming_type_edge_from_live_code","exported":false,"file":"src/utils/ext.rs","incoming":["IMPLEMENTS:live"],"key":"src/utils/ext.rs:27","kind":"method","line":27,"name":"contains_slice","subkind":"trait_method"}
+
 ]

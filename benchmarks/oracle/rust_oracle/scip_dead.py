@@ -266,7 +266,7 @@ def main():
             if cl is None or sym in defs:
                 continue
             defs[sym] = {"symbol": sym, "file": path, "line": l0 + 1, "col": c0, "ecol": c1, "encl": e, "kind": cl[0], "subkind": cl[1],
-                         "name": (lambda n: n.rsplit("]", 1)[-1] if n.startswith("[") else n)(sc.short_name(sym)) if cl[0] != "type" else sc.ctor_name(sym)}
+                         "name": (lambda n: n.rsplit("]", 1)[-1].strip("`"))(sc.short_name(sym)) if cl[0] != "type" else sc.ctor_name(sym)}
 
     # ---- classify each definition from its source line ------------------------------------------------------------------
     for r in defs.values():
@@ -388,7 +388,7 @@ def main():
         mod, last = desc_parts(r["symbol"])
         m = sc.IMPL_RE.match(last)
         tname = m.group(2).strip("`").split("<")[0].split("::")[-1]
-        ty = m.group(1).strip("`").split("<")[0].split("::")[-1].lstrip("&").strip()
+        ty = re.sub(r"^&\s*(?:'\w+\s+)?(?:mut\s+)?", "", m.group(1).strip("`")).split("<")[0].split("::")[-1].strip()
         r["recv"] = ty
         r["trait_name"] = tname
         cands = [t for t in traits_by_name.get(tname, [])]

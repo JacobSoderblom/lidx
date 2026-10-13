@@ -1,0 +1,11 @@
+[
+{"base":"Error","bucket":"external_base","category":"no_edge","relation":"extends","sub":"source/errors/KyError.ts:8"},
+{"base":"Error","bucket":"external_base","category":"no_edge","relation":"extends","sub":"source/errors/NonError.ts:8"},
+{"base":"Error","bucket":"external_base","category":"no_edge","relation":"extends","sub":"source/errors/SchemaValidationError.ts:25"},
+{"base":"Readonly","bucket":"external_base","category":"no_edge","relation":"extends","sub":"source/types/options.ts:540"},
+{"base":"source/errors/KyError.ts:9","base_name":"name","base_type":"source/errors/KyError.ts:8","category":"method_pairing_missing","depth":1,"relation":"overrides","sub":"source/errors/ForceRetryError.ts:12","sub_name":"name","sub_type":"source/errors/ForceRetryError.ts:11","via":"extends"},
+{"base":"source/errors/KyError.ts:9","base_name":"name","base_type":"source/errors/KyError.ts:8","category":"method_pairing_missing","depth":1,"relation":"overrides","sub":"source/errors/HTTPError.ts:16","sub_name":"name","sub_type":"source/errors/HTTPError.ts:15","via":"extends"},
+{"base":"source/errors/KyError.ts:9","base_name":"name","base_type":"source/errors/KyError.ts:8","category":"method_pairing_missing","depth":1,"relation":"overrides","sub":"source/errors/NetworkError.ts:12","sub_name":"name","sub_type":"source/errors/NetworkError.ts:11","via":"extends"},
+{"base":"source/errors/KyError.ts:9","base_name":"name","base_type":"source/errors/KyError.ts:8","category":"method_pairing_missing","depth":1,"relation":"overrides","sub":"source/errors/ResponseSizeError.ts:21","sub_name":"name","sub_type":"source/errors/ResponseSizeError.ts:20","via":"extends"},
+{"base":"source/errors/KyError.ts:9","base_name":"name","base_type":"source/errors/KyError.ts:8","category":"method_pairing_missing","depth":1,"relation":"overrides","sub":"source/errors/TimeoutError.ts:8","sub_name":"name","sub_type":"source/errors/TimeoutError.ts:7","via":"extends"}
+]

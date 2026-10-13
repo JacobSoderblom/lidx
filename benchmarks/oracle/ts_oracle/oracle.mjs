@@ -11,6 +11,7 @@
 import ts from "typescript";
 import fs from "node:fs";
 import path from "node:path";
+import { computeHierarchy } from "./hierarchy.mjs";
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
@@ -295,4 +296,5 @@ out.edges.sort((a, b) => a.caller.file.localeCompare(b.caller.file) || a.caller.
 const diag = ts.getPreEmitDiagnostics(program).filter((d) => d.code === 2307).length;
 out.unresolved_module_diagnostics = diag;
 if (process.env.ORACLE_DEBUG) { const c = {}; for (const d of ts.getPreEmitDiagnostics(program).filter((d) => d.code === 2307)) { const m = /module '(.*?)'/.exec(ts.flattenDiagnosticMessageText(d.messageText, " ")); const k = m ? m[1] : "?"; c[k] = (c[k] || 0) + 1; } console.error("MODDIAG", JSON.stringify(Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 25))); }
+out.hierarchy = computeHierarchy({ program, checker, rel, inRepo, inScope, isTestPath, withTests });
 process.stdout.write(JSON.stringify(out, null, 1));

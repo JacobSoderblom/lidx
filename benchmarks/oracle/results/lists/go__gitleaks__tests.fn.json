@@ -5,5 +5,5 @@
 {"callee":{"file":"config/allowlist.go","line":136,"name":"PathAllowed"},"caller":{"file":"config/allowlist_test.go","line":375,"name":"BenchmarkPathNotAllowed"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["config/allowlist_test.go:377"]},
 {"callee":{"file":"config/allowlist.go","line":149,"name":"RegexAllowed"},"caller":{"file":"config/allowlist_test.go","line":318,"name":"BenchmarkRegexAllowed"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["config/allowlist_test.go:320"]},
 {"callee":{"file":"config/allowlist.go","line":149,"name":"RegexAllowed"},"caller":{"file":"config/allowlist_test.go","line":327,"name":"BenchmarkRegexNotAllowed"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["config/allowlist_test.go:329"]},
-{"callee":{"file":"sources/git.go","line":299,"name":"Fragments"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"other_call_on_line_missed","detail":null,"fanout":6,"sites":["sources/git.go:300","sources/git.go:383","sources/git.go:420"]}
+{"callee":{"file":"sources/git.go","line":299,"name":"Fragments"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"other_call_on_line_missed","detail":null,"fanout":6,"sites":["sources/git.go:383","sources/git.go:407","sources/git.go:300"]}
 ]

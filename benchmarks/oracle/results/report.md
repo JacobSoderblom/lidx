@@ -353,7 +353,7 @@ Lists: `results/lists/go__gitleaks__tests.fn.json`, `go__gitleaks__tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.999, 1.000], R 0.584 [0.573, 0.594]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.992 (4653 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9372 resolved in-repo CALLS pairs; 4858 graded (4858 correct, 0 wrong); lidx indexed in 11.1s
+- lidx: 9372 resolved in-repo CALLS pairs; 4858 graded (4858 correct, 0 wrong); lidx indexed in 11.9s
 - ungradable lidx pairs: caller_file_not_covered 4190, caller_not_judged 324
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -374,7 +374,7 @@ Lists: `results/lists/go__syft__no_tests.fn.json`, `go__syft__no_tests.fp.json`,
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [1.000, 1.000], R 0.337 [0.331, 0.343]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.988 (8778 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9372 resolved in-repo CALLS pairs; 9156 graded (9156 correct, 0 wrong); lidx indexed in 11.1s
+- lidx: 9372 resolved in-repo CALLS pairs; 9156 graded (9156 correct, 0 wrong); lidx indexed in 11.9s
 - ungradable lidx pairs: caller_file_not_covered 148, caller_not_judged 68
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -395,7 +395,7 @@ Lists: `results/lists/go__syft__tests.fn.json`, `go__syft__tests.fp.json`, `go__
 - repowise-comparable scope: 1626 oracle edges (112 module-level and 215 abstract-target edges removed), P 0.999 [0.996, 1.000], R 0.933 [0.920, 0.944]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.993 if they were counted wrong
 - recall when both ends are indexed symbols: 0.924 (1716 oracle edges); caller lifted to an enclosing declaration for 257 edges; capture gap reasons: {'callee_not_indexed': 216}
-- lidx: 1970 resolved in-repo CALLS pairs; 1600 graded (1589 correct, 11 wrong); lidx indexed in 5.4s
+- lidx: 1970 resolved in-repo CALLS pairs; 1600 graded (1589 correct, 11 wrong); lidx indexed in 5.7s
 - ungradable lidx pairs: caller_file_not_covered 370
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -419,7 +419,7 @@ Lists: `results/lists/ts__zod.fn.json`, `ts__zod.fp.json`, `ts__zod.capture_gap.
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 4 oracle edges, 4 matched by lidx
 - unresolved-site exclusion: 5 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.984 (812 oracle edges); caller lifted to an enclosing declaration for 94 edges; capture gap reasons: {'callee_not_indexed': 96}
-- lidx: 1758 resolved in-repo CALLS pairs; 812 graded (808 correct, 4 wrong); lidx indexed in 6.6s
+- lidx: 1758 resolved in-repo CALLS pairs; 812 graded (808 correct, 4 wrong); lidx indexed in 5.3s
 - ungradable lidx pairs: caller_file_not_covered 941, oracle_unresolved_site 5
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -441,7 +441,7 @@ Lists: `results/lists/ts__hono.fn.json`, `ts__hono.fp.json`, `ts__hono.capture_g
 - oracle: None, 4796 edges: 4567 static with an indexed caller, 167 dispatch (40 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.943 (4567 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4510 resolved in-repo CALLS pairs; 4403 graded (4346 correct, 57 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 4403 graded (4346 correct, 57 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 95, caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -463,7 +463,7 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded.fn.json`, `rust__ripgre
 - oracle: None, 2315 edges: 2176 static with an indexed caller, 139 dispatch (40 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.974 if they were counted wrong
 - recall when both ends are indexed symbols: 0.918 (2176 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 4510 resolved in-repo CALLS pairs; 2092 graded (2037 correct, 55 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 2092 graded (2037 correct, 55 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 141, caller_not_judged 2277
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -485,7 +485,7 @@ Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests
 - oracle: None, 6072 edges: 4662 static with an indexed caller, 181 dispatch (44 of them found), 1229 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.941 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1229}
-- lidx: 4510 resolved in-repo CALLS pairs; 4489 graded (4430 correct, 59 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 4489 graded (4430 correct, 59 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 9, caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -574,7 +574,7 @@ Lists: `results/lists/rust__fd__tests.fn.json`, `rust__fd__tests.fp.json`, `rust
 - oracle: None, 4819 edges: 4590 static with an indexed caller, 167 dispatch (40 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.992 if they were counted wrong
 - recall when both ends are indexed symbols: 0.943 (4590 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4510 resolved in-repo CALLS pairs; 4405 graded (4369 correct, 36 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 4405 graded (4369 correct, 36 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 86, caller_not_judged 12, cfg_gated_evidence 7
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -661,7 +661,7 @@ Lists: `results/lists/go__chi__tests.fn.json`, `go__chi__tests.fp.json`, `go__ch
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.987, 1.000], R 0.536 [0.494, 0.578]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.989 (271 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2310 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 0.9s
+- lidx: 2310 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 1671, caller_not_judged 311
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -682,7 +682,7 @@ Lists: `results/lists/go__urfavecli__no_tests.fn.json`, `go__urfavecli__no_tests
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.336 [0.325, 0.347]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.959 (2168 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2310 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 0.9s
+- lidx: 2310 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 20, caller_not_judged 24
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -744,7 +744,7 @@ Lists: `results/lists/go__viper__tests.fn.json`, `go__viper__tests.fp.json`, `go
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.969, 1.000], R 0.371 [0.320, 0.425]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (118 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 632 resolved in-repo CALLS pairs; 178 graded (178 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 632 resolved in-repo CALLS pairs; 178 graded (178 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 454
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -764,7 +764,7 @@ Lists: `results/lists/go__bubbletea__no_tests.fn.json`, `go__bubbletea__no_tests
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.986, 1.000], R 0.339 [0.307, 0.372]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.982 (283 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 632 resolved in-repo CALLS pairs; 333 graded (333 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 632 resolved in-repo CALLS pairs; 333 graded (333 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 292, caller_not_judged 7
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -785,7 +785,7 @@ Lists: `results/lists/go__bubbletea__tests.fn.json`, `go__bubbletea__tests.fp.js
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 2 oracle edges, 2 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.980 if they were counted wrong
 - recall when both ends are indexed symbols: 0.979 (376 oracle edges); caller lifted to an enclosing declaration for 65 edges; capture gap reasons: {'callee_not_indexed': 135}
-- lidx: 2591 resolved in-repo CALLS pairs; 352 graded (345 correct, 7 wrong); lidx indexed in 15.0s
+- lidx: 2591 resolved in-repo CALLS pairs; 352 graded (345 correct, 7 wrong); lidx indexed in 11.5s
 - ungradable lidx pairs: callee_file_not_covered 5, caller_file_not_covered 2234
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -807,7 +807,7 @@ Lists: `results/lists/ts__trpc.fn.json`, `ts__trpc.fp.json`, `ts__trpc.capture_g
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 5 oracle edges, 5 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (255 oracle edges); caller lifted to an enclosing declaration for 10 edges; capture gap reasons: {'callee_not_indexed': 10}
-- lidx: 447 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 2.9s
+- lidx: 447 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 1.8s
 - ungradable lidx pairs: caller_file_not_covered 195
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -828,7 +828,7 @@ Lists: `results/lists/ts__ky.fn.json`, `ts__ky.fp.json`, `ts__ky.capture_gap.jso
 - repowise-comparable scope: 282 oracle edges (1 module-level and 14 abstract-target edges removed), P 0.956 [0.920, 0.976], R 0.766 [0.713, 0.812]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.956 if they were counted wrong
 - recall when both ends are indexed symbols: 0.813 (267 oracle edges); caller lifted to an enclosing declaration for 73 edges; capture gap reasons: {'callee_not_indexed': 30}
-- lidx: 485 resolved in-repo CALLS pairs; 226 graded (216 correct, 10 wrong); lidx indexed in 1.3s
+- lidx: 485 resolved in-repo CALLS pairs; 226 graded (216 correct, 10 wrong); lidx indexed in 0.9s
 - ungradable lidx pairs: caller_file_not_covered 259
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -849,7 +849,7 @@ Lists: `results/lists/ts__immer.fn.json`, `ts__immer.fp.json`, `ts__immer.captur
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 3 oracle edges, 3 matched by lidx
 - unresolved-site exclusion: 1 lidx pairs left out; precision would be 0.940 if they were counted wrong
 - recall when both ends are indexed symbols: 0.925 (533 oracle edges); caller lifted to an enclosing declaration for 51 edges; capture gap reasons: {'callee_not_indexed': 46}
-- lidx: 983 resolved in-repo CALLS pairs; 515 graded (485 correct, 30 wrong); lidx indexed in 3.2s
+- lidx: 983 resolved in-repo CALLS pairs; 515 graded (485 correct, 30 wrong); lidx indexed in 2.8s
 - ungradable lidx pairs: caller_file_not_covered 467, oracle_unresolved_site 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -870,7 +870,7 @@ Lists: `results/lists/ts__h3.fn.json`, `ts__h3.fp.json`, `ts__h3.capture_gap.jso
 - oracle: None, 622 edges: 614 static with an indexed caller, 8 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.972 (614 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 983 resolved in-repo CALLS pairs; 605 graded (597 correct, 8 wrong); lidx indexed in 4.8s
+- lidx: 983 resolved in-repo CALLS pairs; 605 graded (597 correct, 8 wrong); lidx indexed in 5.4s
 - ungradable lidx pairs: callee_file_not_covered 2, caller_file_not_covered 376
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -914,7 +914,7 @@ Lists: `results/lists/rust__tokei__path_tests_excluded.fn.json`, `rust__tokei__p
 - oracle: None, 376 edges: 376 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.923 (376 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 678 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 678 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 331
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -935,7 +935,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded.fn.json`, `rust__xsv__path_
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (1 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.987 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 11.9s
+- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.0s
 - ungradable lidx pairs: caller_file_not_covered 6356
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -957,7 +957,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded.fn.json`, `rust__lidx__pat
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (21 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.837 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.5s
+- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.9s
 - ungradable lidx pairs: caller_file_not_covered 8687, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -980,7 +980,7 @@ Lists: `results/lists/rust__just__path_tests_excluded.fn.json`, `rust__just__pat
 - oracle: None, 2022 edges: 1930 static with an indexed caller, 22 dispatch (2 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.956 if they were counted wrong
 - recall when both ends are indexed symbols: 0.867 (1930 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2342 resolved in-repo CALLS pairs; 1751 graded (1674 correct, 77 wrong); lidx indexed in 3.9s
+- lidx: 2342 resolved in-repo CALLS pairs; 1751 graded (1674 correct, 77 wrong); lidx indexed in 3.7s
 - ungradable lidx pairs: caller_file_not_covered 535, caller_not_judged 56
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1002,7 +1002,7 @@ Lists: `results/lists/rust__nextest__path_tests_excluded.fn.json`, `rust__nextes
 - oracle: None, 639 edges: 631 static with an indexed caller, 8 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.973 (631 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 983 resolved in-repo CALLS pairs; 621 graded (614 correct, 7 wrong); lidx indexed in 4.8s
+- lidx: 983 resolved in-repo CALLS pairs; 621 graded (614 correct, 7 wrong); lidx indexed in 5.4s
 - ungradable lidx pairs: caller_file_not_covered 361, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1046,7 +1046,7 @@ Lists: `results/lists/rust__tokei__path_tests_excluded_all_features.fn.json`, `r
 - oracle: None, 376 edges: 376 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.923 (376 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 678 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 678 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 331
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1067,7 +1067,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded_all_features.fn.json`, `rus
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (1 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.987 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 11.9s
+- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.0s
 - ungradable lidx pairs: caller_file_not_covered 6356
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1089,7 +1089,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (21 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.837 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.5s
+- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.9s
 - ungradable lidx pairs: caller_file_not_covered 8687, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1112,7 +1112,7 @@ Lists: `results/lists/rust__just__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 2023 edges: 1931 static with an indexed caller, 22 dispatch (2 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.957 if they were counted wrong
 - recall when both ends are indexed symbols: 0.866 (1931 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2342 resolved in-repo CALLS pairs; 1750 graded (1674 correct, 76 wrong); lidx indexed in 3.9s
+- lidx: 2342 resolved in-repo CALLS pairs; 1750 graded (1674 correct, 76 wrong); lidx indexed in 3.7s
 - ungradable lidx pairs: caller_file_not_covered 535, caller_not_judged 56, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1494,26 +1494,26 @@ Tools: staticcheck (honnef.co/go/tools) v0.6.1; golang.org/x/tools (RTA, go/anal
 | ts/ky | library | 176 | 0 | 0 | - | - | - | - |
 | ts/immer | library | 121 | 5 | 7 | 0.286 [0.082, 0.641] | 0.400 [0.118, 0.769] | - | - |
 | ts/h3 | library | 412 | 4 | 64 | 0.047 [0.016, 0.129] | 0.750 [0.301, 0.954] | - | - |
-| rust/ripgrep/path_tests_excluded | library + binary crates | 1938 | 6 | 247 | 0.024 [0.011, 0.052] | 1.000 [0.610, 1.000] | 0.035 [0.016, 0.075] | 1.000 [0.610, 1.000] |
-| rust/ripgrep/no_tests | library + binary crates | 1835 | 3 | 239 | 0.013 [0.004, 0.036] | 1.000 [0.439, 1.000] | 0.019 [0.006, 0.053] | 1.000 [0.439, 1.000] |
-| rust/ripgrep/tests | library + binary crates | 2014 | 6 | 272 | 0.022 [0.010, 0.047] | 1.000 [0.610, 1.000] | 0.033 [0.015, 0.071] | 1.000 [0.610, 1.000] |
-| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1948 | 7 | 250 | 0.028 [0.014, 0.057] | 1.000 [0.646, 1.000] | 0.041 [0.020, 0.082] | 1.000 [0.646, 1.000] |
-| rust/fd/path_tests_excluded | binary | 182 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
-| rust/fd/no_tests | binary | 173 | 0 | 3 | 0.000 [0.000, 0.561] | - | 0.000 [0.000, 0.561] | - |
-| rust/fd/tests | binary | 213 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
-| rust/fd/path_tests_excluded_all_features | binary | 182 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
-| rust/bat/path_tests_excluded | library + binary crates | 246 | 5 | 33 | 0.151 [0.067, 0.309] | 1.000 [0.566, 1.000] | 0.455 [0.213, 0.720] | 1.000 [0.566, 1.000] |
-| rust/bat/path_tests_excluded_all_features | library + binary crates | 257 | 5 | 34 | 0.147 [0.065, 0.301] | 1.000 [0.566, 1.000] | 0.455 [0.213, 0.720] | 1.000 [0.566, 1.000] |
-| rust/tokei/path_tests_excluded | library + binary crates | 60 | 7 | 8 | 0.375 [0.137, 0.694] | 0.429 [0.158, 0.750] | 1.000 [0.439, 1.000] | 0.429 [0.158, 0.750] |
-| rust/tokei/path_tests_excluded_all_features | library + binary crates | 60 | 7 | 8 | 0.375 [0.137, 0.694] | 0.429 [0.158, 0.750] | 1.000 [0.439, 1.000] | 0.429 [0.158, 0.750] |
-| rust/xsv/path_tests_excluded | binary | 229 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
-| rust/xsv/path_tests_excluded_all_features | binary | 229 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
-| rust/lidx/path_tests_excluded | library + binary crates | 1792 | 0 | 51 | 0.000 [0.000, 0.070] | - | 0.000 [0.000, 0.161] | - |
-| rust/lidx/path_tests_excluded_all_features | library + binary crates | 1792 | 0 | 51 | 0.000 [0.000, 0.070] | - | 0.000 [0.000, 0.161] | - |
-| rust/just/path_tests_excluded | library + binary crates | 914 | 0 | 27 | 0.000 [0.000, 0.125] | - | 0.000 [0.000, 0.125] | - |
-| rust/just/path_tests_excluded_all_features | library + binary crates | 914 | 0 | 27 | 0.000 [0.000, 0.125] | - | 0.000 [0.000, 0.125] | - |
-| rust/nextest/path_tests_excluded | library + binary crates | 1158 | 26 | 197 | 0.127 [0.087, 0.181] | 0.962 [0.811, 0.993] | 0.168 [0.115, 0.239] | 0.958 [0.798, 0.993] |
-| rust/nextest/path_tests_excluded_all_features | library + binary crates | 1158 | 26 | 198 | 0.126 [0.087, 0.180] | 0.962 [0.811, 0.993] | 0.168 [0.115, 0.239] | 0.958 [0.798, 0.993] |
+| rust/ripgrep/path_tests_excluded | library + binary crates | 1938 | 6 | 247 | 0.024 [0.011, 0.052] | not reported | 0.035 [0.016, 0.075] | not reported |
+| rust/ripgrep/no_tests | library + binary crates | 1835 | 3 | 239 | 0.013 [0.004, 0.036] | not reported | 0.019 [0.006, 0.053] | not reported |
+| rust/ripgrep/tests | library + binary crates | 2014 | 6 | 272 | 0.022 [0.010, 0.047] | not reported | 0.033 [0.015, 0.071] | not reported |
+| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1948 | 7 | 250 | 0.028 [0.014, 0.057] | not reported | 0.041 [0.020, 0.082] | not reported |
+| rust/fd/path_tests_excluded | binary | 182 | 0 | 4 | 0.000 [0.000, 0.490] | not reported | 0.000 [0.000, 0.490] | not reported |
+| rust/fd/no_tests | binary | 173 | 0 | 3 | 0.000 [0.000, 0.561] | not reported | 0.000 [0.000, 0.561] | not reported |
+| rust/fd/tests | binary | 213 | 0 | 4 | 0.000 [0.000, 0.490] | not reported | 0.000 [0.000, 0.490] | not reported |
+| rust/fd/path_tests_excluded_all_features | binary | 182 | 0 | 4 | 0.000 [0.000, 0.490] | not reported | 0.000 [0.000, 0.490] | not reported |
+| rust/bat/path_tests_excluded | library + binary crates | 246 | 5 | 33 | 0.151 [0.067, 0.309] | not reported | 0.455 [0.213, 0.720] | not reported |
+| rust/bat/path_tests_excluded_all_features | library + binary crates | 257 | 5 | 34 | 0.147 [0.065, 0.301] | not reported | 0.455 [0.213, 0.720] | not reported |
+| rust/tokei/path_tests_excluded | library + binary crates | 58 | 3 | 8 | 0.375 [0.137, 0.694] | not reported | 1.000 [0.439, 1.000] | not reported |
+| rust/tokei/path_tests_excluded_all_features | library + binary crates | 58 | 3 | 8 | 0.375 [0.137, 0.694] | not reported | 1.000 [0.439, 1.000] | not reported |
+| rust/xsv/path_tests_excluded | binary | 229 | 0 | 14 | 0.000 [0.000, 0.215] | not reported | 0.000 [0.000, 0.242] | not reported |
+| rust/xsv/path_tests_excluded_all_features | binary | 229 | 0 | 14 | 0.000 [0.000, 0.215] | not reported | 0.000 [0.000, 0.242] | not reported |
+| rust/lidx/path_tests_excluded | library + binary crates | 1792 | 0 | 51 | 0.000 [0.000, 0.070] | not reported | 0.000 [0.000, 0.161] | not reported |
+| rust/lidx/path_tests_excluded_all_features | library + binary crates | 1792 | 0 | 51 | 0.000 [0.000, 0.070] | not reported | 0.000 [0.000, 0.161] | not reported |
+| rust/just/path_tests_excluded | library + binary crates | 917 | 0 | 27 | 0.000 [0.000, 0.125] | not reported | 0.000 [0.000, 0.125] | not reported |
+| rust/just/path_tests_excluded_all_features | library + binary crates | 917 | 0 | 27 | 0.000 [0.000, 0.125] | not reported | 0.000 [0.000, 0.125] | not reported |
+| rust/nextest/path_tests_excluded | library + binary crates | 1158 | 26 | 197 | 0.127 [0.087, 0.181] | not reported | 0.168 [0.115, 0.239] | not reported |
+| rust/nextest/path_tests_excluded_all_features | library + binary crates | 1158 | 26 | 198 | 0.126 [0.087, 0.180] | not reported | 0.168 [0.115, 0.239] | not reported |
 
 ### Unreachable: per cell
 
@@ -1539,26 +1539,26 @@ Tools: staticcheck (honnef.co/go/tools) v0.6.1; golang.org/x/tools (RTA, go/anal
 | ts/ky | library | 102 | 0 | 0 | - | - | - | - |
 | ts/immer | library | 52 | 2 | 4 | 0.000 [0.000, 0.490] | 0.000 [0.000, 0.658] | - | - |
 | ts/h3 | library | 240 | 1 | 42 | 0.024 [0.004, 0.123] | 1.000 [0.206, 1.000] | - | - |
-| rust/ripgrep/path_tests_excluded | library + binary crates | 1677 | 9 | 153 | 0.059 [0.031, 0.108] | 1.000 [0.701, 1.000] | 0.120 [0.064, 0.213] | 1.000 [0.701, 1.000] |
-| rust/ripgrep/no_tests | library + binary crates | 1579 | 3 | 143 | 0.021 [0.007, 0.060] | 1.000 [0.439, 1.000] | 0.046 [0.016, 0.127] | 1.000 [0.439, 1.000] |
-| rust/ripgrep/tests | library + binary crates | 1725 | 27 | 171 | 0.146 [0.101, 0.207] | 0.926 [0.766, 0.979] | 0.202 [0.130, 0.300] | 1.000 [0.816, 1.000] |
-| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1684 | 10 | 153 | 0.065 [0.036, 0.116] | 1.000 [0.723, 1.000] | 0.133 [0.074, 0.228] | 1.000 [0.723, 1.000] |
-| rust/fd/path_tests_excluded | binary | 154 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
-| rust/fd/no_tests | binary | 146 | 0 | 5 | 0.000 [0.000, 0.434] | - | 0.000 [0.000, 0.490] | - |
-| rust/fd/tests | binary | 184 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
-| rust/fd/path_tests_excluded_all_features | binary | 154 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
-| rust/bat/path_tests_excluded | library + binary crates | 214 | 5 | 32 | 0.156 [0.069, 0.318] | 1.000 [0.566, 1.000] | 0.500 [0.237, 0.763] | 1.000 [0.566, 1.000] |
-| rust/bat/path_tests_excluded_all_features | library + binary crates | 222 | 5 | 32 | 0.156 [0.069, 0.318] | 1.000 [0.566, 1.000] | 0.500 [0.237, 0.763] | 1.000 [0.566, 1.000] |
-| rust/tokei/path_tests_excluded | library + binary crates | 53 | 7 | 9 | 0.333 [0.121, 0.646] | 0.429 [0.158, 0.750] | 0.750 [0.301, 0.954] | 0.429 [0.158, 0.750] |
-| rust/tokei/path_tests_excluded_all_features | library + binary crates | 53 | 7 | 9 | 0.333 [0.121, 0.646] | 0.429 [0.158, 0.750] | 0.750 [0.301, 0.954] | 0.429 [0.158, 0.750] |
-| rust/xsv/path_tests_excluded | binary | 176 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
-| rust/xsv/path_tests_excluded_all_features | binary | 176 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
-| rust/lidx/path_tests_excluded | library + binary crates | 1591 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.161] | - |
-| rust/lidx/path_tests_excluded_all_features | library + binary crates | 1591 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.161] | - |
-| rust/just/path_tests_excluded | library + binary crates | 787 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.088] | - |
-| rust/just/path_tests_excluded_all_features | library + binary crates | 787 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.088] | - |
-| rust/nextest/path_tests_excluded | library + binary crates | 935 | 28 | 195 | 0.133 [0.093, 0.188] | 0.929 [0.773, 0.980] | 0.178 [0.122, 0.251] | 0.923 [0.759, 0.979] |
-| rust/nextest/path_tests_excluded_all_features | library + binary crates | 935 | 28 | 196 | 0.133 [0.092, 0.187] | 0.929 [0.773, 0.980] | 0.178 [0.122, 0.251] | 0.923 [0.759, 0.979] |
+| rust/ripgrep/path_tests_excluded | library + binary crates | 1677 | 9 | 153 | 0.059 [0.031, 0.108] | not reported | 0.120 [0.064, 0.213] | not reported |
+| rust/ripgrep/no_tests | library + binary crates | 1579 | 3 | 143 | 0.021 [0.007, 0.060] | not reported | 0.046 [0.016, 0.127] | not reported |
+| rust/ripgrep/tests | library + binary crates | 1725 | 27 | 171 | 0.146 [0.101, 0.207] | not reported | 0.202 [0.130, 0.300] | not reported |
+| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1684 | 10 | 153 | 0.065 [0.036, 0.116] | not reported | 0.133 [0.074, 0.228] | not reported |
+| rust/fd/path_tests_excluded | binary | 154 | 0 | 7 | 0.000 [0.000, 0.354] | not reported | 0.000 [0.000, 0.390] | not reported |
+| rust/fd/no_tests | binary | 146 | 0 | 5 | 0.000 [0.000, 0.434] | not reported | 0.000 [0.000, 0.490] | not reported |
+| rust/fd/tests | binary | 184 | 0 | 7 | 0.000 [0.000, 0.354] | not reported | 0.000 [0.000, 0.390] | not reported |
+| rust/fd/path_tests_excluded_all_features | binary | 154 | 0 | 7 | 0.000 [0.000, 0.354] | not reported | 0.000 [0.000, 0.390] | not reported |
+| rust/bat/path_tests_excluded | library + binary crates | 214 | 5 | 32 | 0.156 [0.069, 0.318] | not reported | 0.500 [0.237, 0.763] | not reported |
+| rust/bat/path_tests_excluded_all_features | library + binary crates | 222 | 5 | 32 | 0.156 [0.069, 0.318] | not reported | 0.500 [0.237, 0.763] | not reported |
+| rust/tokei/path_tests_excluded | library + binary crates | 51 | 3 | 9 | 0.333 [0.121, 0.646] | not reported | 0.750 [0.301, 0.954] | not reported |
+| rust/tokei/path_tests_excluded_all_features | library + binary crates | 51 | 3 | 9 | 0.333 [0.121, 0.646] | not reported | 0.750 [0.301, 0.954] | not reported |
+| rust/xsv/path_tests_excluded | binary | 176 | 0 | 14 | 0.000 [0.000, 0.215] | not reported | 0.000 [0.000, 0.242] | not reported |
+| rust/xsv/path_tests_excluded_all_features | binary | 176 | 0 | 14 | 0.000 [0.000, 0.215] | not reported | 0.000 [0.000, 0.242] | not reported |
+| rust/lidx/path_tests_excluded | library + binary crates | 1591 | 0 | 40 | 0.000 [0.000, 0.088] | not reported | 0.000 [0.000, 0.161] | not reported |
+| rust/lidx/path_tests_excluded_all_features | library + binary crates | 1591 | 0 | 40 | 0.000 [0.000, 0.088] | not reported | 0.000 [0.000, 0.161] | not reported |
+| rust/just/path_tests_excluded | library + binary crates | 790 | 0 | 40 | 0.000 [0.000, 0.088] | not reported | 0.000 [0.000, 0.088] | not reported |
+| rust/just/path_tests_excluded_all_features | library + binary crates | 790 | 0 | 40 | 0.000 [0.000, 0.088] | not reported | 0.000 [0.000, 0.088] | not reported |
+| rust/nextest/path_tests_excluded | library + binary crates | 935 | 28 | 195 | 0.133 [0.093, 0.188] | not reported | 0.178 [0.122, 0.251] | not reported |
+| rust/nextest/path_tests_excluded_all_features | library + binary crates | 935 | 28 | 196 | 0.133 [0.092, 0.187] | not reported | 0.178 [0.122, 0.251] | not reported |
 
 ### Library or binary, and the universe that applies
 
@@ -1607,14 +1607,16 @@ Tools: staticcheck (honnef.co/go/tools) v0.6.1; golang.org/x/tools (RTA, go/anal
 
 Sums over the cells of a language (the `tests` and `no_tests` cells of one repository overlap, so the pooled interval is narrower than the evidence supports; per-cell rows are the figures to quote).
 
+Rust recall is **not reported** (shown as `not reported`): the spot-check read all 5 missed Rust declarations the corpus has and 2 of them (40%) were oracle artefacts, calls inside `rgtest!`-generated tests that SCIP does not resolve, above the 20% bar. Precision is unaffected. Methods of impls for foreign or primitive self types (`impl Logic for bool`) and trait items are named buckets (`impl_for_foreign_type`, `trait_declaration`) and are not in the Rust universe.
+
 | Language | Column | Oracle-dead | Claims graded | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] | R without exported [95% CI] |
 |---|---|---:|---:|---|---|---|---|
 | Go | Unreferenced | 15 | 5081 | 0.002 [0.001, 0.004] | 0.667 [0.417, 0.848] | 0.013 [0.007, 0.023] | 0.667 [0.417, 0.848] |
 | Go | Unreachable | 290 | 3756 | 0.020 [0.016, 0.025] | 0.255 [0.208, 0.308] | 0.117 [0.071, 0.186] | 0.173 [0.106, 0.270] |
 | TypeScript | Unreferenced | 41 | 785 | 0.024 [0.015, 0.037] | 0.463 [0.321, 0.613] | 0.000 [0.000, 0.793] | - |
 | TypeScript | Unreachable | 25 | 490 | 0.025 [0.014, 0.042] | 0.480 [0.300, 0.665] | 0.000 [0.000, 0.793] | 0.000 [0.000, 0.299] |
-| Rust | Unreferenced | 98 | 1685 | 0.052 [0.043, 0.064] | 0.898 [0.822, 0.944] | 0.075 [0.061, 0.092] | 0.894 [0.815, 0.941] |
-| Rust | Unreachable | 129 | 1307 | 0.088 [0.074, 0.105] | 0.891 [0.826, 0.934] | 0.135 [0.113, 0.161] | 0.896 [0.826, 0.939] |
+| Rust | Unreferenced | 90 | 1685 | 0.052 [0.043, 0.064] | not reported | 0.075 [0.061, 0.092] | not reported |
+| Rust | Unreachable | 121 | 1307 | 0.088 [0.074, 0.105] | not reported | 0.135 [0.113, 0.161] | not reported |
 
 ### Per symbol kind
 
@@ -1688,66 +1690,66 @@ Precision is tp/graded over lidx claims whose oracle declaration has that kind; 
 | ts/h3 | method | 0.000 [0.000, 0.324] (0/8) | - (0/0) | 0.000 [0.000, 0.324] (0/8) | - (0/0) |
 | ts/h3 | type | 0.333 [0.061, 0.792] (1/3) | 0.500 [0.095, 0.905] (1/2) | - | - |
 | ts/h3 | const | 0.053 [0.009, 0.246] (1/19) | 1.000 [0.206, 1.000] (1/1) | - | - |
-| rust/ripgrep/path_tests_excluded | function | 0.000 [0.000, 0.155] (0/21) | - (0/0) | 0.130 [0.045, 0.321] (3/23) | 1.000 [0.439, 1.000] (3/3) |
-| rust/ripgrep/path_tests_excluded | method | 0.048 [0.022, 0.100] (6/126) | 1.000 [0.610, 1.000] (6/6) | 0.046 [0.021, 0.097] (6/130) | 1.000 [0.610, 1.000] (6/6) |
-| rust/ripgrep/path_tests_excluded | type | 0.000 [0.000, 0.037] (0/100) | - (0/0) | - | - |
-| rust/ripgrep/no_tests | function | 0.000 [0.000, 0.194] (0/16) | - (0/0) | 0.000 [0.000, 0.168] (0/19) | - (0/0) |
-| rust/ripgrep/no_tests | method | 0.024 [0.008, 0.069] (3/123) | 1.000 [0.439, 1.000] (3/3) | 0.024 [0.008, 0.069] (3/124) | 1.000 [0.439, 1.000] (3/3) |
-| rust/ripgrep/no_tests | type | 0.000 [0.000, 0.037] (0/100) | - (0/0) | - | - |
-| rust/ripgrep/tests | function | 0.000 [0.000, 0.138] (0/24) | - (0/0) | 0.222 [0.106, 0.408] (6/27) | 0.750 [0.409, 0.928] (6/8) |
-| rust/ripgrep/tests | method | 0.041 [0.019, 0.086] (6/147) | 1.000 [0.610, 1.000] (6/6) | 0.132 [0.086, 0.197] (19/144) | 1.000 [0.832, 1.000] (19/19) |
-| rust/ripgrep/tests | type | 0.000 [0.000, 0.037] (0/101) | - (0/0) | - | - |
-| rust/ripgrep/path_tests_excluded_all_features | function | 0.000 [0.000, 0.155] (0/21) | - (0/0) | 0.130 [0.045, 0.321] (3/23) | 1.000 [0.439, 1.000] (3/3) |
-| rust/ripgrep/path_tests_excluded_all_features | method | 0.055 [0.027, 0.109] (7/127) | 1.000 [0.646, 1.000] (7/7) | 0.054 [0.026, 0.107] (7/130) | 1.000 [0.646, 1.000] (7/7) |
-| rust/ripgrep/path_tests_excluded_all_features | type | 0.000 [0.000, 0.036] (0/102) | - (0/0) | - | - |
-| rust/fd/path_tests_excluded | function | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.490] (0/4) | - (0/0) |
-| rust/fd/path_tests_excluded | method | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.561] (0/3) | - (0/0) |
-| rust/fd/path_tests_excluded | type | - (0/0) | - (0/0) | - | - |
-| rust/fd/no_tests | function | 0.000 [0.000, 0.793] (0/1) | - (0/0) | 0.000 [0.000, 0.658] (0/2) | - (0/0) |
-| rust/fd/no_tests | method | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.561] (0/3) | - (0/0) |
-| rust/fd/no_tests | type | - (0/0) | - (0/0) | - | - |
-| rust/fd/tests | function | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.490] (0/4) | - (0/0) |
-| rust/fd/tests | method | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.561] (0/3) | - (0/0) |
-| rust/fd/tests | type | - (0/0) | - (0/0) | - | - |
-| rust/fd/path_tests_excluded_all_features | function | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.490] (0/4) | - (0/0) |
-| rust/fd/path_tests_excluded_all_features | method | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.561] (0/3) | - (0/0) |
-| rust/fd/path_tests_excluded_all_features | type | - (0/0) | - (0/0) | - | - |
-| rust/bat/path_tests_excluded | function | 0.667 [0.208, 0.939] (2/3) | 1.000 [0.342, 1.000] (2/2) | 0.667 [0.208, 0.939] (2/3) | 1.000 [0.342, 1.000] (2/2) |
-| rust/bat/path_tests_excluded | method | 0.103 [0.036, 0.264] (3/29) | 1.000 [0.439, 1.000] (3/3) | 0.103 [0.036, 0.264] (3/29) | 1.000 [0.439, 1.000] (3/3) |
-| rust/bat/path_tests_excluded | type | 0.000 [0.000, 0.793] (0/1) | - (0/0) | - | - |
-| rust/bat/path_tests_excluded_all_features | function | 0.667 [0.208, 0.939] (2/3) | 1.000 [0.342, 1.000] (2/2) | 0.667 [0.208, 0.939] (2/3) | 1.000 [0.342, 1.000] (2/2) |
-| rust/bat/path_tests_excluded_all_features | method | 0.103 [0.036, 0.264] (3/29) | 1.000 [0.439, 1.000] (3/3) | 0.103 [0.036, 0.264] (3/29) | 1.000 [0.439, 1.000] (3/3) |
-| rust/bat/path_tests_excluded_all_features | type | 0.000 [0.000, 0.658] (0/2) | - (0/0) | - | - |
-| rust/tokei/path_tests_excluded | function | 0.500 [0.150, 0.850] (2/4) | 1.000 [0.342, 1.000] (2/2) | 0.400 [0.118, 0.769] (2/5) | 1.000 [0.342, 1.000] (2/2) |
-| rust/tokei/path_tests_excluded | method | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) |
-| rust/tokei/path_tests_excluded | type | - (0/0) | - (0/0) | - | - |
-| rust/tokei/path_tests_excluded_all_features | function | 0.500 [0.150, 0.850] (2/4) | 1.000 [0.342, 1.000] (2/2) | 0.400 [0.118, 0.769] (2/5) | 1.000 [0.342, 1.000] (2/2) |
-| rust/tokei/path_tests_excluded_all_features | method | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) |
-| rust/tokei/path_tests_excluded_all_features | type | - (0/0) | - (0/0) | - | - |
-| rust/xsv/path_tests_excluded | function | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.658] (0/2) | - (0/0) |
-| rust/xsv/path_tests_excluded | method | 0.000 [0.000, 0.242] (0/12) | - (0/0) | 0.000 [0.000, 0.242] (0/12) | - (0/0) |
-| rust/xsv/path_tests_excluded | type | - (0/0) | - (0/0) | - | - |
-| rust/xsv/path_tests_excluded_all_features | function | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.658] (0/2) | - (0/0) |
-| rust/xsv/path_tests_excluded_all_features | method | 0.000 [0.000, 0.242] (0/12) | - (0/0) | 0.000 [0.000, 0.242] (0/12) | - (0/0) |
-| rust/xsv/path_tests_excluded_all_features | type | - (0/0) | - (0/0) | - | - |
-| rust/lidx/path_tests_excluded | function | 0.000 [0.000, 0.161] (0/20) | - (0/0) | 0.000 [0.000, 0.149] (0/22) | - (0/0) |
-| rust/lidx/path_tests_excluded | method | 0.000 [0.000, 0.176] (0/18) | - (0/0) | 0.000 [0.000, 0.176] (0/18) | - (0/0) |
-| rust/lidx/path_tests_excluded | type | 0.000 [0.000, 0.228] (0/13) | - (0/0) | - | - |
-| rust/lidx/path_tests_excluded_all_features | function | 0.000 [0.000, 0.161] (0/20) | - (0/0) | 0.000 [0.000, 0.149] (0/22) | - (0/0) |
-| rust/lidx/path_tests_excluded_all_features | method | 0.000 [0.000, 0.176] (0/18) | - (0/0) | 0.000 [0.000, 0.176] (0/18) | - (0/0) |
-| rust/lidx/path_tests_excluded_all_features | type | 0.000 [0.000, 0.228] (0/13) | - (0/0) | - | - |
-| rust/just/path_tests_excluded | function | 0.000 [0.000, 0.793] (0/1) | - (0/0) | 0.000 [0.000, 0.259] (0/11) | - (0/0) |
-| rust/just/path_tests_excluded | method | 0.000 [0.000, 0.133] (0/25) | - (0/0) | 0.000 [0.000, 0.117] (0/29) | - (0/0) |
-| rust/just/path_tests_excluded | type | 0.000 [0.000, 0.793] (0/1) | - (0/0) | - | - |
-| rust/just/path_tests_excluded_all_features | function | 0.000 [0.000, 0.793] (0/1) | - (0/0) | 0.000 [0.000, 0.259] (0/11) | - (0/0) |
-| rust/just/path_tests_excluded_all_features | method | 0.000 [0.000, 0.133] (0/25) | - (0/0) | 0.000 [0.000, 0.117] (0/29) | - (0/0) |
-| rust/just/path_tests_excluded_all_features | type | 0.000 [0.000, 0.793] (0/1) | - (0/0) | - | - |
-| rust/nextest/path_tests_excluded | function | 0.309 [0.203, 0.440] (17/55) | 1.000 [0.816, 1.000] (17/17) | 0.239 [0.155, 0.350] (17/71) | 0.944 [0.742, 0.990] (17/18) |
-| rust/nextest/path_tests_excluded | method | 0.060 [0.029, 0.118] (7/117) | 1.000 [0.646, 1.000] (7/7) | 0.073 [0.039, 0.132] (9/124) | 0.900 [0.596, 0.982] (9/10) |
-| rust/nextest/path_tests_excluded | type | 0.040 [0.007, 0.195] (1/25) | 0.500 [0.095, 0.905] (1/2) | - | - |
-| rust/nextest/path_tests_excluded_all_features | function | 0.304 [0.199, 0.433] (17/56) | 1.000 [0.816, 1.000] (17/17) | 0.236 [0.153, 0.346] (17/72) | 0.944 [0.742, 0.990] (17/18) |
-| rust/nextest/path_tests_excluded_all_features | method | 0.060 [0.029, 0.118] (7/117) | 1.000 [0.646, 1.000] (7/7) | 0.073 [0.039, 0.132] (9/124) | 0.900 [0.596, 0.982] (9/10) |
-| rust/nextest/path_tests_excluded_all_features | type | 0.040 [0.007, 0.195] (1/25) | 0.500 [0.095, 0.905] (1/2) | - | - |
+| rust/ripgrep/path_tests_excluded | function | 0.000 [0.000, 0.155] (0/21) | not reported | 0.130 [0.045, 0.321] (3/23) | not reported |
+| rust/ripgrep/path_tests_excluded | method | 0.048 [0.022, 0.100] (6/126) | not reported | 0.046 [0.021, 0.097] (6/130) | not reported |
+| rust/ripgrep/path_tests_excluded | type | 0.000 [0.000, 0.037] (0/100) | not reported | - | not reported |
+| rust/ripgrep/no_tests | function | 0.000 [0.000, 0.194] (0/16) | not reported | 0.000 [0.000, 0.168] (0/19) | not reported |
+| rust/ripgrep/no_tests | method | 0.024 [0.008, 0.069] (3/123) | not reported | 0.024 [0.008, 0.069] (3/124) | not reported |
+| rust/ripgrep/no_tests | type | 0.000 [0.000, 0.037] (0/100) | not reported | - | not reported |
+| rust/ripgrep/tests | function | 0.000 [0.000, 0.138] (0/24) | not reported | 0.222 [0.106, 0.408] (6/27) | not reported |
+| rust/ripgrep/tests | method | 0.041 [0.019, 0.086] (6/147) | not reported | 0.132 [0.086, 0.197] (19/144) | not reported |
+| rust/ripgrep/tests | type | 0.000 [0.000, 0.037] (0/101) | not reported | - | not reported |
+| rust/ripgrep/path_tests_excluded_all_features | function | 0.000 [0.000, 0.155] (0/21) | not reported | 0.130 [0.045, 0.321] (3/23) | not reported |
+| rust/ripgrep/path_tests_excluded_all_features | method | 0.055 [0.027, 0.109] (7/127) | not reported | 0.054 [0.026, 0.107] (7/130) | not reported |
+| rust/ripgrep/path_tests_excluded_all_features | type | 0.000 [0.000, 0.036] (0/102) | not reported | - | not reported |
+| rust/fd/path_tests_excluded | function | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.490] (0/4) | not reported |
+| rust/fd/path_tests_excluded | method | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.561] (0/3) | not reported |
+| rust/fd/path_tests_excluded | type | - (0/0) | not reported | - | not reported |
+| rust/fd/no_tests | function | 0.000 [0.000, 0.793] (0/1) | not reported | 0.000 [0.000, 0.658] (0/2) | not reported |
+| rust/fd/no_tests | method | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.561] (0/3) | not reported |
+| rust/fd/no_tests | type | - (0/0) | not reported | - | not reported |
+| rust/fd/tests | function | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.490] (0/4) | not reported |
+| rust/fd/tests | method | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.561] (0/3) | not reported |
+| rust/fd/tests | type | - (0/0) | not reported | - | not reported |
+| rust/fd/path_tests_excluded_all_features | function | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.490] (0/4) | not reported |
+| rust/fd/path_tests_excluded_all_features | method | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.561] (0/3) | not reported |
+| rust/fd/path_tests_excluded_all_features | type | - (0/0) | not reported | - | not reported |
+| rust/bat/path_tests_excluded | function | 0.667 [0.208, 0.939] (2/3) | not reported | 0.667 [0.208, 0.939] (2/3) | not reported |
+| rust/bat/path_tests_excluded | method | 0.103 [0.036, 0.264] (3/29) | not reported | 0.103 [0.036, 0.264] (3/29) | not reported |
+| rust/bat/path_tests_excluded | type | 0.000 [0.000, 0.793] (0/1) | not reported | - | not reported |
+| rust/bat/path_tests_excluded_all_features | function | 0.667 [0.208, 0.939] (2/3) | not reported | 0.667 [0.208, 0.939] (2/3) | not reported |
+| rust/bat/path_tests_excluded_all_features | method | 0.103 [0.036, 0.264] (3/29) | not reported | 0.103 [0.036, 0.264] (3/29) | not reported |
+| rust/bat/path_tests_excluded_all_features | type | 0.000 [0.000, 0.658] (0/2) | not reported | - | not reported |
+| rust/tokei/path_tests_excluded | function | 0.500 [0.150, 0.850] (2/4) | not reported | 0.400 [0.118, 0.769] (2/5) | not reported |
+| rust/tokei/path_tests_excluded | method | 0.250 [0.046, 0.699] (1/4) | not reported | 0.250 [0.046, 0.699] (1/4) | not reported |
+| rust/tokei/path_tests_excluded | type | - (0/0) | not reported | - | not reported |
+| rust/tokei/path_tests_excluded_all_features | function | 0.500 [0.150, 0.850] (2/4) | not reported | 0.400 [0.118, 0.769] (2/5) | not reported |
+| rust/tokei/path_tests_excluded_all_features | method | 0.250 [0.046, 0.699] (1/4) | not reported | 0.250 [0.046, 0.699] (1/4) | not reported |
+| rust/tokei/path_tests_excluded_all_features | type | - (0/0) | not reported | - | not reported |
+| rust/xsv/path_tests_excluded | function | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.658] (0/2) | not reported |
+| rust/xsv/path_tests_excluded | method | 0.000 [0.000, 0.242] (0/12) | not reported | 0.000 [0.000, 0.242] (0/12) | not reported |
+| rust/xsv/path_tests_excluded | type | - (0/0) | not reported | - | not reported |
+| rust/xsv/path_tests_excluded_all_features | function | 0.000 [0.000, 0.658] (0/2) | not reported | 0.000 [0.000, 0.658] (0/2) | not reported |
+| rust/xsv/path_tests_excluded_all_features | method | 0.000 [0.000, 0.242] (0/12) | not reported | 0.000 [0.000, 0.242] (0/12) | not reported |
+| rust/xsv/path_tests_excluded_all_features | type | - (0/0) | not reported | - | not reported |
+| rust/lidx/path_tests_excluded | function | 0.000 [0.000, 0.161] (0/20) | not reported | 0.000 [0.000, 0.149] (0/22) | not reported |
+| rust/lidx/path_tests_excluded | method | 0.000 [0.000, 0.176] (0/18) | not reported | 0.000 [0.000, 0.176] (0/18) | not reported |
+| rust/lidx/path_tests_excluded | type | 0.000 [0.000, 0.228] (0/13) | not reported | - | not reported |
+| rust/lidx/path_tests_excluded_all_features | function | 0.000 [0.000, 0.161] (0/20) | not reported | 0.000 [0.000, 0.149] (0/22) | not reported |
+| rust/lidx/path_tests_excluded_all_features | method | 0.000 [0.000, 0.176] (0/18) | not reported | 0.000 [0.000, 0.176] (0/18) | not reported |
+| rust/lidx/path_tests_excluded_all_features | type | 0.000 [0.000, 0.228] (0/13) | not reported | - | not reported |
+| rust/just/path_tests_excluded | function | 0.000 [0.000, 0.793] (0/1) | not reported | 0.000 [0.000, 0.259] (0/11) | not reported |
+| rust/just/path_tests_excluded | method | 0.000 [0.000, 0.133] (0/25) | not reported | 0.000 [0.000, 0.117] (0/29) | not reported |
+| rust/just/path_tests_excluded | type | 0.000 [0.000, 0.793] (0/1) | not reported | - | not reported |
+| rust/just/path_tests_excluded_all_features | function | 0.000 [0.000, 0.793] (0/1) | not reported | 0.000 [0.000, 0.259] (0/11) | not reported |
+| rust/just/path_tests_excluded_all_features | method | 0.000 [0.000, 0.133] (0/25) | not reported | 0.000 [0.000, 0.117] (0/29) | not reported |
+| rust/just/path_tests_excluded_all_features | type | 0.000 [0.000, 0.793] (0/1) | not reported | - | not reported |
+| rust/nextest/path_tests_excluded | function | 0.309 [0.203, 0.440] (17/55) | not reported | 0.239 [0.155, 0.350] (17/71) | not reported |
+| rust/nextest/path_tests_excluded | method | 0.060 [0.029, 0.118] (7/117) | not reported | 0.073 [0.039, 0.132] (9/124) | not reported |
+| rust/nextest/path_tests_excluded | type | 0.040 [0.007, 0.195] (1/25) | not reported | - | not reported |
+| rust/nextest/path_tests_excluded_all_features | function | 0.304 [0.199, 0.433] (17/56) | not reported | 0.236 [0.153, 0.346] (17/72) | not reported |
+| rust/nextest/path_tests_excluded_all_features | method | 0.060 [0.029, 0.118] (7/117) | not reported | 0.073 [0.039, 0.132] (9/124) | not reported |
+| rust/nextest/path_tests_excluded_all_features | type | 0.040 [0.007, 0.195] (1/25) | not reported | - | not reported |
 
 ### The exported-symbol reading
 
@@ -1770,8 +1772,8 @@ Wrong claims (lidx says dead, oracle says live, or live by construction), pooled
 - **Go, unreachable.** Wrong claims: test_root 2296, public_api 878, reachable_method 301, library_root 136, main_init 48, reachable_function 23. Missed: incoming_from_dead_code_only 97, incoming_from_tests_only 56, no_incoming_edge_but_filtered 45, incoming_from_tests_or_dead_code 17, incoming_self_edge_only 1.
 - **TypeScript, unreferenced.** Wrong claims: public_api 742, overrides_or_implements 24. Missed: kind_not_in_dead_symbols 17, incoming_from_tests_only 3, no_incoming_edge_but_filtered 2.
 - **TypeScript, unreachable.** Wrong claims: public_api 456, overrides_or_implements 22. Missed: incoming_from_dead_code_only 6, incoming_call_from_live_code 4, incoming_from_tests_only 2, no_incoming_edge_but_filtered 1.
-- **Rust, unreferenced.** Wrong claims: public_api 546, referenced_type 457, referenced_method 407, referenced_function 133, test_root 54. Missed: incoming_type_edge_from_live_code 8, kind_not_in_dead_symbols 2.
-- **Rust, unreachable.** Wrong claims: public_api 521, reachable_method 421, reachable_function 196, test_root 54. Missed: incoming_type_edge_from_live_code 8, incoming_from_tests_only 2, incoming_from_dead_code_only 2, no_incoming_edge_but_filtered 2.
+- **Rust, unreferenced.** Wrong claims: public_api 546, referenced_type 457, referenced_method 407, referenced_function 133, test_root 54. Missed: kind_not_in_dead_symbols 2.
+- **Rust, unreachable.** Wrong claims: public_api 521, reachable_method 421, reachable_function 196, test_root 54. Missed: incoming_from_tests_only 2, incoming_from_dead_code_only 2, no_incoming_edge_but_filtered 2.
 
 ### Exclusion buckets
 
@@ -1839,10 +1841,10 @@ Oracle side: declarations left out of the universe, per cell and column (every b
 | rust/bat/path_tests_excluded | Unreachable | public_api 140, test_root 94, not_a_function 83, impl_for_foreign_type 3, main_init 1 | test_file_outside_cell 608, file_not_in_program 2, not_a_judged_declaration 1, not_a_function 1 |
 | rust/bat/path_tests_excluded_all_features | Unreferenced | public_api 189, test_root 99, impl_for_foreign_type 3, trait_declaration 3, main_init 1 | test_file_outside_cell 608, file_not_in_program 1, not_a_judged_declaration 1 |
 | rust/bat/path_tests_excluded_all_features | Unreachable | public_api 140, test_root 99, not_a_function 87, impl_for_foreign_type 3, main_init 1 | test_file_outside_cell 608, not_a_function 2, file_not_in_program 1, not_a_judged_declaration 1 |
-| rust/tokei/path_tests_excluded | Unreferenced | public_api 53, test_root 16, impl_for_foreign_type 14, oracle_unresolved_site 3, trait_declaration 2, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
-| rust/tokei/path_tests_excluded | Unreachable | public_api 44, not_a_function 21, test_root 16, impl_for_foreign_type 14, main_init 1 | test_file_outside_cell 7 |
-| rust/tokei/path_tests_excluded_all_features | Unreferenced | public_api 53, test_root 16, impl_for_foreign_type 14, oracle_unresolved_site 3, trait_declaration 2, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
-| rust/tokei/path_tests_excluded_all_features | Unreachable | public_api 44, not_a_function 21, test_root 16, impl_for_foreign_type 14, main_init 1 | test_file_outside_cell 7 |
+| rust/tokei/path_tests_excluded | Unreferenced | public_api 53, test_root 16, impl_for_foreign_type 16, oracle_unresolved_site 3, trait_declaration 2, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
+| rust/tokei/path_tests_excluded | Unreachable | public_api 44, not_a_function 21, test_root 16, impl_for_foreign_type 16, main_init 1 | test_file_outside_cell 7 |
+| rust/tokei/path_tests_excluded_all_features | Unreferenced | public_api 53, test_root 16, impl_for_foreign_type 16, oracle_unresolved_site 3, trait_declaration 2, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
+| rust/tokei/path_tests_excluded_all_features | Unreachable | public_api 44, not_a_function 21, test_root 16, impl_for_foreign_type 16, main_init 1 | test_file_outside_cell 7 |
 | rust/xsv/path_tests_excluded | Unreferenced | main_init 1 | test_file_outside_cell 18, not_a_judged_declaration 1 |
 | rust/xsv/path_tests_excluded | Unreachable | not_a_function 53, main_init 1 | test_file_outside_cell 18, not_a_judged_declaration 1 |
 | rust/xsv/path_tests_excluded_all_features | Unreferenced | main_init 1 | test_file_outside_cell 18, not_a_judged_declaration 1 |
@@ -1851,10 +1853,10 @@ Oracle side: declarations left out of the universe, per cell and column (every b
 | rust/lidx/path_tests_excluded | Unreachable | test_root 778, public_api 473, not_a_function 407, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, not_a_function 13, not_a_judged_declaration 1 |
 | rust/lidx/path_tests_excluded_all_features | Unreferenced | test_root 778, public_api 675, trait_declaration 2, oracle_unresolved_site 2, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, oracle_unresolved_site 2, not_a_judged_declaration 1 |
 | rust/lidx/path_tests_excluded_all_features | Unreachable | test_root 778, public_api 473, not_a_function 407, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, not_a_function 13, not_a_judged_declaration 1 |
-| rust/just/path_tests_excluded | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, impl_for_foreign_type 22, trait_declaration 9, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
-| rust/just/path_tests_excluded | Unreachable | macro_generated 441, not_a_function 161, test_root 134, impl_for_foreign_type 22, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
-| rust/just/path_tests_excluded_all_features | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, impl_for_foreign_type 22, trait_declaration 9, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
-| rust/just/path_tests_excluded_all_features | Unreachable | macro_generated 441, not_a_function 161, test_root 134, impl_for_foreign_type 22, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
+| rust/just/path_tests_excluded | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, impl_for_foreign_type 19, trait_declaration 9, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
+| rust/just/path_tests_excluded | Unreachable | macro_generated 441, not_a_function 161, test_root 134, impl_for_foreign_type 19, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
+| rust/just/path_tests_excluded_all_features | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, impl_for_foreign_type 19, trait_declaration 9, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
+| rust/just/path_tests_excluded_all_features | Unreachable | macro_generated 441, not_a_function 161, test_root 134, impl_for_foreign_type 19, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
 | rust/nextest/path_tests_excluded | Unreferenced | public_api 699, test_root 130, oracle_unresolved_site 27, impl_for_foreign_type 20, main_init 6, trait_declaration 2 | oracle_unresolved_site 23, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 12 |
 | rust/nextest/path_tests_excluded | Unreachable | not_a_function 534, public_api 416, test_root 130, impl_for_foreign_type 20, main_init 6, oracle_unresolved_site 1 | not_a_function 25, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 12 |
 | rust/nextest/path_tests_excluded_all_features | Unreferenced | public_api 700, test_root 130, oracle_unresolved_site 27, impl_for_foreign_type 20, main_init 6, trait_declaration 2 | oracle_unresolved_site 23, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 11 |
@@ -1913,48 +1915,48 @@ Wall-clock seconds and peak resident set of the oracle process tree (sampled eve
 
 | Cell | Oracle | Seconds | Peak RSS (MB) |
 |---|---|---:|---:|
-| go/cobra/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 444 |
-| go/cobra/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 332 |
-| go/gitleaks/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 3.1 | 1439 |
-| go/gitleaks/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 2.3 | 1252 |
-| go/syft/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 21.6 | 6475 |
-| go/syft/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 20.1 | 6281 |
-| go/chi/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 666 |
-| go/chi/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 671 |
-| go/urfavecli/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.4 | 790 |
-| go/urfavecli/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 672 |
-| go/viper/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.4 | 777 |
-| go/viper/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 734 |
-| go/bubbletea/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 436 |
-| go/bubbletea/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 349 |
-| ts/zod | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 3.0 | 504 |
-| ts/hono | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 2.4 | 394 |
-| ts/trpc | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 3.3 | 252 |
-| ts/ky | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.2 | 246 |
-| ts/immer | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.3 | 231 |
-| ts/h3 | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.9 | 270 |
-| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP occurrences | 1.9 | 99 |
-| rust/ripgrep/no_tests | rust-analyzer SCIP occurrences | 2.1 | 95 |
-| rust/ripgrep/tests | rust-analyzer SCIP occurrences | 2.1 | 108 |
-| rust/ripgrep/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 2.1 | 98 |
+| go/cobra/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 473 |
+| go/cobra/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.6 | 189 |
+| go/gitleaks/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 2.4 | 1387 |
+| go/gitleaks/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 2.0 | 1231 |
+| go/syft/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 35.1 | 6409 |
+| go/syft/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 17.5 | 6075 |
+| go/chi/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 679 |
+| go/chi/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 590 |
+| go/urfavecli/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.4 | 767 |
+| go/urfavecli/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 694 |
+| go/viper/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 871 |
+| go/viper/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 766 |
+| go/bubbletea/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.7 | 447 |
+| go/bubbletea/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 207 |
+| ts/zod | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 3.1 | 507 |
+| ts/hono | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 5.7 | 401 |
+| ts/trpc | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.3 | 261 |
+| ts/ky | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 0.9 | 237 |
+| ts/immer | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 0.9 | 233 |
+| ts/h3 | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.5 | 276 |
+| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP occurrences | 2.0 | 99 |
+| rust/ripgrep/no_tests | rust-analyzer SCIP occurrences | 1.9 | 95 |
+| rust/ripgrep/tests | rust-analyzer SCIP occurrences | 1.9 | 106 |
+| rust/ripgrep/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 1.9 | 100 |
 | rust/fd/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
-| rust/fd/no_tests | rust-analyzer SCIP occurrences | 0.4 | 10 |
-| rust/fd/tests | rust-analyzer SCIP occurrences | 0.9 | 12 |
+| rust/fd/no_tests | rust-analyzer SCIP occurrences | 0.2 | 0 |
+| rust/fd/tests | rust-analyzer SCIP occurrences | 0.4 | 6 |
 | rust/fd/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 0 |
-| rust/bat/path_tests_excluded | rust-analyzer SCIP occurrences | 1.0 | 39 |
+| rust/bat/path_tests_excluded | rust-analyzer SCIP occurrences | 0.4 | 38 |
 | rust/bat/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.4 | 38 |
-| rust/tokei/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 0 |
+| rust/tokei/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
 | rust/tokei/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 0 |
-| rust/xsv/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 4 |
-| rust/xsv/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 11 |
-| rust/lidx/path_tests_excluded | rust-analyzer SCIP occurrences | 3.9 | 199 |
-| rust/lidx/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 3.3 | 196 |
-| rust/just/path_tests_excluded | rust-analyzer SCIP occurrences | 0.9 | 69 |
-| rust/just/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.7 | 71 |
-| rust/nextest/path_tests_excluded | rust-analyzer SCIP occurrences | 1.1 | 99 |
-| rust/nextest/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 1.1 | 97 |
+| rust/xsv/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
+| rust/xsv/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 0 |
+| rust/lidx/path_tests_excluded | rust-analyzer SCIP occurrences | 3.5 | 197 |
+| rust/lidx/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 5.1 | 196 |
+| rust/just/path_tests_excluded | rust-analyzer SCIP occurrences | 0.8 | 72 |
+| rust/just/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.8 | 72 |
+| rust/nextest/path_tests_excluded | rust-analyzer SCIP occurrences | 1.1 | 98 |
+| rust/nextest/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 1.1 | 98 |
 
-`go/syft/tests` (the largest cell): 21.6 s, 6475 MB peak, recorded in `cells.json` under `cells['go/syft/tests']['dead']['oracle_meta']`.
+`go/syft/tests` (the largest cell): 35.1 s, 6409 MB peak, recorded in `cells.json` under `cells['go/syft/tests']['dead']['oracle_meta']`.
 
 ### Dead-code spot-check
 
@@ -1962,23 +1964,23 @@ Read by hand against the source (seed 450). Per language: 20 wrong claims (FP, c
 
 | Language | Sample | lidx_error | oracle_artefact | matching_artefact | artefact rate [95% Wilson CI] |
 |---|---|---:|---:|---:|---|
-| go | FP (n=20) | 19 | 1 | 0 | 1/20 = 5.0% [0.9%, 23.6%] |
+| go | FP (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
 | go | FN (n=15) | 13 | 2 | 0 | 2/15 = 13.3% [3.7%, 37.9%] |
-| go | both (n=35) | 32 | 3 | 0 | **3/35 = 8.6%** [3.0%, 22.4%] |
+| go | both (n=35) | 33 | 2 | 0 | **2/35 = 5.7%** [1.6%, 18.6%] |
 | ts | FP (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
 | ts | FN (n=20) | 15 | 5 | 0 | 5/20 = 25.0% [11.2%, 46.9%] |
 | ts | both (n=40) | 35 | 5 | 0 | **5/40 = 12.5%** [5.5%, 26.1%] |
 | rust | FP (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
-| rust | FN (n=20) | 9 | 11 | 0 | 11/20 = 55.0% [34.2%, 74.2%] |
-| rust | both (n=40) | 29 | 11 | 0 | **11/40 = 27.5%** [16.1%, 42.8%] |
+| rust | FN (n=5) | 3 | 2 | 0 | 2/5 = 40.0% [11.8%, 76.9%] |
+| rust | both (n=25) | 23 | 2 | 0 | **2/25 = 8.0%** [2.2%, 25.0%] |
 
 | Language | Bucket | Bucket size | Sampled | misbucketed | rate [95% Wilson CI] |
 |---|---|---:|---:|---:|---|
-| go | policy:exported_used_by_rule | 304 | 10 | 1 | 10.0% [1.8%, 40.4%] |
+| go | policy:exported_used_by_rule | 306 | 10 | 1 | 10.0% [1.8%, 40.4%] |
 | go | policy:library_root | 272 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | go | policy:main_init | 52 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | go | policy:public_api | 1233 | 10 | 1 | 10.0% [1.8%, 40.4%] |
-| go | policy:test_root | 4596 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| go | policy:test_root | 4592 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | go | ungradable:file_not_in_program | 438 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | go | ungradable:not_a_function | 697 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | go | ungradable:not_a_judged_declaration | 340 | 10 | 0 | 0.0% [0.0%, 27.8%] |
@@ -1990,8 +1992,10 @@ Read by hand against the source (seed 450). Per language: 20 wrong claims (FP, c
 | ts | ungradable:outside_scope_directory | 742 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | ts | ungradable:test_file_outside_cell | 2556 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | excluded:cfg_twin | 2 | 2 | 0 | 0.0% [0.0%, 65.8%] |
+| rust | excluded:impl_for_foreign_type | 124 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | excluded:macro_generated | 2520 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | excluded:oracle_unresolved_site | 82 | 10 | 1 | 10.0% [1.8%, 40.4%] |
+| rust | excluded:trait_declaration | 19 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | policy:public_api | 379 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | policy:test_root | 38 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | ungradable:cfg_twin | 1 | 1 | 0 | 0.0% [0.0%, 79.3%] |
@@ -2000,9 +2004,9 @@ Read by hand against the source (seed 450). Per language: 20 wrong claims (FP, c
 | rust | ungradable:not_a_judged_declaration | 114 | 10 | 1 | 10.0% [1.8%, 40.4%] |
 | rust | ungradable:oracle_unresolved_site | 60 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | ungradable:test_file_outside_cell | 2118 | 10 | 0 | 0.0% [0.0%, 27.8%] |
-| all | all buckets | | 235 | 4 | **1.7%** [0.7%, 4.3%] |
+| all | all buckets | | 255 | 4 | **1.6%** [0.6%, 4.0%] |
 
-Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
+Pooled over every sampled item: 13/355 = 3.7% [2.2%, 6.2%].
 
 **How to read this.** Each item was read against the source by a Sonnet subagent per language (one pass per language, the Rust draw repeated after the Rust oracle was fixed), with the cell's scope and the column's definition in hand; the main agent changed three Go verdicts (staticcheck's U1000 is transitive: a helper whose only caller is itself unused is dead by the tool's definition, so those are not oracle errors). **What the first draw found and what changed.** The first Rust draw had 19 oracle artefacts among 20 FN: trait-impl names were parsed with their `[Trait]` prefix so trait-declared methods lost their impls, serde/clap attribute uses inside strings were invisible, and bench / macro-registered tests were not roots. All three were fixed and the Rust sample re-drawn. **Known remaining oracle artefacts (listed in the samples above).** TypeScript: a helper reached only through dynamic indexing of a namespace import (`ns[tag]`) is reported unreachable (hono, 5 items). Rust: extension-trait methods called on foreign types (`SliceExt` on `&[u8]` in tokei, `Ordinal`/`Clean`/`CommandExt` in just) and helpers called only from `rgtest!`-generated tests are reported dead, because rust-analyzer's SCIP carries no occurrence for those calls (11 of the 20 Rust FN). Rust recall in the dead cells is therefore an upper-bound-of-the-oracle figure: some of its dead declarations are alive. Go: two buckets are conservative by rule (an exported method of an unexported type counts as public API; an exported symbol of an internal package is `exported_used_by_rule` in the unreferenced column).
 
@@ -2020,16 +2024,16 @@ Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
 - `0af463d7` type encodingMatch (detect/codec/encodings.go:88) (go/gitleaks/no_tests, unref): **lidx_error**, encodingMatch is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong.
 - `807118b7` type packagePinsV1 (syft/pkg/cataloger/swift/parse_package_resolved.go:32) (go/syft/no_tests, unref): **lidx_error**, packagePinsV1 is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong.
 - `713452f2` type decoder (syft/format/purls/decoder.go:19) (go/syft/no_tests, unref): **lidx_error**, decoder is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong.
-- `9de2ce46` method AddFlags (cmd/syft/internal/options/attest.go:20) (go/syft/no_tests, reach): **lidx_error**, AddFlags is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `3435977c` method Mode (syft/internal/fileresolver/filetree_resolver_test.go:1345) (go/syft/tests, reach): **lidx_error**, Mode is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `ec77ef73` method parsePnpmLock (syft/pkg/cataloger/javascript/parse_pnpm_lock.go:185) (go/syft/no_tests, reach): **lidx_error**, parsePnpmLock is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `fdde5e70` method Sys (syft/internal/fileresolver/unindexed_directory.go:547) (go/syft/tests, reach): **lidx_error**, Sys is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `f396809f` method Close (internal/file/getter.go:135) (go/syft/no_tests, reach): **lidx_error**, Close is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `56f61740` method AllPathQueries (syft/pkg/cataloger/internal/pkgtest/observing_resolver.go:84) (go/syft/tests, reach): **oracle_artefact**, AllPathQueries has no caller or interface use anywhere (git grep -w shows only its declaration and doc comment), so it is dead in both columns.
+- `da0aff18` method Format (errors_test.go:118) (go/urfavecli/tests, reach): **lidx_error**, Used: fmt.Formatter: fmt calls Format when the value is printed; the oracle is right.
+- `652d5081` method Setup (cmd/syft/internal/ui/no_ui.go:31) (go/syft/no_tests, reach): **lidx_error**, Used: implements the UI interface of the event loop, called through it; the oracle is right.
+- `02febcf9` method AddFlags (cmd/syft/internal/options/catalog.go:218) (go/syft/no_tests, reach): **lidx_error**, Used: implements the clio flag-adder interface, called through it; the oracle is right.
+- `54c04f38` method RespondsTo (cmd/syft/internal/ui/ui.go:123) (go/syft/no_tests, reach): **lidx_error**, Used: implements partybus handler interface, called through it; the oracle is right.
+- `9b799937` method Report (internal/cmptest/diff_reporter.go:24) (go/syft/tests, reach): **lidx_error**, Used: implements cmp.Reporter, called by cmp.Equal; the oracle is right.
 - `25f8ec72` method PostLoad (cmd/syft/internal/options/source.go:66) (go/syft/no_tests, reach): **lidx_error**, PostLoad is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `ec786a39` method Tracef (cmd/syft/internal/ui/log_writer_test.go:39) (go/syft/tests, reach): **lidx_error**, Tracef is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `342e589c` method DescribeFields (cmd/syft/internal/options/cache.go:26) (go/syft/no_tests, reach): **lidx_error**, DescribeFields is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
-- `88045e4c` method fetchPkgs (syft/pkg/cataloger/java/graalvm_native_image_cataloger.go:465) (go/syft/no_tests, reach): **lidx_error**, fetchPkgs is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong.
+- `1ec9308c` function defaultHelpFunc (command.go:2047) (go/cobra/no_tests, reach): **lidx_error**, Used: returned as a function value at command.go:514 and called through it; the oracle is right.
+- `b3eb8e33` method FilesByBasenameGlob (syft/pkg/cataloger/binary/classifier_cataloger_test.go:3223) (go/syft/tests, reach): **lidx_error**, Used: test double for the file.Resolver interface, called through it; the oracle is right.
+- `420767a3` method Read (internal/file/copy_test.go:20) (go/syft/tests, reach): **lidx_error**, Used: io.Reader implementation, called by the reader consumer; the oracle is right.
+- `5ea726b7` method UnmarshalJSON (syft/pkg/cataloger/internal/cpegenerate/dictionary/types.go:44) (go/syft/no_tests, reach): **lidx_error**, Used: json.Unmarshaler, called by encoding/json; the oracle is right.
 
 **FN**
 
@@ -2038,16 +2042,16 @@ Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
 - `d0bf55aa` function exponentialBackoffDurations (test/cli/utils_test.go:341) (go/syft/tests, unref): **oracle_artefact**, exponentialBackoffDurations is called by testRetryIntervals at utils_test.go:338, so unref=dead is wrong.
 - `92a2c5b4` method suggestFlagFromError (app.go:350) (go/urfavecli/no_tests, unref): **lidx_error**, App.suggestFlagFromError is only called from suggestions_test.go; command.go:172 calls Command's method, so it is dead in the no_tests cell.
 - `d212c91d` function debugPrintTree (tree_test.go:449) (go/chi/tests, unref): **lidx_error**, debugPrintTree is only called by itself (recursion at tree_test.go:469) plus commented-out calls, so it is really dead.
-- `23e86dc0` function NewFromUnindexedDirectoryFS (syft/internal/fileresolver/unindexed_directory.go:44) (go/syft/no_tests, reach): **lidx_error**, Only callers are NewFromUnindexedDirectory and NewFromRootedUnindexedDirectory, which have no non-test callers, so unreachable in the production cell.
+- `df041667` function hasFileDigests (syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go:382) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
+- `a106d6cb` method WithLinuxRelease (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:169) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
+- `8bfb7556` method Empty (internal/set.go:66) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
+- `36b9ca51` function EvaluateCapabilities (internal/capabilities/evaluation.go:8) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
+- `b4027573` method WithError (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:182) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
+- `6e58cb15` function Packages (internal/capabilities/capabilities.go:96) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
 - `d9321af0` method FromDirectory (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:112) (go/syft/no_tests, reach): **lidx_error**, FromDirectory is only invoked from tests and the pkgtest test helper in an internal package, unreachable from production roots.
-- `d030b012` function DirectoryInput (syft/format/internal/testutil/directory_input.go:19) (go/syft/no_tests, reach): **lidx_error**, testutil.DirectoryInput is only called from _test.go files in an internal package, unreachable with tests excluded.
-- `e3bd9b18` method WithPatternRedactors (syft/format/internal/testutil/redactor.go:138) (go/syft/no_tests, reach): **lidx_error**, WithPatternRedactors is only called from encoder tests, unreachable with tests excluded.
-- `ff5a27c5` method isRegularFile (syft/internal/fileresolver/unindexed_directory.go:109) (go/syft/no_tests, reach): **lidx_error**, isRegularFile is only called by UnindexedDirectory methods whose constructors have no production callers, so unreachable.
-- `e2370220` function dereferenceToStruct (syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go:404) (go/syft/no_tests, reach): **lidx_error**, dereferenceToStruct is only used inside pkgtest MetadataTracker, which has no production users, so unreachable.
-- `5243901b` method FilesByMIMEType (syft/internal/fileresolver/deferred.go:68) (go/syft/no_tests, reach): **lidx_error**, Deferred is only constructed (NewDeferred) in deferred_test.go, so its FilesByMIMEType is unreachable from production roots.
-- `0023ba67` method RecordParser (syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go:59) (go/syft/no_tests, reach): **lidx_error**, RecordParser is only called inside the pkgtest MetadataTracker, which no production code uses, so unreachable.
-- `d9ecfbe8` function DefaultLicenseComparer (internal/cmptest/license.go:12) (go/syft/no_tests, reach): **lidx_error**, DefaultLicenseComparer is only used by internal/cmptest and pkgtest test helpers, unreachable from production roots.
-- `857181f8` method AllLocations (syft/pkg/cataloger/internal/pkgtest/observing_resolver.go:238) (go/syft/no_tests, reach): **lidx_error**, ObservingResolver exists only in the pkgtest helper, so its AllLocations is unreachable from production roots.
+- `ce3eac52` function mockMavenHandler (syft/pkg/cataloger/java/internal/maven/test/mock_repo.go:47) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
+- `1879275c` function diffPackages (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:433) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
+- `c0731e67` method IgnoreUnfulfilledPathResponses (syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:273) (go/syft/no_tests, reach): **lidx_error**, Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests.
 
 **bucket policy:exported_used_by_rule**
 
@@ -2059,7 +2063,7 @@ Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
 - `bddc4884` method PostLoad (cmd/syft/internal/commands/scan.go:110) (go/syft/no_tests): **correct_exclusion**, PostLoad is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.
 - `2758276a` method Warnf (cmd/syft/internal/ui/log_writer_test.go:45) (go/syft/tests): **correct_exclusion**, Warnf is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.
 - `024c5479` method Infof (cmd/syft/internal/ui/log_writer_test.go:43) (go/syft/tests): **correct_exclusion**, Infof is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.
-- `5272b3ac` method DescribeFields (cmd/syft/internal/options/linux_kernel.go:23) (go/syft/no_tests): **correct_exclusion**, DescribeFields is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.
+- `9b4d1abf` method View (syft/pkg/cataloger/binary/internal/manager/internal/ui/binary_list.go:100) (go/syft/no_tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
 - `0b4fd80b` method String (syft/internal/fileresolver/directory.go:69) (go/syft/no_tests): **correct_exclusion**, String is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right.
 
 **bucket policy:library_root**
@@ -2103,16 +2107,16 @@ Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
 
 **bucket policy:test_root**
 
-- `2a97959a` function Test_corruptStackYaml (syft/pkg/cataloger/haskell/parse_stack_yaml_test.go:114) (go/syft/tests): **correct_exclusion**, Test_corruptStackYaml is a Test function in a _test.go file.
-- `c17ea1c8` function TestIntSliceApplyInputSourceValue_Alias (altsrc/flag_test.go:193) (go/urfavecli/tests): **correct_exclusion**, TestIntSliceApplyInputSourceValue_Alias is a Test function in a _test.go file.
-- `a7323916` function TestHelpflagCommandExecutedWithoutVersionSet (command_test.go:2779) (go/cobra/tests): **correct_exclusion**, TestHelpflagCommandExecutedWithoutVersionSet is a Test function in a _test.go file.
-- `7bd9d74a` function TestExtractReceiverTypeName (internal/capabilities/generate/cataloger_config_linking_test.go:244) (go/syft/tests): **correct_exclusion**, TestExtractReceiverTypeName is a Test function in a _test.go file.
-- `eb28244d` function TestClientIPFromXFFTrustedProxies (middleware/client_ip_test.go:242) (go/chi/tests): **correct_exclusion**, TestClientIPFromXFFTrustedProxies is a Test function in a _test.go file.
-- `5b44d268` function Test_IndexingNestedSymLinksOutsideOfRoot (syft/internal/fileresolver/filetree_resolver_test.go:931) (go/syft/tests): **correct_exclusion**, Test_IndexingNestedSymLinksOutsideOfRoot is a Test function in a _test.go file.
-- `b5ef43c0` function TestPkgCoverageImage (cmd/syft/internal/test/integration/catalog_packages_test.go:41) (go/syft/tests): **correct_exclusion**, TestPkgCoverageImage is a Test function in a _test.go file.
-- `9b4bb269` function TestGetClientIPAddr_RoundTrip (middleware/client_ip_test.go:392) (go/chi/tests): **correct_exclusion**, TestGetClientIPAddr_RoundTrip is a Test function in a _test.go file.
-- `67c0ffb6` function TestCustomizedSliceFlagSeparator (flag_test.go:3711) (go/urfavecli/tests): **correct_exclusion**, TestCustomizedSliceFlagSeparator is a Test function in a _test.go file.
-- `ea317322` function TestNormalizeGitleaksIgnorePaths (detect/detect_test.go:2461) (go/gitleaks/tests): **correct_exclusion**, TestNormalizeGitleaksIgnorePaths is a Test function in a _test.go file.
+- `b0fa9a02` function TestHandleExitCoder_MultiErrorWithFormat (errors_test.go:144) (go/urfavecli/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `a3281430` function TestDigestsCataloger (syft/file/cataloger/filedigest/cataloger_test.go:51) (go/syft/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `431982e8` function TestActiveHelpForFlag (active_help_test.go:231) (go/cobra/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `95d7b3f3` function TestApp_OnUsageError_WithWrongFlagValue (app_test.go:2408) (go/urfavecli/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `8ba96f28` function Test_parseBitnamiPURL (syft/pkg/cataloger/bitnami/package_test.go:10) (go/syft/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `2ecf830b` function Test_attestCommand (cmd/syft/internal/commands/attest_test.go:101) (go/syft/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `fe2c0278` function TestParsePnpmLock_ExcludeDevDependencies (syft/pkg/cataloger/javascript/parse_pnpm_lock_test.go:72) (go/syft/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `45746554` function Test_newSBOMMultiWriter (cmd/syft/internal/options/writer_test.go:79) (go/syft/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `b13f4ad4` function Test_PackageCataloger_IgnorePackage (syft/pkg/cataloger/python/cataloger_test.go:460) (go/syft/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
+- `13db7343` function Test_newSBOMWriterDescription (cmd/syft/internal/options/writer_test.go:230) (go/syft/tests): **correct_exclusion**, Go test function / exported method in the rule-based bucket: live by construction, correct exclusion.
 
 **bucket ungradable:file_not_in_program**
 
@@ -2311,31 +2315,29 @@ Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
 
 **FN**
 
-- `a4d721dc` method logic_or (nextest-filtering/src/expression.rs:504) (rust/nextest/path_tests_excluded, unref): **lidx_error**, Logic is only ever used with Option<bool>; the bool impl's logic_or is never called, so it is really dead.
 - `a289dc86` type IgnoreOverridesOpt (cargo-nextest/src/dispatch.rs:953) (rust/nextest/path_tests_excluded, unref): **lidx_error**, IgnoreOverridesOpt has no use anywhere except its own declaration and derives, so it is really dead.
-- `1095b4f5` method top (nextest-filtering/src/expression.rs:489) (rust/nextest/path_tests_excluded, unref): **lidx_error**, Logic::top() at expression.rs:269 resolves to Option<bool>; the bool impl's top is never used, so it is really dead.
-- `828745e9` method is_not_line_ending_whitespace (src/utils/ext.rs:5) (rust/tokei/path_tests_excluded, unref): **lidx_error**, AsciiExt::is_not_line_ending_whitespace has no caller anywhere, so it is really dead.
-- `2734b26d` method trim (src/utils/ext.rs:26) (rust/tokei/path_tests_excluded, unref): **oracle_artefact**, SliceExt::trim is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.
-- `ebb11c41` type Ordinal (src/ordinal.rs:1) (rust/just/path_tests_excluded, unref): **oracle_artefact**, The Ordinal trait is needed for the .ordinal() calls in token.rs and compile_error.rs.
-- `222490b4` method logic_and (nextest-filtering/src/expression.rs:499) (rust/nextest/path_tests_excluded, unref): **lidx_error**, The bool impl's logic_and is never called (all callers use Option<bool> or FilterBinaryMatch), so it is really dead.
-- `ff3cb322` type CommandExt (src/command_ext.rs:3) (rust/just/path_tests_excluded, unref): **oracle_artefact**, CommandExt is used: output_guard_stdout() is called via the trait in load_dotenv.rs, evaluator.rs and windows.rs; SCIP records no trait-name reference for method calls.
-- `8056eeaa` type Clean (src/clean.rs:3) (rust/just/path_tests_excluded, unref): **oracle_artefact**, compiler.rs:89/164/187 call .clean() from the Clean trait.
-- `ba9b80ca` method trim_first_and_last_line_of_whitespace (src/utils/ext.rs:24) (rust/tokei/path_tests_excluded, unref): **oracle_artefact**, SliceExt::trim_first_and_last_line_of_whitespace is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.
-- `7270b19d` method trim_start (src/utils/ext.rs:25) (rust/tokei/path_tests_excluded, reach): **oracle_artefact**, SliceExt::trim_start is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.
-- `d07139c8` method trim_first_and_last_line_of_whitespace (src/utils/ext.rs:24) (rust/tokei/path_tests_excluded, reach): **oracle_artefact**, SliceExt::trim_first_and_last_line_of_whitespace is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.
-- `6c3513ca` method is_not_line_ending_whitespace (src/utils/ext.rs:5) (rust/tokei/path_tests_excluded, reach): **lidx_error**, grep of tokei src finds only the trait declaration and impl at ext.rs:5/14, so the method is never called.
 - `782d252c` method drop_source_span (nextest-filtering/src/parsing.rs:77) (rust/nextest/path_tests_excluded, reach): **lidx_error**, ParsedLeaf::drop_source_span is called by ParsedExpr::drop_source_span, used by the proptest-attribute test, so it is used.
 - `4b71e984` function sort_lines (tests/util.rs:39) (rust/ripgrep/tests, reach): **oracle_artefact**, sort_lines is called from many tests inside rgtest!-generated #[test] fns, which the oracle cannot see as roots.
-- `0cd664e3` method contains_slice (src/utils/ext.rs:27) (rust/tokei/path_tests_excluded, reach): **oracle_artefact**, SliceExt::contains_slice is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.
-- `6c86302a` function cmd_exists (tests/util.rs:47) (rust/ripgrep/tests, reach): **oracle_artefact**, cmd_exists is called from rgtest!-generated #[test] fns in misc.rs, which the oracle cannot see as roots.
-- `727fa4a6` method is_not_line_ending_whitespace (src/utils/ext.rs:14) (rust/tokei/path_tests_excluded, reach): **lidx_error**, The u8 impl of is_not_line_ending_whitespace has no caller anywhere, so it is really dead.
 - `e273c306` function __nextest_external_symbol_that_does_not_exist (nextest-runner/src/helpers.rs:396) (rust/nextest/path_tests_excluded, reach): **lidx_error**, Only caller is statically_unreachable, which is #[expect(dead_code)] and has no callers, so it is really dead.
-- `726d99c3` method trim (src/utils/ext.rs:26) (rust/tokei/path_tests_excluded, reach): **oracle_artefact**, SliceExt::trim is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls.
+- `6c86302a` function cmd_exists (tests/util.rs:47) (rust/ripgrep/tests, reach): **oracle_artefact**, cmd_exists is called from rgtest!-generated #[test] fns in misc.rs, which the oracle cannot see as roots.
 
 **bucket excluded:cfg_twin**
 
 - `19260e05` method link_dir (tests/util.rs:199) (rust/ripgrep/tests): **correct_exclusion**, cfg(not(windows)) method with a cfg(windows) twin of the same name in util.rs, so name-keyed matching cannot judge it.
 - `4525d64f` method link_file (tests/util.rs:221) (rust/ripgrep/tests): **correct_exclusion**, cfg(not(windows)) method with a cfg(windows) twin of the same name in util.rs, so name-keyed matching cannot judge it.
+
+**bucket excluded:impl_for_foreign_type**
+
+- `12ac2273` method index (crates/matcher/src/lib.rs:178) (rust/ripgrep/no_tests): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `334bdb83` method output_guard (src/command_ext.rs:4) (rust/just/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `8e127e13` method trim (src/utils/ext.rs:26) (rust/tokei/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `5eadc90d` method index (crates/matcher/src/lib.rs:162) (rust/ripgrep/no_tests): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `be366ecc` method is_whitespace (src/utils/ext.rs:4) (rust/tokei/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `65c86ba4` method bottom (nextest-filtering/src/expression.rs:474) (rust/nextest/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `c4e2e43d` method is_whitespace (src/utils/ext.rs:10) (rust/tokei/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `4ef798ac` method resolve (src/command_ext.rs:8) (rust/just/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `f6334fd6` method is_line_ending_whitespace (src/utils/ext.rs:18) (rust/tokei/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
+- `228b99e1` method logic_not (nextest-filtering/src/expression.rs:554) (rust/nextest/path_tests_excluded): **correct_exclusion**, Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged.
 
 **bucket excluded:macro_generated**
 
@@ -2362,6 +2364,19 @@ Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
 - `b58114b8` function serialize_signature (src/model.rs:71) (rust/lidx/path_tests_excluded): **correct_exclusion**, Referenced only via serde serialize_with attribute strings.
 - `99a5932b` function listed_status (nextest-metadata/src/test_list.rs:689) (rust/nextest/path_tests_excluded): **correct_exclusion**, Referenced only via serde default attribute string.
 - `db9adc10` function deserialize_fail_fast (nextest-runner/src/config/max_fail.rs:59) (rust/nextest/path_tests_excluded): **correct_exclusion**, Referenced only via serde deserialize_with attribute string.
+
+**bucket excluded:trait_declaration**
+
+- `4a08ae2f` type WithNameOnly (src/indexer/csharp.rs:7788) (rust/lidx/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `f97ec624` type ColorSchemeDetector (src/theme.rs:246) (rust/bat/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `4745b21e` type Ordinal (src/ordinal.rs:1) (rust/just/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `8e324c20` type Node (src/node.rs:4) (rust/just/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `7d7ccb16` type Flag (crates/core/flags/mod.rs:71) (rust/ripgrep/no_tests): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `5517ae1a` type RangeExt (src/range_ext.rs:3) (rust/just/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `dbed8146` type TrackSource (nextest-runner/src/config/overrides.rs:112) (rust/nextest/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `fabf2acc` type Printer (src/printer.rs:85) (rust/bat/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `d9425fea` type PlatformInterface (src/platform_interface.rs:3) (rust/just/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
+- `5d6fe196` type ColorDisplay (src/color_display.rs:3) (rust/just/path_tests_excluded): **correct_exclusion**, A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded.
 
 **bucket policy:public_api**
 
@@ -2458,4 +2473,497 @@ Pooled over every sampled item: 23/350 = 6.6% [4.4%, 9.7%].
 - `8b21aea8` ? test_export_flags (tests/benchmarks/highlighting-speed-src/numpy_test_multiarray.py:7141) (rust/bat/path_tests_excluded): **correct_exclusion**, A Python benchmark source file under tests/, outside a cell without tests.
 - `457fc182` ? test_void_sort (tests/benchmarks/highlighting-speed-src/numpy_test_multiarray.py:1898) (rust/bat/path_tests_excluded): **correct_exclusion**, A Python benchmark source file under tests/, outside a cell without tests.
 
+
+
+## Type hierarchy
+
+`EXTENDS`, `IMPLEMENTS` and method-override pairs graded against the type checker: Go `go/types`, TypeScript's checker, Rust rust-analyzer's impl symbols. The compiler is the only source of the oracle pairs; nothing is derived from lidx. A lidx pair is **correct** when the compiler has it, **wrong** when both of its ends are declarations the oracle judged and the compiler does not have it, and **ungradable** otherwise (an end outside the analysed files, a generic declaration the oracle cannot judge). Precision = correct / (correct + wrong); recall = oracle pairs lidx has / all oracle pairs (a pair lidx has no symbol for stays in the denominator, counted as a capture gap). Intervals are 95% Wilson. Definitions, keying and exclusions: README, "Type hierarchy".
+
+### Go
+
+Go `extends` is interface embedding (`Interface.EmbeddedType`), `embeds` is struct embedding (`Struct.Field(i).Embedded()`); lidx's EXTENDS rows are split the same way by the source's kind. `overrides` is graded on lidx's dispatch pairs (`lidx dispatch-pairs`).
+
+**implements (type -> interface/trait)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| go/cobra/tests | 1.000 [0.206, 1.000] | 1 (0) | 1.000 [0.206, 1.000] | 1 (1) | 0 | 0 |
+| go/cobra/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 1 |
+| go/gitleaks/no_tests | 1.000 [0.676, 1.000] | 8 (0) | 1.000 [0.676, 1.000] | 8 (8) | 0 | 0 |
+| go/gitleaks/tests | 1.000 [0.676, 1.000] | 8 (0) | 1.000 [0.676, 1.000] | 8 (8) | 0 | 0 |
+| go/syft/no_tests | 1.000 [0.978, 1.000] | 174 (0) | 0.978 [0.944, 0.991] | 178 (174) | 0 | 42 |
+| go/syft/tests | 1.000 [0.982, 1.000] | 212 (0) | 0.951 [0.914, 0.972] | 223 (212) | 0 | 4 |
+| go/chi/no_tests | 1.000 [0.566, 1.000] | 5 (0) | 0.455 [0.213, 0.720] | 11 (5) | 0 | 1 |
+| go/chi/tests | 1.000 [0.610, 1.000] | 6 (0) | 0.500 [0.254, 0.746] | 12 (6) | 0 | 0 |
+| go/urfavecli/no_tests | 1.000 [0.985, 1.000] | 259 (0) | 1.000 [0.985, 1.000] | 259 (259) | 0 | 16 |
+| go/urfavecli/tests | 1.000 [0.986, 1.000] | 270 (0) | 1.000 [0.986, 1.000] | 270 (270) | 0 | 5 |
+| go/viper/no_tests | 1.000 [0.832, 1.000] | 19 (0) | 0.950 [0.764, 0.991] | 20 (19) | 0 | 5 |
+| go/viper/tests | 1.000 [0.857, 1.000] | 23 (0) | 0.958 [0.798, 0.993] | 24 (23) | 0 | 1 |
+| go/bubbletea/no_tests | 1.000 [0.342, 1.000] | 2 (0) | 0.667 [0.208, 0.939] | 3 (2) | 0 | 52 |
+| go/bubbletea/tests | 1.000 [0.566, 1.000] | 5 (0) | 0.833 [0.436, 0.970] | 6 (5) | 0 | 49 |
+
+**extends (class -> class, interface -> interface, trait -> supertrait)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| go/cobra/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/cobra/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/gitleaks/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/gitleaks/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/syft/no_tests | 1.000 [0.566, 1.000] | 5 (0) | 0.833 [0.436, 0.970] | 6 (5) | 0 | 0 |
+| go/syft/tests | 1.000 [0.566, 1.000] | 5 (0) | 0.833 [0.436, 0.970] | 6 (5) | 0 | 0 |
+| go/chi/no_tests | -  | 0 (0) | 0.000 [0.000, 0.793] | 1 (0) | 0 | 0 |
+| go/chi/tests | -  | 0 (0) | 0.000 [0.000, 0.793] | 1 (0) | 0 | 0 |
+| go/urfavecli/no_tests | 1.000 [0.757, 1.000] | 12 (0) | 1.000 [0.757, 1.000] | 12 (12) | 0 | 0 |
+| go/urfavecli/tests | 1.000 [0.757, 1.000] | 12 (0) | 1.000 [0.757, 1.000] | 12 (12) | 0 | 0 |
+| go/viper/no_tests | 1.000 [0.342, 1.000] | 2 (0) | 0.500 [0.150, 0.850] | 4 (2) | 0 | 0 |
+| go/viper/tests | 1.000 [0.342, 1.000] | 2 (0) | 0.500 [0.150, 0.850] | 4 (2) | 0 | 0 |
+| go/bubbletea/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/bubbletea/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+
+**embeds (Go struct embedding, struct -> embedded type)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| go/cobra/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/cobra/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/gitleaks/no_tests | -  | 0 (0) | 0.000 [0.000, 0.561] | 3 (0) | 0 | 0 |
+| go/gitleaks/tests | -  | 0 (0) | 0.000 [0.000, 0.561] | 3 (0) | 0 | 0 |
+| go/syft/no_tests | -  | 0 (0) | 0.000 [0.000, 0.058] | 63 (0) | 0 | 0 |
+| go/syft/tests | -  | 0 (0) | 0.000 [0.000, 0.054] | 67 (0) | 0 | 0 |
+| go/chi/no_tests | -  | 0 (0) | 0.000 [0.000, 0.390] | 6 (0) | 0 | 0 |
+| go/chi/tests | -  | 0 (0) | 0.000 [0.000, 0.390] | 6 (0) | 0 | 0 |
+| go/urfavecli/no_tests | -  | 0 (0) | 0.000 [0.000, 0.215] | 14 (0) | 0 | 0 |
+| go/urfavecli/tests | -  | 0 (0) | 0.000 [0.000, 0.184] | 17 (0) | 0 | 0 |
+| go/viper/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/viper/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/bubbletea/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| go/bubbletea/tests | -  | 0 (0) | 0.000 [0.000, 0.793] | 1 (0) | 0 | 0 |
+
+**overrides (implementing method -> interface/trait/base method)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| go/cobra/tests | 1.000 [0.206, 1.000] | 1 (0) | 1.000 [0.206, 1.000] | 1 (1) | 0 | 0 |
+| go/cobra/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 1 |
+| go/gitleaks/no_tests | 1.000 [0.676, 1.000] | 8 (0) | 1.000 [0.676, 1.000] | 8 (8) | 0 | 0 |
+| go/gitleaks/tests | 1.000 [0.676, 1.000] | 8 (0) | 1.000 [0.676, 1.000] | 8 (8) | 0 | 0 |
+| go/syft/no_tests | 1.000 [0.985, 1.000] | 252 (0) | 0.992 [0.972, 0.998] | 254 (252) | 0 | 62 |
+| go/syft/tests | 1.000 [0.988, 1.000] | 308 (0) | 0.994 [0.977, 0.998] | 310 (308) | 0 | 6 |
+| go/chi/no_tests | 1.000 [0.879, 1.000] | 28 (0) | 0.849 [0.691, 0.933] | 33 (28) | 0 | 1 |
+| go/chi/tests | 1.000 [0.883, 1.000] | 29 (0) | 0.853 [0.699, 0.935] | 34 (29) | 0 | 0 |
+| go/urfavecli/no_tests | 1.000 [0.979, 1.000] | 176 (0) | 0.521 [0.468, 0.573] | 338 (176) | 0 | 24 |
+| go/urfavecli/tests | 1.000 [0.980, 1.000] | 189 (0) | 0.538 [0.486, 0.590] | 351 (189) | 0 | 11 |
+| go/viper/no_tests | 1.000 [0.839, 1.000] | 20 (0) | 0.952 [0.773, 0.992] | 21 (20) | 0 | 6 |
+| go/viper/tests | 1.000 [0.857, 1.000] | 23 (0) | 0.958 [0.798, 0.993] | 24 (23) | 0 | 3 |
+| go/bubbletea/no_tests | 1.000 [0.929, 1.000] | 50 (0) | 0.943 [0.846, 0.981] | 53 (50) | 0 | 154 |
+| go/bubbletea/tests | 1.000 [0.937, 1.000] | 57 (0) | 0.950 [0.863, 0.983] | 60 (57) | 0 | 147 |
+
+**External base** (the base is declared outside the repository: `impl Display for X`, `extends Error`, an embedded `sync.Mutex`). Judged for existence only: the oracle pair is *found* when lidx has an EXTENDS / IMPLEMENTS row from the same declaration whose target names the same base. No precision is computed.
+
+| Cell | oracle pairs | lidx has a row | existence recall [95% CI] |
+|---|---:|---:|---|
+| go/cobra/tests | 0 | 0 | -  |
+| go/cobra/no_tests | 0 | 0 | -  |
+| go/gitleaks/no_tests | 3 | 2 | 0.667 [0.208, 0.939] |
+| go/gitleaks/tests | 4 | 2 | 0.500 [0.150, 0.850] |
+| go/syft/no_tests | 21 | 0 | 0.000 [0.000, 0.155] |
+| go/syft/tests | 24 | 0 | 0.000 [0.000, 0.138] |
+| go/chi/no_tests | 5 | 2 | 0.400 [0.118, 0.769] |
+| go/chi/tests | 7 | 2 | 0.286 [0.082, 0.641] |
+| go/urfavecli/no_tests | 5 | 1 | 0.200 [0.036, 0.625] |
+| go/urfavecli/tests | 6 | 1 | 0.167 [0.030, 0.564] |
+| go/viper/no_tests | 0 | 0 | -  |
+| go/viper/tests | 0 | 0 | -  |
+| go/bubbletea/no_tests | 1 | 0 | 0.000 [0.000, 0.793] |
+| go/bubbletea/tests | 1 | 0 | 0.000 [0.000, 0.793] |
+
+**Go `implements` recall and the dispatch-credited call recall.** The dispatch-credited, lidx-native call grading ("Go interface edges" above) covers an RTA edge to an implementation only when lidx's own graph links that implementation to the interface method, which is exactly what the IMPLEMENTS rows and the override pairs below provide. So a missing `implements` or `overrides` pair caps the dispatch-credited recall of every call made through that interface.
+
+| Cell | implements R | overrides R | oracle dispatch edges | dispatch edges matched | dispatch-credited call R |
+|---|---|---|---:|---:|---|
+| go/cobra/tests | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 362 | 0 | 0.805 [0.787, 0.823] |
+| go/cobra/no_tests | -  | -  | 110 | 0 | 0.832 [0.802, 0.859] |
+| go/gitleaks/no_tests | 1.000 [0.676, 1.000] | 1.000 [0.676, 1.000] | 20 | 8 | 0.992 [0.986, 0.995] |
+| go/gitleaks/tests | 1.000 [0.676, 1.000] | 1.000 [0.676, 1.000] | 60 | 8 | 0.966 [0.957, 0.974] |
+| go/syft/no_tests | 0.978 [0.944, 0.991] | 0.992 [0.972, 0.998] | 3291 | 1267 | 0.740 [0.731, 0.750] |
+| go/syft/tests | 0.951 [0.914, 0.972] | 0.994 [0.977, 0.998] | 17064 | 4354 | 0.504 [0.498, 0.510] |
+| go/chi/no_tests | 0.455 [0.213, 0.720] | 0.849 [0.691, 0.933] | 255 | 8 | 0.399 [0.353, 0.447] |
+| go/chi/tests | 0.500 [0.254, 0.746] | 0.853 [0.699, 0.935] | 795 | 33 | 0.487 [0.462, 0.512] |
+| go/urfavecli/no_tests | 1.000 [0.985, 1.000] | 0.521 [0.468, 0.573] | 268 | 132 | 0.742 [0.704, 0.777] |
+| go/urfavecli/tests | 1.000 [0.986, 1.000] | 0.538 [0.486, 0.590] | 4290 | 864 | 0.456 [0.444, 0.468] |
+| go/viper/no_tests | 0.950 [0.764, 0.991] | 0.952 [0.773, 0.992] | 73 | 18 | 0.814 [0.765, 0.854] |
+| go/viper/tests | 0.958 [0.798, 0.993] | 0.958 [0.798, 0.993] | 88 | 21 | 0.907 [0.883, 0.926] |
+| go/bubbletea/no_tests | 0.667 [0.208, 0.939] | 0.943 [0.846, 0.981] | 195 | 100 | 0.697 [0.643, 0.745] |
+| go/bubbletea/tests | 0.833 [0.436, 0.970] | 0.950 [0.863, 0.983] | 523 | 100 | 0.469 [0.435, 0.503] |
+
+Excluded, by bucket (counts are oracle-side, summed over the Go cells): empty_or_constraint_interface 4, generic_interface 6, generic_type 14, override_impl_is_embedded_interface_method 57, override_impl_method_outside_repo 2, override_interface_method_outside_repo 549
+
+Lists: `results/lists/<cell>.hierarchy_fn.json` (oracle pairs lidx lacks, plus unmatched external bases) and `<cell>.hierarchy_fp.json` (wrong lidx pairs), each row with a category.
+
+### TypeScript
+
+`overrides` is graded on lidx's dispatch pairs (`lidx dispatch-pairs`): the pairing lidx uses at query time, which for a base *class* needs an `override` modifier and otherwise is a name match through IMPLEMENTS / EXTENDS rows.
+
+**implements (type -> interface/trait)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| ts/zod | 1.000 [0.206, 1.000] | 1 (0) | 1.000 [0.206, 1.000] | 1 (1) | 0 | 0 |
+| ts/hono | 1.000 [0.646, 1.000] | 7 (0) | 1.000 [0.646, 1.000] | 7 (7) | 0 | 1 |
+| ts/trpc | 1.000 [0.206, 1.000] | 1 (0) | 1.000 [0.206, 1.000] | 1 (1) | 0 | 2 |
+| ts/ky | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| ts/immer | 1.000 [0.206, 1.000] | 1 (0) | 1.000 [0.206, 1.000] | 1 (1) | 0 | 0 |
+| ts/h3 | 1.000 [0.439, 1.000] | 3 (0) | 1.000 [0.439, 1.000] | 3 (3) | 0 | 0 |
+
+**extends (class -> class, interface -> interface, trait -> supertrait)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| ts/zod | 1.000 [0.994, 1.000] | 652 (0) | 1.000 [0.994, 1.000] | 652 (652) | 0 | 7 |
+| ts/hono | 0.987 [0.928, 0.998] | 75 (1) | 1.000 [0.951, 1.000] | 74 (74) | 0 | 1 |
+| ts/trpc | 1.000 [0.896, 1.000] | 33 (0) | 1.000 [0.896, 1.000] | 33 (33) | 0 | 180 |
+| ts/ky | 1.000 [0.646, 1.000] | 7 (0) | 1.000 [0.646, 1.000] | 7 (7) | 0 | 1 |
+| ts/immer | 1.000 [0.566, 1.000] | 5 (0) | 1.000 [0.566, 1.000] | 5 (5) | 0 | 0 |
+| ts/h3 | 1.000 [0.676, 1.000] | 8 (0) | 1.000 [0.676, 1.000] | 8 (8) | 0 | 1 |
+
+**overrides (implementing method -> interface/trait/base method)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| ts/zod | -  | 0 (0) | 0.000 [0.000, 0.090] | 39 (0) | 3 | 0 |
+| ts/hono | -  | 0 (0) | 0.000 [0.000, 0.079] | 45 (0) | 19 | 0 |
+| ts/trpc | -  | 0 (0) | 0.000 [0.000, 0.490] | 4 (0) | 4 | 0 |
+| ts/ky | -  | 0 (0) | 0.000 [0.000, 0.434] | 5 (0) | 0 | 0 |
+| ts/immer | -  | 0 (0) | 0.000 [0.000, 0.658] | 2 (0) | 2 | 0 |
+| ts/h3 | -  | 0 (0) | 0.000 [0.000, 0.155] | 21 (0) | 14 | 0 |
+
+**External base** (the base is declared outside the repository: `impl Display for X`, `extends Error`, an embedded `sync.Mutex`). Judged for existence only: the oracle pair is *found* when lidx has an EXTENDS / IMPLEMENTS row from the same declaration whose target names the same base. No precision is computed.
+
+| Cell | oracle pairs | lidx has a row | existence recall [95% CI] |
+|---|---:|---:|---|
+| ts/zod | 5 | 0 | 0.000 [0.000, 0.434] |
+| ts/hono | 23 | 0 | 0.000 [0.000, 0.143] |
+| ts/trpc | 12 | 0 | 0.000 [0.000, 0.242] |
+| ts/ky | 4 | 0 | 0.000 [0.000, 0.490] |
+| ts/immer | 2 | 0 | 0.000 [0.000, 0.658] |
+| ts/h3 | 4 | 0 | 0.000 [0.000, 0.490] |
+
+**Structural satisfaction (diagnostic only).** `checker.isTypeAssignableTo(class, interface)` for a class and an interface in the analysed files that the class does not declare (weak interfaces, with only optional members, are skipped). lidx has no structural rule for TypeScript; the table says how many of its IMPLEMENTS rows missing from the declared set are structurally true, and what precision would be if they counted as correct.
+
+| Cell | structural pairs (checker) | lidx IMPLEMENTS rows that are structural only | P declared [95% CI] | P incl. structural |
+|---|---:|---:|---|---|
+| ts/zod | 5 | 0 | 1.000 [0.206, 1.000] | 1.000 |
+| ts/hono | 4 | 0 | 1.000 [0.646, 1.000] | 1.000 |
+| ts/trpc | 11 | 0 | 1.000 [0.206, 1.000] | 1.000 |
+| ts/ky | 0 | 0 | -  | - |
+| ts/immer | 0 | 0 | 1.000 [0.206, 1.000] | 1.000 |
+| ts/h3 | 0 | 0 | 1.000 [0.439, 1.000] | 1.000 |
+
+Excluded, by bucket (counts are oracle-side, summed over the TypeScript cells): override_base_external 40
+
+Lists: `results/lists/<cell>.hierarchy_fn.json` (oracle pairs lidx lacks, plus unmatched external bases) and `<cell>.hierarchy_fp.json` (wrong lidx pairs), each row with a category.
+
+### Rust
+
+`implements` is a type -> trait row, `overrides` a method-level IMPLEMENTS row (impl method -> trait method), `extends` a supertrait row. rust-analyzer's SCIP carries no implementation relationships, so the oracle reads the impl symbols and the reference occurrences on the impl header.
+
+**implements (type -> interface/trait)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| rust/ripgrep/path_tests_excluded | 1.000 [0.967, 1.000] | 111 (0) | 0.933 [0.873, 0.966] | 119 (111) | 0 | 2 |
+| rust/ripgrep/no_tests | 1.000 [0.966, 1.000] | 110 (0) | 0.940 [0.882, 0.971] | 117 (110) | 0 | 3 |
+| rust/ripgrep/tests | 1.000 [0.967, 1.000] | 111 (0) | 0.910 [0.846, 0.949] | 122 (111) | 0 | 2 |
+| rust/fd/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/ripgrep/path_tests_excluded_all_features | 1.000 [0.967, 1.000] | 111 (0) | 0.933 [0.873, 0.966] | 119 (111) | 0 | 2 |
+| rust/fd/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/bat/path_tests_excluded | 1.000 [0.676, 1.000] | 8 (0) | 1.000 [0.676, 1.000] | 8 (8) | 0 | 0 |
+| rust/tokei/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/xsv/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 2 |
+| rust/lidx/path_tests_excluded | 1.000 [0.785, 1.000] | 14 (0) | 0.933 [0.702, 0.988] | 15 (14) | 0 | 13 |
+| rust/just/path_tests_excluded | 1.000 [0.845, 1.000] | 21 (0) | 0.656 [0.483, 0.796] | 32 (21) | 0 | 0 |
+| rust/nextest/path_tests_excluded | 1.000 [0.701, 1.000] | 9 (0) | 0.900 [0.596, 0.982] | 10 (9) | 0 | 0 |
+| rust/bat/path_tests_excluded_all_features | 1.000 [0.676, 1.000] | 8 (0) | 1.000 [0.676, 1.000] | 8 (8) | 0 | 0 |
+| rust/tokei/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/xsv/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 2 |
+| rust/lidx/path_tests_excluded_all_features | 1.000 [0.785, 1.000] | 14 (0) | 0.933 [0.702, 0.988] | 15 (14) | 0 | 13 |
+| rust/just/path_tests_excluded_all_features | 1.000 [0.845, 1.000] | 21 (0) | 0.656 [0.483, 0.796] | 32 (21) | 0 | 0 |
+| rust/nextest/path_tests_excluded_all_features | 1.000 [0.701, 1.000] | 9 (0) | 0.900 [0.596, 0.982] | 10 (9) | 0 | 0 |
+
+**extends (class -> class, interface -> interface, trait -> supertrait)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| rust/ripgrep/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/ripgrep/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/ripgrep/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/ripgrep/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/bat/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 4 |
+| rust/tokei/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/xsv/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/lidx/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 8 |
+| rust/just/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/nextest/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/bat/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 4 |
+| rust/tokei/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/xsv/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/lidx/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 8 |
+| rust/just/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/nextest/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+
+**overrides (implementing method -> interface/trait/base method)**
+
+| Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle pairs (matched) | capture gap | ungradable lidx pairs |
+|---|---|---:|---|---:|---:|---:|
+| rust/ripgrep/path_tests_excluded | 1.000 [0.995, 1.000] | 810 (0) | 1.000 [0.995, 1.000] | 810 (810) | 0 | 50 |
+| rust/ripgrep/no_tests | 1.000 [0.995, 1.000] | 802 (0) | 1.000 [0.995, 1.000] | 802 (802) | 0 | 58 |
+| rust/ripgrep/tests | 1.000 [0.995, 1.000] | 819 (0) | 1.000 [0.995, 1.000] | 819 (819) | 0 | 41 |
+| rust/fd/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/no_tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/fd/tests | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/ripgrep/path_tests_excluded_all_features | 1.000 [0.995, 1.000] | 810 (0) | 1.000 [0.995, 1.000] | 810 (810) | 0 | 50 |
+| rust/fd/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 0 |
+| rust/bat/path_tests_excluded | 1.000 [0.839, 1.000] | 20 (0) | 1.000 [0.839, 1.000] | 20 (20) | 0 | 2 |
+| rust/tokei/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 7 |
+| rust/xsv/path_tests_excluded | -  | 0 (0) | -  | 0 (0) | 0 | 6 |
+| rust/lidx/path_tests_excluded | 1.000 [0.923, 1.000] | 46 (0) | 1.000 [0.923, 1.000] | 46 (46) | 0 | 1 |
+| rust/just/path_tests_excluded | 1.000 [0.904, 1.000] | 36 (0) | 1.000 [0.904, 1.000] | 36 (36) | 0 | 17 |
+| rust/nextest/path_tests_excluded | 1.000 [0.862, 1.000] | 24 (0) | 1.000 [0.862, 1.000] | 24 (24) | 0 | 23 |
+| rust/bat/path_tests_excluded_all_features | 1.000 [0.839, 1.000] | 20 (0) | 1.000 [0.839, 1.000] | 20 (20) | 0 | 2 |
+| rust/tokei/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 7 |
+| rust/xsv/path_tests_excluded_all_features | -  | 0 (0) | -  | 0 (0) | 0 | 6 |
+| rust/lidx/path_tests_excluded_all_features | 1.000 [0.923, 1.000] | 46 (0) | 1.000 [0.923, 1.000] | 46 (46) | 0 | 1 |
+| rust/just/path_tests_excluded_all_features | 1.000 [0.904, 1.000] | 36 (0) | 1.000 [0.904, 1.000] | 36 (36) | 0 | 17 |
+| rust/nextest/path_tests_excluded_all_features | 1.000 [0.862, 1.000] | 24 (0) | 1.000 [0.862, 1.000] | 24 (24) | 0 | 23 |
+
+**External base** (the base is declared outside the repository: `impl Display for X`, `extends Error`, an embedded `sync.Mutex`). Judged for existence only: the oracle pair is *found* when lidx has an EXTENDS / IMPLEMENTS row from the same declaration whose target names the same base. No precision is computed.
+
+| Cell | oracle pairs | lidx has a row | existence recall [95% CI] |
+|---|---:|---:|---|
+| rust/ripgrep/path_tests_excluded | 211 | 195 | 0.924 [0.880, 0.953] |
+| rust/ripgrep/no_tests | 209 | 193 | 0.923 [0.879, 0.952] |
+| rust/ripgrep/tests | 211 | 195 | 0.924 [0.880, 0.953] |
+| rust/fd/path_tests_excluded | 27 | 27 | 1.000 [0.875, 1.000] |
+| rust/fd/no_tests | 23 | 23 | 1.000 [0.857, 1.000] |
+| rust/fd/tests | 27 | 27 | 1.000 [0.875, 1.000] |
+| rust/ripgrep/path_tests_excluded_all_features | 223 | 204 | 0.915 [0.871, 0.945] |
+| rust/fd/path_tests_excluded_all_features | 27 | 27 | 1.000 [0.875, 1.000] |
+| rust/bat/path_tests_excluded | 57 | 56 | 0.983 [0.907, 0.997] |
+| rust/tokei/path_tests_excluded | 32 | 32 | 1.000 [0.893, 1.000] |
+| rust/xsv/path_tests_excluded | 47 | 47 | 1.000 [0.924, 1.000] |
+| rust/lidx/path_tests_excluded | 46 | 45 | 0.978 [0.887, 0.996] |
+| rust/just/path_tests_excluded | 170 | 114 | 0.671 [0.597, 0.737] |
+| rust/nextest/path_tests_excluded | 336 | 326 | 0.970 [0.946, 0.984] |
+| rust/bat/path_tests_excluded_all_features | 63 | 62 | 0.984 [0.915, 0.997] |
+| rust/tokei/path_tests_excluded_all_features | 32 | 32 | 1.000 [0.893, 1.000] |
+| rust/xsv/path_tests_excluded_all_features | 47 | 47 | 1.000 [0.924, 1.000] |
+| rust/lidx/path_tests_excluded_all_features | 46 | 45 | 0.978 [0.887, 0.996] |
+| rust/just/path_tests_excluded_all_features | 170 | 114 | 0.671 [0.597, 0.737] |
+| rust/nextest/path_tests_excluded_all_features | 336 | 326 | 0.970 [0.946, 0.984] |
+
+Excluded, by bucket (counts are oracle-side, summed over the Rust cells): blanket_impl 44, impl_for_foreign_type 54, impl_for_type_alias 8
+
+Lists: `results/lists/<cell>.hierarchy_fn.json` (oracle pairs lidx lacks, plus unmatched external bases) and `<cell>.hierarchy_fp.json` (wrong lidx pairs), each row with a category.
+
+### Type hierarchy spot-check
+
+20 random wrong pairs (FP), 20 random missed pairs (FN) and 20 random **correct** pairs (TP, so that precision does not rest on the matcher alone) per language, read against the source (seed 412; cells go/cobra/tests, go/gitleaks/tests, go/syft/tests, go/chi/tests, go/urfavecli/tests, go/viper/tests, go/bubbletea/tests, ts/zod, ts/hono, ts/trpc, ts/ky, ts/immer, ts/h3, rust/ripgrep/path_tests_excluded, rust/fd/path_tests_excluded, rust/bat/path_tests_excluded, rust/tokei/path_tests_excluded, rust/xsv/path_tests_excluded, rust/lidx/path_tests_excluded, rust/just/path_tests_excluded, rust/nextest/path_tests_excluded). Verdicts: `lidx_error` (lidx is wrong or missed a real relation), `oracle_artefact` (the compiler pair is not the right judge), `matching_artefact` (our keying or bucketing mis-attributed the pair). Where a language has fewer than 20 wrong pairs, every one is read.
+
+| Language | Sample | lidx_error | oracle_artefact | matching_artefact | artefact rate [95% Wilson CI] |
+|---|---|---:|---:|---:|---|
+| go | FP (n=0) | 0 | 0 | 0 | 0/0 = 0.0%  |
+| go | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| go | TP, 20 confirmed in source (n=20) | 0 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| go | both (n=40) | 20 | 0 | 0 | **0/40 = 0.0%** [0.0%, 8.8%] |
+| ts | FP (n=1) | 1 | 0 | 0 | 0/1 = 0.0% [0.0%, 79.3%] |
+| ts | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| ts | TP, 20 confirmed in source (n=20) | 0 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| ts | both (n=41) | 21 | 0 | 0 | **0/41 = 0.0%** [0.0%, 8.6%] |
+| rust | FP (n=0) | 0 | 0 | 0 | 0/0 = 0.0%  |
+| rust | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| rust | TP, 20 confirmed in source (n=20) | 0 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| rust | both (n=40) | 20 | 0 | 0 | **0/40 = 0.0%** [0.0%, 8.8%] |
+
+**Exclusion buckets** (up to 10 random items each: capture gaps, ungradable lidx pairs by reason, and the external-base misses). `misbucketed` means the item should have been graded.
+
+| Language | Bucket | Bucket size | Sampled | misbucketed | rate [95% Wilson CI] |
+|---|---|---:|---:|---:|---|
+| go | external_base:no_edge | 37 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| go | ungradable:end_not_judged | 13 | 13 | 0 | 0.0% [0.0%, 22.8%] |
+| go | ungradable:file_not_analysed | 206 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| go | ungradable:generic_type | 7 | 7 | 0 | 0.0% [0.0%, 35.4%] |
+| ts | capture_gap | 42 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| ts | external_base:no_edge | 47 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| ts | external_base:not_indexed | 3 | 3 | 0 | 0.0% [0.0%, 56.2%] |
+| ts | ungradable:file_not_analysed | 193 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| rust | external_base:no_edge | 83 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| rust | external_base:not_indexed | 1 | 1 | 0 | 0.0% [0.0%, 79.3%] |
+| rust | ungradable:end_not_judged | 85 | 20 | 1 | 5.0% [0.9%, 23.6%] |
+| rust | ungradable:file_not_analysed | 50 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| all | all buckets | | 114 | 1 | **0.9%** [0.2%, 4.8%] |
+
+Pooled over every sampled item: 1/235 = 0.4% [0.1%, 2.4%].
+
+Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where fewer wrong pairs exist every one is read (Go and Rust have none: lidx's precision is 1.00 on the pairs the oracle judges; TypeScript has one), plus up to 10 items from every exclusion bucket. Read against the source by Sonnet subagents with access to the checked-out corpus and lidx's index. The first TypeScript sample found 12 of 61 items to be matching artefacts (a type alias named in an `extends` clause was keyed at its target, and the bases of merged interface declarations were all attributed to the first declaration); the oracle now reads each `extends` clause where it is written and the sample was redrawn.
+
+#### go samples
+
+**FP**
+
+
+**FN**
+
+- `h2ca04355` overrides flag_string_slice.go:181 -> flag.go:396: **lidx_error**, Method declared in flag_string_slice.go with receiver StringSliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `hbae08f9a` overrides flag_bool.go:78 -> flag.go:131: **lidx_error**, Method declared in flag_bool.go with receiver BoolFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `h8bfd5ca5` embeds cmd/syft/internal/options/catalog.go:33 -> cmd/syft/internal/options/cataloger_selection.go:10: **lidx_error**, Source line cmd/syft/internal/options/catalog.go:33 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct.
+- `he0c165e3` overrides flag_uint64.go:54 -> flag.go:97: **lidx_error**, Method declared in flag_uint64.go with receiver Uint64Flag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `h2c8294c2` embeds syft/testutil/completion_testing.go:14 -> internal/sourcemetadata/completion_tester.go:8: **lidx_error**, Source line syft/testutil/completion_testing.go:14 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct.
+- `h9ba50444` implements middleware/wrap_writer.go:237 -> middleware/wrap_writer.go:48: **lidx_error**, middleware/wrap_writer.go:237 embeds http.ResponseWriter (and/or basicWriter) and gets the interface's methods by promotion; the compiler fact is correct (basicWriter defines Status/Tee/Unwrap/Discard, Header is promoted) but lidx has no IMPLEMENTS edge since it cannot see promotion through embedding of an external/embedded type.
+- `hacbde44d` embeds cmd/syft/internal/commands/cataloger_list.go:31 -> cmd/syft/internal/options/cataloger_selection.go:10: **lidx_error**, Source line cmd/syft/internal/commands/cataloger_list.go:31 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct.
+- `hb0e35061` overrides flag_float64_slice.go:191 -> flag.go:97: **lidx_error**, Method declared in flag_float64_slice.go with receiver Float64SliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `hfaaa99ff` embeds syft/internal/fileresolver/unindexed_directory.go:460 -> syft/internal/fileresolver/unindexed_directory.go:505: **lidx_error**, Source line syft/internal/fileresolver/unindexed_directory.go:460 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct.
+- `h3cfbfcdb` overrides flag_float64.go:80 -> flag.go:97: **lidx_error**, Method declared in flag_float64.go with receiver Float64Flag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `he20339a4` overrides flag_int_slice.go:107 -> flag.go:124: **lidx_error**, Method declared in flag_int_slice.go with receiver IntSliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `ha10994d7` embeds syft/format/cyclonedxjson/encoder.go:21 -> syft/format/internal/cyclonedxutil/encoder.go:12: **lidx_error**, Source line syft/format/cyclonedxjson/encoder.go:21 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct.
+- `h1b68768d` overrides middleware/wrap_writer.go:142 -> middleware/wrap_writer.go:63: **lidx_error**, basicWriter.Unwrap (wrap_writer.go:142) really implements WrapResponseWriter.Unwrap (line 63); both symbols exist in lidx but basicWriter has no IMPLEMENTS edge to WrapResponseWriter (promoted http.ResponseWriter methods unseen), so the override is missing.
+- `hf2f7d8f4` embeds cmd/syft/internal/commands/attest.go:41 -> cmd/syft/internal/options/output.go:32: **lidx_error**, Source line cmd/syft/internal/commands/attest.go:41 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct.
+- `h6be6b61f` overrides flag_string.go:25 -> flag.go:131: **lidx_error**, Method declared in flag_string.go with receiver StringFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `h788733cd` overrides flag_string.go:14 -> flag.go:127: **lidx_error**, Method declared in flag_string.go with receiver StringFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `hc94b18e6` overrides flag_uint64.go:69 -> flag.go:134: **lidx_error**, Method declared in flag_uint64.go with receiver Uint64Flag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `hbdadc10f` embeds cmd/syft/internal/commands/attest.go:41 -> cmd/syft/internal/options/config.go:6: **lidx_error**, Source line cmd/syft/internal/commands/attest.go:41 has the struct embedding the in-repo type as an anonymous field; lidx's Go extractor emits no embeds edge for struct embedding (only interface EXTENDS), and the syft index has no embeds edge for this struct.
+- `h40bacd65` overrides flag_uint64_slice.go:110 -> flag.go:161: **lidx_error**, Method declared in flag_uint64_slice.go with receiver Uint64SliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
+- `hf8144969` implements middleware/wrap_writer.go:74 -> middleware/wrap_writer.go:48: **lidx_error**, middleware/wrap_writer.go:74 embeds http.ResponseWriter (and/or basicWriter) and gets the interface's methods by promotion; the compiler fact is correct (basicWriter defines Status/Tee/Unwrap/Discard, Header is promoted) but lidx has no IMPLEMENTS edge since it cannot see promotion through embedding of an external/embedded type.
+
+**TP**
+
+- `h408b747d` overrides app_test.go:2497 -> flag.go:106: **correct**, customBoolFlag.Apply (app_test.go:2497) is the pointer-receiver implementer of Flag.Apply(*flag.FlagSet) error at flag.go:106.
+- `hfc0eedda` overrides syft/internal/fileresolver/deferred.go:60 -> syft/file/resolver.go:45: **correct**, (*Deferred).FilesByGlob(patterns ...string) matches PathResolver.FilesByGlob at resolver.go:45 with identical signature.
+- `h49adb017` overrides internal/file/getter.go:48 -> internal/file/getter.go:24: **correct**, HashiGoGetter.GetFile (value receiver, variadic monitors) implements Getter.GetFile at getter.go:24; parameter-name difference is irrelevant.
+- `hc36e369f` implements altsrc/flag_generated.go:32 -> flag.go:158: **correct**, altsrc.DurationFlag embeds *cli.DurationFlag (promoting IsVisible/GetCategory/Names/IsSet/String) and defines Apply on *DurationFlag, so *DurationFlag satisfies CategorizableFlag.
+- `haa5a694d` implements syft/internal/fileresolver/excluding_file.go:15 -> syft/file/resolver.go:67: **correct**, *excluding defines AllLocations(ctx) <-chan file.Location (excluding_file.go:73), the sole method of LocationResolver.
+- `hf095d732` implements flag_int64_slice.go:12 -> flag.go:395: **correct**, *Int64Slice has WithSeparatorSpec(spec separatorSpec) at flag_int64_slice.go:33, the sole method of customizedSeparator.
+- `hbba172d6` overrides syft/source/directorysource/directory_source.go:92 -> syft/source/source.go:18: **correct**, *directorySource.FileResolver(Scope)(file.Resolver,error) at directory_source.go:92 implements Source.FileResolver at source.go:18.
+- `h2583164f` overrides flag_test.go:3004 -> flag_generic.go:11: **correct**, *genericType.String() string (flag_test.go:3004) implements Generic.String at flag_generic.go:11 (Set also present).
+- `hc540c7a7` overrides flag_ext.go:26 -> flag.go:153: **correct**, *extFlag.IsVisible (flag_ext.go:26) implements VisibleFlag.IsVisible at flag.go:153.
+- `h7264c79b` implements syft/pkg/cataloger/generic/cataloger.go:26 -> syft/artifact/id.go:12: **correct**, request embeds file.Location (Location->LocationData->Coordinates, which has ID() artifact.ID at coordinates.go:26) and the method-less func type Parser, so ID() is promoted and Identifiable is satisfied.
+- `hcf2dad1b` overrides syft/internal/fileresolver/container_image_all_layers.go:87 -> syft/file/resolver.go:38: **correct**, *ContainerImageAllLayers.FilesByPath(paths ...string) matches PathResolver.FilesByPath at resolver.go:38.
+- `hf06c025b` implements syft/file/location_read_closer.go:6 -> syft/artifact/id.go:12: **correct**, LocationReadCloser embeds Location, promoting Coordinates.ID() artifact.ID; io.ReadCloser adds no conflicting ID, so Identifiable is satisfied.
+- `h0e58ff81` overrides syft/source/snapsource/snap_test.go:623 -> internal/file/getter.go:24: **correct**, *mockFileGetter.GetFile (snap_test.go:623) overrides the embedded file.Getter's GetFile and implements Getter.GetFile at getter.go:24 with identical signature.
+- `hbeb69c8d` overrides zz_generated.flags.go:149 -> flag.go:153: **correct**, *Int64SliceFlag.IsVisible (zz_generated.flags.go:149) implements VisibleFlag.IsVisible at flag.go:153.
+- `h0d2a9955` implements zz_generated.flags.go:154 -> flag.go:395: **correct**, *IntSliceFlag has WithSeparatorSpec at zz_generated... flag_int_slice.go:191 (pointer receiver), satisfying customizedSeparator.
+- `h66e0966e` extends flag.go:95 -> flag.go:103: **correct**, ActionableFlag (flag.go:95) embeds Flag (flag.go:103); the single embedded identifier Flag resolves to that interface despite bare_name resolution.
+- `hff83d6b5` overrides mux.go:295 -> chi.go:86: **correct**, (*Mux).Mount(pattern string, handler http.Handler) at mux.go:295 implements Router.Mount(pattern string, h http.Handler) at chi.go:86.
+- `hb0623519` overrides zz_generated.flags.go:294 -> flag.go:116: **correct**, *StringSliceFlag.IsRequired (zz_generated.flags.go:294) implements RequiredFlag.IsRequired at flag.go:116.
+- `h506a10e9` implements syft/internal/fileresolver/empty.go:12 -> syft/file/resolver.go:76: **correct**, Empty (value receivers) defines every method of Resolver (Content/Path/Location/Metadata) plus Write; empty.go even asserts var _ file.WritableResolver = (*Empty)(nil).
+- `h5b9dca5a` implements syft/pkg/cataloger/generic/cataloger_test.go:93 -> syft/file/resolver.go:17: **correct**, spyReturningFileResolver has value-receiver FileContentsByLocation(file.Location)(io.ReadCloser,error), the only ContentResolver method.
+
+#### ts samples
+
+**FP**
+
+- `hcb6ba1d3` extends src/adapter/service-worker/types.ts:1 -> src/jsx/types.ts:29: **lidx_error**, hono src/adapter/service-worker/types.ts:1 `interface ExtendableEvent extends Event` has no import of Event, so it is the global DOM Event; lidx resolved the bare name to the unrelated alias `type Event` at src/jsx/types.ts:29.
+
+**FN**
+
+- `h0bbff936` overrides src/adapter/aws-lambda/handler.ts:417 -> src/adapter/aws-lambda/handler.ts:287: **lidx_error**, Real override of abstract `getCookies` at src/adapter/aws-lambda/handler.ts:287 by `getCookies` at src/adapter/aws-lambda/handler.ts:417 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h97f683b6` overrides packages/zod/src/v3/types.ts:1636 -> packages/zod/src/v3/types.ts:170: **lidx_error**, Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:1636 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h8200dce5` overrides source/errors/ForceRetryError.ts:12 -> source/errors/KyError.ts:9: **lidx_error**, ForceRetryError.ts:12 `override name = ...` overrides KyError.ts:9 `override name = ...` (class extends KyError); both carry the override keyword yet lidx has no pairing, so property-member overrides are missed.
+- `h7fcf58c0` overrides packages/zod/src/v3/types.ts:4530 -> packages/zod/src/v3/types.ts:170: **lidx_error**, Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:4530 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `hb9694e7c` overrides packages/zod/src/v3/types.ts:74 -> packages/zod/src/v3/helpers/parseUtil.ts:68: **lidx_error**, Class member `path` at packages/zod/src/v3/types.ts:74 implements interface/type-literal/declare-class member `path` at packages/zod/src/v3/helpers/parseUtil.ts:68 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
+- `h45d7f03a` overrides src/adapter/aws-lambda/handler.ts:526 -> src/adapter/aws-lambda/handler.ts:279: **lidx_error**, Real override of abstract `getPath` at src/adapter/aws-lambda/handler.ts:279 by `getPath` at src/adapter/aws-lambda/handler.ts:526 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `ha14fee18` overrides packages/zod/src/v3/types.ts:3514 -> packages/zod/src/v3/types.ts:170: **lidx_error**, Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:3514 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h0faf9744` overrides packages/zod/src/v3/types.ts:64 -> packages/zod/src/v3/helpers/parseUtil.ts:67: **lidx_error**, Class member `data` at packages/zod/src/v3/types.ts:64 implements interface/type-literal/declare-class member `data` at packages/zod/src/v3/helpers/parseUtil.ts:67 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
+- `hda98d402` overrides packages/zod/src/v3/types.ts:4782 -> packages/zod/src/v3/types.ts:170: **lidx_error**, Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:4782 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h041e4f13` overrides src/adapter/aws-lambda/handler.ts:504 -> src/adapter/aws-lambda/handler.ts:285: **lidx_error**, Real override of abstract `getHeaders` at src/adapter/aws-lambda/handler.ts:285 by `getHeaders` at src/adapter/aws-lambda/handler.ts:504 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `hb71a05c3` overrides src/router/pattern-router/router.ts:44 -> src/router.ts:51: **lidx_error**, Class member `match` at src/router/pattern-router/router.ts:44 implements interface/type-literal/declare-class member `match` at src/router.ts:51 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
+- `h57dcf655` overrides packages/zod/src/v3/types.ts:1370 -> packages/zod/src/v3/types.ts:170: **lidx_error**, Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:1370 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `ha969484d` overrides src/router/reg-exp-router/router.ts:123 -> src/router.ts:33: **lidx_error**, Class member `name` at src/router/reg-exp-router/router.ts:123 implements interface/type-literal/declare-class member `name` at src/router.ts:33 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
+- `hec9ec442` overrides src/h3.ts:64 -> src/types/h3.ts:136: **lidx_error**, Class member `handler` at src/h3.ts:64 implements interface/type-literal/declare-class member `handler` at src/types/h3.ts:136 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
+- `he9d39e79` overrides packages/zod/src/v3/types.ts:2241 -> packages/zod/src/v3/types.ts:170: **lidx_error**, Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:2241 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h4307dd27` overrides src/adapter/aws-lambda/handler.ts:530 -> src/adapter/aws-lambda/handler.ts:281: **lidx_error**, Real override of abstract `getMethod` at src/adapter/aws-lambda/handler.ts:281 by `getMethod` at src/adapter/aws-lambda/handler.ts:530 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h0f95af1b` overrides src/adapter/aws-lambda/handler.ts:470 -> src/adapter/aws-lambda/handler.ts:287: **lidx_error**, Real override of abstract `getCookies` at src/adapter/aws-lambda/handler.ts:287 by `getCookies` at src/adapter/aws-lambda/handler.ts:470 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h526c97e4` overrides packages/zod/src/v3/types.ts:4322 -> packages/zod/src/v3/types.ts:170: **lidx_error**, Real override of abstract `_parse` at packages/zod/src/v3/types.ts:170 by `_parse` at packages/zod/src/v3/types.ts:4322 (class extends base, no `override` keyword in source); lidx pairs overrides only with the keyword, so the miss is a by-design limitation.
+- `h05800233` overrides src/router/reg-exp-router/router.ts:206 -> src/router.ts:51: **lidx_error**, Class member `match` at src/router/reg-exp-router/router.ts:206 implements interface/type-literal/declare-class member `match` at src/router.ts:51 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
+- `h06904be1` overrides src/h3.ts:73 -> src/types/h3.ts:139: **lidx_error**, Class member `"~request"` at src/h3.ts:73 implements interface/type-literal/declare-class member `"~request"` at src/types/h3.ts:139 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
+
+**TP**
+
+- `h69a9717b` extends packages/zod/src/v4/core/schemas.ts:928 -> packages/zod/src/v4/core/schemas.ts:385: **correct**, schemas.ts:928 declares extends $ZodStringFormatInternals<"base64">, base at :385.
+- `h6ad657d6` implements src/jsx/base.ts:140 -> src/utils/html.ts:17: **correct**, hono jsx/base.ts:140 JSXNode implements HtmlEscaped, a type alias at utils/html.ts:17.
+- `h29440d77` extends packages/zod/src/v4/core/schemas.ts:852 -> packages/zod/src/v4/core/schemas.ts:385: **correct**, $ZodCIDRv4Internals extends $ZodStringFormatInternals<"cidrv4"> at l.852.
+- `h8a7dcb94` extends packages/zod/src/v4/core/standard-schema.ts:103 -> packages/zod/src/v4/core/standard-schema.ts:9: **correct**, StandardJSONSchemaV1.Props (l.103) extends StandardTypedV1.Props, whose Props is at l.9 in the other namespace.
+- `hb6b60be4` extends src/jsx/intrinsic-elements.ts:671 -> src/jsx/intrinsic-elements.ts:152: **correct**, ScriptHTMLAttributes extends HTMLAttributes at l.671; single HTMLAttributes decl at l.152 in JSX namespace.
+- `he432aa3a` extends source/errors/NetworkError.ts:11 -> source/errors/KyError.ts:8: **correct**, NetworkError extends KyError (source/errors/NetworkError.ts:11), KyError at KyError.ts:8.
+- `hb86008bc` extends packages/zod/src/v4/core/schemas.ts:1356 -> packages/zod/src/v4/core/schemas.ts:179: **correct**, $ZodUndefined extends $ZodType at l.1356; $ZodType declared l.179.
+- `h0e60ab50` extends src/jsx/intrinsic-elements.ts:208 -> src/jsx/intrinsic-elements.ts:152: **correct**, AnchorHTMLAttributes extends HTMLAttributes at l.208; base is the l.152 decl.
+- `hdf168247` implements src/router/smart-router/router.ts:4 -> src/router.ts:29: **correct**, SmartRouter implements Router<T> (router.ts:4), Router imported from ../../router, declared at router.ts:29.
+- `h8e3c8c36` extends packages/server/src/unstable-core-do-not-import/procedure.ts:57 -> packages/server/src/unstable-core-do-not-import/procedure.ts:23: **correct**, QueryProcedure extends Procedure<'query',TDef> at l.59; Procedure at l.23.
+- `h85e4a8e3` extends packages/zod/src/v4/core/zsf.ts:14 -> packages/zod/src/v4/core/zsf.ts:5: **correct**, $ZSFString extends $ZSF at zsf.ts:14; base at :5.
+- `hc8538845` extends packages/zod/src/v4/core/schemas.ts:404 -> packages/zod/src/v4/core/schemas.ts:381: **correct**, $ZodGUIDDef extends $ZodStringFormatDef<"guid"> at l.404; base at l.381.
+- `h10a13e3e` extends packages/zod/src/v4/core/schemas.ts:831 -> packages/zod/src/v4/core/schemas.ts:385: **correct**, $ZodMACInternals extends $ZodStringFormatInternals<"mac"> at l.831.
+- `h5260c541` extends src/helper/streaming/sse.ts:13 -> src/utils/stream.ts:6: **correct**, SSEStreamingApi extends StreamingApi (sse.ts:13), class at utils/stream.ts:6.
+- `he39df74d` extends packages/server/src/unstable-core-do-not-import/transformer.ts:29 -> packages/server/src/unstable-core-do-not-import/transformer.ts:13: **correct**, OutputDataTransformer extends DataTransformer (transformer.ts:29), base l.13.
+- `hfe4e5c9e` extends packages/zod/src/v4/mini/schemas.ts:753 -> packages/zod/src/v4/mini/schemas.ts:40: **correct**, ZodMiniNever extends _ZodMiniType<...> at l.753; _ZodMiniType at l.40.
+- `h8b812332` extends packages/zod/src/v4/core/schemas.ts:3728 -> packages/zod/src/v4/core/schemas.ts:50: **correct**, $ZodNonOptionalDef extends $ZodTypeDef at l.3728; base l.50.
+- `h9c403c80` extends packages/zod/src/v4/classic/schemas.ts:1728 -> packages/zod/src/v4/core/schemas.ts:2659: **correct**, classic ZodTuple lists core.$ZodTuple<T,Rest> in its extends clause; $ZodTuple is core/schemas.ts:2659.
+- `h0ecaca27` extends packages/zod/src/v4/classic/schemas.ts:2543 -> packages/zod/src/v4/classic/schemas.ts:212: **correct**, ZodFunction extends _ZodType<...> (l.2546), _ZodType at classic/schemas.ts:212.
+- `h3c234d88` extends packages/zod/src/v4/classic/schemas.ts:1027 -> packages/zod/src/v4/classic/schemas.ts:212: **correct**, _ZodNumber extends _ZodType<Internals> (l.1028); _ZodType at l.212.
+
+#### rust samples
+
+**FP**
+
+
+**FN**
+
+- `hf8d21ea1` implements src/line.rs:6 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Line<'src>` in src/node.rs:276 while the type is declared in its own file; lidx has only the method-level edge crate::node::Line::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Line), which is no symbol.
+- `h541c010f` implements src/ast.rs:7 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Ast<'src>` in src/node.rs:10 while the type is declared in its own file; lidx has only the method-level edge crate::node::Ast::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Ast), which is no symbol.
+- `h3ff1caf7` implements src/indexer/extract.rs:82 -> src/indexer/csharp.rs:7788: **lidx_error**, `impl WithNameOnly for ReceiverType` at csharp.rs:7792 (in mod tests) for an enum declared in extract.rs; lidx has only the method edge crate::indexer::csharp::tests::ReceiverType::with_name_only and no type-level edge (cross-file impl, source qualified into the impl's module).
+- `h003dd093` implements crates/printer/src/json.rs:596 -> crates/searcher/src/sink.rs:102: **lidx_error**, Source has `impl ... for JSONSink` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_searcher::Sink` instead of the in-repo trait (crates/searcher/src/sink.rs:102), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `h736904be` implements nextest-runner/src/config/config_impl.rs:929 -> nextest-runner/src/list/test_list.rs:800: **lidx_error**, `impl<'g> ListProfile for EvaluatableProfile<'g>` is at test_list.rs:808 while the struct is in config/config_impl.rs:929; lidx has only method-level edges under crate::list::test_list::EvaluatableProfile::* and no type-level edge (cross-file impl).
+- `hba95e67c` implements crates/regex/src/matcher.rs:524 -> crates/matcher/src/lib.rs:379: **lidx_error**, Source has `impl ... for RegexCaptures (regex)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Captures` instead of the in-repo trait (matcher lib.rs:379), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `h58fab199` implements src/platform.rs:3 -> src/platform_interface.rs:3: **lidx_error**, `impl PlatformInterface for Platform` lives in src/platform/unix.rs:3 (and windows.rs) while struct Platform is in src/platform.rs; lidx only has method edges crate::platform::unix::Platform::* and no type-level edge (source qualname is the impl's module).
+- `h239ac260` implements crates/searcher/src/testutil.rs:24 -> crates/matcher/src/lib.rs:546: **lidx_error**, Source has `impl ... for RegexMatcher (searcher testutil)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Matcher` instead of the in-repo trait (matcher lib.rs:546), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `hdeba57d2` implements src/item.rs:8 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Item<'src>` in src/node.rs:24 while the type is declared in its own file; lidx has only the method-level edge crate::node::Item::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Item), which is no symbol.
+- `h8889124f` implements src/fragment.rs:5 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Fragment<'src>` in src/node.rs:282 while the type is declared in its own file; lidx has only the method-level edge crate::node::Fragment::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Fragment), which is no symbol.
+- `h622fe208` implements crates/regex/src/matcher.rs:367 -> crates/matcher/src/lib.rs:546: **lidx_error**, Source has `impl ... for RegexMatcher (regex)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Matcher` instead of the in-repo trait (matcher lib.rs:546), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `hceda3b51` implements src/warning.rs:4 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Warning<'src>` in src/node.rs:342 while the type is declared in its own file; lidx has only the method-level edge crate::node::Warning::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Warning), which is no symbol.
+- `hc47015c2` implements src/set.rs:4 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Set<'src>` in src/node.rs:291 while the type is declared in its own file; lidx has only the method-level edge crate::node::Set::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Set), which is no symbol.
+- `h5c55b9db` implements crates/pcre2/src/matcher.rs:302 -> crates/matcher/src/lib.rs:546: **lidx_error**, Source has `impl ... for RegexMatcher (pcre2)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Matcher` instead of the in-repo trait (matcher lib.rs:546), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `h15ddd372` implements crates/printer/src/summary.rs:484 -> crates/searcher/src/sink.rs:102: **lidx_error**, Source has `impl ... for SummarySink` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_searcher::Sink` instead of the in-repo trait (searcher sink.rs:102), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `h6dae8ce9` implements src/parameter.rs:4 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Parameter<'src>` in src/node.rs:264 while the type is declared in its own file; lidx has only the method-level edge crate::node::Parameter::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Parameter), which is no symbol.
+- `h5d975e96` implements crates/pcre2/src/matcher.rs:391 -> crates/matcher/src/lib.rs:379: **lidx_error**, Source has `impl ... for RegexCaptures (pcre2)` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_matcher::Captures` instead of the in-repo trait (matcher lib.rs:379), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `h118e6325` implements crates/printer/src/standard.rs:639 -> crates/searcher/src/sink.rs:102: **lidx_error**, Source has `impl ... for StandardSink` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_searcher::Sink` instead of the in-repo trait (searcher sink.rs:102), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
+- `h3dde8606` implements src/alias.rs:5 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Alias<'src>` in src/node.rs:95 while the type is declared in its own file; lidx has only the method-level edge crate::node::Alias::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Alias), which is no symbol.
+- `h3a2ef39c` implements src/expression.rs:10 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Expression<'src>` in src/node.rs:119 while the type is declared in its own file; lidx has only the method-level edge crate::node::Expression::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Expression), which is no symbol.
+
+**TP**
+
+- `h2342b046` overrides crates/core/flags/defs.rs:7246 -> crates/core/flags/mod.rs:177: **correct**, Source confirms method at crates/core/flags/defs.rs:7246 sits inside "impl Flag for Unrestricted {" (line 7212) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:177.
+- `h48ecf8e2` overrides crates/core/flags/defs.rs:2350 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:2350 sits inside "impl Flag for Follow {" (line 2343) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
+- `h375bed81` overrides crates/core/flags/defs.rs:4285 -> crates/core/flags/mod.rs:132: **correct**, Source confirms method at crates/core/flags/defs.rs:4285 sits inside "impl Flag for NoConfig {" (line 4278) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:132.
+- `h28e88b2d` overrides crates/core/flags/defs.rs:3976 -> crates/core/flags/mod.rs:177: **correct**, Source confirms method at crates/core/flags/defs.rs:3976 sits inside "impl Flag for MaxDepth {" (line 3940) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:177.
+- `hd6ef2f65` overrides crates/core/flags/defs.rs:6408 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:6408 sits inside "impl Flag for Sortr {" (line 6404) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
+- `hdb222fca` overrides cargo-nextest/src/output.rs:407 -> nextest-runner/src/write_str.rs:19: **correct**, Source confirms method at cargo-nextest/src/output.rs:407 sits inside "impl WriteStr for StdoutWriter<'_> {" (line 406) and overrides/implements the same-named method of "pub trait WriteStr {" at nextest-runner/src/write_str.rs:19.
+- `h1bd00e4a` overrides crates/core/flags/defs.rs:3657 -> crates/core/flags/mod.rs:74: **correct**, Source confirms method at crates/core/flags/defs.rs:3657 sits inside "impl Flag for LineNumberNo {" (line 3656) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:74.
+- `h102bf975` overrides crates/core/flags/defs.rs:4232 -> crates/core/flags/mod.rs:143: **correct**, Source confirms method at crates/core/flags/defs.rs:4232 sits inside "impl Flag for MultilineDotall {" (line 4216) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:143.
+- `ha1d6ac13` implements src/indexer/javascript.rs:184 -> src/indexer/extract.rs:632: **correct**, javascript.rs has "impl crate::indexer::extract::LanguageExtractor for TypescriptExtractor"; trait at extract.rs:632.
+- `ha2fbcf4a` overrides crates/core/flags/defs.rs:4507 -> crates/core/flags/mod.rs:143: **correct**, Source confirms method at crates/core/flags/defs.rs:4507 sits inside "impl Flag for NoIgnoreFiles {" (line 4491) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:143.
+- `hfa4db138` overrides crates/core/flags/defs.rs:5462 -> crates/core/flags/mod.rs:111: **correct**, Source confirms method at crates/core/flags/defs.rs:5462 sits inside "impl Flag for Pre {" (line 5455) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:111.
+- `h755b7b0c` overrides crates/core/flags/defs.rs:3572 -> crates/core/flags/mod.rs:177: **correct**, Source confirms method at crates/core/flags/defs.rs:3572 sits inside "impl Flag for LineBuffered {" (line 3539) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:177.
+- `he8c2c103` overrides nextest-runner/src/indenter.rs:136 -> nextest-runner/src/write_str.rs:23: **correct**, Source confirms method at nextest-runner/src/indenter.rs:136 sits inside "impl<T> WriteStr for Indented<'_, T>" (line 109) and overrides/implements the same-named method of "pub trait WriteStr {" at nextest-runner/src/write_str.rs:23.
+- `h5a752869` overrides crates/core/flags/defs.rs:2606 -> crates/core/flags/mod.rs:132: **correct**, Source confirms method at crates/core/flags/defs.rs:2606 sits inside "impl Flag for GlobCaseInsensitive {" (line 2596) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:132.
+- `h4af6d129` overrides src/printer.rs:596 -> src/printer.rs:96: **correct**, Source confirms method at src/printer.rs:596 sits inside "impl<'a> Printer for InteractivePrinter<'a> {" (line 451) and overrides/implements the same-named method of "pub(crate) trait Printer {" at src/printer.rs:96.
+- `h0423a5e5` overrides crates/core/flags/defs.rs:3613 -> crates/core/flags/mod.rs:132: **correct**, Source confirms method at crates/core/flags/defs.rs:3613 sits inside "impl Flag for LineNumber {" (line 3603) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:132.
+- `h8bc4a223` overrides crates/core/flags/defs.rs:7297 -> crates/core/flags/mod.rs:74: **correct**, Source confirms method at crates/core/flags/defs.rs:7297 sits inside "impl Flag for Version {" (line 7296) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:74.
+- `hc820086a` overrides crates/core/flags/defs.rs:4892 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:4892 sits inside "impl Flag for NoUnicode {" (line 4888) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
+- `h980ae649` implements crates/core/flags/defs.rs:578 -> crates/core/flags/mod.rs:71: **correct**, defs.rs has "impl Flag for ByteOffset" and trait Flag is at mod.rs:71.
+- `h821c5bf9` overrides crates/core/flags/defs.rs:7303 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:7303 sits inside "impl Flag for Version {" (line 7296) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
 

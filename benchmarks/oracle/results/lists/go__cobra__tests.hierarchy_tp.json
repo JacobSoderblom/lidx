@@ -1,0 +1,4 @@
+[
+{"base":"completions.go:311","evidence_file":"completions_test.go","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"structural","sub":"completions_test.go:676"},
+{"base":"completions.go:313","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","relation":"overrides","resolution":null,"sub":"completions_test.go:693"}
+]

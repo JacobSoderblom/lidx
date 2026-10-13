@@ -1,9 +1,9 @@
 [
-{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"][`Index<Match>`]index"},
-{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"][`IndexMut<Match>`]index_mut"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"index"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"index_mut"},
 {"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":178,"name":"index"},
-{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"][`Index<Match>`]index"},
-{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"][`IndexMut<Match>`]index_mut"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"index"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"index_mut"},
 {"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":178,"name":"index"},
 {"bucket":"macro_generated","column":"reach","file":"crates/globset/src/glob.rs","kind":"function","line":1225,"name":"literal1"},
 {"bucket":"macro_generated","column":"reach","file":"crates/globset/src/glob.rs","kind":"function","line":1226,"name":"literal2"},

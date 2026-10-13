@@ -1,0 +1,13 @@
+[
+{"base":"src/error.ts:30","evidence_file":"src/error.ts","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"exact","sub":"src/error.ts:74"},
+{"base":"src/event.ts:25","evidence_file":"src/event.ts","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"exact","sub":"src/event.ts:34"},
+{"base":"src/h3.ts:41","evidence_file":"src/h3.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"src/h3.ts:146"},
+{"base":"src/response.ts:96","evidence_file":"src/utils/event-stream.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"src/utils/event-stream.ts:58"},
+{"base":"src/rules/compiler/options.ts:7","evidence_file":"src/rules/compiler/options.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"src/rules/compiler/options.ts:42"},
+{"base":"src/rules/internal/premerge.ts:45","evidence_file":"src/rules/internal/premerge.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"src/rules/internal/premerge.ts:54"},
+{"base":"src/rules/match.ts:27","evidence_file":"src/rules/middleware.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"src/rules/middleware.ts:20"},
+{"base":"src/rules/merge.ts:10","evidence_file":"src/rules/internal/premerge.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"import","sub":"src/rules/internal/premerge.ts:45"},
+{"base":"src/types/h3.ts:89","evidence_file":"src/h3.ts","evidence_line":null,"kind":"IMPLEMENTS","relation":"implements","resolution":"import","sub":"src/h3.ts:41"},
+{"base":"src/types/h3.ts:89","evidence_file":"src/types/h3.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"src/types/h3.ts:168"},
+{"base":"src/types/handler.ts:61","evidence_file":"src/types/handler.ts","evidence_line":null,"kind":"EXTENDS","relation":"extends","resolution":"exact","sub":"src/types/handler.ts:86"}
+]
