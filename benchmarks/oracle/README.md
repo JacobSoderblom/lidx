@@ -15,7 +15,7 @@ edges the denominator holds) were read for method only. repowise's *published nu
 
 ```bash
 cargo build --release                       # the lidx binary under test
-python3 benchmarks/oracle/run.py            # all 21 repositories, 40 cells, writes benchmarks/oracle/results/
+python3 benchmarks/oracle/run.py            # all 21 repositories, 40 cells (call graph and dead code), writes benchmarks/oracle/results/
 python3 benchmarks/oracle/run.py --only '^ts/'        # a subset (regex over cell ids)
 python3 benchmarks/oracle/run.py --binary /path/to/lidx --cache /big/disk/lidx-oracle
 python3 benchmarks/oracle/run.py --report-only        # rebuild report.md from results/
@@ -67,7 +67,7 @@ corpus, and `safety.py` fails the run if one did:
   bisected on the merges of #427, #430, #435 and #433, see the held-out section of `results/report.md`).
 - **Go.** `packages.Load` runs `go list`, which never runs `go generate`. It gets `CGO_ENABLED=0` (no cgo tool, no C compiler),
   `GOFLAGS=-mod=readonly` (replaces any inherited flags such as `-toolexec`; go.mod and go.sum are never rewritten),
-  `GOWORK=off` and `GOPACKAGESDRIVER=off`. Go may download module sources and the toolchain the module asks for; downloading is not executing.
+  `GOWORK=off` and `GOPACKAGESDRIVER=off`. Go may download module sources and the toolchain the module asks for; downloading is not executing. The dead-code oracle (`go_oracle/dead`: staticcheck's U1000 analyzer and RTA over the same `packages.Load`) sets the same four variables on the load and is started under `safety.go_hardened_env`; `safety.FORBIDDEN_GO_PROCESS` fails the run if a `go build|test|run|generate|vet`, the compiler, the linker, cgo or a test binary shows up in its process tree; `test_safety.py` asserts the environment and the command, and runs the oracle on a module whose `init()` and `//go:generate` directive write marker files.
 - **TypeScript.** Only the compiler API parses the sources. The corpus is not installed (calls into packages that are not in the
   repository are out of scope); the oracle's own dependencies are installed with `npm ci --ignore-scripts`.
 
@@ -293,6 +293,43 @@ gradings of the same repositories (TypeScript with every edge, Rust without `#[c
 | rust/fd/path_tests_excluded | 0.996 [0.978, 0.999] | 0.899 [0.838, 0.939] | **ahead** | 0.984 [0.961, 0.994] | 0.619 [0.555, 0.679] | **ahead** | 256 / 231 |
 
 Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests, and the held-out cells (`results/report.md`).
+
+
+## Dead code
+
+`dead_symbols` graded by oracles neither lidx nor repowise wrote (issue #450). `results/report.md`, section "Dead code", has every table; this is the method and the reading. Code: `go_oracle/dead`, `ts_oracle/dead.mjs`, `rust_oracle/scip_dead.py` (oracles), `match_dead.py` (universe, buckets, grading), `dead_code.py` (orchestration, run once per cell by `run.py`), `report_dead.py`, `spotcheck_dead.py`. The call-edge grading and its numbers above are untouched: with the dead-code run added, every call-edge table in `results/report.md` is byte-identical except the lidx commit hash and the index wall-clock times.
+
+**Two oracle columns per cell.**
+
+| | Go | TypeScript | Rust |
+|---|---|---|---|
+| Unreferenced | staticcheck U1000 (`honnef.co/go/tools` v0.6.1, pinned in `go_oracle/go.mod`), go/analysis over `packages.Load`; exported identifiers are used by rule, so the universe is the unexported declarations; transitive, so a cluster whose only caller is unused is dead | `noUnusedLocals` diagnostics 6133/6196 for non-exported declarations (these contribute 0 on zod, hono, h3, ky and trpc (8 on immer), so the TypeScript dead set there comes from `findReferences` alone), LanguageService `findReferences` for exported ones | a declaration with no SCIP occurrence outside its own text, `use` lines and its own type's impl blocks (a type is live through its fields / variants; a trait-impl method through the trait method) |
+| Unreachable | RTA from `main`/`init`/tests plus the exported functions and methods of importable packages (the `public_api` bucket, which other code may call, so what only they reach is not dead; generic functions and methods of generic types are entered through their static callees, since RTA cannot take an uninstantiated generic as a root). Only `Example*` functions with an `// Output:` (or `// Unordered output:`) comment are roots, as `go test` and `deadcode -test` only run those. `res.Reachable` is emitted, the machinery of `cmd/deadcode`; the same analysis from `main`/`init`/tests alone is run as a check and on gitleaks with tests its 7 unreachable functions are exactly `deadcode -test`'s 7 (`strict_roots_unreachable_functions` in the oracle stats); the published column also roots the exported API, so on the non-API universe it agrees with `deadcode -test` and reports fewer (gitleaks: 1, `Config.extendURL`, dead in both) | closure over the checker's reference graph (calls, `new`, callbacks, any mention; overrides reached through the base member) from the package entry and the module code of the files it imports | closure over SCIP references from `main`, tests and benches, library `pub` items and module-level code |
+
+rustc's `dead_code` lint is not used (it needs `cargo check`, which runs build scripts and proc macros). The unreachable column judges functions and methods only. TypeScript cells are production code only, like the Go and Rust `no_tests` cells.
+
+**Universe and buckets.** Functions, methods and types (TypeScript also module-level consts, reported as their own kind). Each exclusion is a named bucket with counts per cell and column: `public_api` (Go: exported in an importable package, TypeScript: reachable by re-export from the package entry, Rust: `pub` in a library crate; `pub` items of binary crates stay in), `exported_used_by_rule` (Go, unreferenced), roots (`test_root`, `main_init`, `library_root`), generated files, `macro_generated`, `cfg_twin`, `oracle_unresolved_site` (Rust: a token spelled like the declaration that rust-analyzer attached no symbol to; the sandbox runs no proc macros), `not_a_function`. The report states per cell whether it is a library and which universe applies. In library cells only unexported / internal items can be judged. A lidx claim on a public-API or root declaration is a wrong claim by construction, counted under its bucket name; a claim on anything the oracle cannot judge is ungradable.
+
+**Two readings.** All `dead_symbols` rows (per-category limit raised above any repository), and the same rows without exported / `pub` declarations (recall over the unexported dead ones): what an exported-symbol policy buys. File level (no importer, unreachable from roots) is recorded in `cells.json` and `results/lists/<cell>.dead_oracle.json` as a target for a future file-level answer.
+
+**Results (pooled over the cells of a language; per-cell and per-kind tables with Wilson intervals are in the report, and the `tests` / `no_tests` cells of one repository overlap).**
+
+| Language | Column | Oracle-dead | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] |
+|---|---|---:|---|---|---|
+| Go | Unreferenced | 15 | 0.002 [0.001, 0.004] | 0.667 [0.417, 0.848] | 0.013 [0.007, 0.023] |
+| Go | Unreachable | 290 | 0.020 [0.016, 0.025] | 0.255 [0.208, 0.308] | 0.117 [0.071, 0.186] |
+| TypeScript | Unreferenced | 41 | 0.024 [0.015, 0.037] | 0.463 [0.321, 0.613] | 0.000 [0.000, 0.793] |
+| TypeScript | Unreachable | 25 | 0.025 [0.014, 0.042] | 0.480 [0.300, 0.665] | 0.000 [0.000, 0.793] |
+| Rust | Unreferenced | 90 | 0.052 [0.043, 0.064] | not reported | 0.075 [0.061, 0.092] |
+| Rust | Unreachable | 121 | 0.088 [0.074, 0.105] | not reported | 0.135 [0.113, 0.161] |
+
+Reading: precision is low because most of what `dead_symbols` returns is public API or a root (Go `Test*`/`init`: 2,296 + 48 claims; exported / `pub`: Go 1,858, TypeScript 742, Rust 546), or a type / function the tools show to be used (Go 669 types, Rust 457 types and 540 functions and methods). The repositories themselves have almost nothing dead (summed over the 14 Go cells the unreferenced column has 15 dead declarations; cobra, viper, bubbletea, fd and xsv have none), so recall rests on small counts and its intervals are wide. A policy that never claims exported symbols lifts Go unreferenced precision from 0.002 to 0.013 and removes 765 of 785 TypeScript claims. Findings filed as lidx issues: #461 (exported / `pub` claims), #462 (Go `Test*` / `init` / `main`), #463 (used types), #464 (functions and methods called through method values, interfaces, traits, overrides).
+
+**Spot-check** (`spotcheck_dead.py`, verdicts and a note per item in `spotcheck-dead-verdicts.json`; up to 20 wrong claims and 20 missed declarations per language, 10 per exclusion bucket, read against the source by one pass per language). Artefact plus mis-bucket rate: Go 2/35 = 5.7% (wrong claims 0/20, missed declarations 2/15), TypeScript 5/40 = 12.5% (0/20 and 5/20), Rust 2/25 = 8.0% (0/20 and 2/5); buckets 4/255 = 1.6%; pooled 13/355 = 3.7% [2.2%, 6.2%]. Every wrong claim sampled in all three languages was a real use. Oracle bugs found while sampling and fixed: trait-impl method names, uses inside attribute strings, bench and module-level roots, generic types' exported methods (entered through their static callees), examples without an `// Output:` comment (not run by `go test`), `impl Trait for [u8]` method names, and library API as roots in binary cells (a library that also ships a `cmd/` tool had its unexported helpers judged dead because only the exported API called them).
+
+**Recall caveats.** Rust recall is **not reported**: the corpus has only 5 missed Rust declarations and the spot-check read all of them; 2 (40%) were oracle artefacts (`sort_lines` and `cmd_exists` in ripgrep's tests are called inside `rgtest!`-generated tests that SCIP does not resolve), above the 20% bar, so the pooled and per-cell tables print `not reported`. The earlier draw had 9 of 10 missed Rust items as artefacts, mostly methods of in-repo traits implemented for foreign or primitive types (`impl Logic for bool`, `SliceExt for [u8]`); those methods, and trait methods all of whose impls are such, are now the named bucket `impl_for_foreign_type` (124 declarations), and `trait` items themselves are the bucket `trait_declaration` (not claimable). TypeScript unreachable recall is a lower bound: 5 of 20 sampled missed items were in fact used, all in hono and all reached through dynamic indexing of a namespace import (`intrinsicElementTags[tag]`), which the reference closure cannot follow. The same cause slightly inflates TypeScript precision: of the 15 oracle-dead hono declarations in those files, 8 are lidx claims counted correct that are in fact used. Rust precision is not affected: all 20 sampled Rust wrong claims were real uses.
+
+**Cost.** The dead-code oracle adds 0.2 to 35 s per cell; `go/syft/tests`, the largest: 35.1 s and 6.4 GB peak (measured with other jobs running on the machine; 22 s on an idle one) (recorded in `cells.json` under `cells['go/syft/tests']['dead']['oracle_meta']`), well inside the +5 minute budget.
 
 ## Type hierarchy results
 

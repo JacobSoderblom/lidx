@@ -1,0 +1,9 @@
+[
+{"category":"incoming_from_dead_code_only","exported":false,"file":"src/jsx/intrinsic-element/components.ts","incoming":["CALLS:deadsrc","CALLS:deadsrc","CALLS:deadsrc"],"key":"src/jsx/intrinsic-element/components.ts:93","kind":"function","line":93,"name":"returnWithoutSpecialBehavior","subkind":"arrow"},
+{"category":"incoming_from_dead_code_only","exported":false,"file":"src/jsx/intrinsic-element/components.ts","incoming":["CALLS:deadsrc","CALLS:deadsrc","CALLS:deadsrc"],"key":"src/jsx/intrinsic-element/components.ts:96","kind":"function","line":96,"name":"documentMetadataTag","subkind":"arrow"},
+{"category":"incoming_from_dead_code_only","exported":false,"file":"src/jsx/intrinsic-element/components.ts","incoming":["CALLS:deadsrc","CALLS:deadsrc"],"key":"src/jsx/intrinsic-element/components.ts:179","kind":"function","line":179,"name":"newJSXNode","subkind":"arrow"},
+{"category":"incoming_from_dead_code_only","exported":false,"file":"src/jsx/intrinsic-element/components.ts","incoming":["CALLS:deadsrc","CALLS:deadsrc"],"key":"src/jsx/intrinsic-element/components.ts:194","kind":"function","line":194,"name":"formActionableElement","subkind":"arrow"},
+{"category":"incoming_from_dead_code_only","exported":false,"file":"src/jsx/intrinsic-element/components.ts","incoming":["CALLS:deadsrc","CALLS:deadsrc"],"key":"src/jsx/intrinsic-element/components.ts:21","kind":"function","line":21,"name":"insertIntoHead","subkind":"arrow"},
+{"category":"incoming_from_dead_code_only","exported":true,"file":"src/jsx/base.ts","incoming":["CALLS:deadsrc","CALLS:deadsrc","CALLS:deadsrc"],"key":"src/jsx/base.ts:50","kind":"function","line":50,"name":"getNameSpaceContext","subkind":"arrow"},
+{"category":"incoming_from_tests_only","exported":true,"file":"src/jsx/dom/intrinsic-element/components.ts","incoming":["CALLS:test"],"key":"src/jsx/dom/intrinsic-element/components.ts:18","kind":"function","line":18,"name":"clearCache","subkind":"arrow"}
+]

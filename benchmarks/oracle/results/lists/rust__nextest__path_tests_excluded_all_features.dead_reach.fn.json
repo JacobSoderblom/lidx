@@ -1,0 +1,4 @@
+[
+{"category":"incoming_from_dead_code_only","exported":false,"file":"nextest-filtering/src/parsing.rs","incoming":["CALLS:deadsrc"],"key":"nextest-filtering/src/parsing.rs:77","kind":"method","line":77,"name":"drop_source_span","subkind":"inherent"},
+{"category":"no_incoming_edge_but_filtered","exported":false,"file":"nextest-runner/src/helpers.rs","incoming":[],"key":"nextest-runner/src/helpers.rs:396","kind":"function","line":396,"name":"__nextest_external_symbol_that_does_not_exist","subkind":"fn"}
+]
