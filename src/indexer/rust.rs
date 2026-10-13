@@ -1,6 +1,7 @@
 use crate::db::resolver::{
     DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_CRATE_PIN,
-    RUST_CRATE_ROOT, RUST_STD_RECEIVER, SameFileTwins, TwinTraits, VisibilityRule, rust_crate_pin,
+    RUST_CRATE_ROOT, RUST_EXTERNAL_CRATE, RUST_EXTERNAL_RECEIVER, RUST_STD_RECEIVER, SameFileTwins,
+    TwinTraits, VisibilityRule, rust_crate_pin,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -364,6 +365,15 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
         ));
         let mut macro_parser = Parser::new();
         macro_parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
+        let imports = Rc::new(collect_use_bindings(root, source, module_name));
+        let local_mods = Rc::new(collect_mod_names(root, source));
+        let paths = PathScope {
+            imports: &imports,
+            local_mods: &local_mods,
+            crates: self.file_crates.as_deref(),
+        };
+        let adts = Rc::new(collect_adts(root, source, Some(paths)));
+        let returns = Rc::new(collect_returns(root, source, paths));
         let ctx = Context {
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
                 crate::indexer::string_consts::ConstLang::Rust,
@@ -375,8 +385,8 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             current_scope: module_name.to_string(),
             grpc_service: None,
             grpc_clients: HashMap::new(),
-            imports: Rc::new(collect_use_bindings(root, source, module_name)),
-            local_mods: Rc::new(collect_mod_names(root, source)),
+            imports,
+            local_mods,
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             bound_names: Rc::new(HashSet::new()),
@@ -385,8 +395,8 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             fn_self_ty: None,
             enclosing_fn: None,
             fn_generics: Rc::new(HashSet::new()),
-            adts: Rc::new(collect_adts(root, source)),
-            returns: Rc::new(collect_returns(root, source)),
+            adts,
+            returns,
             in_trait_scope: false,
             in_trait_impl: None,
             cfg_chain: Vec::new(),
@@ -975,6 +985,7 @@ fn handle_function(
             generics: Rc::clone(&generics),
             adts: &ctx.adts,
             ctx: Some(&next_ctx),
+            paths: None,
         };
         collect_local_types(node, &env, &mut local_types);
         next_ctx.local_types = Rc::new(local_types);
@@ -1751,6 +1762,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         generics: Rc::clone(&ctx.fn_generics),
         adts: &ctx.adts,
         ctx: Some(ctx),
+        paths: None,
     };
     match env.expr_ty(value, &ctx.local_types) {
         Ty::Named(ty) => ReceiverType::Known(pin_imported_type(ty, ctx)),
@@ -1912,9 +1924,100 @@ struct TypeEnv<'a> {
     /// Imports, shadowed names and same-file return types; absent when only
     /// declaration types are read (`collect_adts`, `project_deferred`).
     ctx: Option<&'a Context>,
+    /// What a type path's first segment is read through when there is no
+    /// `ctx` (`collect_adts`, `collect_returns`); absent for a signature
+    /// parsed away from its file.
+    paths: Option<PathScope<'a>>,
+}
+
+/// The names a type path written in one scope is read through.
+#[derive(Clone, Copy)]
+struct PathScope<'a> {
+    imports: &'a HashMap<String, Vec<String>>,
+    local_mods: &'a HashSet<String>,
+    crates: Option<&'a PackageView>,
+}
+
+/// Where a module-qualified type path (`fs::DirEntry`) points.
+#[derive(PartialEq)]
+enum PathOrigin {
+    /// A type of this repository (or not provably anything else).
+    Repo,
+    /// std or a dependency from outside the repository.
+    External,
 }
 
 impl TypeEnv<'_> {
+    fn path_scope(&self) -> Option<PathScope<'_>> {
+        match self.ctx {
+            Some(ctx) => Some(PathScope {
+                imports: &ctx.imports,
+                local_mods: &ctx.local_mods,
+                crates: ctx.crates.as_deref(),
+            }),
+            None => self.paths,
+        }
+    }
+
+    /// Whether the type `name` in the module path `path` (`fs`, `crate::walk`,
+    /// `walkdir`) names a place outside the repository. The first segment is read
+    /// through the scope's `use`s; a module declared in the scope or a
+    /// package of the workspace is the repo's, std and every other crate are
+    /// not. Without a scope only the std roots are known.
+    fn path_origin(&self, path: &str, name: &str) -> PathOrigin {
+        let first = path.split("::").next().unwrap_or(path);
+        let path = format!("{path}::{name}");
+        if matches!(first, "crate" | "self" | "super") {
+            return PathOrigin::Repo;
+        }
+        let std_root = |s: &str| matches!(s, "std" | "core" | "alloc");
+        let Some(scope) = self.path_scope() else {
+            return if std_root(first) {
+                PathOrigin::External
+            } else {
+                PathOrigin::Repo
+            };
+        };
+        let expanded: Vec<String> = match scope.imports.get(first) {
+            Some(targets) if !targets.is_empty() => targets
+                .iter()
+                .map(|t| match path.split_once("::") {
+                    Some((_, rest)) => format!("{t}::{rest}"),
+                    None => t.clone(),
+                })
+                .collect(),
+            _ => {
+                if scope.local_mods.contains(first) {
+                    return PathOrigin::Repo;
+                }
+                vec![path.clone()]
+            }
+        };
+        let external = |full: &str| {
+            let root = full.split("::").next().unwrap_or(full);
+            if matches!(root, "crate" | "self" | "super") {
+                return false;
+            }
+            if std_root(root) {
+                return true;
+            }
+            match scope.crates {
+                Some(crates) => {
+                    let markers = crates.markers(std::slice::from_ref(&full.to_string()));
+                    // A workspace package's path is pinned; a dependency's is not.
+                    markers.is_empty() && !scope.local_mods.contains(root)
+                        || markers.iter().any(|m| m == RUST_EXTERNAL_CRATE)
+                }
+                None => !scope.local_mods.contains(root),
+            }
+        };
+        if expanded.iter().all(|full| external(full)) {
+            PathOrigin::External
+        } else {
+            PathOrigin::Repo
+        }
+    }
+
     /// Accepts only nominal, capitalised, non-wrapper, non-generic names;
     /// `Self` maps to the enclosing impl type.
     fn usable(&self, name: String) -> Option<String> {
@@ -1949,7 +2052,15 @@ impl TypeEnv<'_> {
                     {
                         return None;
                     }
-                    current = current.child_by_field_name("name")?
+                    let name = current.child_by_field_name("name")?;
+                    // `fs::DirEntry` / `walkdir::DirEntry` is not the repo's
+                    // `DirEntry`: a receiver of it takes only its own methods.
+                    let tail = self.usable(node_text(name, self.source))?;
+                    return Some(if self.path_origin(&path, &tail) == PathOrigin::External {
+                        RUST_EXTERNAL_RECEIVER.to_string()
+                    } else {
+                        tail
+                    });
                 }
                 "type_identifier" => break,
                 _ => return None,
@@ -2527,7 +2638,7 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
 }
 
 /// Return types of this file's free fns and inherent/trait-impl methods.
-fn collect_returns(root: Node<'_>, source: &str) -> Returns {
+fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Returns {
     fn owner_of(node: Node<'_>, source: &str) -> Option<Option<String>> {
         let list = node.parent()?;
         match list.parent().map(|p| p.kind()) {
@@ -2539,6 +2650,7 @@ fn collect_returns(root: Node<'_>, source: &str) -> Returns {
                     generics: Rc::new(collect_generic_names(impl_node, source)),
                     adts: &Adts::new(),
                     ctx: None,
+                    paths: None,
                 };
                 Some(Some(env.type_name(impl_node.child_by_field_name("type")?)?))
             }
@@ -2547,7 +2659,7 @@ fn collect_returns(root: Node<'_>, source: &str) -> Returns {
             _ => Some(None),
         }
     }
-    fn walk(node: Node<'_>, source: &str, out: &mut Returns) {
+    fn walk(node: Node<'_>, source: &str, paths: PathScope<'_>, out: &mut Returns) {
         if node.kind() == "function_item" {
             if node.child_by_field_name("body").is_some()
                 && let Some(owner) = owner_of(node, source)
@@ -2560,6 +2672,7 @@ fn collect_returns(root: Node<'_>, source: &str) -> Returns {
                     generics: Rc::new(collect_generic_names(node, source)),
                     adts: &empty,
                     ctx: None,
+                    paths: Some(paths),
                 };
                 let mut ty = node
                     .child_by_field_name("return_type")
@@ -2586,11 +2699,11 @@ fn collect_returns(root: Node<'_>, source: &str) -> Returns {
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk(child, source, out);
+            walk(child, source, paths, out);
         }
     }
     let mut out = Returns::new();
-    walk(root, source, &mut out);
+    walk(root, source, paths, &mut out);
     out
 }
 
@@ -2690,6 +2803,11 @@ fn resolve_deferred(
     let Some((ty, dir)) = found else {
         return Ok(Some(None));
     };
+    // Declared with a path into std or a dependency: not the repo's type, and
+    // no repo method is one of its methods.
+    if ty == RUST_EXTERNAL_RECEIVER {
+        return Ok(Some(Some(ty)));
+    }
     if !index.is_repo_type(&ty)? {
         return Ok(Some(None));
     }
@@ -2826,6 +2944,7 @@ fn callable_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
         generics: Rc::new(collect_generic_names(func, &src)),
         adts: &Adts::new(),
         ctx: None,
+        paths: None,
     };
     let ret = env.ty(func.child_by_field_name("return_type")?);
     Some(if is_async {
@@ -2847,7 +2966,7 @@ fn declared_source_ty(source: &DeferredSource, qualname: &str, signature: &str) 
                 format!("{signature};")
             };
             let tree = parse_declaration(&src)?;
-            let adts = collect_adts(tree.root_node(), &src);
+            let adts = collect_adts(tree.root_node(), &src, None);
             let (variant, field) = match field.split_once("::") {
                 Some((v, f)) => (Some(v), f),
                 None => (None, field.as_str()),
@@ -2950,7 +3069,7 @@ fn adt_signature(node: Node<'_>, source: &str) -> Option<String> {
 }
 
 /// Struct and enum-variant field types declared in this file.
-fn collect_adts(root: Node<'_>, source: &str) -> Adts {
+fn collect_adts(root: Node<'_>, source: &str, paths: Option<PathScope<'_>>) -> Adts {
     fn fields_of(env: &TypeEnv<'_>, body: Option<Node<'_>>) -> Vec<(String, Ty)> {
         let Some(body) = body else {
             return Vec::new();
@@ -2973,7 +3092,13 @@ fn collect_adts(root: Node<'_>, source: &str) -> Adts {
             _ => Vec::new(),
         }
     }
-    fn walk(node: Node<'_>, source: &str, empty: &Adts, out: &mut Adts) {
+    fn walk(
+        node: Node<'_>,
+        source: &str,
+        paths: Option<PathScope<'_>>,
+        empty: &Adts,
+        out: &mut Adts,
+    ) {
         let kind = node.kind();
         if matches!(kind, "struct_item" | "enum_item")
             && let Some(name) = node.child_by_field_name("name")
@@ -2985,6 +3110,7 @@ fn collect_adts(root: Node<'_>, source: &str) -> Adts {
                 generics: Rc::new(collect_generic_names(node, source)),
                 adts: empty,
                 ctx: None,
+                paths,
             };
             let mut entries = Vec::new();
             if kind == "struct_item" {
@@ -3010,12 +3136,12 @@ fn collect_adts(root: Node<'_>, source: &str) -> Adts {
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk(child, source, empty, out);
+            walk(child, source, paths, empty, out);
         }
     }
     let empty = Adts::new();
     let mut out = Adts::new();
-    walk(root, source, &empty, &mut out);
+    walk(root, source, paths, &empty, &mut out);
     out
 }
 

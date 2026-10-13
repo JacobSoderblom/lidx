@@ -2467,6 +2467,11 @@ impl<'c> Resolver<'c> {
 
             Some(known_type) => {
                 let method = qualname_trailing_name(target_qualname);
+                // A type from outside the repository: nothing of the repo's
+                // is one of its methods.
+                if source_lang == "rust" && known_type == RUST_EXTERNAL_RECEIVER {
+                    return Ok(None);
+                }
                 if source_lang == "rust" && known_type == RUST_STD_RECEIVER {
                     return self.rust_std_receiver_method(target_qualname, edge_kind, caller);
                 }
@@ -3890,6 +3895,11 @@ pub(crate) fn rust_pinned_type(receiver_type: &str) -> Option<(&str, &str)> {
 /// `Option`, a tuple, a map): it takes std's methods, and any other method
 /// can only come from a trait the repo implements for it.
 pub(crate) const RUST_STD_RECEIVER: &str = "<std>";
+
+/// A Rust receiver declared with a path into std or a dependency from outside
+/// the repository (`ent: &fs::DirEntry`): the type is not the repo's, so no
+/// method of the repo binds to a call on it.
+pub(crate) const RUST_EXTERNAL_RECEIVER: &str = "<ext>";
 
 /// Whether an import candidate is one of the Rust markers above rather than a
 /// qualname.
