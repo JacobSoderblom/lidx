@@ -1662,7 +1662,7 @@ impl<'c> Resolver<'c> {
         let Resolution::Resolved { target_id, .. } = resolution else {
             return Ok(resolution);
         };
-        if r.source_lang != "rust" || r.edge_kind != edge_views::IMPLEMENTS {
+        if r.source_lang != "rust" || !is_rust_trait_edge(r.edge_kind) {
             return Ok(resolution);
         }
         Ok(match symbol_kind(self.conn, target_id)? {
@@ -1686,7 +1686,7 @@ impl<'c> Resolver<'c> {
     /// dependency) is an external stub -- never a repo item that shares the
     /// trait's name. `None` leaves the edge to the tiers below.
     fn resolve_rust_trait(&mut self, r: &Reference<'_>) -> Result<Option<Resolution>> {
-        if r.edge_kind != edge_views::IMPLEMENTS
+        if !is_rust_trait_edge(r.edge_kind)
             || !r
                 .import_candidates
                 .iter()
@@ -1754,6 +1754,51 @@ impl<'c> Resolver<'c> {
                 false,
                 false,
             );
+        }
+        Ok(None)
+    }
+
+    /// A Rust value path `Type::member` (or `module::item`) written against a
+    /// name that another module re-exports (`pub use attribute_set::AttributeSet;`
+    /// beside `use super::*;`): its `crate::` import candidates, with the type
+    /// part followed through the re-exports, then looked up exactly. `None`
+    /// unless the followed path names exactly one declaration.
+    fn resolve_rust_reexported_member(
+        &mut self,
+        r: &Reference<'_>,
+        symbol_map: &HashMap<String, i64>,
+    ) -> Result<Option<i64>> {
+        let package = rust_package_of(r.source_file_path);
+        for candidate in r.import_candidates {
+            if !candidate.starts_with(RUST_CRATE_ROOT) {
+                continue;
+            }
+            let Some((type_path, member)) = candidate.rsplit_once("::") else {
+                continue;
+            };
+            let followed = {
+                let index = LanguageIndex {
+                    resolver: self,
+                    lang: "rust",
+                };
+                crate::indexer::rust::follow_path(
+                    &index,
+                    package,
+                    Some(r.source_file_path),
+                    type_path,
+                )?
+            };
+            if let crate::indexer::rust::Followed::Repo { path, .. } = followed
+                && path != type_path
+                && let Some(id) = self.exact(
+                    &format!("{path}::{member}"),
+                    symbol_map,
+                    r.source_file_path,
+                    false,
+                )?
+            {
+                return Ok(Some(id));
+            }
         }
         Ok(None)
     }
@@ -2228,6 +2273,12 @@ impl<'c> Resolver<'c> {
                     r.source_lang,
                     r.source_file_path,
                 )?
+            {
+                return Ok(resolved(id, ResolutionKind::Import));
+            } else if !types_only
+                && r.source_lang == "rust"
+                && r.call_shape.is_some_and(|shape| shape.is_ref)
+                && let Some(id) = self.resolve_rust_reexported_member(r, symbol_map)?
             {
                 return Ok(resolved(id, ResolutionKind::Import));
             }
@@ -4267,6 +4318,12 @@ pub(crate) fn rust_crate_pin(dir: &str, path: &str) -> String {
     format!("{RUST_CRATE_PIN}{dir}{RUST_PIN_SEPARATOR}{path}")
 }
 
+/// Whether a Rust edge names a trait through paths: the trait of an `impl` or
+/// derive (`IMPLEMENTS`), or a supertrait (`EXTENDS`).
+fn is_rust_trait_edge(edge_kind: &str) -> bool {
+    matches!(edge_kind, edge_views::IMPLEMENTS | edge_views::EXTENDS)
+}
+
 /// `(package dir, path)` of a pin; `None` for any other import candidate.
 pub(crate) fn parse_rust_crate_pin(candidate: &str) -> Option<(&str, &str)> {
     candidate
@@ -5520,7 +5577,7 @@ impl Db {
         let has_rust_hierarchy_rows: bool = self.read_conn()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM unresolved_references ur
                  JOIN files f ON f.id = ur.file_id
-                 WHERE ur.graph_version = ? AND ur.edge_kind = 'IMPLEMENTS'
+                 WHERE ur.graph_version = ? AND ur.edge_kind IN ('IMPLEMENTS', 'EXTENDS')
                    AND f.language = 'rust' AND ur.import_candidates IS NOT NULL)",
             params![graph_version],
             |row| row.get(0),
@@ -5603,7 +5660,7 @@ impl Db {
                         OR ur.deferred_kind IS NOT NULL
                         OR (f.language = 'go' AND ur.edge_kind = 'CALLS'
                             AND ur.import_candidates IS NOT NULL)
-                        OR (f.language = 'rust' AND ur.edge_kind = 'IMPLEMENTS'
+                        OR (f.language = 'rust' AND ur.edge_kind IN ('IMPLEMENTS', 'EXTENDS')
                             AND ur.import_candidates IS NOT NULL)
                         OR (?3 AND ur.reason IN ('ambiguous', 'private'))
                         OR ur.id IN ({alias_ids}))"
@@ -5865,7 +5922,7 @@ impl Db {
         self.rejudge_bound_edges(
             graph_version,
             "",
-            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'IMPLEMENTS'
+            "AND e.target_symbol_id IS NOT NULL AND e.kind IN ('IMPLEMENTS', 'EXTENDS')
              AND e.import_candidates IS NOT NULL
              AND e.file_id IN (SELECT id FROM files WHERE language = 'rust')",
         )
