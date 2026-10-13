@@ -299,6 +299,9 @@ pub enum Step {
     Method(String),
     /// `.await` of a future.
     Await,
+    /// A named field of the struct the type is (`param.field`), read from its
+    /// declaration.
+    Field(String),
 }
 
 /// A Rust receiver type the extractor could only trace to a declaration in

@@ -699,9 +699,13 @@ fn handle_named_item(
         signature: match kind {
             "struct" | "enum" => adt_signature(node, source, ctx),
             // `type Range = Match;`: the resolver follows the alias.
-            "type" => node
-                .child_by_field_name("type")
-                .map(|aliased| format!("type {name} = {}", node_text(aliased, source))),
+            // An alias of a type from outside the repo says so
+            // (`type_origins_marker`).
+            "type" => node.child_by_field_name("type").map(|aliased| {
+                let origins =
+                    type_origins_marker(&[aliased], node, source, ctx).unwrap_or_default();
+                format!("{origins}type {name} = {}", node_text(aliased, source))
+            }),
             _ => None,
         },
         docstring: None,
@@ -1787,7 +1791,19 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         declared: None,
     };
     match env.expr_ty(value, &ctx.local_types) {
-        Ty::Named(ty) => ReceiverType::Known(pin_imported_type(ty, ctx)),
+        // Imported from another module of the repo, which may re-export a
+        // foreign type: the resolver reads that module.
+        Ty::Named(ty) => match ctx.path_scope().bare_via(&ty) {
+            Some(path) => ReceiverType::RustDeferred(RustDeferred {
+                source: DeferredSource::Path {
+                    package: ctx.path_scope().package().to_string(),
+                    path,
+                },
+                steps: Vec::new(),
+                fallback: Some(ty),
+            }),
+            None => ReceiverType::Known(pin_imported_type(ty, ctx)),
+        },
         Ty::Pending(p) => ReceiverType::RustDeferred(p),
         // A value of a std shape (`Vec<_>`, `Option<_>`, an iterator, a
         // tuple, a map) takes std's methods: a repo type's method sharing
@@ -2057,6 +2073,21 @@ impl PathScope<'_> {
         }
     }
 
+    /// The absolute path a bare type name is imported from when that is
+    /// another module of the repo (`use crate::walk::DirEntry;`), which may
+    /// itself re-export a foreign type.
+    fn bare_via(&self, name: &str) -> Option<String> {
+        match self.imports.get(name)?.as_slice() {
+            [target]
+                if target.starts_with(RUST_CRATE_ROOT)
+                    && target.rsplit_once("::").map(|(m, _)| m) != Some(self.module) =>
+            {
+                Some(target.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// The type `name` in the module path `path` (`fs`, `crate::walk`,
     /// `walkdir`). The first segment is read through the scope's `use`s; a
     /// module declared in the scope or a package of the workspace is the
@@ -2191,7 +2222,14 @@ impl TypeEnv<'_> {
         if name == "Self" || self.usable(name.clone()).is_none() {
             return;
         }
-        let value = match self.origin_of(path.as_deref(), &name) {
+        let origin = match (self.origin_of(path.as_deref(), &name), &path) {
+            (TypeOrigin::Repo, None) => self
+                .path_scope()
+                .and_then(|scope| scope.bare_via(&name))
+                .map_or(TypeOrigin::Repo, TypeOrigin::Via),
+            (origin, _) => origin,
+        };
+        let value = match origin {
             TypeOrigin::Repo => return,
             TypeOrigin::External => RUST_EXTERNAL_MARK.to_string(),
             TypeOrigin::Via(abs) => abs,
@@ -2507,6 +2545,12 @@ impl TypeEnv<'_> {
             Ty::Tuple(_) | Ty::Pending(_) if is_index => {
                 project(base, Step::Tuple(field.parse().unwrap_or(usize::MAX)))
             }
+            // A value typed by a `crate::` path: its struct is found once the
+            // path resolves.
+            Ty::Pending(RustDeferred {
+                source: DeferredSource::Path { .. },
+                ..
+            }) => project(base, Step::Field(field.to_string())),
             _ => Ty::Unknown,
         }
     }
@@ -3234,8 +3278,12 @@ fn receiver_after_steps(
     index: &dyn DeclarationIndex,
 ) -> anyhow::Result<Option<(String, String)>> {
     let package = RefCell::new(declared_in.to_string());
-    let ty = receiver_through_steps(ty, steps, |owner, method| {
-        let (ty, dir) = user_method_ty(owner, method, index, &package.borrow())?;
+    let ty = receiver_through_steps(ty, steps, |owner, step| {
+        let (ty, dir) = match step {
+            Step::Field(field) => user_field_ty(owner, field, index, &package.borrow())?,
+            Step::Method(method) => user_method_ty(owner, method, index, &package.borrow())?,
+            _ => (Ty::Unknown, None),
+        };
         if let Some(dir) = dir {
             *package.borrow_mut() = dir;
         }
@@ -3244,21 +3292,22 @@ fn receiver_after_steps(
     Ok(ty.map(|ty| (ty, package.into_inner())))
 }
 
-/// `ty` after `steps`, as a repo type name. `user_method` gives the return
-/// type of a method declared by the repo type `owner`; every std projection
+/// `ty` after `steps`, as a repo type name. `user_step` gives the return
+/// type of a method (or the type of a field) declared by the repo type `owner`; every std projection
 /// goes through `project`.
 fn receiver_through_steps(
     mut ty: Ty,
     steps: &[Step],
-    mut user_method: impl FnMut(&str, &str) -> anyhow::Result<Ty>,
+    mut user_step: impl FnMut(&str, &Step) -> anyhow::Result<Ty>,
 ) -> anyhow::Result<Option<String>> {
     for step in steps {
         ty = match (&ty, step) {
             (Ty::Named(owner), Step::Method(m))
                 if !STD_PASSTHROUGH_METHODS.contains(&m.as_str()) =>
             {
-                user_method(owner, m)?
+                user_step(owner, step)?
             }
+            (Ty::Named(owner), Step::Field(_)) => user_step(owner, step)?,
             _ => project(ty, step.clone()),
         };
     }
@@ -3300,6 +3349,47 @@ fn user_method_ty(
             signature,
             cargo_package_dir(&declaration.path),
         ) else {
+            return Ok((Ty::Unknown, None));
+        };
+        let ty = settle_paths(ty, index)?;
+        match &found {
+            Some(prev) if *prev != ty => return Ok((Ty::Unknown, None)),
+            _ => found = Some(ty),
+        }
+    }
+    let dir = declarations
+        .first()
+        .map(|d| cargo_package_dir(&d.path).to_string());
+    Ok((found.unwrap_or(Ty::Unknown), dir))
+}
+
+/// Type of the field `field` of the struct `owner`, from its declaration in the
+/// index; `Unknown` when there is none or the declarations disagree.
+fn user_field_ty(
+    owner: &str,
+    field: &str,
+    index: &dyn DeclarationIndex,
+    package: &str,
+) -> anyhow::Result<(Ty, Option<String>)> {
+    let mut declarations = index.declarations(DeclarationQuery::Type(owner))?;
+    if declarations
+        .iter()
+        .any(|d| cargo_package_dir(&d.path) == package)
+    {
+        declarations.retain(|d| cargo_package_dir(&d.path) == package);
+    }
+    let source = DeferredSource::Field {
+        owner: owner.to_string(),
+        field: field.to_string(),
+    };
+    let mut found: Option<Ty> = None;
+    for declaration in &declarations {
+        let dir = cargo_package_dir(&declaration.path);
+        let ty = declaration
+            .signature
+            .as_deref()
+            .and_then(|sig| declared_source_ty(&source, &declaration.qualname, sig, dir));
+        let Some(ty) = ty else {
             return Ok((Ty::Unknown, None));
         };
         let ty = settle_paths(ty, index)?;
