@@ -737,11 +737,22 @@ fn handle_named_item(
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
         source_qualname: Some(ctx.module.clone()),
-        target_qualname: Some(qualname),
+        target_qualname: Some(qualname.clone()),
         detail: None,
         evidence_snippet: None,
         ..Default::default()
     });
+    if matches!(kind, "struct" | "enum") {
+        for derived in derived_traits(node, source) {
+            output.edges.push(trait_reference_edge(
+                ctx,
+                &derived,
+                &qualname,
+                edge_views::IMPLEMENTS,
+                TraitMention::Derived,
+            ));
+        }
+    }
 }
 
 fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -776,6 +787,16 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         ..Default::default()
     });
 
+    for bound in supertrait_bounds(node, source) {
+        output.edges.push(trait_reference_edge(
+            ctx,
+            &bound,
+            &qualname,
+            edge_views::EXTENDS,
+            TraitMention::Written,
+        ));
+    }
+
     let mut next_ctx = ctx.clone();
     next_ctx.container_stack.push(qualname);
     // A default method declared directly in the trait is exactly as
@@ -784,6 +805,176 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
     next_ctx.in_trait_scope = true;
     if let Some(body) = body_node(node) {
         walk_node(body, &next_ctx, source, output);
+    }
+}
+
+/// The trait paths a trait names as its supertraits: the bounds after the
+/// `:` of `trait A: B + C` and those of a `where Self: B` clause. Lifetimes
+/// and `?Sized` are no traits; a generic bound (`Iterator<Item = u8>`) is its
+/// path without the arguments.
+fn supertrait_bounds(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut collect = |bounds: Node<'_>| {
+        let mut cursor = bounds.walk();
+        for bound in bounds.named_children(&mut cursor) {
+            if let Some(path) = bound_trait_path(bound, source)
+                && !out.contains(&path)
+            {
+                out.push(path);
+            }
+        }
+    };
+    if let Some(bounds) = node.child_by_field_name("bounds") {
+        collect(bounds);
+    }
+    let mut cursor = node.walk();
+    for clause in node
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() == "where_clause")
+    {
+        let mut inner = clause.walk();
+        for predicate in clause
+            .named_children(&mut inner)
+            .filter(|c| c.kind() == "where_predicate")
+        {
+            let is_self = predicate
+                .child_by_field_name("left")
+                .is_some_and(|left| node_text(left, source) == "Self");
+            if is_self && let Some(bounds) = predicate.child_by_field_name("bounds") {
+                collect(bounds);
+            }
+        }
+    }
+    out
+}
+
+/// The path of the trait one bound names (`Debug`, `fmt::Debug`,
+/// `Into<String>`, `for<'a> Fn(&'a str)`), `None` for a lifetime, a `?Sized`
+/// or a bound that is not a path.
+fn bound_trait_path(bound: Node<'_>, source: &str) -> Option<String> {
+    let path_node = match bound.kind() {
+        "type_identifier" | "scoped_type_identifier" => bound,
+        "generic_type" => bound.child_by_field_name("type")?,
+        "higher_ranked_trait_bound" => {
+            return bound_trait_path(bound.child_by_field_name("type")?, source);
+        }
+        _ => return None,
+    };
+    let path = normalize_type_path(&node_text(path_node, source));
+    (!path.is_empty()).then_some(path)
+}
+
+/// The traits a struct or enum derives: the arguments of its `#[derive(..)]`
+/// attributes (`#[cfg_attr(.., derive(..))]` is conditional and left out).
+fn derived_traits(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut previous = node.prev_sibling();
+    while let Some(sibling) = previous {
+        match sibling.kind() {
+            "attribute_item" => {
+                let infos = attribute_infos(&[sibling], source);
+                for info in infos.iter().filter(|i| i.full_name == "derive") {
+                    let Some(args) = info.args else { continue };
+                    let text = node_text(args, source);
+                    let inner = text.trim().trim_start_matches('(').trim_end_matches(')');
+                    for entry in split_top_level(inner, ',') {
+                        let path = normalize_type_path(&entry);
+                        if !path.is_empty()
+                            && path
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
+                            && !out.contains(&path)
+                        {
+                            out.push(path);
+                        }
+                    }
+                }
+            }
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        previous = sibling.prev_sibling();
+    }
+    out.reverse();
+    out
+}
+
+/// How a trait is named at the place that mentions it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TraitMention {
+    /// A path written in Rust's type namespace (`trait A: B`).
+    Written,
+    /// A derive macro (`#[derive(Debug)]`): the std derives are in scope
+    /// without a `use`, and one nothing in the repository declares is a
+    /// dependency's.
+    Derived,
+}
+
+/// The std traits whose derive macros are in the prelude.
+const DERIVE_PRELUDE: &[(&str, &str)] = &[
+    ("Debug", "std::fmt::Debug"),
+    ("Hash", "std::hash::Hash"),
+    ("Clone", "std::clone::Clone"),
+    ("Copy", "std::marker::Copy"),
+    ("Default", "std::default::Default"),
+    ("PartialEq", "std::cmp::PartialEq"),
+    ("Eq", "std::cmp::Eq"),
+    ("PartialOrd", "std::cmp::PartialOrd"),
+    ("Ord", "std::cmp::Ord"),
+];
+
+/// An `IMPLEMENTS` (derive) or `EXTENDS` (supertrait) edge from the type or
+/// trait `source_qualname` to the trait `trait_name` is written as in this
+/// scope, resolved like the trait of an `impl Trait for Type`: a package of
+/// the repo pins it, std or a dependency makes it an external stub.
+fn trait_reference_edge(
+    ctx: &Context,
+    trait_name: &str,
+    source_qualname: &str,
+    kind: &str,
+    mention: TraitMention,
+) -> EdgeInput {
+    let derive_std = (mention == TraitMention::Derived && !trait_name.contains("::"))
+        .then(|| DERIVE_PRELUDE.iter().find(|(name, _)| *name == trait_name))
+        .flatten()
+        .filter(|_| {
+            !ctx.imports.contains_key(trait_name)
+                && !ctx
+                    .local_traits
+                    .contains(&format!("{}::{trait_name}", ctx.module))
+        });
+    let (qualname, mut import_candidates) = match derive_std {
+        Some((_, path)) => (
+            (*path).to_string(),
+            vec![(*path).to_string(), RUST_EXTERNAL_CRATE.to_string()],
+        ),
+        None => {
+            let qualname = qualify_trait_name(ctx, trait_name);
+            let candidates = trait_candidates(ctx, trait_name, &qualname);
+            (qualname, candidates)
+        }
+    };
+    if mention == TraitMention::Derived
+        && !import_candidates.iter().any(|c| {
+            c == RUST_EXTERNAL_CRATE
+                || c.starts_with(RUST_CRATE_ROOT)
+                || c.starts_with(RUST_CRATE_PIN)
+        })
+        && !ctx
+            .local_traits
+            .contains(&format!("{}::{trait_name}", ctx.module))
+    {
+        // A derive macro of a crate nothing here declares.
+        import_candidates.push(RUST_EXTERNAL_CRATE.to_string());
+    }
+    EdgeInput {
+        kind: kind.to_string(),
+        source_qualname: Some(source_qualname.to_string()),
+        target_qualname: Some(qualname),
+        import_candidates,
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
     }
 }
 
@@ -2018,6 +2209,16 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     })
 }
 
+/// Whether `node` (a `scoped_identifier`) is a path [`value_reference_edge`]
+/// records as a `REFERENCES` edge: a simple `a::b` path in value position.
+fn is_value_path_reference(node: Node<'_>, source: &str) -> bool {
+    if !is_value_position(node) || is_call_callee(node) {
+        return false;
+    }
+    let raw = collapse_call_target_whitespace(&node_text(node, source));
+    is_simple_call_target(&raw) && !raw.contains('.') && raw.contains("::")
+}
+
 /// Target and import candidates of a qualified value path (`Foo::bar`,
 /// `util::f`): an anchored path (`crate::`, `self::`, `super::`, `Self::`) as
 /// the call resolver reads it; otherwise its first segment through the
@@ -2035,6 +2236,27 @@ fn qualified_value_path(raw: &str, ctx: &Context) -> Option<(String, Vec<String>
         .get(first)
         .map(|targets| targets.iter().map(|t| format!("{t}::{rest}")).collect())
         .unwrap_or_default();
+    // A type brought in by a glob (`use super::*;`) is read like a named
+    // import: the glob's module, then the path. Not for a module or type
+    // this scope declares itself, which the module-relative target names.
+    if expanded.is_empty()
+        && !ctx.local_mods.contains(first)
+        && !ctx.local_types_declared.contains(first)
+        && !ctx.shadowed_names.contains("*")
+    {
+        let globbed: Vec<String> = absolute_import_candidates(first, ctx)
+            .into_iter()
+            .map(|t| format!("{t}::{rest}"))
+            .collect();
+        if !globbed.is_empty() {
+            expanded = globbed;
+            if let Some(crates) = &ctx.crates {
+                let markers = crates.markers(&expanded);
+                expanded.extend(markers);
+            }
+            return Some((format!("{}::{raw}", ctx.module), expanded));
+        }
+    }
     add_crate_markers(raw, &mut expanded, ctx);
     Some((format!("{}::{raw}", ctx.module), expanded))
 }
@@ -2656,6 +2878,11 @@ impl TypeEnv<'_> {
                 .child_by_field_name("trait")
                 .and_then(|t| self.iterator_item(t))
                 .map_or(Ty::Unknown, |t| Ty::Iter(Box::new(t))),
+            // `&dyn Shape`: a call on it is a call of the trait's method (a
+            // supertrait's, when the trait declares none of that name).
+            "dynamic_type" => node
+                .child_by_field_name("trait")
+                .map_or(Ty::Unknown, |t| self.ty(t)),
             "generic_type" => {
                 let name = node
                     .child_by_field_name("type")
@@ -5790,7 +6017,18 @@ fn collect_uses(
                 });
             }
         };
-        if is_ref && !is_inner_path && !is_definition_name && !is_call_callee(node) {
+        // A `Type::f` path in value position (`.map(Node::tree)`) is a
+        // `REFERENCES` edge from the function that writes it, with its line
+        // (`value_reference_edge`); a module-level `USES` row for the same
+        // path would only repeat it without a caller or a line.
+        let is_value_path =
+            node.kind() == "scoped_identifier" && is_value_path_reference(node, source);
+        if is_ref
+            && !is_inner_path
+            && !is_definition_name
+            && !is_call_callee(node)
+            && !is_value_path
+        {
             emit(node_text(node, source), ctx);
         }
         // `Type::new(..)`, `Type::Variant`, `module::Type::CONST`: the path
