@@ -1,6 +1,3 @@
 [
-{"k":"inf","member":"crates/ignore/src/walk.rs:1095 skip_entry","node":"crates/ignore/src/walk.rs|crate::walk::Walk::skip_entry","seed":"crates/globset/src/lib.rs:1035","seed_name":"prefix"},
-{"k":"inf","member":"crates/ignore/src/walk.rs:1095 skip_entry","node":"crates/ignore/src/walk.rs|crate::walk::Walk::skip_entry","seed":"crates/ignore/src/gitignore.rs:151","seed_name":"empty"},
-{"k":"inf","member":"crates/ignore/src/walk.rs:1095 skip_entry","node":"crates/ignore/src/walk.rs|crate::walk::Walk::skip_entry","seed":"crates/ignore/src/gitignore.rs:662","seed_name":"parse_excludes_file"},
-{"k":"inf","member":"crates/ignore/src/walk.rs:1136 [Iterator]next","node":"crates/ignore/src/walk.rs|crate::walk::Walk::next","seed":"crates/ignore/src/gitignore.rs:662","seed_name":"parse_excludes_file"}
+
 ]
