@@ -496,7 +496,11 @@ pub fn analyze_direct_impact_scoped(
                             if edge.is_dispatch_hop() != free_phase
                                 || !edge_matches_filter(edge, kinds, include_tests)
                                 || excluded(edge)
-                                || !entry_args.allows(*current_id, edge)
+                                || !entry_args.allows(
+                                    *current_id,
+                                    edge,
+                                    direction == TraversalDirection::Upstream,
+                                )
                             {
                                 continue;
                             }
@@ -551,7 +555,11 @@ pub fn analyze_direct_impact_scoped(
                             || !edge_matches_filter(edge, kinds, include_tests)
                             || excluded(edge)
                             || !config_edge_allowed(edge, allowed.as_ref())
-                            || !entry_args.allows(current_id, edge)
+                            || !entry_args.allows(
+                                current_id,
+                                edge,
+                                direction == TraversalDirection::Upstream,
+                            )
                         {
                             continue;
                         }
@@ -575,8 +583,13 @@ pub fn analyze_direct_impact_scoped(
                             continue;
                         };
 
-                        let widened = matches!(direction, TraversalDirection::Downstream)
-                            && entry_args.record(next_id, edge, db)?;
+                        let widened = direction != TraversalDirection::Both
+                            && entry_args.record(
+                                next_id,
+                                edge,
+                                db,
+                                direction == TraversalDirection::Upstream,
+                            )?;
                         let Some(admission) = scope.admit_plain(next_id) else {
                             // Reached again through a call with other type
                             // arguments: expand it again for those closed impls.
@@ -791,6 +804,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         let mut kinds = HashSet::new();
@@ -827,6 +841,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         // A bare `name_exact` XREF is the Deserialize-class fabrication: one
@@ -888,6 +903,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         let kinds = HashSet::new();

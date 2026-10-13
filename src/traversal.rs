@@ -522,7 +522,7 @@ pub fn trace_flow(
             let passes = kind_ok
                 && crate::model::xref_is_traversable(edge)
                 && config_edge_allowed(edge, allowed.as_ref())
-                && entry_args.allows(current_id, edge)
+                && entry_args.allows(current_id, edge, is_upstream)
                 && !crate::model::is_resolution_excluded(
                     edge.resolution_kind.as_deref(),
                     &config.exclude_resolution_kinds,
@@ -575,7 +575,7 @@ pub fn trace_flow(
             };
 
             outcome.seen += 1;
-            let widened = !is_upstream && entry_args.record(next_id, edge, db)?;
+            let widened = entry_args.record(next_id, edge, db, is_upstream)?;
             let Some(admission) = scope.admit_plain(next_id) else {
                 // Reached again through a call with other type arguments:
                 // expand it again so those closed impls are reached too.
@@ -1510,6 +1510,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         }
     }
 
@@ -1748,6 +1749,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         let context = extract_protocol_context(&rpc_impl_edge);
@@ -1777,6 +1779,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         let context = extract_protocol_context(&call_edge);
@@ -1807,6 +1810,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -1838,6 +1842,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -1869,6 +1874,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -1898,6 +1904,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         assert!(extract_protocol_context(&edge).is_none());
@@ -1924,6 +1931,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         };
 
         assert!(
@@ -2490,6 +2498,7 @@ mod tsx_normalization_tests {
             span_id: None,
             event_ts: None,
             dispatch_args: None,
+            go_scope: None,
         }
     }
 

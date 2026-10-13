@@ -482,3 +482,165 @@ fn a_method_with_other_parameter_or_result_types_is_no_implementation() {
         ]
     );
 }
+
+// ---- #482: a call fans out to the implementers of the receiver's interface
+
+const EMBED_IFACES: &str = "package app
+
+type Identifiable interface{ ID() string }
+
+type Source interface {
+	Identifiable
+	Close() error
+}
+";
+const EMBED_TYPES: &str = "package app
+
+type Adapter struct{}
+
+func (a Adapter) ID() string { return \"a\" }
+
+type File struct{}
+
+func (f File) ID() string   { return \"f\" }
+func (f File) Close() error { return nil }
+
+type Dir struct{}
+
+func (d Dir) ID() string   { return \"d\" }
+func (d Dir) Close() error { return nil }
+";
+const EMBED_USE: &str = "package app
+
+func UseSource(s Source) { s.ID() }
+
+func UseIdentifiable(i Identifiable) { i.ID() }
+";
+
+fn embed_files() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("go.mod", GO_MOD),
+        ("ifaces.go", EMBED_IFACES),
+        ("types.go", EMBED_TYPES),
+        ("use.go", EMBED_USE),
+    ]
+}
+
+fn impact_up(root: &std::path::Path, target: &str) -> String {
+    let result = rpc_result(
+        root,
+        "analyze_impact",
+        &format!(
+            r#"{{"qualname":"{target}","direction":"upstream","max_depth":3,"kinds":["CALLS","DISPATCH"],
+                "enable_test":false,"enable_historical":false}}"#
+        ),
+    );
+    result["affected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["symbol"]["qualname"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn trace_down(root: &std::path::Path, start: &str) -> String {
+    let result = rpc_result(
+        root,
+        "trace_flow",
+        &format!(r#"{{"start_qualname":"{start}","direction":"downstream","max_hops":3}}"#),
+    );
+    result["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["symbol"]["qualname"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn a_call_on_the_outer_interface_does_not_reach_a_type_of_the_inner_one_only() {
+    let (_tmp, root, _indexer) = indexed(&embed_files());
+    // `Adapter` implements `Identifiable` but not `Source`: it can never be
+    // the dynamic type of `UseSource`'s receiver.
+    let callers = impact_up(&root, "types.Adapter.ID");
+    assert!(callers.contains("use.UseIdentifiable"), "{callers}");
+    assert!(!callers.contains("use.UseSource"), "{callers}");
+    // Types of the outer interface are reached by both callers.
+    for target in ["types.File.ID", "types.Dir.ID"] {
+        let callers = impact_up(&root, target);
+        assert!(
+            callers.contains("use.UseIdentifiable"),
+            "{target}: {callers}"
+        );
+        assert!(callers.contains("use.UseSource"), "{target}: {callers}");
+    }
+}
+
+#[test]
+fn trace_flow_from_the_outer_interface_call_reaches_only_its_implementers() {
+    let (_tmp, root, _indexer) = indexed(&embed_files());
+    let from_source = trace_down(&root, "use.UseSource");
+    assert!(from_source.contains("types.File.ID"), "{from_source}");
+    assert!(from_source.contains("types.Dir.ID"), "{from_source}");
+    assert!(!from_source.contains("types.Adapter.ID"), "{from_source}");
+    let from_inner = trace_down(&root, "use.UseIdentifiable");
+    for t in ["types.Adapter.ID", "types.File.ID", "types.Dir.ID"] {
+        assert!(from_inner.contains(t), "{t}: {from_inner}");
+    }
+}
+
+#[test]
+fn the_receiver_interface_follows_edits_and_ends_equal_to_a_fresh_reindex() {
+    let (_tmp, root, mut indexer) = indexed(&embed_files());
+    assert!(!impact_up(&root, "types.Adapter.ID").contains("use.UseSource"));
+
+    // `Adapter` gains `Close`: it now implements `Source` too.
+    let widened = "package app
+
+type Adapter struct{}
+
+func (a Adapter) ID() string    { return \"a\" }
+func (a Adapter) Close() error  { return nil }
+
+type File struct{}
+
+func (f File) ID() string   { return \"f\" }
+func (f File) Close() error { return nil }
+
+type Dir struct{}
+
+func (d Dir) ID() string   { return \"d\" }
+func (d Dir) Close() error { return nil }
+";
+    let files = with(&embed_files(), ("types.go", widened));
+    sync(&mut indexer, &root, &files);
+    assert!(impact_up(&root, "types.Adapter.ID").contains("use.UseSource"));
+    assert_incremental_equals_fresh(&indexer, &files);
+    let (_tmp2, root2, _i2) = indexed(&files);
+    assert!(impact_up(&root2, "types.Adapter.ID").contains("use.UseSource"));
+
+    // ...and loses it again.
+    let narrowed = embed_files();
+    sync(&mut indexer, &root, &narrowed);
+    assert!(!impact_up(&root, "types.Adapter.ID").contains("use.UseSource"));
+    assert_incremental_equals_fresh(&indexer, &narrowed);
+}
+
+#[test]
+fn a_type_embedding_the_inner_implementer_still_reaches_the_outer_call() {
+    // `Wrapper` embeds `Adapter` (which has `ID`) and adds `Close`: it
+    // implements `Source`, and its `ID` is `Adapter.ID`.
+    let wrapper = "package app
+
+type Wrapper struct{ Adapter }
+
+func (w Wrapper) Close() error { return nil }
+";
+    let mut files = embed_files();
+    files.push(("wrapper.go", wrapper));
+    let (_tmp, root, _indexer) = indexed(&files);
+    let callers = impact_up(&root, "types.Adapter.ID");
+    assert!(callers.contains("use.UseSource"), "{callers}");
+}

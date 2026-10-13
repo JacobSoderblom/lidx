@@ -492,7 +492,18 @@ pub struct Edge {
     /// receiver has the same ones reaches it.
     #[serde(skip)]
     pub dispatch_args: Option<String>,
+    /// Go dispatch scope (#482). On a stored `DISPATCH` edge: the qualname of
+    /// the interface its receiver is typed as, when that embeds the one
+    /// declaring the method. On the synthetic pass-through to an
+    /// implementation: the interfaces that implementation's type satisfies,
+    /// joined by [`GO_SCOPE_SEP`]. A traversal then keeps only the pairs where
+    /// the receiver's interface is one of the implementation's.
+    #[serde(skip)]
+    pub go_scope: Option<String>,
 }
+
+/// Separator of the interface list in [`Edge::go_scope`].
+pub const GO_SCOPE_SEP: char = '\u{1}';
 
 impl Edge {
     /// Whether this edge was synthesized by interface dispatch rather than

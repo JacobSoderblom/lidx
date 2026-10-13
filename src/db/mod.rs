@@ -2694,6 +2694,7 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
         event_ts: row.get(15)?,
         resolution_kind: row.get(16)?,
         dispatch_args: None,
+        go_scope: None,
     })
 }
 

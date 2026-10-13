@@ -1507,6 +1507,12 @@ pub(crate) struct Resolver<'c> {
     /// passes (one resolver, one cache, for every such edge) do: the edge
     /// insert, which makes a resolver per file, leaves the call on the spec.
     narrow_interface_calls: bool,
+    /// Set by `refine_go_interface_call` for a call left on an interface
+    /// method spec: the qualname of the interface the receiver is typed as,
+    /// when that is not the one declaring the method (it embeds it). A
+    /// `DISPATCH` edge keeps it in `receiver_scope`, so traversals fan out to
+    /// the implementers of that interface only.
+    go_dispatch_receiver: Option<String>,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
     /// The only language the exact tier may bind a candidate in, for the
@@ -1547,6 +1553,7 @@ impl<'c> Resolver<'c> {
             external_file_id: None,
             go: resolver_go::GoCaches::default(),
             narrow_interface_calls: false,
+            go_dispatch_receiver: None,
             repo_entity_memo: HashMap::new(),
             exact_language: None,
             exact_skips_modules: false,
@@ -1562,6 +1569,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.caller_scope = r.source_qualname.map(str::to_string);
+        self.go_dispatch_receiver = None;
         self.caller_file = r.source_file_path.to_string();
         // A Rust call names a Rust item: a bare method name that is also the
         // qualname of a SQL table or a Python function is no candidate.
@@ -6004,7 +6012,23 @@ impl Db {
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
-                match row.ctx.resolve(&mut resolver, &empty_symbol_map)? {
+                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
+                // A call that stays a `DISPATCH` keeps the interface its
+                // receiver is typed as when that is not the declaring one.
+                if row.stored_kind == edge_views::DISPATCH
+                    && matches!(resolution, Resolution::Resolved { target_id, .. }
+                        if target_id == row.target_symbol_id)
+                {
+                    let scope = resolver.go_dispatch_receiver.take();
+                    if scope != row.ctx.receiver_scope {
+                        tx.execute(
+                            "UPDATE edges SET receiver_scope = ?1 WHERE id = ?2",
+                            params![scope, row.edge_id],
+                        )?;
+                        total_resolved += 1;
+                    }
+                }
+                match resolution {
                     // A different target, or the same one whose kind now
                     // stores differently (a constant became a function).
                     Resolution::Resolved { target_id, kind }
