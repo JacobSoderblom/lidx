@@ -1,0 +1,8 @@
+[
+{"category":"public_api","exported":true,"file":"src/cli_utils.rs","key":"src/cli_utils.rs:108","kind":"method","lidx_kind":"method","line":108,"name":"all","policy":true,"qualname":"crate::cli_utils::NumberFormatStyle::all","subkind":"inherent"},
+{"category":"public_api","exported":true,"file":"src/cli_utils.rs","key":"src/cli_utils.rs:20","kind":"function","lidx_kind":"function","line":20,"name":"crate_version","policy":true,"qualname":"crate::cli_utils::crate_version","subkind":"fn"},
+{"category":"public_api","exported":true,"file":"src/cli_utils.rs","key":"src/cli_utils.rs:51","kind":"function","lidx_kind":"function","line":51,"name":"parse_or_exit","policy":true,"qualname":"crate::cli_utils::parse_or_exit","subkind":"fn"},
+{"category":"public_api","exported":true,"file":"src/language/mod.rs","key":"src/language/mod.rs:102","kind":"method","lidx_kind":"method","line":102,"name":"total","policy":true,"qualname":"crate::language::Language::total","subkind":"inherent"},
+{"category":"public_api","exported":true,"file":"src/language/mod.rs","key":"src/language/mod.rs:127","kind":"method","lidx_kind":"method","line":127,"name":"is_empty","policy":true,"qualname":"crate::language::Language::is_empty","subkind":"inherent"},
+{"category":"reachable_function","exported":false,"file":"build.rs","key":"build.rs:57","kind":"function","lidx_kind":"function","line":57,"name":"compare_json_str_len","policy":false,"qualname":"crate::build::compare_json_str_len","subkind":"fn"}
+]

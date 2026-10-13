@@ -1,0 +1,6 @@
+[
+{"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":101,"name":"messages"},
+{"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":113,"name":"ignore_messages"},
+{"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":137,"name":"set_errored"},
+{"bucket":"oracle_unresolved_site","column":"unref","file":"crates/regex/src/literal.rs","kind":"method","line":459,"name":"new"}
+]

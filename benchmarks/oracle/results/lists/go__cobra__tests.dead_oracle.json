@@ -1,0 +1,5 @@
+[
+{"api":true,"exported":true,"file":"cobra.go","kind":"function","line":105,"name":"OnFinalize","reach":"dead","unref":"live"},
+{"api":true,"exported":true,"file":"cobra.go","kind":"function","line":99,"name":"OnInitialize","reach":"dead","unref":"live"},
+{"api":true,"exported":true,"file":"completions.go","kind":"function","line":980,"name":"CompDebugln","reach":"dead","unref":"live"}
+]

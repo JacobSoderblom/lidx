@@ -328,6 +328,11 @@ def build(results_dir):
     if os.path.exists(sc):
         w("")
         w(spotcheck_section(json.load(open(sc))))
+    import report_dead
+    dead = report_dead.section(meta, cells, results_dir)
+    if dead:
+        w("")
+        w(dead)
     w("")
     open(os.path.join(results_dir, "report.md"), "w").write("\n".join(L))
     print("wrote", os.path.join(results_dir, "report.md"))

@@ -1,0 +1,11 @@
+[
+{"exported":false,"file":"src/cli.rs","key":"src/cli.rs:959","kind":"function","lidx_kind":"function","line":959,"name":"parse_millis","qualname":"crate::cli::parse_millis","reason":"oracle_unresolved_site","subkind":"fn"},
+{"exported":false,"file":"src/fmt/input.rs","key":"src/fmt/input.rs:39","kind":"function","lidx_kind":"function","line":39,"name":"correct","qualname":"crate::fmt::input::path_tests::correct","reason":"oracle_unresolved_site","subkind":"fn"},
+{"exported":true,"file":"src/filter/owner.rs","key":"src/filter/owner.rs:27","kind":"method","lidx_kind":"method","line":27,"name":"from_string","qualname":"crate::filter::owner::OwnerFilter::from_string","reason":"oracle_unresolved_site","subkind":"inherent"},
+{"file":"src/filesystem.rs","key":"src/filesystem.rs:109","lidx_kind":"function","name":"osstr_to_bytes","qualname":"crate::filesystem::osstr_to_bytes","reason":"not_a_judged_declaration"},
+{"file":"src/filesystem.rs","key":"src/filesystem.rs:68","lidx_kind":"function","name":"is_block_device","qualname":"crate::filesystem::is_block_device","reason":"not_a_judged_declaration"},
+{"file":"src/filesystem.rs","key":"src/filesystem.rs:78","lidx_kind":"function","name":"is_char_device","qualname":"crate::filesystem::is_char_device","reason":"not_a_judged_declaration"},
+{"file":"src/filesystem.rs","key":"src/filesystem.rs:88","lidx_kind":"function","name":"is_socket","qualname":"crate::filesystem::is_socket","reason":"not_a_judged_declaration"},
+{"file":"src/filesystem.rs","key":"src/filesystem.rs:98","lidx_kind":"function","name":"is_pipe","qualname":"crate::filesystem::is_pipe","reason":"not_a_judged_declaration"},
+{"file":"src/hyperlink.rs","key":"src/hyperlink.rs:60","lidx_kind":"function","name":"host","qualname":"crate::hyperlink::host","reason":"not_a_judged_declaration"}
+]

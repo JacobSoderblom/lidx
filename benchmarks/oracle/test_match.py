@@ -267,5 +267,200 @@ class GoInterfaceDispatch(unittest.TestCase):
         self.assertEqual(match.grade(match.repowise_go_scope(oracle), syms, both, "go", src)[0]["recall_comparable"], 0.5)
 
 
+
+# ---------------------------------------------------------------- dead code (issue 450)
+import json  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+
+import match_dead  # noqa: E402
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "rust_oracle"))
+import scip_dead  # noqa: E402
+
+
+def decl(file, line, name, kind="function", unref="dead", reach="dead", **kw):
+    d = {"file": file, "line": line, "name": name, "kind": kind, "subkind": "", "exported": False, "api": False, "unref": unref}
+    if kind in ("function", "method"):
+        d["reach"] = reach
+    d.update(kw)
+    return d
+
+
+def claim(file, line, name, kind="function"):
+    return {"key": "%s:%d" % (file, line), "file": file, "kind": kind, "name": name, "qualname": name, "id": line}
+
+
+def dead_oracle(decls, files=("a.go",), **kw):
+    return dict({"files": list(files), "decls": decls, "tests": False}, **kw)
+
+
+def is_test(lang, path):
+    return match.is_test_file(lang, path)
+
+
+class DeadCodeUniverse(unittest.TestCase):
+    def test_u1000_finding_is_matched_to_a_dead_symbols_row(self):
+        """staticcheck says `helper` is unused; lidx's dead_symbols returns a symbol at the same file:line: a true claim, and found."""
+        o = dead_oracle([decl("a.go", 12, "helper", unref="dead")])
+        syms = {7: sym(7, "a.go", 12, "helper")}
+        rows = [{"id": 7, "kind": "function"}]
+        claims = match_dead.lidx_claims(rows, syms)
+        summ, fp, fn, ungr = match_dead.grade_column(o, claims, "go", "unref", is_test)
+        self.assertEqual((summ["all"]["tp"], summ["all"]["fp"], summ["all"]["found"], summ["all"]["dead"]), (1, 0, 1, 1))
+        self.assertEqual((summ["all"]["precision"], summ["all"]["recall"]), (1.0, 1.0))
+        self.assertEqual((fp, fn, ungr), ([], [], []))
+        # and a dead declaration lidx does not claim is a missed one
+        summ, fp, fn, ungr = match_dead.grade_column(o, [], "go", "unref", is_test)
+        self.assertEqual((summ["all"]["recall"], len(fn)), (0.0, 1))
+
+    def test_exported_go_function_is_not_in_the_universe(self):
+        """An exported function of an importable package is public API: no verdict, and a lidx claim on it is wrong by construction."""
+        pub = decl("a.go", 3, "Public", unref="live", reach="dead", exported=True, api=True)
+        internal = decl("internal/b.go", 4, "Helper", unref="live", reach="dead", exported=True, api=False)
+        o = dead_oracle([pub, internal], files=("a.go", "internal/b.go"))
+        self.assertEqual(match_dead.bucket(pub, "unref", "go"), "public_api")
+        self.assertEqual(match_dead.bucket(pub, "reach", "go"), "public_api")
+        # U1000 treats every exported identifier as used, so the unreferenced column leaves the internal one out too; RTA judges it
+        self.assertEqual(match_dead.bucket(internal, "unref", "go"), "exported_used_by_rule")
+        self.assertIsNone(match_dead.bucket(internal, "reach", "go"))
+        self.assertEqual(set(match_dead.universe(o, "unref", "go")), set())
+        self.assertEqual(set(match_dead.universe(o, "reach", "go")), {"internal/b.go:4"})
+        claims = [claim("a.go", 3, "Public"), claim("internal/b.go", 4, "Helper")]
+        summ, fp, fn, ungr = match_dead.grade_column(o, claims, "go", "unref", is_test)
+        self.assertEqual({f["category"] for f in fp}, {"public_api", "exported_used_by_rule"})
+        self.assertEqual((summ["all"]["tp"], summ["all"]["fp"]), (0, 2))
+        # an exported-symbol policy drops both claims
+        self.assertEqual((summ["no_exported"]["graded"], summ["fp_categories_no_exported"]), (0, {}))
+        summ_r, fp_r, _, _ = match_dead.grade_column(o, claims, "go", "reach", is_test)
+        self.assertEqual([f["category"] for f in fp_r], ["public_api"])
+        self.assertEqual((summ_r["all"]["tp"], summ_r["all"]["fp"]), (1, 1))  # RTA: the internal Helper is unreachable, the claim is right
+
+    def test_generated_file_is_excluded(self):
+        gen = decl("x.pb.go", 9, "unused", generated=True)
+        o = dead_oracle([gen], files=("x.pb.go",))
+        self.assertEqual(match_dead.bucket(gen, "unref", "go"), "generated")
+        self.assertEqual(match_dead.universe(o, "unref", "go"), {})
+        summ, fp, fn, ungr = match_dead.grade_column(o, [claim("x.pb.go", 9, "unused")], "go", "unref", is_test)
+        self.assertEqual((summ["all"]["graded"], summ["dead"], summ["claims_ungradable"]), (0, 0, {"generated": 1}))
+        self.assertEqual(ungr[0]["reason"], "generated")
+
+    def test_roots_are_wrong_claims_not_exclusions(self):
+        """Go `Test*`, `main` and `init` are live by construction: a claim on them is a wrong claim of its own category."""
+        o = dead_oracle([decl("a_test.go", 3, "TestX", unref="live", root="test_root", exported=True), decl("a.go", 4, "init", unref="live", root="main_init")],
+                        files=("a_test.go", "a.go"), tests=True)
+        claims = [claim("a_test.go", 3, "TestX"), claim("a.go", 4, "init")]
+        summ, fp, fn, ungr = match_dead.grade_column(o, claims, "go", "unref", is_test)
+        self.assertEqual(summ["fp_categories"], {"test_root": 1, "main_init": 1})
+        # `TestX` is exported (an exported-symbol policy removes it), `init` is not
+        self.assertEqual(summ["fp_categories_no_exported"], {"main_init": 1})
+
+    def test_claims_outside_the_program_are_named(self):
+        o = dead_oracle([decl("a.go", 1, "f")], files=("a.go",))
+        claims = [claim("a_test.go", 5, "TestY"), claim("tagged_windows.go", 2, "g"), claim("a.go", 99, "field", kind="variable")]
+        summ, _, _, ungr = match_dead.grade_column(o, claims, "go", "unref", is_test)
+        self.assertEqual(summ["claims_ungradable"], {"test_file_outside_cell": 1, "file_not_in_program": 1, "not_a_judged_declaration": 1})
+
+    def test_reachable_column_judges_functions_only(self):
+        t = decl("a.go", 1, "T", kind="type", subkind="struct", unref="dead")
+        self.assertEqual(match_dead.bucket(t, "reach", "go"), "not_a_function")
+        self.assertIsNone(match_dead.bucket(t, "unref", "go"))
+
+    def test_withheld_and_unjudged_are_named_buckets(self):
+        w = decl("a.rs", 1, "f", unref="", reach="live", withheld="oracle_unresolved_site")
+        self.assertEqual(match_dead.bucket(w, "unref", "rust"), "oracle_unresolved_site")
+        self.assertEqual(match_dead.bucket(decl("a.rs", 2, "g", unref=""), "unref", "rust"), "no_verdict")
+
+
+class RustPublicApi(unittest.TestCase):
+    def test_pub_item_of_a_library_crate_is_api_and_of_a_binary_crate_is_kept(self):
+        self.assertTrue(scip_dead.is_api(True, "lib"))
+        self.assertTrue(scip_dead.is_api(True, "proc_macro"))
+        self.assertFalse(scip_dead.is_api(False, "lib"))  # private items of a library are judged
+        for k in ("bin", "example", "test", "build", "other"):
+            self.assertFalse(scip_dead.is_api(True, k), k)
+        self.assertFalse(scip_dead.is_api(True, "lib", root="test_root"))
+
+    def test_crate_kinds_come_from_the_manifests(self):
+        with tempfile.TemporaryDirectory() as d:
+            def w(rel, text=""):
+                p = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w") as fh:
+                    fh.write(text)
+            w("Cargo.toml", '[package]\nname = "app"\nversion = "0.1.0"\n[[bin]]\nname = "app"\npath = "crates/core/main.rs"\n[workspace]\nmembers = ["crates/lib", "crates/both"]\n')
+            w("crates/core/main.rs")
+            w("crates/core/flags.rs")
+            w("crates/lib/Cargo.toml", '[package]\nname = "lib"\nversion = "0.1.0"\n')
+            w("crates/lib/src/lib.rs")
+            w("crates/lib/src/deep/mod.rs")
+            w("crates/both/Cargo.toml", '[package]\nname = "both"\nversion = "0.1.0"\n')
+            w("crates/both/src/lib.rs")
+            w("crates/both/src/util.rs")
+            w("crates/both/src/main.rs")
+            w("crates/both/src/bin/extra.rs")
+            w("crates/both/tests/it.rs")
+            pk = scip_dead.read_manifests(d)
+            kind = lambda p: scip_dead.crate_of(pk, p)
+            self.assertEqual(kind("crates/core/main.rs"), ("app", "bin"))
+            self.assertEqual(kind("crates/core/flags.rs"), ("app", "bin"))
+            self.assertEqual(kind("crates/lib/src/lib.rs"), ("lib", "lib"))
+            self.assertEqual(kind("crates/lib/src/deep/mod.rs"), ("lib", "lib"))
+            self.assertEqual(kind("crates/both/src/util.rs"), ("both", "lib"))
+            self.assertEqual(kind("crates/both/src/main.rs"), ("both", "bin"))
+            self.assertEqual(kind("crates/both/src/bin/extra.rs"), ("both", "bin"))
+            self.assertEqual(kind("crates/both/tests/it.rs"), ("both", "test"))
+            # a `pub` item in each: only the library ones leave the universe
+            api = lambda p: scip_dead.is_api(True, kind(p)[1])
+            self.assertFalse(api("crates/core/flags.rs"))
+            self.assertTrue(api("crates/lib/src/lib.rs"))
+            self.assertFalse(api("crates/both/src/main.rs"))
+
+
+TS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ts_oracle")
+
+
+@unittest.skipUnless(shutil.which("node") and os.path.isdir(os.path.join(TS, "node_modules", "typescript")),
+                     "node or the oracle's typescript dependency is not installed")
+class TypeScriptEntryBarrel(unittest.TestCase):
+    FILES = {
+        "package.json": '{"name": "toy", "main": "./dist/index.js", "types": "./dist/index.d.ts"}',
+        "tsconfig.json": '{"compilerOptions": {"strict": true, "target": "es2020", "module": "esnext", "moduleResolution": "bundler"}}',
+        "src/index.ts": 'export { exposed } from "./exposed";\nexport * from "./star";\nimport { used } from "./used";\nexport function top() { return used(); }\n',
+        "src/exposed.ts": "export function exposed() { return 1; }\n",
+        "src/star.ts": "export function viaStar() { return 2; }\nexport class Klass { m() { return 3; } }\n",
+        "src/used.ts": "export function used() { return helper(); }\nfunction helper() { return 4; }\nfunction neverCalled() { return 5; }\n",
+        "src/orphan.ts": "export function orphanExport() { return orphanTwo(); }\nexport function orphanTwo() { return 1; }\n",
+    }
+
+    def run_oracle(self):
+        with tempfile.TemporaryDirectory() as d:
+            for rel, text in self.FILES.items():
+                p = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w") as fh:
+                    fh.write(text)
+            r = subprocess.run(["node", os.path.join(TS, "dead.mjs"), "--repo", d, "--subdir", "src"], capture_output=True, text=True, check=True)
+        return json.loads(r.stdout)
+
+    def test_exports_reachable_from_the_entry_barrel_are_public_api(self):
+        out = self.run_oracle()
+        by = {(x["file"], x["name"]): x for x in out["decls"]}
+        self.assertEqual(out["entry_files"], ["src/index.ts"])
+        for k in (("src/exposed.ts", "exposed"), ("src/star.ts", "viaStar"), ("src/star.ts", "Klass"), ("src/star.ts", "m"), ("src/index.ts", "top")):
+            self.assertTrue(by[k]["api"], k)
+            self.assertEqual(by[k]["unref"], "", k)  # no verdict: other code may use it
+        # exported but not reachable from the entry: judged, and dead (only an unreachable sibling mentions it / nothing does)
+        self.assertFalse(by[("src/orphan.ts", "orphanExport")]["api"])
+        self.assertEqual(by[("src/orphan.ts", "orphanExport")]["unref"], "dead")
+        self.assertEqual(by[("src/orphan.ts", "orphanTwo")]["unref"], "live")  # referenced by orphanExport ...
+        self.assertEqual(by[("src/orphan.ts", "orphanTwo")]["reach"], "dead")  # ... which nothing reaches
+        # the compiler's own unused-locals diagnostic decides the non-exported ones
+        self.assertEqual(by[("src/used.ts", "neverCalled")]["unref"], "dead")
+        self.assertEqual(by[("src/used.ts", "helper")]["unref"], "live")
+        self.assertEqual(by[("src/used.ts", "helper")]["reach"], "live")
+
+
 if __name__ == "__main__":
     unittest.main()

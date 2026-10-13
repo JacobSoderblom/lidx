@@ -1,0 +1,6 @@
+[
+{"category":"incoming_call_from_live_code","exported":false,"file":"packages/zod/src/v3/benchmarks/realworld.ts","incoming":["CALLS:live","CALLS:live","CALLS:live"],"key":"packages/zod/src/v3/benchmarks/realworld.ts:29","kind":"function","line":29,"name":"str","subkind":"function"},
+{"category":"incoming_call_from_live_code","exported":false,"file":"packages/zod/src/v3/benchmarks/realworld.ts","incoming":["CALLS:live"],"key":"packages/zod/src/v3/benchmarks/realworld.ts:25","kind":"function","line":25,"name":"num","subkind":"function"},
+{"category":"incoming_call_from_live_code","exported":false,"file":"packages/zod/src/v3/benchmarks/realworld.ts","incoming":["CALLS:live"],"key":"packages/zod/src/v3/benchmarks/realworld.ts:33","kind":"function","line":33,"name":"array","subkind":"function"},
+{"category":"incoming_call_from_live_code","exported":false,"file":"packages/zod/src/v3/benchmarks/string.ts","incoming":["CALLS:live"],"key":"packages/zod/src/v3/benchmarks/string.ts:11","kind":"function","line":11,"name":"manual","subkind":"arrow"}
+]
