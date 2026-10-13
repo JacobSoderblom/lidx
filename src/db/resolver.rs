@@ -595,6 +595,8 @@ pub enum DeclarationQuery<'a> {
     /// A module with exactly this qualname (its `signature` carries the names
     /// its `use`s bind: `model::rust_uses_data`).
     Module(&'a str),
+    /// A type, trait or alias with exactly this qualname (Rust), not a module.
+    Item(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -1156,6 +1158,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 String::new(),
                 String::new(),
             ),
+            DeclarationQuery::Item(qualname) => (
+                "s.kind IN ('struct', 'enum', 'union', 'trait', 'type') AND s.qualname = ?1",
+                qualname.to_string(),
+                String::new(),
+                String::new(),
+            ),
         };
         let mut stmt = self.resolver.conn.prepare_cached(&format!(
             "SELECT s.qualname, s.signature, s.visibility, s.file_id, f.path
@@ -1477,6 +1485,7 @@ impl<'c> Resolver<'c> {
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             let resolution = self.refuse_uncallable_kind(r, resolution)?;
+            let resolution = self.refuse_non_trait_base(r, resolution)?;
             return self.refine_go_interface_call(r, resolution);
         }
         // A value reference (`map(handler)`) is looked up exactly like a bare
@@ -1511,6 +1520,170 @@ impl<'c> Resolver<'c> {
             }
             _ => resolution,
         })
+    }
+
+    /// A Rust `IMPLEMENTS` names a trait (or one of its items): whatever tier
+    /// bound a struct, enum or module of the same name (`impl std::error::Error
+    /// for Error` and the repo's own `Error`), the impl stays unresolved.
+    fn refuse_non_trait_base(
+        &mut self,
+        r: &Reference<'_>,
+        resolution: Resolution,
+    ) -> Result<Resolution> {
+        let Resolution::Resolved { target_id, .. } = resolution else {
+            return Ok(resolution);
+        };
+        if r.source_lang != "rust" || r.edge_kind != edge_views::IMPLEMENTS {
+            return Ok(resolution);
+        }
+        Ok(match symbol_kind(self.conn, target_id)? {
+            Some(kind)
+                if matches!(
+                    kind.as_str(),
+                    "struct" | "enum" | "union" | "class" | "module"
+                ) =>
+            {
+                Resolution::Unresolved(UnresolvedReason::NoCandidates)
+            }
+            _ => resolution,
+        })
+    }
+
+    /// The trait of a Rust `impl Trait for Type` (type-level `IMPLEMENTS`)
+    /// from the paths its `import_candidates` list: a package of this repo
+    /// (`@dir|path`) binds only to a trait that library declares, a `crate::`
+    /// path is followed through the modules' re-exports (globs included) to
+    /// the trait's declaration or out of the repo, and `~` (std, a
+    /// dependency) is an external stub -- never a repo item that shares the
+    /// trait's name. `None` leaves the edge to the tiers below.
+    fn resolve_rust_trait(&mut self, r: &Reference<'_>) -> Result<Option<Resolution>> {
+        if r.edge_kind != edge_views::IMPLEMENTS
+            || !r
+                .import_candidates
+                .iter()
+                .any(|c| !c.starts_with(RUST_IMPL_SELF))
+        {
+            return Ok(None);
+        }
+        let package = rust_package_of(r.source_file_path);
+        let mut external = false;
+        let mut miss: Option<UnresolvedReason> = None;
+        for candidate in r.import_candidates {
+            if candidate.starts_with(RUST_IMPL_SELF) {
+                continue;
+            }
+            if candidate == RUST_EXTERNAL_CRATE {
+                external = true;
+            } else if let Some((dir, path)) = parse_rust_crate_pin(candidate) {
+                let traits: Vec<PackageItem> = rust_package_items(
+                    self.conn,
+                    self.graph_version,
+                    dir,
+                    path,
+                    self.caller_scope.as_deref(),
+                )?
+                .into_iter()
+                .filter(|item| item.kind == "trait")
+                .collect();
+                match traits.as_slice() {
+                    [item] => return Ok(Some(resolved(item.id, ResolutionKind::Import))),
+                    [] => miss = miss.or(Some(UnresolvedReason::NoCandidates)),
+                    _ => miss = Some(UnresolvedReason::Ambiguous),
+                }
+            } else if candidate.starts_with(RUST_CRATE_ROOT) {
+                let followed = {
+                    let index = LanguageIndex {
+                        resolver: self,
+                        lang: "rust",
+                    };
+                    crate::indexer::rust::follow_path(&index, package, candidate)?
+                };
+                match followed {
+                    crate::indexer::rust::Followed::External => external = true,
+                    crate::indexer::rust::Followed::Repo { path, .. } => {
+                        if let Some(id) = self.rust_item_in_package(package, &path, &["trait"])? {
+                            return Ok(Some(resolved(id, ResolutionKind::Import)));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(reason) = miss {
+            return Ok(Some(Resolution::Unresolved(reason)));
+        }
+        if external {
+            return self.stub_resolution(
+                r.source_lang,
+                r.target_qualname,
+                r.import_candidates,
+                false,
+                false,
+            );
+        }
+        Ok(None)
+    }
+
+    /// The symbol of one of `kinds` whose qualname is exactly `qualname`,
+    /// declared in the Cargo package at `package`: the lowest id of its
+    /// `cfg` twins.
+    fn rust_item_in_package(
+        &mut self,
+        package: &str,
+        qualname: &str,
+        kinds: &[&str],
+    ) -> Result<Option<i64>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT s.id, s.kind, f.path FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.qualname = ?1 AND f.language = 'rust' AND {}
+             ORDER BY s.id",
+            live_symbols(2)
+        ))?;
+        let rows = stmt.query_map(params![qualname, self.graph_version], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, kind, path) = row?;
+            if kinds.contains(&kind.as_str()) && rust_package_of(&path) == package {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The type a Rust `impl .. for Type` is about, from the `^path`
+    /// candidates of its `IMPLEMENTS` edge (`RUST_IMPL_SELF`): the first path
+    /// that, followed through the modules' re-exports, is a type declared in
+    /// the impl file's own Cargo package. `None` when the type is outside the
+    /// repo or not (yet) indexed.
+    pub(crate) fn rust_impl_self(
+        &mut self,
+        file_path: &str,
+        candidates: &[String],
+    ) -> Result<Option<i64>> {
+        let package = rust_package_of(file_path);
+        for candidate in candidates {
+            let Some(candidate) = candidate.strip_prefix(RUST_IMPL_SELF) else {
+                continue;
+            };
+            let followed = {
+                let index = LanguageIndex {
+                    resolver: self,
+                    lang: "rust",
+                };
+                crate::indexer::rust::follow_path(&index, package, candidate)?
+            };
+            if let crate::indexer::rust::Followed::Repo { path, .. } = followed
+                && let Some(id) =
+                    self.rust_item_in_package(package, &path, &["struct", "enum", "union", "type"])?
+            {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
     }
 
     /// Keep a value reference's resolution only when it is trustworthy and
@@ -1851,6 +2024,12 @@ impl<'c> Resolver<'c> {
         }
 
         let types_only = edge_views::contains(edge_views::TYPE_HIERARCHY, r.edge_kind);
+        if types_only
+            && r.source_lang == "rust"
+            && let Some(resolution) = self.resolve_rust_trait(r)?
+        {
+            return Ok(resolution);
+        }
         // A base-list type name carries its scope-ordered guesses (C# enclosing
         // scopes, the global namespace, then usings): the first that names a
         // type wins, like the language's own lookup -- never an ambiguity.
@@ -2559,6 +2738,13 @@ impl<'c> Resolver<'c> {
                     caller,
                 )? {
                     return Ok(Some((id, ResolutionKind::ReceiverType)));
+                }
+                // Rust: two methods of the receiver's own type (an inherent
+                // one and a trait's, which the language tells apart by
+                // precedence) are more specific than any ancestor's
+                // declaration, which would be the wrong target.
+                if source_lang == "rust" && self.saw_ambiguous {
+                    return Ok(None);
                 }
                 // The receiver's own type declares no matching method (or
                 // the match there was itself ambiguous) — walk its ancestors.
@@ -3903,6 +4089,14 @@ pub(crate) fn parse_rust_crate_pin(candidate: &str) -> Option<(&str, &str)> {
 }
 pub(crate) const RUST_EXTERNAL_CRATE: &str = "~";
 
+/// Rust: a type-level `IMPLEMENTS` edge of an `impl` for a type the impl's
+/// module does not declare lists, as `^<absolute path>` entries of its
+/// `import_candidates`, the paths that type may be declared at (the module's
+/// own item of that name, then what its `use`s and globs bring in). The edge
+/// has no source until `Resolver::rust_impl_self` settles it, and
+/// `Db::rederive_rust_impl_sources` keeps it settled.
+pub(crate) const RUST_IMPL_SELF: char = '^';
+
 /// Whether `root` (the first segment of a Rust path) is one of the standard
 /// library's crates.
 pub(crate) fn is_rust_std_root(root: &str) -> bool {
@@ -3927,7 +4121,9 @@ pub(crate) const RUST_EXTERNAL_RECEIVER: &str = "<ext>";
 /// Whether an import candidate is one of the Rust markers above rather than a
 /// qualname.
 fn is_rust_crate_marker(candidate: &str) -> bool {
-    candidate == RUST_EXTERNAL_CRATE || candidate.starts_with(RUST_CRATE_PIN)
+    candidate == RUST_EXTERNAL_CRATE
+        || candidate.starts_with(RUST_CRATE_PIN)
+        || candidate.starts_with(RUST_IMPL_SELF)
 }
 
 /// The `ext:` marker every external stub qualname starts with.
@@ -4337,6 +4533,11 @@ enum PinnedMember {
     Missing,
     /// No indexed type has the pinned qualname.
     NoType,
+}
+
+/// The Cargo package directory of a Rust source file.
+fn rust_package_of(path: &str) -> &str {
+    profile_for("rust").package_dir.map_or("", |of| of(path))
 }
 
 /// The public item of the library of the Cargo package at `dir` that `path`
@@ -5128,10 +5329,21 @@ impl Db {
             params![graph_version],
             |row| row.get(0),
         )?;
+        // A stored Rust `impl` whose trait is named through `use`s and
+        // re-exports hangs on those modules, not on a symbol sharing its name.
+        let has_rust_hierarchy_rows: bool = self.read_conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM unresolved_references ur
+                 JOIN files f ON f.id = ur.file_id
+                 WHERE ur.graph_version = ? AND ur.edge_kind = 'IMPLEMENTS'
+                   AND f.language = 'rust' AND ur.import_candidates IS NOT NULL)",
+            params![graph_version],
+            |row| row.get(0),
+        )?;
         // A stored call through a type alias hangs on the alias's declaration.
         let alias_call_ids = self.rust_alias_call_ids(graph_version, true)?;
         if !symbols_deleted_this_batch
             && !inheritance_changed
+            && !has_rust_hierarchy_rows
             && alias_call_ids.is_empty()
             && !has_deferred_rows
             && !has_go_typed_rows
@@ -5204,6 +5416,8 @@ impl Db {
                    AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
                         OR ur.deferred_kind IS NOT NULL
                         OR (f.language = 'go' AND ur.edge_kind = 'CALLS'
+                            AND ur.import_candidates IS NOT NULL)
+                        OR (f.language = 'rust' AND ur.edge_kind = 'IMPLEMENTS'
                             AND ur.import_candidates IS NOT NULL)
                         OR (?3 AND ur.reason IN ('ambiguous', 'private'))
                         OR ur.id IN ({alias_ids}))"
@@ -5454,6 +5668,59 @@ impl Db {
         }
         let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
         self.rejudge_bound_edges(graph_version, "", &format!("AND e.id IN ({list})"))
+    }
+
+    /// Re-judge every bound Rust `impl Trait for Type` edge that names its
+    /// trait through paths (`import_candidates`): the answer hangs on other
+    /// modules' `use`s and re-exports and on the packages' items, none of
+    /// which touch the impl's file, so an incremental sync must re-judge it
+    /// to equal a fresh reindex.
+    pub fn retry_rust_hierarchy_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "",
+            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'IMPLEMENTS'
+             AND e.import_candidates IS NOT NULL
+             AND e.file_id IN (SELECT id FROM files WHERE language = 'rust')",
+        )
+    }
+
+    /// Settle the source of every Rust `impl Trait for Type` edge written for
+    /// a type the impl's module does not declare (`RUST_IMPL_SELF`
+    /// candidates): the type's declaration may be in a file that changed, or
+    /// moved, since the edge was written. Depends only on the current symbols
+    /// and modules' `use`s, so incremental sync equals a fresh reindex.
+    /// Returns how many edges changed their source.
+    pub fn rederive_rust_impl_sources(&self, graph_version: i64) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let rows: Vec<(i64, Option<i64>, String, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT e.id, e.source_symbol_id, e.import_candidates, f.path
+                 FROM edges e JOIN files f ON f.id = e.file_id
+                 WHERE e.graph_version = ?1 AND e.kind = 'IMPLEMENTS' AND f.language = 'rust'
+                   AND e.import_candidates LIKE '%\"^%'",
+            )?;
+            stmt.query_map(params![graph_version], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut changed = 0;
+        {
+            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut update = tx.prepare("UPDATE edges SET source_symbol_id = ?1 WHERE id = ?2")?;
+            for (edge_id, current, candidates, path) in rows {
+                let source =
+                    resolver.rust_impl_self(&path, &decode_import_candidates(&candidates))?;
+                if source != current {
+                    update.execute(params![source, edge_id])?;
+                    changed += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// Rebuild the `RPC_CALL` edges of calls through a deferred receiver
@@ -5873,6 +6140,11 @@ impl Db {
             eprintln!("lidx: re-judged {alias_rejudged} type-alias edge(s) after {context}");
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
+        let hierarchy_rejudged = self.retry_rust_hierarchy_edges(graph_version)?;
+        if hierarchy_rejudged > 0 {
+            eprintln!("lidx: re-judged {hierarchy_rejudged} impl edge(s) after {context}");
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
         let promoted_rejudged = self.retry_go_promoted_edges(graph_version)?;
         if promoted_rejudged > 0 {
             eprintln!(
@@ -5925,6 +6197,11 @@ impl Db {
         let deferred_rpc = self.rederive_deferred_rpc_calls(graph_version)?;
         if deferred_rpc > 0 {
             self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        // After every step that can bind or rebuild an impl edge.
+        let impl_sources = self.rederive_rust_impl_sources(graph_version)?;
+        if impl_sources > 0 {
+            eprintln!("lidx: settled {impl_sources} impl source(s) after {context}");
         }
         // Runs after `retry_external_stub_edges`, so a stub an edge just
         // moved off of in this same pass is pruned immediately if that was

@@ -1612,6 +1612,17 @@ impl Db {
                         graph_version,
                     )?,
                 };
+                // A Rust impl for a type imported from elsewhere names the
+                // type by the paths it may be declared at.
+                let source_id = match source_id {
+                    None if edge.source_qualname.is_none()
+                        && edge.kind == "IMPLEMENTS"
+                        && source_lang == "rust" =>
+                    {
+                        resolver.rust_impl_self(&source_file_path, &edge.import_candidates)?
+                    }
+                    found => found,
+                };
                 // A channel edge with no source symbol is unreachable from
                 // either end (#222); fail loudly instead of storing it.
                 if source_id.is_none() && edge.kind.starts_with("CHANNEL_") {

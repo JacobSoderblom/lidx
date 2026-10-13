@@ -481,3 +481,145 @@ fn editing_an_alias_matches_a_fresh_reindex() {
     alias_edit_matches_fresh(ALIAS_REPO, ALIAS_FOREIGN, true);
     alias_edit_matches_fresh(ALIAS_FOREIGN, ALIAS_REPO, false);
 }
+
+// ---- glob re-exports and long chains (issue #457) ----
+
+const GLOB_USER: &str = "pub fn go(e: &crate::walk::DirEntry) -> u32 { e.path() }\n";
+
+#[test]
+fn a_foreign_type_re_exported_by_a_glob_does_not_bind_the_repo_method() {
+    let t = tree(MAKER_REPO, GLOB_USER, "pub use walkdir::*;\n");
+    assert!(!binds(&t, "crate::user::go"));
+}
+
+#[test]
+fn a_foreign_glob_does_not_hide_a_type_the_module_declares() {
+    let t = tree(
+        MAKER_REPO,
+        GLOB_USER,
+        "pub use walkdir::*;\npub use crate::entry::DirEntry;\n",
+    );
+    // the explicit re-export of the repo's type wins over the glob
+    assert!(binds(&t, "crate::user::go"));
+}
+
+#[test]
+fn a_repo_glob_is_followed_to_the_foreign_type_behind_it() {
+    // walk -> glob of `inner`, which re-exports the foreign type
+    let user = "pub fn go(e: &crate::walk::DirEntry) -> u32 { e.path() }\n";
+    let mut t = tree(MAKER_REPO, user, "pub use crate::hop::*;\n");
+    t.push(("src/hop.rs", "pub use walkdir::DirEntry;\n"));
+    t[1].1 = "pub mod entry;\npub mod maker;\npub mod user;\npub mod walk;\npub mod facade;\npub mod holder;\npub mod alias;\npub mod hop;\n";
+    assert!(!binds(&t, "crate::user::go"));
+    // the same glob over a module that declares the repo's type binds it
+    let mut t = tree(MAKER_REPO, user, "pub use crate::hop::*;\n");
+    t.push(("src/hop.rs", "pub use crate::entry::DirEntry;\n"));
+    t[1].1 = "pub mod entry;\npub mod maker;\npub mod user;\npub mod walk;\npub mod facade;\npub mod holder;\npub mod alias;\npub mod hop;\n";
+    assert!(binds(&t, "crate::user::go"));
+}
+
+#[test]
+fn a_glob_through_a_cycle_ends() {
+    let user = "pub fn go(e: &crate::walk::DirEntry) -> u32 { e.path() }\n";
+    let mut t = tree(MAKER_REPO, user, "pub use crate::hop::*;\n");
+    t.push(("src/hop.rs", "pub use crate::walk::*;\n"));
+    t[1].1 = "pub mod entry;\npub mod maker;\npub mod user;\npub mod walk;\npub mod facade;\npub mod holder;\npub mod alias;\npub mod hop;\n";
+    // nothing declares the type: the repo guess stands, and indexing finishes
+    let _ = binds(&t, "crate::user::go");
+}
+
+/// A chain of `n` modules, each re-exporting the next, ending in `last`.
+fn chain(n: usize, last: &str) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    for i in 0..n {
+        let src = if i + 1 == n {
+            last.to_string()
+        } else {
+            format!("pub use crate::c{}::DirEntry;\n", i + 1)
+        };
+        files.push((format!("src/c{i}.rs"), src));
+    }
+    files
+}
+
+fn chained_tree(n: usize, last: &str) -> Vec<(String, String)> {
+    let mut mods = String::from("pub mod entry;\npub mod user;\n");
+    for i in 0..n {
+        mods.push_str(&format!("pub mod c{i};\n"));
+    }
+    let mut files: Vec<(String, String)> = vec![
+        ("Cargo.toml".into(), MANIFEST.into()),
+        ("src/lib.rs".into(), mods),
+        ("src/entry.rs".into(), ENTRY.into()),
+        (
+            "src/user.rs".into(),
+            "pub fn go(e: &crate::c0::DirEntry) -> u32 { e.path() }\n".into(),
+        ),
+    ];
+    files.extend(chain(n, last));
+    files
+}
+
+fn binds_owned(tree: &[(String, String)]) -> bool {
+    let borrowed: Vec<(&str, &str)> = tree.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    binds(&borrowed, "crate::user::go")
+}
+
+#[test]
+fn a_re_export_chain_longer_than_four_hops_still_ends_foreign() {
+    for hops in [3, 5, 9] {
+        let t = chained_tree(hops, "pub use walkdir::DirEntry;\n");
+        assert!(!binds_owned(&t), "{hops} hops to a foreign type");
+    }
+}
+
+#[test]
+fn a_re_export_chain_longer_than_four_hops_still_ends_in_the_repo() {
+    for hops in [3, 5, 9] {
+        let t = chained_tree(hops, "pub use crate::entry::DirEntry;\n");
+        assert!(binds_owned(&t), "{hops} hops to the repo type");
+    }
+}
+
+#[test]
+fn editing_a_glob_re_export_matches_a_fresh_reindex() {
+    edit_matches_fresh(
+        &tree(MAKER_REPO, GLOB_USER, "pub use crate::entry::*;\n"),
+        "src/walk.rs",
+        "pub use walkdir::*;\n",
+        "user::go",
+        true,
+    );
+}
+
+#[test]
+fn editing_a_long_chain_matches_a_fresh_reindex() {
+    let before = chained_tree(6, "pub use walkdir::DirEntry;\n");
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let borrowed: Vec<(&str, &str)> = before
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    common::write_files(&root, &borrowed);
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+    assert!(!calls_repo_method(
+        &snapshot(&indexer),
+        "user::go",
+        REPO_METHOD
+    ));
+    let after = "pub use crate::entry::DirEntry;\n";
+    common::write_files(&root, &[("src/c5.rs", after)]);
+    indexer.sync_rel_paths(&["src/c5.rs".to_string()]).unwrap();
+    let incremental = snapshot(&indexer);
+    assert!(calls_repo_method(&incremental, "user::go", REPO_METHOD));
+    let edited = chained_tree(6, after);
+    let borrowed: Vec<(&str, &str)> = edited
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (_t, fresh) = common::index_files(&borrowed);
+    common::assert_matches_fresh(&incremental, &fresh);
+}
