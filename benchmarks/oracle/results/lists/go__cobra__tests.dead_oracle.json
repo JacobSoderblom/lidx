@@ -1,0 +1,4 @@
+[
+{"api":false,"exported":true,"file":"doc/man_examples_test.go","kind":"function","line":25,"name":"ExampleGenManTree","reach":"dead","unref":"live"},
+{"api":false,"exported":true,"file":"doc/man_examples_test.go","kind":"function","line":37,"name":"ExampleGenMan","reach":"dead","unref":"live"}
+]

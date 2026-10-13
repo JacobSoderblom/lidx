@@ -24,6 +24,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import dead_code  # noqa: E402
 import hierarchy  # noqa: E402
 import match  # noqa: E402
 import report  # noqa: E402
@@ -327,6 +328,7 @@ def main():
     ap.add_argument("--report-only", action="store_true")
     ap.add_argument("--reuse-index", action="store_true", help="development only: skip reindexing when a db exists")
     ap.add_argument("--results", default=RESULTS)
+    ap.add_argument("--skip-dead", action="store_true", help="development only: leave out the dead-code benchmark (res['dead'])")
     a = ap.parse_args()
 
     if a.report_only:
@@ -415,11 +417,20 @@ def main():
             fn = [x for x in fn if x["category"] != "dispatch"]
             for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap), ("ungradable", ungr), ("dispatch_fn", dispatch_fn)):
                 dump_list(os.path.join(a.results, "lists", "%s.%s.json" % (fid, suffix)), data)
+            if not a.skip_dead:
+                res["dead"] = dead_code.run_cell(cell, repo, repo_dir, cache, binary, db, syms, a.force, a.results,
+                                                 {"go_toolchain": go_toolchain, "run_scip": run_scip}, oracle.get("_meta"))
+                dc = res["dead"]["columns"]
+                print("   %s: dead code unref P=%s R=%s, reach P=%s R=%s (oracle %ss, %s MB)" % (
+                    cell["id"], dc["unref"]["all"]["precision"], dc["unref"]["all"]["recall"], dc["reach"]["all"]["precision"],
+                    dc["reach"]["all"]["recall"], res["dead"]["oracle_meta"].get("seconds"), res["dead"]["oracle_meta"].get("peak_rss_mb")), flush=True)
             grade_hierarchy(res, cell, oracle, syms, hier_edges, dispatch_ids, a.results)
             out["cells"][cell["id"]] = res
             print("   %s: P=%s R=%s (graded=%d, oracle=%d)" % (cell["id"], summ["precision"], summ["recall"], summ["graded"],
                                                               summ["oracle_edges_caller_indexed"]), flush=True)
     out["toolchains"] = toolchain_versions()  # after the oracles ran, so typescript is installed
+    if not a.skip_dead:
+        out["dead_toolchains"] = dead_code.toolchains()
     json.dump(out, open(meta_path, "w"), indent=1)
     report.build(a.results)
     return 0

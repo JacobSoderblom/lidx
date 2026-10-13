@@ -1,0 +1,3 @@
+[
+{"category":"kind_not_in_dead_symbols","exported":false,"file":"cargo-nextest/src/dispatch.rs","incoming":[],"key":"cargo-nextest/src/dispatch.rs:953","kind":"type","line":953,"name":"IgnoreOverridesOpt","subkind":"enum"}
+]

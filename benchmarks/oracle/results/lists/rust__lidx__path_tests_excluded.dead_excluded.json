@@ -1,0 +1,8 @@
+[
+{"bucket":"macro_generated","column":"reach","file":"benches/impact.rs","kind":"function","line":406,"name":"benches"},
+{"bucket":"macro_generated","column":"unref","file":"benches/impact.rs","kind":"function","line":406,"name":"benches"},
+{"bucket":"oracle_unresolved_site","column":"unref","file":"src/model.rs","kind":"function","line":71,"name":"serialize_signature"},
+{"bucket":"oracle_unresolved_site","column":"unref","file":"src/model.rs","kind":"function","line":81,"name":"is_false"},
+{"bucket":"trait_declaration","column":"unref","file":"src/indexer/csharp.rs","kind":"type","line":7788,"name":"WithNameOnly"},
+{"bucket":"trait_declaration","column":"unref","file":"src/rpc/mod.rs","kind":"type","line":737,"name":"ParamsExtra"}
+]
