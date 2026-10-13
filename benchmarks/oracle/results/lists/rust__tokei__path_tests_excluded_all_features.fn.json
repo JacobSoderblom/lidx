@@ -1,6 +1,4 @@
 [
-{"callee":{"file":"src/cli_utils.rs","line":108,"name":"all"},"caller":{"file":"src/cli.rs","line":29,"name":"from_args"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/cli.rs:90"]},
-{"callee":{"file":"src/cli_utils.rs","line":20,"name":"crate_version"},"caller":{"file":"src/cli.rs","line":29,"name":"from_args"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/cli.rs:31"]},
 {"callee":{"file":"src/language/mod.rs","line":102,"name":"total"},"caller":{"file":"src/language/languages.rs","line":79,"name":"get_statistics"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/language/languages.rs:86"]},
 {"callee":{"file":"src/language/mod.rs","line":127,"name":"is_empty"},"caller":{"file":"src/cli_utils.rs","line":296,"name":"print_results"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/cli_utils.rs:301"]},
 {"callee":{"file":"src/stats.rs","line":26,"name":"lines"},"caller":{"file":"src/language/mod.rs","line":148,"name":"sort_by"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["src/language/mod.rs:160","src/language/mod.rs:160"]},

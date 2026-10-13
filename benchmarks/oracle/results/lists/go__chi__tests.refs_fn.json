@@ -1,4 +1,3 @@
 [
-{"callee":{"file":"middleware/compress.go","line":207,"name":"Handler"},"caller":{"file":"middleware/compress.go","line":45,"name":"Compress"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["method_value"],"module_level":false,"sites":["middleware/compress.go:47"]},
-{"callee":{"file":"middleware/compress.go","line":207,"name":"Handler"},"caller":{"file":"middleware/compress_test.go","line":16,"name":"TestCompressor"},"category":"no_edge","ctxs":["call_argument"],"detail":null,"forms":["method_value"],"module_level":false,"sites":["middleware/compress_test.go:32"]}
+
 ]

@@ -174,3 +174,27 @@ fn chained_call_evidence_starts_at_the_method_name_line() {
         src_line(".count_things()")
     );
 }
+
+#[test]
+fn bare_call_of_a_bound_local_never_binds_an_item() {
+    let files = [
+        ("Cargo.toml", "[package]\nname = \"x\"\n"),
+        (
+            "src/lib.rs",
+            "pub fn path() {}\n\
+             pub fn by_param(path: fn()) { path(); }\n\
+             pub fn by_let() { let path = || (); path(); }\n\
+             pub fn by_pattern(o: Option<fn()>) { if let Some(path) = o { path(); } }\n\
+             pub fn by_closure() { let f = |path: fn()| path(); f(path); }\n\
+             pub fn plain() { path(); }\n",
+        ),
+    ];
+    for caller in ["crate::by_param", "crate::by_let", "crate::by_pattern"] {
+        let t = common::call_targets(&files, caller);
+        assert!(t.is_empty(), "{caller}: {t:?}");
+    }
+    assert_eq!(
+        common::call_targets(&files, "crate::plain"),
+        ["crate::path"]
+    );
+}

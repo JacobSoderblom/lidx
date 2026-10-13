@@ -1,3 +1,5 @@
 [
-
+{"category":"incoming_call_from_live_code","exported":false,"file":"crates/globset/src/glob.rs","incoming":["CALLS:live","CALLS:live","CALLS:live"],"key":"crates/globset/src/glob.rs:1213","kind":"function","line":1213,"name":"classn","subkind":"fn"},
+{"category":"incoming_call_from_live_code","exported":false,"file":"crates/globset/src/glob.rs","incoming":["CALLS:live","CALLS:live","CALLS:live"],"key":"crates/globset/src/glob.rs:1217","kind":"function","line":1217,"name":"rclass","subkind":"fn"},
+{"category":"incoming_call_from_live_code","exported":false,"file":"crates/globset/src/glob.rs","incoming":["CALLS:live","CALLS:live"],"key":"crates/globset/src/glob.rs:1221","kind":"function","line":1221,"name":"rclassn","subkind":"fn"}
 ]

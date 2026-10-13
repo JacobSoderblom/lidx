@@ -1,4 +1,3 @@
 [
-{"category":"referenced_type","confidence":"high","exported":false,"file":"flags.go","key":"flags.go:22","kind":"type","lidx_kind":"class","line":22,"name":"pflagValueSet","policy":false,"qualname":"flags.pflagValueSet","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"logger.go","key":"logger.go:15","kind":"type","lidx_kind":"class","line":15,"name":"discardHandler","policy":false,"qualname":"logger.discardHandler","subkind":"struct"}
+
 ]

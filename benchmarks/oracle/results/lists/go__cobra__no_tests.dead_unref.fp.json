@@ -1,9 +1,3 @@
 [
-{"category":"referenced_function","confidence":"high","exported":false,"file":"command.go","key":"command.go:1974","kind":"function","lidx_kind":"function","line":1974,"name":"defaultUsageFunc","policy":false,"qualname":"command.defaultUsageFunc","subkind":""},
-{"category":"referenced_function","confidence":"high","exported":false,"file":"command.go","key":"command.go:2047","kind":"function","lidx_kind":"function","line":2047,"name":"defaultHelpFunc","policy":false,"qualname":"command.defaultHelpFunc","subkind":""},
-{"category":"referenced_function","confidence":"high","exported":false,"file":"command.go","key":"command.go:2068","kind":"function","lidx_kind":"function","line":2068,"name":"defaultVersionFunc","policy":false,"qualname":"command.defaultVersionFunc","subkind":""},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"command.go","key":"command.go:1937","kind":"type","lidx_kind":"class","line":1937,"name":"tmplFunc","policy":false,"qualname":"command.tmplFunc","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"completions.go","key":"completions.go:47","kind":"type","lidx_kind":"class","line":47,"name":"flagCompError","policy":false,"qualname":"completions.flagCompError","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"doc/yaml_docs.go","key":"doc/yaml_docs.go:30","kind":"type","lidx_kind":"class","line":30,"name":"cmdOption","policy":false,"qualname":"doc/yaml_docs.cmdOption","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"doc/yaml_docs.go","key":"doc/yaml_docs.go:37","kind":"type","lidx_kind":"class","line":37,"name":"cmdDoc","policy":false,"qualname":"doc/yaml_docs.cmdDoc","subkind":"struct"}
+
 ]
