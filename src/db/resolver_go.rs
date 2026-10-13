@@ -984,30 +984,47 @@ impl Resolver<'_> {
         Ok(rows)
     }
 
-    /// The methods declared on the type (or specs of the interface)
-    /// `container` (its qualname), with their normalized signatures.
-    fn go_own_methods(&mut self, container: &str) -> Result<Rc<Vec<(String, MethodSig)>>> {
-        if let Some(known) = self.go.methods.get(container) {
+    /// The methods declared on the type `ty` of package directory `dir` (or
+    /// the specs of that interface), whichever file of the package declares
+    /// them, with their normalized signatures.
+    fn go_own_methods(&mut self, dir: &str, ty: &str) -> Result<Rc<Vec<(String, MethodSig)>>> {
+        let key = format!("{dir}|{ty}");
+        if let Some(known) = self.go.methods.get(&key) {
             return Ok(known.clone());
         }
-        let (from, to) = (format!("{container}."), format!("{container}/"));
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT s.name, s.signature FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.kind = 'method' AND s.qualname > ?1 AND s.qualname < ?2
+            "SELECT s.qualname, s.name, s.signature FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.kind = 'method' AND s.qualname LIKE ?1 ESCAPE '\\'
                AND f.language = 'go' AND {}",
-            live_symbols(3)
+            live_symbols(2)
         ))?;
+        let escaped = ty
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let rows = stmt
-            .query_map(params![from, to, self.graph_version], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })?
+            .query_map(
+                params![format!("%.{escaped}.%"), self.graph_version],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let rows = Rc::new(
             rows.into_iter()
-                .map(|(name, sig)| (name, method_signature(sig.as_deref())))
+                .filter(|(qualname, name, _)| {
+                    qualname
+                        .strip_suffix(&format!(".{ty}.{name}"))
+                        .is_some_and(|module| module.rsplit_once('/').map_or("", |(d, _)| d) == dir)
+                })
+                .map(|(_, name, sig)| (name, method_signature(sig.as_deref())))
                 .collect::<Vec<_>>(),
         );
-        self.go.methods.insert(container.to_string(), rows.clone());
+        self.go.methods.insert(key, rows.clone());
         Ok(rows)
     }
 
@@ -1020,7 +1037,7 @@ impl Resolver<'_> {
             methods: HashMap::new(),
             complete: true,
         };
-        for (name, sig) in self.go_own_methods(&t.qualname)?.iter() {
+        for (name, sig) in self.go_own_methods(t.dir(), &t.name)?.iter() {
             set.methods.insert(name.clone(), sig.clone());
         }
         let embedded: Vec<String> = struct_fields(t.signature.as_deref())
@@ -1092,7 +1109,7 @@ impl Resolver<'_> {
         let mut uncertain = !want.complete;
         if want.complete && !want.methods.is_empty() {
             let mut seen: HashSet<String> = HashSet::new();
-            let mut candidates: Vec<String> = Vec::new();
+            let mut candidates: Vec<(String, String)> = Vec::new();
             let mut names: Vec<&String> = want.methods.keys().collect();
             names.sort();
             for name in names {
@@ -1106,14 +1123,16 @@ impl Resolver<'_> {
                         .collect::<rusqlite::Result<Vec<String>>>()?
                 };
                 for qualname in owners {
-                    let Some(container) = qualname
+                    let Some((module, ty)) = qualname
                         .strip_suffix(name.as_str())
                         .and_then(|c| c.strip_suffix('.'))
+                        .and_then(|c| c.rsplit_once('.'))
                     else {
                         continue;
                     };
-                    if seen.insert(container.to_string()) {
-                        candidates.push(container.to_string());
+                    let dir = module.rsplit_once('/').map_or("", |(d, _)| d);
+                    if seen.insert(format!("{dir}|{ty}")) {
+                        candidates.push((dir.to_string(), ty.to_string()));
                     }
                 }
             }
@@ -1121,7 +1140,7 @@ impl Resolver<'_> {
             // their methods too: search embedders a few levels out.
             let mut frontier: Vec<String> = candidates
                 .iter()
-                .filter_map(|q| q.rsplit('.').next().map(str::to_string))
+                .map(|(_, ty)| ty.clone())
                 .chain([iface.name.clone()])
                 .collect();
             for _ in 0..MAX_EMBEDDING_DEPTH {
@@ -1133,9 +1152,9 @@ impl Resolver<'_> {
                         params![pattern, self.graph_version],
                     )?;
                     for row in rows {
-                        if seen.insert(row.qualname.clone()) {
+                        if seen.insert(format!("{}|{}", row.dir(), row.name)) {
                             next.push(row.name.clone());
-                            candidates.push(row.qualname);
+                            candidates.push((row.dir().to_string(), row.name.clone()));
                         }
                     }
                 }
@@ -1144,27 +1163,24 @@ impl Resolver<'_> {
                 }
                 frontier = next;
             }
-            for container in candidates {
-                let rows = self.go_type_query(
-                    "s.qualname = ?1 AND s.kind IN ('class', 'type', 'interface')",
-                    params![container, self.graph_version],
-                )?;
+            for (dir, ty) in candidates {
+                let rows = self.go_types_named(&dir, &ty)?;
                 if rows.is_empty() {
                     // methods of a receiver type with no declaration here
-                    let own = self.go_own_methods(&container)?;
+                    let own = self.go_own_methods(&dir, &ty)?;
                     if want.methods.keys().all(|m| own.iter().any(|(n, _)| n == m)) {
                         uncertain = true;
                     }
                     continue;
                 }
-                for t in rows.into_iter().filter(|t| t.kind != "interface") {
-                    let has = self.go_method_set(&t, 0)?;
+                for t in rows.iter().filter(|t| t.kind != "interface") {
+                    let has = self.go_method_set(t, 0)?;
                     if want
                         .methods
                         .iter()
                         .all(|(m, a)| has.methods.get(m) == Some(a))
                     {
-                        found.push(t);
+                        found.push(t.clone());
                     }
                 }
             }
