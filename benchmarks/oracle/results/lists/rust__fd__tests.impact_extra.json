@@ -1,26 +1,6 @@
 [
 {"k":"3","member":"src/main.rs:62 main","node":"src/main.rs|crate::main","seed":"src/cli.rs:776","seed_name":"gen_completions"},
 {"k":"3","member":"src/main.rs:75 run","node":"src/main.rs|crate::run","seed":"src/cli.rs:776","seed_name":"gen_completions"},
-{"k":"3","member":"tests/testenv/mod.rs:148 new","node":"tests/testenv/mod.rs|crate::tests::testenv::TestEnv::new","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/testenv/mod.rs:169 global_ignore_file","node":"tests/testenv/mod.rs|crate::tests::testenv::TestEnv::global_ignore_file","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/testenv/mod.rs:179 create_broken_symlink","node":"tests/testenv/mod.rs|crate::tests::testenv::TestEnv::create_broken_symlink","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/testenv/mod.rs:29 create_working_directory","node":"tests/testenv/mod.rs|crate::tests::testenv::create_working_directory","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/testenv/mod.rs:65 create_config_directory_with_global_ignore","node":"tests/testenv/mod.rs|crate::tests::testenv::create_config_directory_with_global_ignore","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/tests.rs:104 test_and_basic","node":"tests/tests.rs|crate::tests::tests::test_and_basic","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/tests.rs:131 test_and_empty_pattern","node":"tests/tests.rs|crate::tests::tests::test_and_empty_pattern","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/tests.rs:137 test_and_bad_pattern","node":"tests/tests.rs|crate::tests::tests::test_and_bad_pattern","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/tests.rs:1701 format","node":"tests/tests.rs|crate::tests::tests::format","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"3","member":"tests/tests.rs:49 get_test_env_with_abs_path","node":"tests/tests.rs|crate::tests::tests::get_test_env_with_abs_path","seed":"src/dir_entry.rs:42","seed_name":"path"},
 {"k":"inf","member":"src/main.rs:62 main","node":"src/main.rs|crate::main","seed":"src/cli.rs:776","seed_name":"gen_completions"},
-{"k":"inf","member":"src/main.rs:75 run","node":"src/main.rs|crate::run","seed":"src/cli.rs:776","seed_name":"gen_completions"},
-{"k":"inf","member":"tests/testenv/mod.rs:148 new","node":"tests/testenv/mod.rs|crate::tests::testenv::TestEnv::new","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/testenv/mod.rs:169 global_ignore_file","node":"tests/testenv/mod.rs|crate::tests::testenv::TestEnv::global_ignore_file","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/testenv/mod.rs:179 create_broken_symlink","node":"tests/testenv/mod.rs|crate::tests::testenv::TestEnv::create_broken_symlink","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/testenv/mod.rs:29 create_working_directory","node":"tests/testenv/mod.rs|crate::tests::testenv::create_working_directory","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/testenv/mod.rs:65 create_config_directory_with_global_ignore","node":"tests/testenv/mod.rs|crate::tests::testenv::create_config_directory_with_global_ignore","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/tests.rs:104 test_and_basic","node":"tests/tests.rs|crate::tests::tests::test_and_basic","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/tests.rs:1260 test_absolute_path","node":"tests/tests.rs|crate::tests::tests::test_absolute_path","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/tests.rs:137 test_and_bad_pattern","node":"tests/tests.rs|crate::tests::tests::test_and_bad_pattern","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/tests.rs:1701 format","node":"tests/tests.rs|crate::tests::tests::format","seed":"src/dir_entry.rs:42","seed_name":"path"},
-{"k":"inf","member":"tests/tests.rs:49 get_test_env_with_abs_path","node":"tests/tests.rs|crate::tests::tests::get_test_env_with_abs_path","seed":"src/dir_entry.rs:42","seed_name":"path"}
+{"k":"inf","member":"src/main.rs:75 run","node":"src/main.rs|crate::run","seed":"src/cli.rs:776","seed_name":"gen_completions"}
 ]

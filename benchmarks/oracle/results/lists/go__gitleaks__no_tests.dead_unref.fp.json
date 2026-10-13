@@ -1,7 +1,3 @@
 [
-{"category":"referenced_type","confidence":"high","exported":false,"file":"config/config.go","key":"config/config.go:65","kind":"type","lidx_kind":"class","line":65,"name":"viperRequired","policy":false,"qualname":"config/config.viperRequired","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"config/config.go","key":"config/config.go:81","kind":"type","lidx_kind":"class","line":81,"name":"viperGlobalAllowlist","policy":false,"qualname":"config/config.viperGlobalAllowlist","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"detect/codec/encodings.go","key":"detect/codec/encodings.go:88","kind":"type","lidx_kind":"class","line":88,"name":"encodingMatch","policy":false,"qualname":"detect/codec/encodings.encodingMatch","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"detect/codec/encodings.go","key":"detect/codec/encodings.go:94","kind":"type","lidx_kind":"class","line":94,"name":"encoding","policy":false,"qualname":"detect/codec/encodings.encoding","subkind":"struct"},
-{"category":"referenced_type","confidence":"high","exported":false,"file":"sources/git.go","key":"sources/git.go:38","kind":"type","lidx_kind":"class","line":38,"name":"blobReader","policy":false,"qualname":"sources/git.blobReader","subkind":"struct"}
+
 ]

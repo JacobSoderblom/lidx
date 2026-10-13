@@ -488,6 +488,11 @@ struct Context {
     /// never merged across functions. See `python::infer_receiver_type` for
     /// the mechanism this mirrors.
     local_types: Rc<HashMap<String, LocalType>>,
+    /// The types of the names an enclosing scope binds (module-level
+    /// `const`s included) that this function body does not rebind: a
+    /// closure's captured variables. Nearest binding wins; read through
+    /// [`tracked_type`] after `local_types`.
+    captured_types: Rc<HashMap<String, LocalType>>,
     /// The subset of `local_types` names bound by an enclosing function or
     /// arrow scope (parameters, locals), as opposed to module-level
     /// bindings: only these shadow a module declaration.
@@ -2051,6 +2056,7 @@ fn extract_with_parser(
         grpc_clients,
         grpc_evidence,
         local_types: Rc::clone(&module_types),
+        captured_types: Rc::new(HashMap::new()),
         scope_bindings: Rc::new(HashSet::new()),
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
@@ -4722,6 +4728,20 @@ fn enter_scope(ctx: &mut Context) {
     let mut outer = (*ctx.outer_locals).clone();
     outer.extend(ctx.local_types.keys().cloned());
     ctx.outer_locals = Rc::new(outer);
+    let mut captured = (*ctx.captured_types).clone();
+    captured.extend(ctx.local_types.iter().map(|(k, v)| (k.clone(), v.clone())));
+    ctx.captured_types = Rc::new(captured);
+}
+
+/// The type of `name` in the scope being walked: its own binding, else the
+/// nearest enclosing scope's (a captured variable).
+fn tracked_type<'a>(ctx: &'a Context, name: &str) -> Option<&'a LocalType> {
+    ctx.local_types.get(name).or_else(|| {
+        // An import or `require` binding is no variable of an outer scope.
+        (!ctx.import_bindings.contains_key(name) && !ctx.required_names.contains(name))
+            .then(|| ctx.captured_types.get(name))
+            .flatten()
+    })
 }
 
 /// A name bound by a parameter or declaration of an enclosing function or
@@ -8632,8 +8652,12 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         return ReceiverType::Unresolved;
     }
     let root_name = node_text(root, source);
+    let method = function_node
+        .child_by_field_name("property")
+        .map(|n| node_text(n, source))
+        .unwrap_or_default();
     if hops == 0 {
-        return match ctx.local_types.get(&root_name) {
+        return match tracked_type(ctx, &root_name) {
             Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
             Some(LocalType::ReturnOf(f)) => match ctx.return_types.get(f) {
                 Some(ty) => ReceiverType::Known(ty.clone()),
@@ -8642,8 +8666,9 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
             Some(LocalType::Contextual(param)) => {
                 ReceiverType::Deferred(DeferredReturn::on_param(param.clone(), ""))
             }
-            Some(_) => ReceiverType::Unresolved,
-            None => ReceiverType::NotTracked,
+            Some(_) if ctx.local_types.contains_key(&root_name) => ReceiverType::Unresolved,
+            Some(_) => outer_unknown(ctx, &method),
+            None => untracked_root(ctx, &root_name, &method),
         };
     }
     if let Some(chain) = property_chain_receiver(&root_name, object, source, ctx) {
@@ -8651,6 +8676,50 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     }
     if ctx.local_types.contains_key(&root_name) {
         ReceiverType::Unresolved
+    } else if tracked_type(ctx, &root_name).is_some() {
+        outer_unknown(ctx, &method)
+    } else {
+        untracked_root(ctx, &root_name, &method)
+    }
+}
+
+/// Method names of the JS/TS builtins (`Array`, `Map`, `Set`, `Promise`,
+/// `Headers`, `Object`, `WeakMap`, streams) that a value of unknown type
+/// outside the function's own bindings most likely takes, measured on the six
+/// TypeScript cells (zod, hono, trpc, ky, immer, h3) at the `bare_name` tier:
+/// false edges removed / true edges lost -- `toString` 2/0, `delete` 2/0,
+/// `get` 1/0, `has` 1/0, `set` 1/0, `map` 1/0, `catch` 1/0, `resolve` 1/0,
+/// `any` 1/0, `close` 1/0. A name with no false edge (`parse`, `add`, `dirty`,
+/// `write`, `request`) keeps binding when its receiver is a captured or
+/// unbound name of unknown type.
+const JS_TS_BUILTIN_METHODS: &[&str] = &[
+    "toString", "delete", "get", "has", "set", "map", "catch", "resolve", "any", "close",
+];
+
+/// A captured or unbound receiver of unknown type: refused for a builtin
+/// method name, left to the name tiers for any other.
+fn outer_unknown(_ctx: &Context, method: &str) -> ReceiverType {
+    if JS_TS_BUILTIN_METHODS.contains(&method) {
+        ReceiverType::Unresolved
+    } else {
+        ReceiverType::NotTracked
+    }
+}
+
+/// The receiver type of a member call whose root identifier is no binding
+/// of any enclosing scope: `NotTracked` for a name this file imports,
+/// `require`s or declares (a class, namespace or module reference:
+/// `Console.log()`); in an ES module any other can only be a runtime global
+/// (`AbortSignal.any(..)`), a named function expression's own name or a
+/// parameter this extractor does not scope, so it is unknown like a
+/// captured one (issue #483).
+fn untracked_root(ctx: &Context, name: &str, method: &str) -> ReceiverType {
+    if ctx.is_esm
+        && !ctx.import_bindings.contains_key(name)
+        && !ctx.required_names.contains(name)
+        && !ctx.declared_names.contains(name)
+    {
+        outer_unknown(ctx, method)
     } else {
         ReceiverType::NotTracked
     }
@@ -8666,7 +8735,7 @@ fn property_chain_receiver(
     source: &str,
     ctx: &Context,
 ) -> Option<ReceiverType> {
-    let root_type = match ctx.local_types.get(root_name)? {
+    let root_type = match tracked_type(ctx, root_name)? {
         LocalType::Known(ty) => Some(ty.clone()),
         LocalType::ReturnOf(f) => Some(ctx.return_types.get(f)?.clone()),
         LocalType::Contextual(_) => None,
@@ -8687,7 +8756,7 @@ fn property_chain_receiver(
     if names.len() > MAX_DEFERRED_DEPTH {
         return None;
     }
-    let mut call = match (&root_type, ctx.local_types.get(root_name)) {
+    let mut call = match (&root_type, tracked_type(ctx, root_name)) {
         (Some(ty), _) => DeferredReturn::on_type(ty, first, false, false),
         (None, Some(LocalType::Contextual(param))) => {
             DeferredReturn::on_param(param.clone(), first)
@@ -8706,7 +8775,7 @@ fn property_chain_receiver(
 fn subscript_element_type(subscript: Node<'_>, source: &str, ctx: &Context) -> Option<String> {
     let container = peel_expression(subscript.child_by_field_name("object")?);
     let declared = match container.kind() {
-        "identifier" => ctx.local_types.get(&node_text(container, source)),
+        "identifier" => tracked_type(ctx, &node_text(container, source)),
         "member_expression" => {
             let owner = peel_expression(container.child_by_field_name("object")?);
             if owner.kind() != "this" || ctx.this_rebound {
