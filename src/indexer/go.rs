@@ -1908,7 +1908,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
     let (target, candidate, bare) = if node.kind() == "identifier" {
         let name = node_text(node, source);
-        if ctx.bound_names.contains(&name) || name == "_" {
+        if name == "_" || ctx.types.is_bound(&name, node.start_byte()) {
             return None;
         }
         (
@@ -1921,7 +1921,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         let field = node_text(node.child_by_field_name("field")?, source);
         let imported = (operand.kind() == "identifier")
             .then(|| node_text(operand, source))
-            .filter(|base| !ctx.bound_names.contains(base))
+            .filter(|base| !ctx.types.is_bound(base, node.start_byte()))
             .and_then(|base| ctx.imports.get(&base));
         if let Some(path) = imported {
             // The import path in the target text keeps a same-named package
