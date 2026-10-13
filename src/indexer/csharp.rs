@@ -2292,6 +2292,7 @@ fn call_shape(node: Node<'_>) -> CallShape {
         implicit_this: false,
         is_ref: false,
         is_type: false,
+        is_typeof: false,
     }
 }
 

@@ -1797,6 +1797,7 @@ impl Db {
             local,
             overrides,
             decls,
+            accessors,
             static_lines,
             file_wide,
             public,
@@ -1811,6 +1812,7 @@ impl Db {
             && local.is_empty()
             && overrides.is_empty()
             && decls.is_empty()
+            && accessors.is_empty()
             && static_lines.is_empty()
             && file_wide.is_empty()
         {
@@ -1843,6 +1845,7 @@ impl Db {
         };
         let override_test = line_test(overrides);
         let decl_test = line_test(decls);
+        let accessor_test = line_test(accessors);
         let static_line_test = line_test(static_lines);
         let sql = format!(
             "UPDATE symbols
@@ -1855,10 +1858,12 @@ impl Db {
                     || CASE WHEN qualname IN ({global_ph}) THEN ' {global_modifier}' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END
                     || CASE WHEN {decl_test} THEN ' {decl_modifier}' ELSE '' END
+                    || CASE WHEN {accessor_test} THEN ' {accessor_modifier}' ELSE '' END
                     || ?), '')
              WHERE file_id = ? AND graph_version = ?",
             local_modifier = graph_query::LOCAL_MODIFIER,
             decl_modifier = graph_query::DECL_MODIFIER,
+            accessor_modifier = graph_query::ACCESSOR_MODIFIER,
             global_modifier = graph_query::GLOBAL_MODIFIER
         );
         // In the order the placeholders appear in the statement.
@@ -1889,6 +1894,7 @@ impl Db {
         );
         params.extend(line_params(overrides));
         params.extend(line_params(decls));
+        params.extend(line_params(accessors));
         // Words every symbol of the file carries, after the per-symbol ones.
         params.push(Box::new(
             file_wide

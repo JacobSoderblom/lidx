@@ -63,7 +63,8 @@ pub(crate) use resolver_go::go_deferred_candidate;
 
 use super::Db;
 use super::graph_query::{
-    DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, has_modifier, has_modifier_sql,
+    ACCESSOR_MODIFIER, DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, has_modifier,
+    has_modifier_sql,
 };
 use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
@@ -150,12 +151,13 @@ pub(crate) fn is_value_reference(edge_kind: &str, call_shape: Option<CallShape>)
 /// can include or exclude value references with one definition.
 pub(crate) fn value_reference_sql(kind_col: &str, shape_col: &str) -> String {
     format!(
-        "({kind_col} IN ('{}', '{}') AND COALESCE({shape_col}, '') IN ('{}', '{}', '{}'))",
+        "({kind_col} IN ('{}', '{}') AND COALESCE({shape_col}, '') IN ('{}', '{}', '{}', '{}'))",
         edge_views::REFERENCES,
         edge_views::USES,
         CallShape::REF_ENCODING,
         CallShape::REF_THIS_ENCODING,
         CallShape::REF_TYPE_ENCODING,
+        CallShape::REF_TYPEOF_ENCODING,
     )
 }
 
@@ -200,7 +202,7 @@ pub(crate) fn stored_edge_kind(
         return Ok(edge_kind.to_string());
     }
     // A type mention (`ref:type`) is a plain use of the type.
-    if call_shape.is_some_and(|shape| shape.is_type) {
+    if call_shape.is_some_and(|shape| shape.is_type || shape.is_typeof) {
         return Ok(edge_views::USES.to_string());
     }
     Ok(
@@ -266,7 +268,7 @@ pub(crate) fn drop_references_shadowed_by_calls(
         &format!(
             "DELETE FROM {from}
              WHERE graph_version = ?1 AND {value_ref}
-               AND COALESCE(call_shape, '') != '{type_ref}'
+               AND COALESCE(call_shape, '') NOT IN ('{type_ref}', '{typeof_ref}')
                AND target_symbol_id IS NOT NULL
                AND {file_filter}
                AND EXISTS (
@@ -277,6 +279,7 @@ pub(crate) fn drop_references_shadowed_by_calls(
                )",
             value_ref = value_reference_sql("kind", "call_shape"),
             type_ref = CallShape::REF_TYPE_ENCODING,
+            typeof_ref = CallShape::REF_TYPEOF_ENCODING,
             calls = edge_views::CALLS,
         ),
         params![graph_version, file_id],
@@ -1843,6 +1846,13 @@ impl<'c> Resolver<'c> {
         ) {
             return refuse;
         }
+        // A bodiless member declaration (a TypeScript interface member,
+        // `declare class` method signature) is no function to point at.
+        if self.has_symbol_modifier(target_id, DECL_MODIFIER)?
+            || self.has_symbol_modifier(target_id, ACCESSOR_MODIFIER)?
+        {
+            return refuse;
+        }
         let target_kind = symbol_kind(self.conn, target_id)?;
         // A type mention names a type and nothing else.
         if r.call_shape.is_some_and(|shape| shape.is_type) {
@@ -1851,6 +1861,12 @@ impl<'c> Resolver<'c> {
             } else {
                 refuse
             };
+        }
+        // A `typeof f` query reads a type: never a function or method.
+        if r.call_shape.is_some_and(|shape| shape.is_typeof)
+            && matches!(target_kind.as_deref(), Some("function" | "method"))
+        {
+            return refuse;
         }
         let allowed = match target_kind.as_deref() {
             Some("function" | "class") => true,
@@ -7491,6 +7507,7 @@ mod tests {
             implicit_this: false,
             is_ref: false,
             is_type: false,
+            is_typeof: false,
         });
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
         assert!(

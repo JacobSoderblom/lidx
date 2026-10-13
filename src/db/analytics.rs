@@ -636,6 +636,9 @@ impl Db {
             super::graph_query::has_modifier_sql("s", super::graph_query::LOCAL_MODIFIER);
         // A bodiless member declaration has no code to be dead.
         let is_decl = super::graph_query::has_modifier_sql("s", super::graph_query::DECL_MODIFIER);
+        // A property read runs an accessor and no edge records the read.
+        let is_accessor =
+            super::graph_query::has_modifier_sql("s", super::graph_query::ACCESSOR_MODIFIER);
         let external_base = super::graph_query::external_base_member_sql("s", gv);
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let reachability = edge_views::sql_list(edge_views::REACHABILITY);
@@ -671,6 +674,7 @@ impl Db {
                                    OR f.path LIKE 'pages/%' OR f.path LIKE '%/pages/%'))
                      AND NOT {is_local}
                      AND NOT {is_decl}
+                     AND NOT {is_accessor}
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
                      -- Operators and finalizers are invoked implicitly (#247).
                      AND NOT (f.language = 'csharp' AND (s.name LIKE 'operator %'

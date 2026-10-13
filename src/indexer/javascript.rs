@@ -771,13 +771,18 @@ pub fn resolve_import_file_edges(
         file_rel_path: &str,
         resolved_specs: &mut HashMap<String, Option<String>>,
         candidate: &str,
+        through_objects: bool,
     ) -> Option<(String, String)> {
         let (spec, member) = candidate.split_once(IMPORT_PLACEHOLDER_SEP)?;
         let dst = resolved_specs
             .entry(spec.to_string())
             .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec))
             .as_ref()?;
-        Some(EXPORT_CACHE.with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut())))
+        Some(
+            EXPORT_CACHE.with(|c| {
+                chase_member(repo_root, dst, member, &mut c.borrow_mut(), through_objects)
+            }),
+        )
     }
     // A value reference or type use through an import that names no repo
     // file (a package, `react`), or a value reference that names only a
@@ -792,7 +797,8 @@ pub fn resolve_import_file_edges(
             if !c.contains(IMPORT_PLACEHOLDER_SEP) {
                 return true;
             }
-            let Some((path, member)) = locate(repo_root, file_rel_path, &mut resolved_specs, c)
+            let Some((path, member)) =
+                locate(repo_root, file_rel_path, &mut resolved_specs, c, !value_ref)
             else {
                 return false;
             };
@@ -807,11 +813,22 @@ pub fn resolve_import_file_edges(
                 })
         })
     });
-    let mut rewrite = |candidate: &str| -> Option<String> {
-        let (path, member) = locate(repo_root, file_rel_path, &mut resolved_specs, candidate)?;
+    let mut rewrite_with = |candidate: &str, through_objects: bool| -> Option<String> {
+        let (path, member) = locate(
+            repo_root,
+            file_rel_path,
+            &mut resolved_specs,
+            candidate,
+            through_objects,
+        )?;
         Some(format!("{}.{member}", module_name_from_rel_path(&path)))
     };
     for edge in edges.iter_mut() {
+        // `export const verify = Jwt.verify` names the property `verify` of
+        // the object `Jwt`, which is where the compiler binds a reference
+        // (a call goes on to what the property holds).
+        let through_objects = !is_value_ref(edge);
+        let mut rewrite = |candidate: &str| rewrite_with(candidate, through_objects);
         for candidate in edge.import_candidates.iter_mut() {
             let Some((spec, member)) = candidate.split_once(IMPORT_PLACEHOLDER_SEP) else {
                 continue;
@@ -983,6 +1000,9 @@ struct FileExports {
     /// Top-level enums, interfaces, type aliases and namespaces: declarations
     /// a value reference never binds. (A class is a value: `register(Foo)`.)
     non_value: HashSet<String>,
+    /// `Class.member` of the `get` / `set` accessors of top-level classes: an
+    /// importer's value reference to a member binds or not by it.
+    accessors: HashSet<String>,
 }
 
 impl FileExports {
@@ -1007,7 +1027,7 @@ impl FileExports {
             format!("{v:?}")
         }
         format!(
-            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}",
             sorted(self.names.iter()),
             sorted(self.aliases.iter()),
             self.default_local,
@@ -1025,6 +1045,7 @@ impl FileExports {
                     .map(|(k, props)| (k, sorted(props.iter())))
             ),
             sorted(self.non_value.iter()),
+            sorted(self.accessors.iter()),
         )
     }
 }
@@ -1071,6 +1092,7 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
         collect_exported_names(stmt, &source, &mut ex);
         collect_object_consts(stmt, &source, &mut out.object_consts);
         collect_non_value_names(stmt, &source, &mut out.non_value);
+        collect_accessor_names(stmt, &source, &mut out.accessors);
         if !matches!(stmt.kind(), "export_statement" | "export_declaration") {
             continue;
         }
@@ -1137,6 +1159,34 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
     }
     out.names = ex.names;
     out
+}
+
+/// `Class.member` of the accessors of the class a top-level statement (or
+/// its `export`) declares; see `FileExports::accessors`.
+fn collect_accessor_names(stmt: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    let decl = match stmt.kind() {
+        "export_statement" | "export_declaration" => stmt.child_by_field_name("declaration"),
+        _ => Some(stmt),
+    };
+    let Some(decl) = decl.filter(|d| d.kind().ends_with("class_declaration")) else {
+        return;
+    };
+    let (Some(name), Some(body)) = (
+        decl.child_by_field_name("name"),
+        decl.child_by_field_name("body"),
+    ) else {
+        return;
+    };
+    let class = node_text(name, source);
+    let mut cursor = body.walk();
+    for member in body.named_children(&mut cursor) {
+        if member.kind() == "method_definition"
+            && is_accessor_member(member)
+            && let Some(n) = member.child_by_field_name("name")
+        {
+            out.insert(format!("{class}.{}", node_text(n, source)));
+        }
+    }
 }
 
 /// Names of the enums, interfaces, type aliases and namespaces a
@@ -1329,6 +1379,7 @@ fn chase_member(
     dst: &str,
     member: &str,
     cache: &mut ExportCache,
+    through_objects: bool,
 ) -> (String, String) {
     let (is_default, member) = match member.strip_prefix(DEFAULT_IMPORT_MARK) {
         Some(m) => (true, m),
@@ -1341,10 +1392,10 @@ fn chase_member(
     let lookup = if is_default { DEFAULT_EXPORT } else { head };
     let fallback = || (dst.to_string(), member.to_string());
     match chase_export(repo_root, dst, lookup, cache, &mut Visited::new()) {
-        Some(ExportTarget::Symbol(path, name)) => {
-            object_member_target(repo_root, &path, &name, &tail, cache)
-                .unwrap_or_else(|| (path, format!("{name}{tail}")))
-        }
+        Some(ExportTarget::Symbol(path, name)) => through_objects
+            .then(|| object_member_target(repo_root, &path, &name, &tail, cache))
+            .flatten()
+            .unwrap_or_else(|| (path, format!("{name}{tail}"))),
         // `ns.fn()` through an exported namespace: chase `fn` in that module.
         Some(ExportTarget::Namespace(module)) => {
             let Some((next, rest)) = tail.strip_prefix('.').map(|t| match t.split_once('.') {
@@ -2885,7 +2936,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         output.edges.push(edge);
     }
     if node.kind() == "member_expression"
-        && let Some(edge) = this_member_reference_edge(node, ctx, source)
+        && let Some(edge) = member_reference_edge(node, ctx, source)
     {
         output.edges.push(edge);
     }
@@ -3613,6 +3664,10 @@ fn in_value_position(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else {
         return false;
     };
+    // `(f as any)(x)` calls `f`: a callee behind casts or parentheses.
+    if is_expression_wrapper(parent.kind()) && is_callee(climb_wrappers(node)) {
+        return false;
+    }
     if node.kind() == "shorthand_property_identifier" {
         return parent.kind() == "object";
     }
@@ -3644,9 +3699,10 @@ fn in_value_position(node: Node<'_>) -> bool {
         | "subscript_expression"
         | "computed_property_name" => true,
         "member_expression" | "optional_member_expression" => is_field("object"),
-        "assignment_expression" | "augmented_assignment_expression" | "assignment_pattern" => {
-            is_field("right")
-        }
+        "assignment_expression"
+        | "augmented_assignment_expression"
+        | "assignment_pattern"
+        | "object_assignment_pattern" => is_field("right"),
         "variable_declarator"
         | "pair"
         | "public_field_definition"
@@ -3661,10 +3717,60 @@ fn in_value_position(node: Node<'_>) -> bool {
     }
 }
 
+/// Wrappers that leave the value of the expression they hold as it is.
+fn is_expression_wrapper(kind: &str) -> bool {
+    matches!(
+        kind,
+        "parenthesized_expression"
+            | "as_expression"
+            | "satisfies_expression"
+            | "non_null_expression"
+            | "type_assertion"
+    )
+}
+
+/// `node` with the casts and parentheses around it: the outermost wrapper
+/// that holds it as its expression, or `node` itself.
+fn climb_wrappers(node: Node<'_>) -> Node<'_> {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        if !is_expression_wrapper(parent.kind())
+            || parent
+                .child_by_field_name("type")
+                .is_some_and(|t| t.id() == cur.id())
+        {
+            break;
+        }
+        cur = parent;
+    }
+    cur
+}
+
+/// Whether `node` is the callee of a call or `new`.
+fn is_callee(node: Node<'_>) -> bool {
+    node.parent().is_some_and(|p| {
+        matches!(p.kind(), "call_expression" | "new_expression")
+            && p.child_by_field_name("function")
+                .or_else(|| p.child_by_field_name("constructor"))
+                .is_some_and(|f| f.id() == node.id())
+    })
+}
+
 /// A function or parameter-bearing node of `name`'s enclosing scopes binds
 /// it (a parameter, `let`/`const`/`var`, catch parameter, nested function or
 /// class). Deliberately over-approximate: a missed edge beats a wrong one.
 fn enclosing_function_binds(node: Node<'_>, name: &str, source: &str) -> bool {
+    enclosing_function_binds_from(node, name, source, 0)
+}
+
+/// `enclosing_function_binds` over the functions that start at or after
+/// byte `min_start` only: the scopes nested inside a declaration.
+fn enclosing_function_binds_from(
+    node: Node<'_>,
+    name: &str,
+    source: &str,
+    min_start: usize,
+) -> bool {
     // Bindings of this function's own scope: nested functions have their own
     // (only their declared names bind here).
     fn body_binds(node: Node<'_>, name: &str, source: &str) -> bool {
@@ -3704,7 +3810,7 @@ fn enclosing_function_binds(node: Node<'_>, name: &str, source: &str) -> bool {
     }
     let mut cur = node.parent();
     while let Some(n) = cur {
-        if is_function_like(n.kind()) {
+        if is_function_like(n.kind()) && n.start_byte() >= min_start {
             let mut params = Vec::new();
             collect_lambda_parameter_bindings(n, source, &mut params);
             let body_binds_name = n
@@ -3733,6 +3839,13 @@ fn is_function_like(kind: &str) -> bool {
     )
 }
 
+/// Whether a parameter or declaration of an enclosing function hides the
+/// module-level declaration or import `name` from the value read at `node`.
+/// Syntactic and over-approximate: a missed edge beats a wrong one.
+fn value_root_is_shadowed(node: Node<'_>, name: &str, source: &str) -> bool {
+    enclosing_function_binds(node, name, source)
+}
+
 /// `CALLS` edge for an identifier used as a value (`options.getPath ?? getPath`,
 /// `register(handler)`): an import, or a declaration of this file, that no
 /// local shadows. Resolved like a bare call to the name; see
@@ -3741,21 +3854,13 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     if !in_value_position(node) {
         return None;
     }
-    // `module.exports = { helper }` and `export const Api = { helper }`
-    // declare an export surface, they use nothing.
+    // `module.exports = { helper }` declares an export surface, it uses
+    // nothing; `export const Api = { helper }` is a table that does (the
+    // compiler reads `helper` there), so it is a reference.
     let mut up = node.parent();
     while let Some(n) = up {
         if is_function_like(n.kind()) {
             break;
-        }
-        if n.kind() == "variable_declarator"
-            && n.parent()
-                .and_then(|d| d.parent())
-                .is_some_and(|e| e.kind() == "export_statement")
-            && n.child_by_field_name("value")
-                .is_some_and(|v| v.kind() == "object")
-        {
-            return None;
         }
         if n.kind() == "assignment_expression"
             && n.child_by_field_name("left").is_some_and(|l| {
@@ -3768,20 +3873,25 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         up = n.parent();
     }
     let name = node_text(node, source);
-    let shadowed = if ctx.fn_depth == 0
-        && ctx.local_types.contains_key(&name)
-        && (ctx.declared_names.contains(&name) || ctx.import_bindings.contains_key(&name))
-    {
-        // Module-level inference folds module consts and arrow locals
-        // into one map: ask the enclosing functions instead.
-        enclosing_function_binds(node, &name, source)
+    // A function declared inside an enclosing function and named here is
+    // that local symbol (`.catch(handleError)`, `{ createContext }`).
+    let local_fn = ctx.local_fns.get(&name);
+    let shadowed = if let Some(local) = local_fn {
+        // A parameter or declaration inside the local function itself
+        // (`let isDir` in `const isDir = () => { .. return isDir }`).
+        enclosing_function_binds_from(node, &name, source, local.start_byte)
     } else {
-        is_local_non_import_binding(ctx, &name)
+        value_root_is_shadowed(node, &name, source)
     };
     if shadowed {
         return None;
     }
-    let import_candidates: Vec<String> = match (ctx.import_bindings.get(&name), node.parent()) {
+    let import_candidates: Vec<String> = match (
+        ctx.import_bindings
+            .get(&name)
+            .filter(|_| local_fn.is_none()),
+        node.parent(),
+    ) {
         // `ns.CONST` (not a call, which `handle_call` records): the export.
         (Some((spec, None)), Some(member))
             if matches!(
@@ -3789,11 +3899,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
                 "member_expression" | "optional_member_expression"
             ) =>
         {
-            let is_callee = member.parent().is_some_and(|call| {
-                call.child_by_field_name("function")
-                    .or_else(|| call.child_by_field_name("constructor"))
-                    .is_some_and(|f| f.id() == member.id())
-            });
+            let is_callee = is_callee(climb_wrappers(member));
             member
                 .child_by_field_name("property")
                 .filter(|p| p.kind() == "property_identifier" && !is_callee)
@@ -3801,13 +3907,16 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
                 .into_iter()
                 .collect()
         }
+        _ if local_fn.is_some() => Vec::new(),
         _ => import_placeholder_unshadowed(&name, ctx)
             .into_iter()
             .collect(),
     };
     // An import resolves through its candidate alone: a container-qualified
     // guess would bind a same-named member of the enclosing class.
-    let target = if !import_candidates.is_empty() {
+    let target = if let Some(local) = local_fn {
+        Some(local.qualname.clone())
+    } else if !import_candidates.is_empty() {
         None
     } else if ctx.declared_names.contains(&name) && !ctx.import_bindings.contains_key(&name) {
         Some(build_qualname(
@@ -3819,13 +3928,14 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         return None;
     };
     // `config.port` reads the object, it does not call it: a `USES` edge.
-    let is_root = node.parent().is_some_and(|p| {
+    let outer = climb_wrappers(node);
+    let is_root = outer.parent().is_some_and(|p| {
         matches!(
             p.kind(),
             "member_expression" | "optional_member_expression" | "subscript_expression"
         ) && p
             .child_by_field_name("object")
-            .is_some_and(|o| o.id() == node.id())
+            .is_some_and(|o| o.id() == outer.id())
     });
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
@@ -3844,58 +3954,102 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         import_candidates,
-        bare_call: !is_root,
-        call_shape: (!is_root).then_some(CallShape {
-            arg_count: 0,
-            is_new: false,
-            implicit_this: false,
-            is_ref: true,
-            is_type: false,
-        }),
+        // A local function binds through a bare reference only, even when
+        // its property is read (`(resolve as Lazy)[marker] = true`).
+        bare_call: !is_root || local_fn.is_some(),
+        call_shape: (!is_root || local_fn.is_some()).then(CallShape::value_reference),
         ..Default::default()
     })
 }
 
-/// `REFERENCES` edge for a method of the enclosing class used as a value
-/// (`bus.on('x', this.handle)`, `{ run: this.run }`): `this.name` in a value
-/// position, not called and not the root of a longer chain.
-fn this_member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    if ctx.this_rebound
-        || ctx.class_stack.len() <= ctx.ns_depth
-        || !in_value_position(node)
-        || node
-            .parent()
-            .is_some_and(|p| matches!(p.kind(), "member_expression" | "optional_member_expression"))
-    {
+/// `REFERENCES` edge for a member used as a value rather than called:
+/// `bus.on('x', this.handle)`, `{ run: this.run }`, `const f = Cls.create`,
+/// `valuesArray.map(Unpromise.resolve)`, `this.m = this.m.bind(this)`,
+/// `immer.produce.bind(immer)`. Only a chain whose owner the file names is
+/// kept: `this`, a class, namespace or import of this file, or a receiver
+/// with an inferred type. The resolver refuses an accessor (`return
+/// this.shape` reads a property, it names no function).
+fn member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let property = node.child_by_field_name("property")?;
+    if property.kind() != "property_identifier" {
         return None;
     }
-    let object = node.child_by_field_name("object")?;
-    let property = node.child_by_field_name("property")?;
-    if object.kind() != "this" || property.kind() != "property_identifier" {
+    let outer = climb_wrappers(node);
+    let parent = outer.parent()?;
+    let is_chain_object = |p: Node<'_>| {
+        matches!(
+            p.kind(),
+            "member_expression" | "optional_member_expression" | "subscript_expression"
+        ) && p
+            .child_by_field_name("object")
+            .is_some_and(|o| o.id() == outer.id())
+    };
+    // `x.m.bind(..)` binds `x.m` as a value; any other longer chain reads it.
+    let bound = is_chain_object(parent)
+        && parent.kind() == "member_expression"
+        && parent
+            .child_by_field_name("property")
+            .is_some_and(|p| node_text(p, source) == "bind")
+        && is_callee(parent);
+    if !bound && (is_chain_object(parent) || !in_value_position(node)) {
+        return None;
+    }
+    let (root, hops) = member_chain_root(node);
+    let root_name = (root.kind() == "identifier").then(|| node_text(root, source));
+    let on_this = root.kind() == "this";
+    if on_this {
+        if ctx.this_rebound || ctx.class_stack.len() <= ctx.ns_depth {
+            return None;
+        }
+    } else if let Some(name) = &root_name {
+        if ctx.local_fns.contains_key(name) || value_root_is_shadowed(root, name, source) {
+            return None;
+        }
+    } else {
         return None;
     }
     let raw = node_text(node, source);
-    let target = resolve_call_target(&raw, ctx)?;
     let receiver_type = pin_receiver_type(infer_receiver_type(node, source, ctx), ctx);
+    let known = matches!(
+        receiver_type,
+        ReceiverType::Known(_) | ReceiverType::Pinned(_) | ReceiverType::Scoped { .. }
+    );
+    let import_candidates: Vec<String> = import_placeholder(&raw, ctx).into_iter().collect();
+    let names_owner = on_this && hops == 1
+        || root_name.as_deref().is_some_and(|name| {
+            is_same_file_declaration_root(name, ctx) || ctx.import_bindings.contains_key(name)
+        });
+    if !known && !names_owner {
+        return None;
+    }
+    let target = if import_candidates.is_empty() {
+        Some(resolve_call_target(&raw, ctx)?)
+    } else {
+        None
+    };
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
         kind: edge_views::REFERENCES.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(target),
+        detail: target.is_none().then(|| raw.clone()),
+        target_qualname: target,
         evidence_snippet: util::edge_evidence_snippet(
             source, start_byte, end_byte, start_line, end_line,
         ),
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         receiver_type,
+        import_candidates,
         bare_call: false,
         call_shape: Some(CallShape::value_reference()),
         ..Default::default()
     })
 }
 
+/// A function used as a value; a `typeof` query names a value in a type
+/// position and is judged like any other `USES`.
 fn is_value_ref(edge: &EdgeInput) -> bool {
-    edge.call_shape.is_some_and(|s| s.is_ref)
+    edge.call_shape.is_some_and(|s| s.is_ref && !s.is_typeof)
 }
 
 /// Keeps a value reference only when its target can exist: an import (an
@@ -3952,9 +4106,21 @@ fn finish_value_references(output: &mut ExtractedFile) {
                 return true;
             }
             let symbols = if e.kind == "USES" { &any } else { &values };
-            let known = !e.import_candidates.is_empty()
+            // A member of a typed receiver (`immer.produce`) is bound by its
+            // type once every symbol exists.
+            let typed = e.kind == "REFERENCES"
+                && matches!(
+                    e.receiver_type,
+                    ReceiverType::Known(_) | ReceiverType::Pinned(_) | ReceiverType::Scoped { .. }
+                );
+            let known = typed
+                || !e.import_candidates.is_empty()
                 || e.target_qualname.as_deref().is_some_and(|t| {
-                    symbols.contains(t) && Some(t) != e.source_qualname.as_deref()
+                    // A callback may name its own function
+                    // (`signal.off('abort', onAbort)`); a `USES` of itself
+                    // is a function reading its own property.
+                    symbols.contains(t)
+                        && (e.kind != "USES" || Some(t) != e.source_qualname.as_deref())
                 });
             known && seen.insert(site(e))
         })
@@ -3962,6 +4128,22 @@ fn finish_value_references(output: &mut ExtractedFile) {
     let mut keep = keep.into_iter();
     output.edges.retain(|_| keep.next().unwrap_or(true));
 }
+
+/// Type keywords some parser versions give as plain type identifiers.
+const PRIMITIVE_TYPE_NAMES: [&str; 12] = [
+    "any",
+    "bigint",
+    "boolean",
+    "never",
+    "null",
+    "number",
+    "object",
+    "string",
+    "symbol",
+    "undefined",
+    "unknown",
+    "void",
+];
 
 /// State of one `collect_type_references` walk.
 struct Scan<'a> {
@@ -4001,7 +4183,7 @@ fn query_root(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 impl Scan<'_> {
-    fn emit(&mut self, node: Node<'_>, dotted: &str) {
+    fn emit(&mut self, node: Node<'_>, dotted: &str, typeof_query: bool) {
         let name = dotted.split('.').next().unwrap_or(dotted);
         if declares_type_parameter(node, name, self.source) {
             return;
@@ -4051,6 +4233,7 @@ impl Scan<'_> {
             evidence_start_line: Some(start_line),
             evidence_end_line: Some(end_line),
             import_candidates: candidates,
+            call_shape: typeof_query.then(CallShape::typeof_reference),
             ..Default::default()
         });
     }
@@ -4077,7 +4260,11 @@ impl Scan<'_> {
                         ));
                 if !declares {
                     let name = node_text(node, self.source);
-                    self.emit(node, &name);
+                    // `bigint` is the primitive type; a function named
+                    // `bigint` is not what an annotation means.
+                    if !PRIMITIVE_TYPE_NAMES.contains(&name.as_str()) {
+                        self.emit(node, &name, false);
+                    }
                 }
             }
             "nested_type_identifier" => {
@@ -4090,13 +4277,13 @@ impl Scan<'_> {
                         node_text(module, self.source),
                         node_text(name, self.source)
                     );
-                    self.emit(node, &dotted);
+                    self.emit(node, &dotted, false);
                 }
             }
             "type_query" => {
                 if let Some(root) = node.named_child(0).and_then(query_root) {
                     let name = node_text(root, self.source);
-                    self.emit(root, &name);
+                    self.emit(root, &name, true);
                 }
             }
             _ => {}
@@ -4192,6 +4379,18 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         };
         target_node = operand;
     }
+    // `(checks.minLength as any)(..)` calls `checks.minLength`.
+    while is_expression_wrapper(target_node.kind()) && target_node.kind() != "non_null_expression" {
+        let inner = if target_node.kind() == "type_assertion" {
+            target_node.named_child(target_node.named_child_count().saturating_sub(1))
+        } else {
+            target_node.named_child(0)
+        };
+        let Some(inner) = inner else {
+            break;
+        };
+        target_node = inner;
+    }
     let raw = node_text(target_node, source);
     if raw.is_empty() {
         return register_handled;
@@ -4276,6 +4475,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             implicit_this: false,
             is_ref: false,
             is_type: false,
+            is_typeof: false,
         }),
         ..Default::default()
     });
@@ -4306,6 +4506,7 @@ fn super_constructor_edge(node: Node<'_>, base: &str, ctx: &Context, source: &st
             implicit_this: false,
             is_ref: false,
             is_type: false,
+            is_typeof: false,
         }),
         ..Default::default()
     }
@@ -5983,8 +6184,8 @@ fn resolve_pending_wrapper_calls(
         let resolved = edge.import_candidates.first().and_then(|cand| {
             let (spec, member) = cand.split_once(IMPORT_PLACEHOLDER_SEP)?;
             let dst = resolve_import_path(repo_root, file_rel_path, spec)?;
-            let (path, member) =
-                EXPORT_CACHE.with(|c| chase_member(repo_root, &dst, member, &mut c.borrow_mut()));
+            let (path, member) = EXPORT_CACHE
+                .with(|c| chase_member(repo_root, &dst, member, &mut c.borrow_mut(), true));
             let table = tables
                 .entry(path.clone())
                 .or_insert_with(|| scan_http_wrappers(repo_root, &path).unwrap_or_default());
@@ -7643,6 +7844,13 @@ fn handle_function_named(
     }
 }
 
+/// Whether the class member `node` is a `get` or `set` accessor.
+fn is_accessor_member(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .any(|c| matches!(c.kind(), "get" | "set"))
+}
+
 /// Whether the class member `node` carries the `static` keyword.
 fn is_static_member(node: Node<'_>) -> bool {
     let mut cursor = node.walk();
@@ -7679,6 +7887,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     }
     if is_static_member(node) {
         output.static_symbols.push((qualname.clone(), start_line));
+    }
+    if is_accessor_member(node) {
+        output.accessor_symbols.push((qualname.clone(), start_line));
     }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),

@@ -133,6 +133,11 @@ pub(crate) const LOCAL_MODIFIER: &str = "local";
 /// exact typed-receiver call, but never by a name tier, and never dead code.
 pub(crate) const DECL_MODIFIER: &str = "decl";
 
+/// The `symbols.visibility` modifier of a JS/TS `get` / `set` accessor: a
+/// property read or write runs it, which no value reference to a function
+/// means, and no edge records, so `dead_symbols` never judges it.
+pub(crate) const ACCESSOR_MODIFIER: &str = "accessor";
+
 /// The `symbols.visibility` modifier of a JS/TS declaration every file sees
 /// as a global (a script file's top level, `declare global { }`).
 pub(crate) const GLOBAL_MODIFIER: &str = "global";
