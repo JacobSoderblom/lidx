@@ -782,12 +782,24 @@ pub(super) struct GoTypeRow {
     signature: Option<String>,
     pub(super) file_id: i64,
     visibility: Option<String>,
+    /// Path of the declaring file.
+    path: String,
 }
 
 impl GoTypeRow {
     pub(super) fn dir(&self) -> &str {
         self.qualname.rsplit_once('/').map_or("", |(dir, _)| dir)
     }
+}
+
+/// The types implementing a Go interface.
+pub(super) struct Implementers {
+    pub(super) types: Vec<GoTypeRow>,
+    /// A method owner with every method name of the interface was not a
+    /// declaration we could judge (a type alias, a type with no symbol):
+    /// there may be an implementer this list lacks, so it proves no
+    /// uniqueness.
+    pub(super) uncertain: bool,
 }
 
 /// What one `Resolver` has read of the Go declarations, memoized: the
@@ -797,7 +809,7 @@ pub(super) struct GoCaches {
     types: HashMap<(String, String), Rc<Vec<GoTypeRow>>>,
     methods: HashMap<String, Rc<Vec<(String, MethodSig)>>>,
     sets: HashMap<i64, MethodSet>,
-    implementers: HashMap<i64, Rc<Vec<GoTypeRow>>>,
+    implementers: HashMap<i64, Rc<Implementers>>,
 }
 
 /// A type text with the parts two declarations of one signature may spell
@@ -950,7 +962,7 @@ impl Resolver<'_> {
     fn go_type_query(&self, filter: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Vec<GoTypeRow>> {
         let gv_param = args.len();
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT s.id, s.qualname, s.name, s.kind, s.signature, s.file_id, s.visibility
+            "SELECT s.id, s.qualname, s.name, s.kind, s.signature, s.file_id, s.visibility, f.path
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE f.language = 'go' AND {filter} AND {}",
             live_symbols(gv_param)
@@ -965,6 +977,7 @@ impl Resolver<'_> {
                     signature: row.get(4)?,
                     file_id: row.get(5)?,
                     visibility: row.get(6)?,
+                    path: row.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1070,12 +1083,13 @@ impl Resolver<'_> {
     /// with an embedded interface whose methods are not known, so no
     /// implementer rests on a guess. Found through the types that declare
     /// one of the interface's methods.
-    pub(super) fn go_implementers(&mut self, iface: &GoTypeRow) -> Result<Rc<Vec<GoTypeRow>>> {
+    pub(super) fn go_implementers(&mut self, iface: &GoTypeRow) -> Result<Rc<Implementers>> {
         if let Some(known) = self.go.implementers.get(&iface.id) {
             return Ok(known.clone());
         }
         let want = self.go_method_set(iface, 0)?;
         let mut found: Vec<GoTypeRow> = Vec::new();
+        let mut uncertain = !want.complete;
         if want.complete && !want.methods.is_empty() {
             let mut seen: HashSet<String> = HashSet::new();
             let mut candidates: Vec<String> = Vec::new();
@@ -1132,10 +1146,18 @@ impl Resolver<'_> {
             }
             for container in candidates {
                 let rows = self.go_type_query(
-                    "s.qualname = ?1 AND s.kind IN ('class', 'type')",
+                    "s.qualname = ?1 AND s.kind IN ('class', 'type', 'interface')",
                     params![container, self.graph_version],
                 )?;
-                for t in rows {
+                if rows.is_empty() {
+                    // methods of a receiver type with no declaration here
+                    let own = self.go_own_methods(&container)?;
+                    if want.methods.keys().all(|m| own.iter().any(|(n, _)| n == m)) {
+                        uncertain = true;
+                    }
+                    continue;
+                }
+                for t in rows.into_iter().filter(|t| t.kind != "interface") {
                     let has = self.go_method_set(&t, 0)?;
                     if want
                         .methods
@@ -1148,7 +1170,10 @@ impl Resolver<'_> {
             }
         }
         found.sort_by_key(|t| t.id);
-        let found = Rc::new(found);
+        let found = Rc::new(Implementers {
+            types: found,
+            uncertain,
+        });
         self.go.implementers.insert(iface.id, found.clone());
         Ok(found)
     }
@@ -1193,7 +1218,15 @@ impl Resolver<'_> {
             return Ok(resolved(found.id, ResolutionKind::ReceiverType));
         }
         let implementers = self.go_implementers(&iface)?;
-        if let [only] = &implementers[..]
+        // A production caller never reaches a type declared in a test file.
+        let from_test = r.source_file_path.ends_with("_test.go");
+        let visible: Vec<&GoTypeRow> = implementers
+            .types
+            .iter()
+            .filter(|t| from_test || !t.path.ends_with("_test.go"))
+            .collect();
+        if !implementers.uncertain
+            && let [only] = &visible[..]
             && let Some(found) = self.go_member(only.dir(), &only.name, &spec.name, 0)?
             && found.kind == "method"
             && found.id != spec.id
@@ -1233,7 +1266,7 @@ impl Resolver<'_> {
         let interfaces = self.go_type_query("s.kind = 'interface'", params![self.graph_version])?;
         let mut pairs = Vec::new();
         for iface in interfaces {
-            for t in self.go_implementers(&iface)?.iter() {
+            for t in self.go_implementers(&iface)?.types.iter() {
                 pairs.push((t.id, iface.id, t.file_id));
             }
         }

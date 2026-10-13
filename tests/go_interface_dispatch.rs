@@ -402,6 +402,43 @@ fn editing_the_proof_matches_a_fresh_reindex() {
 }
 
 #[test]
+fn a_production_caller_does_not_see_an_implementation_declared_in_a_test_file() {
+    let mock =
+        "package app\n\ntype mockDoer struct{}\n\nfunc (m mockDoer) Do() error { return nil }\n";
+    let test_caller = "package app\n\nfunc UseInTest(d Doer) {\n\td.Do()\n}\n";
+    let mut files = with(&base(), ("impls.go", IMPLS_ONE));
+    files.push(("mock_test.go", mock));
+    files.push(("use_test.go", test_caller));
+    let (_tmp, _root, indexer) = indexed(&files);
+    // the production caller: ImplA is the only implementation it can reach
+    assert_eq!(
+        edges(&indexer, "CALLS", "use.Use"),
+        vec!["use.Use -> impls.ImplA.Do"]
+    );
+    // the test caller sees both
+    assert!(edges(&indexer, "CALLS", "use_test.UseInTest").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use_test.UseInTest"),
+        vec!["use_test.UseInTest -> doer.Doer.Do"]
+    );
+}
+
+#[test]
+fn a_method_on_an_undeclared_receiver_type_makes_the_implementation_unproven() {
+    // `A2` is an alias of `ImplB`; its method has no type symbol to judge, so
+    // `ImplA` is not shown to be the only implementation
+    let alias = "package app\n\ntype A2 = ImplA\n\nfunc (a *A2) Do() error { return nil }\n";
+    let mut files = with(&base(), ("impls.go", IMPLS_ONE));
+    files.push(("alias.go", alias));
+    let (_tmp, _root, indexer) = indexed(&files);
+    assert!(edges(&indexer, "CALLS", "use.Use").is_empty());
+    assert_eq!(
+        edges(&indexer, "DISPATCH", "use.Use"),
+        vec!["use.Use -> doer.Doer.Do"]
+    );
+}
+
+#[test]
 fn a_method_with_other_parameter_or_result_types_is_no_implementation() {
     let files = [
         ("go.mod", GO_MOD),
