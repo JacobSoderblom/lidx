@@ -936,11 +936,18 @@ fn std_interface(path: &str, name: &str) -> Option<&'static [(&'static str, &'st
         ("net/http", "Flusher") => &[("Flush", "()")],
         ("net/http", "Hijacker") => &[("Hijack", "() -> (net.Conn, *bufio.ReadWriter, error)")],
         ("net/http", "Pusher") => &[("Push", "(target string, opts *http.PushOptions) -> error")],
-        // A struct, not an interface: its listed methods are the ones an
-        // embedding type most often satisfies an interface with.
+        // A struct, not an interface: the exported methods of *exec.Cmd
+        // (Go 1.24), which an embedding type promotes.
         ("os/exec", "Cmd") => &[
+            ("CombinedOutput", "() -> ([]byte, error)"),
+            ("Environ", "() -> []string"),
+            ("Output", "() -> ([]byte, error)"),
             ("Run", "() -> error"),
             ("Start", "() -> error"),
+            ("StderrPipe", "() -> (io.ReadCloser, error)"),
+            ("StdinPipe", "() -> (io.WriteCloser, error)"),
+            ("StdoutPipe", "() -> (io.ReadCloser, error)"),
+            ("String", "() -> string"),
             ("Wait", "() -> error"),
         ],
         ("context", "Context") => &[

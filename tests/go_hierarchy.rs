@@ -398,3 +398,15 @@ fn embedding_adds_no_override_pair_of_its_own() {
     assert!(edges(&indexer, "IMPLEMENTS", "wrap.%").is_empty());
     assert_eq!(pairs(&indexer), vec!["doer.Doer.Do <- base.Base.Do"]);
 }
+
+#[test]
+fn promotion_through_an_embedded_exec_cmd_covers_output_and_the_pipes() {
+    let iface = "package app\n\nimport \"io\"\n\ntype Runner interface {\n\tOutput() ([]byte, error)\n\tStdoutPipe() (io.ReadCloser, error)\n\tString() string\n}\n\ntype Wrong interface {\n\tOutput() (string, error)\n}\n";
+    let cmd = "package app\n\nimport \"os/exec\"\n\ntype osCommand struct {\n\t*exec.Cmd\n}\n";
+    let files = [("go.mod", GO_MOD), ("iface.go", iface), ("cmd.go", cmd)];
+    let (_tmp, _root, indexer) = indexed(&files);
+    assert_eq!(
+        edges(&indexer, "IMPLEMENTS", "cmd.%"),
+        vec!["cmd.osCommand -> iface.Runner"]
+    );
+}
