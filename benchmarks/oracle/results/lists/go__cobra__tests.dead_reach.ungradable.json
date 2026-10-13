@@ -1,0 +1,16 @@
+[
+{"exported":false,"file":"command.go","key":"command.go:1937","kind":"type","lidx_kind":"class","line":1937,"name":"tmplFunc","qualname":"command.tmplFunc","reason":"not_a_function","subkind":"struct"},
+{"exported":false,"file":"command_test.go","key":"command_test.go:2435","kind":"type","lidx_kind":"class","line":2435,"name":"calledAsTestcase","qualname":"command_test.calledAsTestcase","reason":"not_a_function","subkind":"struct"},
+{"exported":false,"file":"completions.go","key":"completions.go:47","kind":"type","lidx_kind":"class","line":47,"name":"flagCompError","qualname":"completions.flagCompError","reason":"not_a_function","subkind":"struct"},
+{"exported":false,"file":"doc/yaml_docs.go","key":"doc/yaml_docs.go:30","kind":"type","lidx_kind":"class","line":30,"name":"cmdOption","qualname":"doc/yaml_docs.cmdOption","reason":"not_a_function","subkind":"struct"},
+{"exported":false,"file":"doc/yaml_docs.go","key":"doc/yaml_docs.go:37","kind":"type","lidx_kind":"class","line":37,"name":"cmdDoc","qualname":"doc/yaml_docs.cmdDoc","reason":"not_a_function","subkind":"struct"},
+{"exported":true,"file":"command.go","key":"command.go:45","kind":"type","lidx_kind":"class","line":45,"name":"Group","qualname":"command.Group","reason":"not_a_function","subkind":"struct"},
+{"exported":true,"file":"doc/man_docs.go","key":"doc/man_docs.go:84","kind":"type","lidx_kind":"class","line":84,"name":"GenManTreeOptions","qualname":"doc/man_docs.GenManTreeOptions","reason":"not_a_function","subkind":"struct"},
+{"exported":true,"file":"doc/man_docs.go","key":"doc/man_docs.go:94","kind":"type","lidx_kind":"class","line":94,"name":"GenManHeader","qualname":"doc/man_docs.GenManHeader","reason":"not_a_function","subkind":"struct"},
+{"file":"command_test.go","key":"command_test.go:2604","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"file":"command_test.go","key":"command_test.go:2629","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"file":"command_test.go","key":"command_test.go:2655","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"file":"command_test.go","key":"command_test.go:2676","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"file":"command_win.go","key":"command_win.go:30","lidx_kind":"function","name":"preExecHook","qualname":"command_win.preExecHook","reason":"file_not_in_program"},
+{"file":"completions.go","key":"completions.go:313","lidx_kind":"method","name":"GetSlice","qualname":"completions.SliceValue.GetSlice","reason":"not_a_judged_declaration"}
+]

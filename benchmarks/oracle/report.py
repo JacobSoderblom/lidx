@@ -328,6 +328,11 @@ def build(results_dir):
     if os.path.exists(sc):
         w("")
         w(spotcheck_section(json.load(open(sc))))
+    import report_dead
+    dead = report_dead.section(meta, cells, results_dir)
+    if dead:
+        w("")
+        w(dead)
     import report_hierarchy  # the type hierarchy section (issue #449) is appended after everything above
     hier = report_hierarchy.section(meta, results_dir)
     if hier:
