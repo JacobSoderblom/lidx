@@ -1369,32 +1369,51 @@ fn handle_use(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     }
 }
 
-/// Std macros whose arguments are ordinary expressions (modulo the format
-/// string / `matches!` pattern), so calls inside them are real calls.
-const EXPR_ARG_MACROS: &[&str] = &[
-    "format",
-    "println",
-    "print",
-    "eprintln",
-    "eprint",
-    "vec",
-    "assert",
-    "assert_eq",
-    "assert_ne",
-    "matches",
-    "write",
-    "writeln",
-    "panic",
-    "debug_assert",
-    "debug_assert_eq",
-    "debug_assert_ne",
-    "unreachable",
-    "unimplemented",
-    "todo",
-    "dbg",
-    "assert_matches",
-    "debug_assert_matches",
+/// Macros whose arguments are not (mostly) expressions: declarative ones that
+/// define items or statics, file and string builders, `proptest!` / `quote!`
+/// bodies. Every other macro's arguments are re-parsed as expressions: the
+/// std ones (`format!`, `vec!`, `assert_eq!`, ..), `anyhow::bail!`,
+/// `insta::assert_snapshot!`, `tokio::select!`, test-helper macros of the
+/// repository (`rgtest!(name, |dir, cmd| { .. })`). A call in them is a call;
+/// text that is not an expression parses to nothing that resolves.
+const NON_EXPR_ARG_MACROS: &[&str] = &[
+    "thread_local",
+    "lazy_static",
+    "cfg_if",
+    "include",
+    "include_str",
+    "include_bytes",
+    "concat",
+    "stringify",
+    "env",
+    "option_env",
+    "compile_error",
+    "quote",
+    "bitflags",
+    "proptest",
+    "macro_rules",
+    // Embedded DSLs: their identifiers are markup, field and column names, not
+    // calls, and a bare one could bind a free function of the same name.
+    "json",
+    "html",
+    "rsx",
+    "view",
+    "sql",
+    "query",
+    "parse_quote",
+    "arg",
 ];
+
+/// Whether `bytes` holds an identifier character directly before a `(`.
+fn has_call_like_token(bytes: &[u8]) -> bool {
+    bytes
+        .windows(2)
+        .any(|w| w[1] == b'(' && (w[0].is_ascii_alphanumeric() || w[0] == b'_'))
+}
+
+fn macro_args_are_expressions(name: &str) -> bool {
+    !NON_EXPR_ARG_MACROS.contains(&name)
+}
 
 /// Method names the std types and traits define -- `Clone`, `AsRef`/`AsMut`,
 /// `Borrow`, `Iterator`, `Option`/`Result`, `Path`/`PathBuf`, `str`/`String`,
@@ -1675,7 +1694,7 @@ fn handle_macro_invocation(
         && node
             .parent()
             .is_some_and(|p| matches!(p.kind(), "source_file" | "declaration_list"));
-    if !item_macro && !EXPR_ARG_MACROS.contains(&name) {
+    if !item_macro && !macro_args_are_expressions(name) {
         return;
     }
     let mut cursor = node.walk();
@@ -1687,6 +1706,10 @@ fn handle_macro_invocation(
     };
     if item_macro {
         walk_item_macro(tokens, ctx, source, output);
+        return;
+    }
+    // Arguments with no `name(` hold no call: nothing to re-parse.
+    if !has_call_like_token(&source.as_bytes()[tokens.start_byte()..tokens.end_byte()]) {
         return;
     }
     let range = tree_sitter::Range {
@@ -1911,13 +1934,28 @@ fn collect_nested_fn_names(node: Node<'_>, source: &str, out: &mut HashSet<Strin
 }
 
 /// Whether `node` is read as a value that can name a function: a call
-/// argument, a struct field's value (plain or shorthand) or an array element.
+/// argument, a struct field's value (plain or shorthand), an array or tuple
+/// element (`alt((parse_a, parse_b))`), the value of a `let` or an
+/// assignment, a returned or borrowed value, a match arm's value, or the
+/// receiver of a method called on a function value (`f.parse_next(input)`).
 fn is_value_position(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else {
         return false;
     };
     match parent.kind() {
-        "array_expression" => true,
+        "array_expression" | "tuple_expression" | "return_expression" | "reference_expression" => {
+            true
+        }
+        "let_declaration" => parent.child_by_field_name("value") == Some(node),
+        "assignment_expression" => parent.child_by_field_name("right") == Some(node),
+        "match_arm" => parent.child_by_field_name("value") == Some(node),
+        "field_expression" => {
+            parent.child_by_field_name("value") == Some(node)
+                && parent.parent().is_some_and(|c| {
+                    c.kind() == "call_expression"
+                        && c.child_by_field_name("function") == Some(parent)
+                })
+        }
         "arguments" => parent
             .parent()
             .is_some_and(|c| c.kind() == "call_expression"),
@@ -5655,10 +5693,55 @@ fn is_std_type_name(name: &str) -> bool {
     )
 }
 
+/// Whether `name` reads as a type or variant (`CamelCase`), not a constant
+/// (`SCREAMING`) or a function / module (`snake_case`).
+fn is_type_like_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && name.chars().any(|c| c.is_ascii_lowercase())
+        && !name.contains('_')
+}
+
+/// `is_type_like_name`, or an acronym type (`JSON`, `PCRE2`): no underscore,
+/// so not a `SCREAMING_SNAKE` constant.
+fn is_unit_struct_name(name: &str) -> bool {
+    is_type_like_name(name)
+        || (name.len() > 1
+            && !name.contains('_')
+            && name.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+}
+
+/// Whether `node` is where a unit or tuple struct is mentioned as an
+/// expression: a value (`&Flag`, `Box::new(Visitor)`, `[A, B]`, `let x = A`)
+/// or a pattern. Not a binding (`let Foo = ..`) nor a definition's name.
+fn is_struct_value_mention(node: Node<'_>) -> bool {
+    node.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            "arguments"
+                | "reference_expression"
+                | "array_expression"
+                | "tuple_expression"
+                | "return_expression"
+                | "match_arm"
+                | "tuple_struct_pattern"
+                | "tuple_pattern"
+                | "binary_expression"
+                | "parenthesized_expression"
+                | "try_expression"
+                | "await_expression"
+                | "unary_expression"
+        ) || (p.kind() == "field_initializer" && p.child_by_field_name("value") == Some(node))
+            || (p.kind() == "let_declaration" && p.child_by_field_name("value") == Some(node))
+            || (p.kind() == "assignment_expression" && p.child_by_field_name("right") == Some(node))
+    })
+}
+
 /// Emits `USES` edges for type references (field/param/return types, struct
-/// literals) and paths passed as arguments (`get_or_init(Config::from_env)`),
-/// none of which are calls. Sourced from the enclosing module: `dead_symbols`
-/// only needs to know the target is referenced somewhere.
+/// literals and patterns, unit structs used as values, the type in a
+/// `Type::item` path) and paths passed as arguments
+/// (`get_or_init(Config::from_env)`), none of which are calls. Sourced from
+/// the enclosing module: `dead_symbols` only needs to know the target is
+/// referenced somewhere.
 fn collect_uses(
     node: Node<'_>,
     ctx: &Context,
@@ -5666,12 +5749,19 @@ fn collect_uses(
     output: &mut ExtractedFile,
     seen: &mut HashSet<(String, String)>,
 ) {
-    let mut ctx = ctx.clone();
-    if node.kind() == "mod_item"
+    // The context changes only below a `mod`; cloning it per node is the
+    // walk's main cost.
+    let module_ctx;
+    let ctx = if node.kind() == "mod_item"
         && let Some(name) = extract_name(node, source)
     {
-        ctx.module = format!("{}::{name}", ctx.module);
-    }
+        let mut inner = ctx.clone();
+        inner.module = format!("{}::{name}", ctx.module);
+        module_ctx = inner;
+        &module_ctx
+    } else {
+        ctx
+    };
     if !matches!(node.kind(), "use_declaration" | "attribute_item") {
         let parent = node.parent();
         let is_ref = matches!(
@@ -5681,27 +5771,63 @@ fn collect_uses(
         let is_inner_path = parent
             .is_some_and(|p| matches!(p.kind(), "scoped_type_identifier" | "scoped_identifier"));
         let is_definition_name = parent.is_some_and(|p| {
-            p.child_by_field_name("name") == Some(node)
+            // `Foo { .. }` names its type in a `name` field too; that one is
+            // a use.
+            (p.child_by_field_name("name") == Some(node) && p.kind() != "struct_expression")
                 || (p.kind() == "impl_item" && p.child_by_field_name("type") == Some(node))
         });
-        if is_ref && !is_inner_path && !is_definition_name && !is_call_callee(node) {
-            let raw = node_text(node, source);
+        let mut emit = |raw: String, ctx: &Context| {
             if !is_std_type_name(&raw)
-                && let Some(target) = resolve_call_target(&raw, &ctx)
+                && let Some(target) = resolve_call_target(&raw, ctx)
                 && seen.insert((ctx.module.clone(), target.clone()))
             {
                 output.edges.push(EdgeInput {
                     kind: "USES".to_string(),
                     source_qualname: Some(ctx.module.clone()),
                     target_qualname: Some(target),
-                    import_candidates: import_qualified_candidates(&raw, &ctx),
+                    import_candidates: import_qualified_candidates(&raw, ctx),
                     ..Default::default()
                 });
+            }
+        };
+        if is_ref && !is_inner_path && !is_definition_name && !is_call_callee(node) {
+            emit(node_text(node, source), ctx);
+        }
+        // `Type::new(..)`, `Type::Variant`, `module::Type::CONST`: the path
+        // up to the last segment names a type; that is a use of it even
+        // though the whole path is a call or a variant.
+        if node.kind() == "scoped_identifier"
+            && !is_inner_path
+            && let Some(path) = node.child_by_field_name("path")
+        {
+            let prefix = node_text(path, source);
+            if prefix.rsplit("::").next().is_some_and(is_type_like_name) {
+                emit(prefix, ctx);
+            }
+        }
+        // A unit or tuple struct as an expression (`&Unrestricted`).
+        if node.kind() == "identifier"
+            && !is_definition_name
+            && !is_inner_path
+            && !is_call_callee(node)
+            && is_struct_value_mention(node)
+        {
+            let raw = node_text(node, source);
+            if is_unit_struct_name(&raw) {
+                emit(raw, ctx);
+            }
+        }
+        // Tokens of a macro call are not parsed: a `CamelCase` one may name
+        // a type (`vec![Score { .. }; n]`, `matches!(x, Kind::A)`).
+        if node.kind() == "identifier" && parent.is_some_and(|p| p.kind() == "token_tree") {
+            let raw = node_text(node, source);
+            if is_type_like_name(&raw) {
+                emit(raw, ctx);
             }
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            collect_uses(child, &ctx, source, output, seen);
+            collect_uses(child, ctx, source, output, seen);
         }
     }
 }

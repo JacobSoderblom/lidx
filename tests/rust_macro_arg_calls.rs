@@ -1,6 +1,7 @@
 //! Calls written inside the arguments of known std macros (`format!`,
 //! `println!`, ...) are opaque `token_tree`s to tree-sitter; the extractor
-//! re-parses them so those calls still get CALLS edges (issue #362).
+//! re-parses them so those calls still get CALLS edges (issue #362; any macro
+//! but the declarative item-defining ones, issue #463).
 
 mod common;
 
@@ -18,6 +19,7 @@ pub fn in_nested() -> u32 { 5 }
 pub fn on_later_line() -> u32 { 6 }
 pub fn in_custom() -> u32 { 7 }
 pub fn in_pattern() -> u32 { 8 }
+pub fn dsl_name() -> u32 { 11 }
 pub fn in_path() -> u32 { 9 }
 pub struct Bag;
 impl Bag {
@@ -43,6 +45,8 @@ pub fn run(bag: Bag) {
         on_later_line()
     );
     custom!(in_custom());
+    let _d = json!({ "k": dsl_name() });
+    let _s = sql!(dsl_name());
     let _p = matches!(1u32, 1 | 2 if in_pattern() > 0);
     let _q = format!("{}", m::f());
 }
@@ -111,11 +115,13 @@ fn macro_names_yield_no_edges() {
 }
 
 #[test]
-fn unknown_macro_arguments_are_skipped() {
+fn unknown_macro_arguments_are_read_as_expressions() {
+    // A repository's own macros (`rgtest!`, `custom!`) take expressions too:
+    // calls in them are real, and tests that only run through them are used.
     let edges = call_edges();
     assert!(
-        !edges.iter().any(|(t, _)| t == "crate::in_custom"),
-        "unknown macro args must be skipped: {edges:?}"
+        edges.iter().any(|(t, _)| t == "crate::in_custom"),
+        "custom macro args hold calls: {edges:?}"
     );
 }
 
@@ -156,4 +162,13 @@ fn incremental_sync_matches_fresh_reindex() {
     let gv = indexer.db().current_graph_version().unwrap();
     let snap = common::golden::snapshot_edges(indexer.db(), gv).unwrap();
     common::assert_matches_fresh(&snap, &fresh);
+}
+
+#[test]
+fn dsl_macro_arguments_are_skipped() {
+    let edges = call_edges();
+    assert!(
+        !edges.iter().any(|(t, _)| t == "crate::dsl_name"),
+        "json!/sql! args are not expressions: {edges:?}"
+    );
 }

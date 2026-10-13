@@ -2291,6 +2291,7 @@ fn call_shape(node: Node<'_>) -> CallShape {
         is_new: node.kind() != "invocation_expression",
         implicit_this: false,
         is_ref: false,
+        is_type: false,
     }
 }
 
