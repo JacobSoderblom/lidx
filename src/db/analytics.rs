@@ -700,6 +700,18 @@ impl Db {
                          AND e.kind IN ({entrypoint})
                          AND e.graph_version = ?
                      )
+                     -- A call the resolver could not narrow (several same-named
+                     -- candidates, untyped receiver) calls one of them: none of
+                     -- the candidates is provably dead.
+                     AND NOT (s.kind IN ('method', 'function') AND EXISTS (
+                       SELECT 1 FROM unresolved_references ur
+                       JOIN files uf ON uf.id = ur.file_id
+                       WHERE ur.name_tail = s.name
+                         AND ur.reason = 'ambiguous'
+                         AND ur.edge_kind IN ('CALLS', 'REFERENCES')
+                         AND ur.graph_version = {gv}
+                         AND uf.language = f.language
+                     ))
                      AND NOT EXISTS (
                        SELECT 1 {dispatch_from}
                          AND cm.id = s.id

@@ -150,11 +150,12 @@ pub(crate) fn is_value_reference(edge_kind: &str, call_shape: Option<CallShape>)
 /// can include or exclude value references with one definition.
 pub(crate) fn value_reference_sql(kind_col: &str, shape_col: &str) -> String {
     format!(
-        "({kind_col} IN ('{}', '{}') AND COALESCE({shape_col}, '') IN ('{}', '{}'))",
+        "({kind_col} IN ('{}', '{}') AND COALESCE({shape_col}, '') IN ('{}', '{}', '{}'))",
         edge_views::REFERENCES,
         edge_views::USES,
         CallShape::REF_ENCODING,
         CallShape::REF_THIS_ENCODING,
+        CallShape::REF_TYPE_ENCODING,
     )
 }
 
@@ -170,6 +171,15 @@ pub(crate) fn symbol_kind(conn: &Connection, id: i64) -> Result<Option<String>> 
 /// reference to it reads. Such an edge is stored as `USES`.
 fn is_data_symbol_kind(kind: Option<&str>) -> bool {
     matches!(kind, Some("const" | "variable" | "static"))
+}
+
+/// Whether a symbol kind declares a type: what a type mention (`ref:type`)
+/// may bind to.
+fn is_type_symbol_kind(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some("class" | "struct" | "interface" | "type" | "enum" | "trait")
+    )
 }
 
 /// The `edges.kind` to store for an edge bound to `target_id`. A value
@@ -188,6 +198,10 @@ pub(crate) fn stored_edge_kind(
             return Ok(edge_views::DISPATCH.to_string());
         }
         return Ok(edge_kind.to_string());
+    }
+    // A type mention (`ref:type`) is a plain use of the type.
+    if call_shape.is_some_and(|shape| shape.is_type) {
+        return Ok(edge_views::USES.to_string());
     }
     Ok(
         if is_data_symbol_kind(symbol_kind(conn, target_id)?.as_deref()) {
@@ -242,12 +256,19 @@ pub(crate) fn drop_references_shadowed_by_calls(
     graph_version: i64,
     file_id: Option<i64>,
 ) -> Result<usize> {
+    // One file's edges are read through the per-file index: left to itself
+    // the planner walks every value reference of the graph for each file.
+    let (from, file_filter) = match file_id {
+        Some(_) => ("edges INDEXED BY idx_edges_file", "file_id = ?2"),
+        None => ("edges", "?2 IS NULL"),
+    };
     Ok(conn.execute(
         &format!(
-            "DELETE FROM edges
+            "DELETE FROM {from}
              WHERE graph_version = ?1 AND {value_ref}
+               AND COALESCE(call_shape, '') != '{type_ref}'
                AND target_symbol_id IS NOT NULL
-               AND (?2 IS NULL OR file_id = ?2)
+               AND {file_filter}
                AND EXISTS (
                  SELECT 1 FROM edges c
                  WHERE c.kind = '{calls}' AND c.graph_version = ?1
@@ -255,10 +276,24 @@ pub(crate) fn drop_references_shadowed_by_calls(
                    AND c.target_symbol_id = edges.target_symbol_id
                )",
             value_ref = value_reference_sql("kind", "call_shape"),
+            type_ref = CallShape::REF_TYPE_ENCODING,
             calls = edge_views::CALLS,
         ),
         params![graph_version, file_id],
     )?)
+}
+
+/// Whether the parent path of Rust item `qualname` is a module: the item is a
+/// free function (or a type), not a member of an impl or trait.
+fn rust_parent_is_module(conn: &Connection, graph_version: i64, qualname: &str) -> Result<bool> {
+    let Some((parent, _)) = qualname.rsplit_once("::") else {
+        return Ok(false);
+    };
+    Ok(conn
+        .prepare_cached(
+            "SELECT 1 FROM symbols WHERE qualname = ?1 AND kind = 'module' AND graph_version = ?2 LIMIT 1",
+        )?
+        .exists(params![parent, graph_version])?)
 }
 
 /// How a resolved target was found. `as_str` is the `edges.resolution_kind`
@@ -1096,6 +1131,9 @@ struct FallbackGuard {
     /// Refuse a `method`-kind candidate — set for a bare (receiver-less)
     /// `CALLS` edge; see `EdgeInput::bare_call`.
     exclude_method: bool,
+    /// Refuse a free function (one a module declares) — set for a Rust call
+    /// with a receiver (`x.m()`), which only a method can answer.
+    exclude_free_fn: bool,
     /// Refuse a cross-file candidate the language's `VisibilityRule`
     /// deems not visible.
     enforce_visibility: bool,
@@ -1106,6 +1144,7 @@ impl FallbackGuard {
     /// resolution) and `resolve_type_symbol`'s type-name lookups.
     const NONE: FallbackGuard = FallbackGuard {
         exclude_method: false,
+        exclude_free_fn: false,
         enforce_visibility: false,
     };
 }
@@ -1805,6 +1844,14 @@ impl<'c> Resolver<'c> {
             return refuse;
         }
         let target_kind = symbol_kind(self.conn, target_id)?;
+        // A type mention names a type and nothing else.
+        if r.call_shape.is_some_and(|shape| shape.is_type) {
+            return if is_type_symbol_kind(target_kind.as_deref()) {
+                Ok(resolution)
+            } else {
+                refuse
+            };
+        }
         let allowed = match target_kind.as_deref() {
             Some("function" | "class") => true,
             Some("method") => !r.bare_call,
@@ -2712,6 +2759,16 @@ impl<'c> Resolver<'c> {
             self.saw_ambiguous = true;
         }
 
+        // The one candidate of a receiver call is a free function: the call
+        // is not an answer to it (`"..".style(..)` is not `style(..)`).
+        if guard.exclude_free_fn
+            && let [only] = visible.as_slice()
+            && let Some(row) = found.iter().find(|r| r.id == *only)
+            && row.kind == "function"
+            && rust_parent_is_module(self.conn, gv, &row.qualname)?
+        {
+            return Ok(None);
+        }
         match visible.len() {
             1 => Ok(Some(visible[0])),
             0 if kind_eligible > 0 => {
@@ -2823,6 +2880,7 @@ impl<'c> Resolver<'c> {
                 // a candidate (two `Args` types, each with a private `run`).
                 let guard = FallbackGuard {
                     exclude_method: false,
+                    exclude_free_fn: false,
                     enforce_visibility: source_lang == "rust",
                 };
                 if let Some(id) = self.unique_by_pattern(
@@ -2885,8 +2943,15 @@ impl<'c> Resolver<'c> {
                 // kinds (RPC_CALL, HTTP_CALL, CHANNEL_*, XREF, ...) have
                 // their own detection and don't set `bare_call`, so this
                 // never restricts them (see `EdgeInput::bare_call`).
+                // A Rust call with a receiver (`x.m()`, target text without a
+                // path) is answered by a method, never by a free function
+                // that shares the name (`"..".style(..)` is not `style(..)`).
                 let guard = FallbackGuard {
                     exclude_method: edge_kind == "CALLS" && bare_call,
+                    exclude_free_fn: source_lang == "rust"
+                        && edge_kind == "CALLS"
+                        && !bare_call
+                        && !target_qualname.contains("::"),
                     enforce_visibility: true,
                 };
                 if profile_for(source_lang).two_segment
@@ -3225,6 +3290,7 @@ impl<'c> Resolver<'c> {
         let (name, dot, colons) = fuzzy_qualname_patterns(method);
         let guard = FallbackGuard {
             exclude_method: false,
+            exclude_free_fn: false,
             enforce_visibility: true,
         };
         let Some(id) =
@@ -7424,6 +7490,7 @@ mod tests {
             is_new: false,
             implicit_this: false,
             is_ref: false,
+            is_type: false,
         });
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
         assert!(

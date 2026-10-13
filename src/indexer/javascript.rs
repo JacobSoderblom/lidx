@@ -3850,6 +3850,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
             is_new: false,
             implicit_this: false,
             is_ref: true,
+            is_type: false,
         }),
         ..Default::default()
     })
@@ -4274,6 +4275,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             is_new: true,
             implicit_this: false,
             is_ref: false,
+            is_type: false,
         }),
         ..Default::default()
     });
@@ -4303,6 +4305,7 @@ fn super_constructor_edge(node: Node<'_>, base: &str, ctx: &Context, source: &st
             is_new: true,
             implicit_this: false,
             is_ref: false,
+            is_type: false,
         }),
         ..Default::default()
     }

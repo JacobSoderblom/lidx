@@ -182,6 +182,11 @@ struct Context {
     /// The declared or nameable types of the current function's bindings,
     /// closures included (`go_types`).
     types: Rc<LocalTypes>,
+    /// Struct fields this file declares (named struct types and anonymous
+    /// ones, such as a table test's rows) that no method of the file shares
+    /// a name with: `x.name` in a value position reads one, it is no method
+    /// value.
+    field_only_names: Rc<HashSet<String>>,
 }
 
 #[derive(Clone)]
@@ -266,8 +271,10 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             bound_names: Rc::new(HashSet::new()),
             param_types: Rc::new(HashMap::new()),
             types: Rc::new(LocalTypes::default()),
+            field_only_names: Rc::new(field_only_names(root, source)),
         };
         walk_node(root, &ctx, source, &mut output);
+        collect_type_uses(root, &ctx, source, &mut output);
         if let Some(constraint) = crate::indexer::go_build::file_constraint(module_name, source) {
             output.file_modifiers = constraint.modifiers();
         }
@@ -450,6 +457,251 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 walk_node(child, ctx, source, output);
             }
         }
+    }
+}
+
+/// Field names the file's struct types declare, minus the method names it
+/// declares (see `Context::field_only_names`).
+fn field_only_names(root: Node<'_>, source: &str) -> HashSet<String> {
+    let mut fields = HashSet::new();
+    let mut methods = HashSet::new();
+    let mut cursor = root.walk();
+    'walk: loop {
+        let node = cursor.node();
+        match node.kind() {
+            "field_declaration" => {
+                let mut c = node.walk();
+                for child in node.children_by_field_name("name", &mut c) {
+                    fields.insert(node_text(child, source));
+                }
+            }
+            "method_declaration" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    methods.insert(node_text(name, source));
+                }
+            }
+            _ => {}
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    fields.retain(|f| !methods.contains(f));
+    fields
+}
+
+/// `REFERENCES` edges (stored as `USES` once bound to a type) for every type a
+/// file mentions: a signature, field, variable or composite-literal type, a
+/// conversion `(*T)(nil)`, a type argument, an embedded field. Sourced from
+/// the file's module symbol (the declaration is not what makes the type
+/// used, and a function-sourced edge to a type is no call), one edge per
+/// distinct type text. The declaring `type T ...` name, a method receiver
+/// (a type with methods but no mention is still unused) and the type
+/// parameters in scope are no mention.
+fn collect_type_uses(root: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut seen = HashSet::new();
+    // Depth-first on one cursor with the path of ancestors at hand:
+    // `Node::parent` walks down from the root, which is too slow to call per
+    // mention, and a child list per node is too many allocations.
+    let mut path: Vec<Node<'_>> = Vec::new();
+    let mut cursor = root.walk();
+    'walk: loop {
+        let node = cursor.node();
+        if node.is_named()
+            && matches!(
+                node.kind(),
+                "type_identifier" | "qualified_type" | "call_expression"
+            )
+            && let Some((mention, name, qualifier)) = type_mention(node, source)
+        {
+            // `mention` is `node` or one of its descendants (`(*T)(x)`).
+            let mut ancestors = path.clone();
+            if mention.id() != node.id() {
+                ancestors.push(node);
+            }
+            if is_type_mention(mention, &ancestors, &name, source) {
+                push_type_use(
+                    ctx, dir, source, mention, &name, qualifier, &mut seen, output,
+                );
+            }
+        }
+        if cursor.goto_first_child() {
+            path.push(node);
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+            path.pop();
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_type_use(
+    ctx: &Context,
+    dir: &str,
+    source: &str,
+    mention: Node<'_>,
+    name: &str,
+    qualifier: Option<String>,
+    seen: &mut HashSet<String>,
+    output: &mut ExtractedFile,
+) {
+    let (target, candidate) = match &qualifier {
+        None => {
+            if GO_PREDECLARED_TYPES.contains(&name) {
+                return;
+            }
+            (
+                format!("{}.{name}", ctx.module),
+                format!("{GO_SAME_PACKAGE}{dir}|{name}"),
+            )
+        }
+        Some(pkg) => {
+            let Some(path) = ctx.imports.get(pkg) else {
+                return;
+            };
+            (format!("{path}.{name}"), format!("{path}|{name}"))
+        }
+    };
+    if !seen.insert(candidate.clone()) {
+        return;
+    }
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(mention);
+    output.edges.push(EdgeInput {
+        kind: edge_views::REFERENCES.to_string(),
+        source_qualname: Some(ctx.module.clone()),
+        target_qualname: Some(target),
+        import_candidates: vec![candidate],
+        call_shape: Some(CallShape::type_reference()),
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    });
+}
+
+/// The type `node` mentions, as `(node, name, package qualifier)`: a
+/// `type_identifier`, a `pkg.T` `qualified_type`, or the `T` of a conversion
+/// `(*T)(x)`, which parses as a call of a parenthesized dereference (an
+/// expression by syntax, a type by position).
+fn type_mention<'t>(node: Node<'t>, source: &str) -> Option<(Node<'t>, String, Option<String>)> {
+    match node.kind() {
+        "type_identifier" => Some((node, node_text(node, source), None)),
+        "qualified_type" => {
+            let pkg = node.child_by_field_name("package")?;
+            let name = node.child_by_field_name("name")?;
+            Some((node, node_text(name, source), Some(node_text(pkg, source))))
+        }
+        "call_expression" => {
+            let function = node.child_by_field_name("function")?;
+            if function.kind() != "parenthesized_expression" {
+                return None;
+            }
+            let mut cursor = function.walk();
+            let inner = function.named_children(&mut cursor).next()?;
+            if inner.kind() != "unary_expression"
+                || inner.child_by_field_name("operator")?.kind() != "*"
+            {
+                return None;
+            }
+            let ty = inner.child_by_field_name("operand")?;
+            match ty.kind() {
+                "identifier" => Some((ty, node_text(ty, source), None)),
+                "selector_expression" => {
+                    let pkg = ty.child_by_field_name("operand")?;
+                    let name = ty.child_by_field_name("field")?;
+                    (pkg.kind() == "identifier")
+                        .then(|| (ty, node_text(name, source), Some(node_text(pkg, source))))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether the `type_identifier` / `qualified_type` `node` (named `name`)
+/// mentions a type, as opposed to declaring one, receiving a method or
+/// naming a type parameter.
+fn is_type_mention(node: Node<'_>, ancestors: &[Node<'_>], name: &str, source: &str) -> bool {
+    let mut child = node;
+    for &p in ancestors.iter().rev() {
+        match p.kind() {
+            // The `T` of `pkg.T` is part of the qualified mention.
+            "qualified_type" => return false,
+            // `type T ...` / `type T = ...`: the name is the declaration.
+            "type_spec" | "type_alias"
+                if p.child_by_field_name("name")
+                    .is_some_and(|n| n.id() == child.id()) =>
+            {
+                return false;
+            }
+            // `func (r T) M()`: the receiver is no mention (its type
+            // arguments name the type's parameters).
+            "method_declaration"
+                if p.child_by_field_name("receiver")
+                    .is_some_and(|r| r.id() == child.id()) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        if matches!(
+            p.kind(),
+            "type_spec" | "function_declaration" | "method_declaration"
+        ) && declares_type_parameter(p, name, source)
+        {
+            return false;
+        }
+        child = p;
+    }
+    true
+}
+
+/// Whether declaration `decl` has a type parameter called `name`, in its own
+/// parameter list or (for a method) as an argument of the receiver type.
+fn declares_type_parameter(decl: Node<'_>, name: &str, source: &str) -> bool {
+    let mut names = HashSet::new();
+    if let Some(list) = decl.child_by_field_name("type_parameters") {
+        collect_identifier_names(list, source, &mut names);
+    }
+    if let Some(receiver) = decl.child_by_field_name("receiver") {
+        collect_receiver_type_arguments(receiver, source, false, &mut names);
+    }
+    names.contains(name)
+}
+
+/// The type identifiers inside a receiver's type arguments (`Set[T]`).
+fn collect_receiver_type_arguments(
+    node: Node<'_>,
+    source: &str,
+    in_arguments: bool,
+    out: &mut HashSet<String>,
+) {
+    let in_arguments = in_arguments || node.kind() == "type_arguments";
+    if in_arguments && node.kind() == "type_identifier" {
+        out.insert(node_text(node, source));
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_receiver_type_arguments(child, source, in_arguments, out);
     }
 }
 
@@ -1100,12 +1352,32 @@ fn emit_receiver_call(
     }
     let method = node_text(field, source);
     let site = site_edge("CALLS", node, ctx, source);
+    let edge = receiver_member_edge(site, operand, method, raw, ctx, source, true)
+        .expect("an untyped receiver keeps its call edge");
+    output.edges.push(edge);
+    true
+}
+
+/// The edge of member `method` on the value `operand` evaluates to, carried
+/// by `site` (a call or a method value): bound through the declared type when
+/// the file proves it, deferred to the resolver when another file declares
+/// it, and left untyped (`keep_untyped`) or dropped (`None`) when the value
+/// has no nameable type.
+fn receiver_member_edge(
+    site: EdgeInput,
+    operand: Node<'_>,
+    method: String,
+    raw: &str,
+    ctx: &Context,
+    source: &str,
+    keep_untyped: bool,
+) -> Option<EdgeInput> {
     let declared = ctx.types.value_type(operand, 0, source);
     // A receiver whose concrete type the call site proves (`var d Doer =
     // &Impl{}`) is finished by the resolver: it binds the concrete method
     // when the declared type turns out to be an interface.
     let dynamic = ctx.types.dynamic_type(operand, source);
-    let edge = match declared {
+    Some(match declared {
         Some(recv) if dynamic.is_some() => EdgeInput {
             target_qualname: Some(method.clone()),
             detail: Some(collapse_call_target_whitespace(raw)),
@@ -1138,15 +1410,14 @@ fn emit_receiver_call(
             }),
             ..site
         },
-        None => EdgeInput {
+        None if keep_untyped => EdgeInput {
             target_qualname: Some(method),
             detail: Some(collapse_call_target_whitespace(raw)),
             receiver_type: ReceiverType::Unresolved,
             ..site
         },
-    };
-    output.edges.push(edge);
-    true
+        None => return None,
+    })
 }
 
 /// An edge of `kind` sourced from the current scope, with the evidence
@@ -1595,26 +1866,43 @@ fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) 
     }
 }
 
-/// `REFERENCES` edge for a function used as a value, not called: an
-/// identifier or selector passed as a call argument or given as the value of
-/// a composite-literal element (map value, struct field value, slice item).
-/// A bare name is a function of the package; `pkg.Name` is a function of an
-/// imported package; `recv.Name` is a method value on a receiver, parameter
-/// or local whose type is a plain local type. Locals are never references.
-fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let parent = node.parent()?;
-    let in_value_position = match parent.kind() {
+/// Whether `node` stands where a value is read and kept rather than called or
+/// declared: a call argument, a composite-literal element or keyed value, the
+/// right-hand side of an assignment, `:=` or `var`, or a returned value. A
+/// function name in such a place is a function value; a keyed element's key
+/// names a field (struct) or index, not a value.
+fn in_value_position(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
         "argument_list" => parent
             .parent()
             .is_some_and(|c| c.kind() == "call_expression"),
-        // A keyed element's key names a field (struct) or index, not a value.
         "literal_element" => parent.parent().is_some_and(|p| {
             p.kind() == "literal_value"
                 || (p.kind() == "keyed_element" && p.child_by_field_name("value") == Some(parent))
         }),
+        // `return f`, `x = f`, `x := f`, `var x = f`: possibly several values.
+        "expression_list" => parent.parent().is_some_and(|stmt| match stmt.kind() {
+            "return_statement" => true,
+            "assignment_statement" | "short_var_declaration" => {
+                stmt.child_by_field_name("right") == Some(parent)
+            }
+            "var_spec" | "const_spec" => stmt.child_by_field_name("value") == Some(parent),
+            _ => false,
+        }),
         _ => false,
-    };
-    if !in_value_position || ctx.current_scope.is_empty() {
+    }
+}
+
+/// `REFERENCES` edge for a function used as a value, not called (see
+/// [`in_value_position`]). A bare name is a function of the package;
+/// `pkg.Name` is a function of an imported package; `recv.Name` is a method
+/// value on a receiver whose type the file or the resolver can name
+/// (`s.Handle`, `newX(opts).parse`, `T{}.run`). Locals are never references.
+fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    if !in_value_position(node) || ctx.current_scope.is_empty() {
         return None;
     }
     let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -1631,28 +1919,24 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     } else {
         let operand = node.child_by_field_name("operand")?;
         let field = node_text(node.child_by_field_name("field")?, source);
-        if operand.kind() != "identifier" {
-            return None;
-        }
-        let base = node_text(operand, source);
-        if let Some(path) = ctx
-            .imports
-            .get(&base)
-            .filter(|_| !ctx.bound_names.contains(&base))
-        {
+        let imported = (operand.kind() == "identifier")
+            .then(|| node_text(operand, source))
+            .filter(|base| !ctx.bound_names.contains(base))
+            .and_then(|base| ctx.imports.get(&base));
+        if let Some(path) = imported {
             // The import path in the target text keeps a same-named package
             // directory from matching it as an exact qualname.
             (format!("{path}.{field}"), format!("{path}|{field}"), false)
         } else {
-            let ty =
-                ctx.param_types.get(&base).map(String::as_str).or_else(|| {
-                    resolve_var_type_at(&ctx.local_var_types, &base, node.start_byte())
-                })?;
-            (
-                format!("{}.{ty}.{field}", ctx.module),
-                format!("{GO_SAME_PACKAGE}{dir}|{ty}.{field}"),
-                false,
-            )
+            if ctx.field_only_names.contains(&field) {
+                return None;
+            }
+            let site = EdgeInput {
+                call_shape: Some(CallShape::value_reference()),
+                ..site_edge(edge_views::REFERENCES, node, ctx, source)
+            };
+            let raw = node_text(node, source);
+            return receiver_member_edge(site, operand, field, &raw, ctx, source, false);
         }
     };
     Some(EdgeInput {
