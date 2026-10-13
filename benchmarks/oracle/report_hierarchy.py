@@ -15,8 +15,9 @@ RELATION_NOTES = {
     "go": "Go `extends` is interface embedding (`Interface.EmbeddedType`), `embeds` is struct embedding (`Struct.Field(i).Embedded()`); "
           "lidx's EXTENDS rows are split the same way by the source's kind. `overrides` is graded on lidx's dispatch pairs "
           "(`lidx dispatch-pairs`).",
-    "ts": "`overrides` is graded on lidx's dispatch pairs (`lidx dispatch-pairs`): the pairing lidx uses at query time, which for a "
-          "base *class* needs an `override` modifier and otherwise is a name match through IMPLEMENTS / EXTENDS rows.",
+    "ts": "`overrides` is graded on lidx's dispatch pairs (`lidx dispatch-pairs`): the pairing lidx uses at query time, a "
+          "name match through IMPLEMENTS / EXTENDS rows (interface and type-literal members are symbols; `override` is optional "
+          "in TypeScript, so a base-class member pairs without it; constructors, statics and an interface redeclaring a member do not).",
     "rust": "`implements` is a type -> trait row, `overrides` a method-level IMPLEMENTS row (impl method -> trait method), `extends` a "
             "supertrait row. rust-analyzer's SCIP carries no implementation relationships, so the oracle reads the impl symbols and "
             "the reference occurrences on the impl header.",
