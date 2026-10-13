@@ -1,0 +1,3 @@
+[
+{"callee":{"file":"src/filter/owner.rs","line":61,"name":"filter_ignore"},"caller":{"file":"src/main.rs","line":248,"name":"construct_config"},"category":"coarse_module_level","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/main.rs:269"]}
+]

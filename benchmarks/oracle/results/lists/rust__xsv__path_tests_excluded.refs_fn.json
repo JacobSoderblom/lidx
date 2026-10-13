@@ -1,0 +1,9 @@
+[
+{"callee":{"file":"src/main.rs","line":214,"name":"[`From<docopt::Error>`]from"},"caller":{"file":"src/util.rs","line":34,"name":"get_args"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/util.rs:40"]},
+{"callee":{"file":"src/main.rs","line":232,"name":"[`From<io::Error>`]from"},"caller":{"file":"src/cmd/cat.rs","line":71,"name":"cat_rows"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/cmd/cat.rs:83"]},
+{"callee":{"file":"src/main.rs","line":232,"name":"[`From<io::Error>`]from"},"caller":{"file":"src/cmd/cat.rs","line":86,"name":"cat_columns"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/cmd/cat.rs:130"]},
+{"callee":{"file":"src/main.rs","line":238,"name":"[`From<String>`]from"},"caller":{"file":"src/cmd/cat.rs","line":64,"name":"configs"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/cmd/cat.rs:68"]},
+{"callee":{"file":"src/select.rs","line":360,"name":"get_field"},"caller":{"file":"src/select.rs","line":353,"name":"select"},"category":"no_edge","ctxs":["assignment"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/select.rs:364"]},
+{"callee":{"file":"src/select.rs","line":360,"name":"get_field"},"caller":{"file":"src/select.rs","line":416,"name":"select"},"category":"no_edge","ctxs":["assignment"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/select.rs:424"]},
+{"callee":{"file":"src/select.rs","line":418,"name":"filmap"},"caller":{"file":"src/select.rs","line":416,"name":"select"},"category":"no_edge","ctxs":["assignment"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/select.rs:425"]}
+]

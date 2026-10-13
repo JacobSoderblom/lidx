@@ -28,6 +28,7 @@ import dead_code  # noqa: E402
 import hierarchy  # noqa: E402
 import impact_run  # noqa: E402
 import match  # noqa: E402
+import refs  # noqa: E402
 import report  # noqa: E402
 import rust_cfg  # noqa: E402
 import safety  # noqa: E402
@@ -128,7 +129,7 @@ def run_go_oracle(repo_dir, cell, cache):
         env["GOTOOLCHAIN"] = tc
     exe = os.path.join(cache, "bin", "gooracle-%s" % tc)
     src = os.path.join(HERE, "go_oracle")
-    st = stamp([os.path.join(src, "main.go"), os.path.join(src, "hierarchy.go"), os.path.join(src, "go.mod")])
+    st = stamp([os.path.join(src, "main.go"), os.path.join(src, "hierarchy.go"), os.path.join(src, "refs.go"), os.path.join(src, "go.mod")])
     stf = exe + ".stamp"
     if not (os.path.exists(exe) and os.path.exists(stf) and open(stf).read() == st):
         os.makedirs(os.path.dirname(exe), exist_ok=True)
@@ -222,7 +223,8 @@ def make_cfg_gate(repo_dir, features):
 
 
 def get_oracle(cell, repo, repo_dir, cache, force):
-    key_src = {"go": ["go_oracle/main.go", "go_oracle/hierarchy.go"], "ts": ["ts_oracle/oracle.mjs", "ts_oracle/hierarchy.mjs", "ts_oracle/package-lock.json"],
+    key_src = {"go": ["go_oracle/main.go", "go_oracle/hierarchy.go", "go_oracle/refs.go"],
+               "ts": ["ts_oracle/oracle.mjs", "ts_oracle/hierarchy.mjs", "ts_oracle/refs.mjs", "ts_oracle/package-lock.json"],
                "rust": ["rust_oracle/scip_calls.py", "rust_oracle/scip_hierarchy.py", "safety.py"]}[cell["lang"]]
     st = stamp([os.path.join(HERE, p) for p in key_src], repo["sha"] + " ".join(cell["args"]) + ",".join(repo.get("subdirs", [])) + cell.get("features", ""))
     path = os.path.join(cache, "oracle", "%s.json" % cell["id"].replace("/", "__"))
@@ -311,6 +313,26 @@ def grade_hierarchy(res, cell, oracle, syms, hier_edges, dispatch_ids, results_d
     dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_fn.json" % fid), fn)
     dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_fp.json" % fid), fp)
     dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_ungradable.json" % fid), ungr)
+
+
+def grade_value_refs(res, cell, oracle, syms, edges, src, results_dir, repo_dir):
+    """Value references section of one cell (issue #452): graded by refs.py, lists in results/lists/<cell>.refs_{fn,fp,capture_gap,ungradable}.json.
+    The dead-code cross-reference reads the dead-code FP lists written just before (when the dead-code benchmark ran)."""
+    if not refs.has_refs(oracle):
+        return
+    gate = make_cfg_gate(repo_dir, oracle.get("_meta", {}).get("features", "default")) if cell["lang"] == "rust" else None
+    summ, fn, fp, gap, ungr, state = refs.grade_refs(oracle, syms, edges, cell["lang"], src, cfg_gate=gate)
+    fid = cell["id"].replace("/", "__")
+    if res.get("dead"):
+        x = {}
+        for col in ("unref", "reach"):
+            p = os.path.join(results_dir, "lists", "%s.dead_%s.fp.json" % (fid, col))
+            if os.path.exists(p):
+                x[col] = refs.dead_xref(state, [i for i in json.load(open(p)) if not i.get("policy")])
+        summ["dead_code_xref"] = x
+    res["refs"] = summ
+    for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap), ("ungradable", ungr), ("call_wins", state["call_wins"]), ("tp", state["tp"])):
+        dump_list(os.path.join(results_dir, "lists", "%s.refs_%s.json" % (fid, suffix)), data)
 
 
 def dump_list(path, data):
@@ -437,6 +459,7 @@ def main():
                     cell["id"], dc["unref"]["all"]["precision"], dc["unref"]["all"]["recall"], dc["reach"]["all"]["precision"],
                     dc["reach"]["all"]["recall"], res["dead"]["oracle_meta"].get("seconds"), res["dead"]["oracle_meta"].get("peak_rss_mb")), flush=True)
             grade_hierarchy(res, cell, oracle, syms, hier_edges, dispatch_ids, a.results)
+            grade_value_refs(res, cell, oracle, syms, edges, src, a.results, repo_dir)
             out["cells"][cell["id"]] = res
             print("   %s: P=%s R=%s (graded=%d, oracle=%d)" % (cell["id"], summ["precision"], summ["recall"], summ["graded"],
                                                               summ["oracle_edges_caller_indexed"]), flush=True)

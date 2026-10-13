@@ -1,0 +1,5 @@
+[
+{"callee":{"file":"cmd/syft/internal/test/integration/testdata/npm-lock/node_modules/once/once.js","line":21,"name":"once","qualname":"cmd/syft/internal/test/integration/testdata/npm-lock/node_modules/once/once.once"},"caller":{"file":"cmd/syft/internal/test/integration/testdata/npm-lock/node_modules/once/once.js","line":0,"name":"once","qualname":"cmd/syft/internal/test/integration/testdata/npm-lock/node_modules/once/once"},"evidence_file":"cmd/syft/internal/test/integration/testdata/npm-lock/node_modules/once/once.js","evidence_lines":[5],"side":"lidx"},
+{"callee":{"file":"syft/pkg/license_set_test.go","line":171,"name":"defaultLocationComparer"},"caller":{"file":"syft/pkg/license_set_test.go","line":175,"name":"defaultLicenseComparer"},"side":"oracle","sites":["syft/pkg/license_set_test.go:176"]},
+{"callee":{"file":"syft/pkg/package_test.go","line":433,"name":"locationComparer"},"caller":{"file":"syft/pkg/package_test.go","line":231,"name":"TestPackage_Merge"},"side":"oracle","sites":["syft/pkg/package_test.go:421"]}
+]

@@ -1,4 +1,6 @@
 [
+{"base":"inputreader_windows.go:112","evidence_file":"inputreader_windows.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"inputreader_windows.go:18"},
+{"base":"renderer.go:4","evidence_file":"exec_test.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"exec_test.go:40"},
 {"base":"renderer.go:4","evidence_file":"exec_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"exec_test.go:40"},
 {"base":"renderer.go:84","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"exec_test.go:45"},
 {"base":"tea.go:44","evidence_file":"examples/altscreen-toggle/main.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"examples/altscreen-toggle/main.go:16"},

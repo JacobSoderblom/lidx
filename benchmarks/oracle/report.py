@@ -333,6 +333,11 @@ def build(results_dir):
     if dead:
         w("")
         w(dead)
+    import report_refs  # the value references section (issue #452)
+    refs_sec = report_refs.section(meta, results_dir)
+    if refs_sec:
+        w("")
+        w(refs_sec)
     import report_hierarchy  # the type hierarchy section (issue #449) is appended after everything above
     hier = report_hierarchy.section(meta, results_dir)
     if hier:

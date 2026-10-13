@@ -1,0 +1,5 @@
+[
+{"callee":{"file":"source/index.ts","line":35,"name":"ky"},"caller":{"file":"source/index.ts","line":33,"name":"createInstance"},"category":"no_edge","ctxs":["other","return"],"detail":null,"forms":["ident"],"module_level":false,"sites":["source/index.ts:39","source/index.ts:55"]},
+{"callee":{"file":"source/utils/delay.ts","line":19,"name":"abortHandler"},"caller":{"file":"source/utils/delay.ts","line":9,"name":"delay"},"category":"no_edge","ctxs":["call_argument"],"detail":null,"forms":["ident"],"module_level":false,"sites":["source/utils/delay.ts:16","source/utils/delay.ts:25"]},
+{"callee":{"file":"source/utils/merge.ts","line":266,"name":"resolveItem"},"caller":{"file":"source/utils/merge.ts","line":256,"name":"resolveReplaceMarkers"},"category":"no_edge","ctxs":["call_argument"],"detail":null,"forms":["ident"],"module_level":false,"sites":["source/utils/merge.ts:267"]}
+]

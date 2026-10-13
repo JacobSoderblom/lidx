@@ -1,0 +1,4 @@
+[
+{"callee":{"file":"src/config.rs","line":56,"name":"get_config","qualname":"crate::config::Config::get_config"},"caller":{"file":"src/config.rs","line":86,"name":"from_config_files","qualname":"crate::config::Config::from_config_files"},"edge_kinds":["REFERENCES"],"evidence_file":"src/config.rs","evidence_lines":[88,92,97],"resolution_kind":"exact","sites":["src/config.rs:88","src/config.rs:92","src/config.rs:97"]},
+{"callee":{"file":"src/language/mod.rs","line":38,"name":"new","qualname":"crate::language::Language::new"},"caller":{"file":"src/utils/fs.rs","line":14,"name":"get_all_files","qualname":"crate::utils::fs::get_all_files"},"edge_kinds":["REFERENCES"],"evidence_file":"src/utils/fs.rs","evidence_lines":[96],"resolution_kind":"import","sites":["src/utils/fs.rs:96"]}
+]

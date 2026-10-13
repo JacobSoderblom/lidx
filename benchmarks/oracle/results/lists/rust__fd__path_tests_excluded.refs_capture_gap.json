@@ -1,0 +1,5 @@
+[
+{"callee":{"file":"src/fmt/input.rs","line":12,"name":"remove_extension"},"caller":{"file":"src/fmt/input.rs","line":72,"name":"dirname_utf8_1"},"reason":"macro_generated","sites":["src/fmt/input.rs:57","src/fmt/input.rs:58","src/fmt/input.rs:59"]},
+{"callee":{"file":"src/fmt/input.rs","line":22,"name":"dirname"},"caller":{"file":"src/fmt/input.rs","line":72,"name":"dirname_utf8_1"},"reason":"macro_generated","sites":["src/fmt/input.rs:69","src/fmt/input.rs:70","src/fmt/input.rs:71"]},
+{"callee":{"file":"src/fmt/input.rs","line":7,"name":"basename"},"caller":{"file":"src/fmt/input.rs","line":72,"name":"dirname_utf8_1"},"reason":"macro_generated","sites":["src/fmt/input.rs:63","src/fmt/input.rs:64","src/fmt/input.rs:65"]}
+]

@@ -1,0 +1,3 @@
+[
+{"callee":{"file":"crates/searcher/src/sink.rs","line":27,"name":"error_io"},"caller":{"file":"crates/searcher/src/searcher/mod.rs","line":975,"name":"fill_multi_line_buffer_from_reader"},"side":"oracle","sites":["crates/searcher/src/searcher/mod.rs:991"]}
+]

@@ -1,0 +1,3 @@
+[
+{"callee":{"file":"cmd/urfave-cli-genflags/main.go","line":121,"name":"runGenFlags","qualname":"cmd/urfave-cli-genflags/main.runGenFlags"},"caller":{"file":"cmd/urfave-cli-genflags/main.go","line":51,"name":"main","qualname":"cmd/urfave-cli-genflags/main.main"},"edge_kinds":["REFERENCES"],"evidence_file":"cmd/urfave-cli-genflags/main.go","evidence_lines":[109],"reason":"caller_file_not_covered","resolution_kind":"exact"}
+]

@@ -25,8 +25,6 @@
 {"base":"crates/matcher/src/lib.rs:948","evidence_file":"crates/matcher/src/lib.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"crates/matcher/src/lib.rs:1317"},
 {"base":"crates/matcher/src/lib.rs:974","evidence_file":"crates/matcher/src/lib.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"crates/matcher/src/lib.rs:1332"},
 {"base":"crates/matcher/src/lib.rs:987","evidence_file":"crates/matcher/src/lib.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"crates/matcher/src/lib.rs:1337"},
-{"base":"crates/pcre2/src/error.rs:7","evidence_file":"crates/regex/src/error.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"implements","sub":"crates/regex/src/error.rs:7"},
-{"base":"crates/regex/src/error.rs:7","evidence_file":"crates/pcre2/src/error.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"implements","sub":"crates/pcre2/src/error.rs:7"},
 {"base":"crates/searcher/src/sink.rs:124","evidence_file":"crates/searcher/src/sink.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"crates/searcher/src/sink.rs:229"},
 {"base":"crates/searcher/src/sink.rs:124","evidence_file":"crates/searcher/src/sink.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"crates/searcher/src/sink.rs:282"},
 {"base":"crates/searcher/src/sink.rs:143","evidence_file":"crates/searcher/src/sink.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"crates/searcher/src/sink.rs:238"},
