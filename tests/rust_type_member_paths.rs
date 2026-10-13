@@ -439,3 +439,25 @@ fn blanket_impl_method_path_is_not_an_external_stub() {
         .unwrap();
     assert_eq!(stubs, 0);
 }
+
+/// `use crate::exec; exec::job(..)` with `mod job; pub use self::job::job;`:
+/// the function, not the module `crate::exec::job`.
+#[test]
+fn imported_module_path_to_a_function_named_like_a_submodule_binds_the_function() {
+    let tree = vec![
+        ("Cargo.toml", "[package]\nname = \"g7\"\n"),
+        ("src/lib.rs", "pub mod exec;\npub mod walk;\n"),
+        ("src/exec/mod.rs", "mod job;\npub use self::job::job;\n"),
+        ("src/exec/job.rs", "pub fn job(n: u32) -> u32 { n }\n"),
+        (
+            "src/walk.rs",
+            "use crate::exec;\npub fn receive() -> u32 { exec::job(1) }\n",
+        ),
+    ];
+    let got = targets(&tree, "crate::walk::receive");
+    assert_eq!(
+        got,
+        BTreeSet::from(["crate::exec::job::job".to_string()]),
+        "{got:#?}"
+    );
+}
