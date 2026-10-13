@@ -65,6 +65,8 @@ def section(results_dir):
     n_seeds = sum(c["tables"]["seeds"] for c in cells.values())
     w("## Impact, tests and flows")
     w("")
+    w("**Quoting policy:** a figure from this section is quoted in `README.md` only for a language and kind whose hand spot-check artefact rate is under 10% (see \"Spot-check of impact pairs\" below); the Go closure without function-value edges is an upper-bound view built after the fact, not a verdict.")
+    w("")
     w("`analyze_impact` upstream sets, its test layer and `trace_flow` stop reasons graded against the **closure** of the compiler call graph "
       "of each cell (Go RTA with dynamic calls at the concrete implementations, tsc, rust-analyzer SCIP; no compiler is re-run). "
       "%d cells (the Rust all-features cells are diagnostics and are not graded), %d seeds, 100 per cell, stratified by oracle in-degree "
@@ -103,7 +105,7 @@ def section(results_dir):
                     u["truncated_seeds"], pci(dk["precision"], dk["precision_ci"]), pci(dk["recall"], dk["recall_ci"]), dk["fp_beyond_calls"]))
             w("")
         if lang == "go":
-            w("**Go, without function-value edges.** The Go oracle resolves the call of a function value (`parg(cmd, args)`, `p.cancel()`, `cmd()`) to every address-taken function "
+            w("**Go, without function-value edges (upper-bound view: it excludes real function-value calls that lidx cannot resolve, and was built post hoc, after seeing lidx's misses; no verdict).** The Go oracle resolves the call of a function value (`parg(cmd, args)`, `p.cancel()`, `cmd()`) to every address-taken function "
               "of that signature that RTA reaches and keys a function literal at its enclosing declaration, so such an edge names the function that built the closure "
               "(or an unrelated closure of the same signature). lidx does not resolve a call of a function value. The same grading with these edges (`closure` or "
               "`dispatch` without interface alternatives in the oracle; interface invocations stay) left out of the closure (calls-only; precision differs only through the members these edges add):")
@@ -190,10 +192,10 @@ def section(results_dir):
               "against nothing), so no figure is reported.")
             w("")
         w("**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the "
-          "oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); false alarm = a leaf marked `unresolved_calls` where the oracle shows nothing missing. Leaves marked `truncated`, "
+          "oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); **gap with no in-repo callee left** = a leaf marked `unresolved_calls` where the oracle has no in-scope callee. This is not a claim that lidx is wrong: lidx defines `unresolved_calls` as a resolution gap (pending unresolved references), and an unresolved external name is a true gap. The narrower point it supports is that lidx itself tags most of these names `external` and still reports `unresolved_calls`, so the signal says little. Leaves marked `truncated`, "
           "`depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.")
         w("")
-        w("| Cell | k | False leaf | False alarm | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |")
+        w("| Cell | k | False leaf | Gap, no in-repo callee left | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |")
         w("|---|---|---|---|---|---|---|---|---:|")
         for c in lc:
             for kn, label in KN:

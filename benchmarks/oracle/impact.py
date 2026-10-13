@@ -605,9 +605,9 @@ def down_one(rec, node, k, graph, syms, lidx, sid, alt_graph=None):
            "depth_limited": bool(res.get("depth_limited")), "extra": [graph_name(graph, x) for x in extra[:EXAMPLES]],
            "missing": [graph_name(graph, x) for x in missing[:EXAMPLES]]}
     # leaf honesty: a leaf marked no_callees where the oracle has an in-scope callee is a false leaf; one marked unresolved_calls where
-    # the oracle shows nothing missing (no in-scope callee) is a false alarm. truncated / depth_limit leaves are excluded from both.
+    # the oracle shows nothing missing (no in-scope callee) is a gap with no in-repo callee left (not a claim of wrongness). truncated / depth_limit leaves are excluded from both.
     lv = {"no_callees": [0, 0], "unresolved_calls": [0, 0]}  # reason -> [gradable, wrong]
-    ext_only = 0  # false alarms whose every named unresolved call lidx itself flags `external`
+    ext_only = 0  # such gaps whose every named unresolved call lidx itself flags `external`
     only_closure = 0
     ex = []
     for n, stop, detail in leaves:

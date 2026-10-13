@@ -25,7 +25,7 @@ import impact  # noqa: E402
 import match  # noqa: E402
 import spotcheck as base  # noqa: E402  (redaction of fixture secrets)
 
-SEED = 451
+SEED = 451  # the draw of the hand sample (the issue number); independent of the benchmark's seed 2026 that draws the graded seeds, so the sample cannot be steered by them
 N = 20
 PER_SEED = 3
 

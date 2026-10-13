@@ -3630,6 +3630,8 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 
 ## Impact, tests and flows
 
+**Quoting policy:** a figure from this section is quoted in `README.md` only for a language and kind whose hand spot-check artefact rate is under 10% (see "Spot-check of impact pairs" below); the Go closure without function-value edges is an upper-bound view built after the fact, not a verdict.
+
 `analyze_impact` upstream sets, its test layer and `trace_flow` stop reasons graded against the **closure** of the compiler call graph of each cell (Go RTA with dynamic calls at the concrete implementations, tsc, rust-analyzer SCIP; no compiler is re-run). 32 cells (the Rust all-features cells are diagnostics and are not graded), 3200 seeds, 100 per cell, stratified by oracle in-degree (0, 1-3, 4-10, >10) and drawn with seed 2026 from the declarations the oracle judged (`results/seeds/<cell>.json`). Definitions, the lidx calls and every exclusion: README, "Impact, tests and flows".
 
 - **Pooled** figures are pair-level: a pair is (seed, member). Intervals are 95% Wilson over pairs, which cluster by seed and are optimistic; **macro** figures average per-seed precision and recall (a seed with no members on a side has no rate for it) with a 1,000-sample bootstrap interval over seeds, so one high-fan-out seed cannot dominate.
@@ -3642,18 +3644,18 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 
 | Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
 |---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
-| cobra/tests | 100 | 3827 | 0 | 1 | 1.000 [0.999, 1.000] | 0.796 [0.783, 0.808] | 1.000 [1.000, 1.000] | 0.628 [0.547, 0.705] | 0 | 0.965 [0.958, 0.970] | 0.802 [0.789, 0.814] | 113 |
-| cobra/no_tests | 100 | 1783 | 0 | 1912 | 1.000 [0.997, 1.000] | 0.706 [0.684, 0.727] | 1.000 [1.000, 1.000] | 0.584 [0.505, 0.664] | 0 | 0.998 [0.993, 0.999] | 0.708 [0.687, 0.729] | 3 |
+| cobra/tests | 100 | 3827 | 0 | 1 | 1.000 [0.999, 1.000] | 0.796 [0.783, 0.808] | 1.000 [1.000, 1.000] | 0.628 [0.547, 0.705] | 0 | 0.958 [0.951, 0.964] | 0.804 [0.792, 0.817] | 135 |
+| cobra/no_tests | 100 | 1783 | 0 | 1912 | 1.000 [0.997, 1.000] | 0.706 [0.684, 0.727] | 1.000 [1.000, 1.000] | 0.584 [0.505, 0.664] | 0 | 0.978 [0.969, 0.985] | 0.720 [0.699, 0.741] | 29 |
 | gitleaks/no_tests | 100 | 1812 | 0 | 167 | 1.000 [0.998, 1.000] | 0.965 [0.955, 0.972] | 1.000 [1.000, 1.000] | 0.919 [0.867, 0.962] | 0 | 0.999 [0.996, 1.000] | 0.965 [0.955, 0.972] | 2 |
 | gitleaks/tests | 100 | 3113 | 0 | 28 | 1.000 [0.999, 1.000] | 0.938 [0.929, 0.946] | 1.000 [1.000, 1.000] | 0.859 [0.798, 0.914] | 0 | 1.000 [0.998, 1.000] | 0.938 [0.929, 0.946] | 1 |
-| syft/no_tests | 100 | 5389 | 7 | 921 | 0.994 [0.988, 0.997] | 0.217 [0.206, 0.228] | 0.997 [0.990, 1.000] | 0.472 [0.388, 0.557] | 0 | 0.912 [0.895, 0.926] | 0.218 [0.207, 0.229] | 102 |
-| syft/tests | 100 | 12363 | 20 | 10 | 0.990 [0.984, 0.993] | 0.152 [0.146, 0.158] | 0.997 [0.993, 1.000] | 0.250 [0.185, 0.325] | 0 | 0.932 [0.920, 0.942] | 0.155 [0.149, 0.162] | 120 |
-| bubbletea/no_tests | 100 | 646 | 0 | 1850 | 1.000 [0.986, 1.000] | 0.426 [0.388, 0.464] | 1.000 [1.000, 1.000] | 0.405 [0.327, 0.481] | 0 | 0.979 [0.954, 0.990] | 0.426 [0.388, 0.464] | 0 |
-| bubbletea/tests | 100 | 2503 | 0 | 1049 | 1.000 [0.994, 1.000] | 0.244 [0.228, 0.262] | 1.000 [1.000, 1.000] | 0.338 [0.262, 0.410] | 0 | 1.000 [0.994, 1.000] | 0.252 [0.235, 0.269] | 0 |
-| chi/no_tests | 100 | 760 | 0 | 815 | 1.000 [0.979, 1.000] | 0.230 [0.202, 0.262] | 1.000 [1.000, 1.000] | 0.369 [0.270, 0.472] | 0 | 0.888 [0.837, 0.925] | 0.230 [0.202, 0.262] | 22 |
-| chi/tests | 100 | 3219 | 0 | 129 | 1.000 [0.996, 1.000] | 0.319 [0.303, 0.335] | 1.000 [1.000, 1.000] | 0.321 [0.240, 0.408] | 0 | 0.982 [0.972, 0.988] | 0.320 [0.304, 0.336] | 19 |
-| urfavecli/no_tests | 100 | 832 | 3 | 2274 | 0.994 [0.982, 0.998] | 0.581 [0.547, 0.614] | 0.993 [0.978, 1.000] | 0.676 [0.597, 0.756] | 0 | 0.955 [0.933, 0.970] | 0.581 [0.547, 0.614] | 8 |
-| urfavecli/tests | 100 | 5027 | 0 | 20 | 1.000 [0.998, 1.000] | 0.379 [0.366, 0.393] | 1.000 [1.000, 1.000] | 0.394 [0.313, 0.484] | 0 | 0.993 [0.989, 0.996] | 0.380 [0.366, 0.393] | 13 |
+| syft/no_tests | 100 | 5389 | 7 | 921 | 0.994 [0.988, 0.997] | 0.217 [0.206, 0.228] | 0.997 [0.990, 1.000] | 0.472 [0.388, 0.557] | 0 | 0.900 [0.882, 0.915] | 0.220 [0.209, 0.231] | 120 |
+| syft/tests | 100 | 12363 | 20 | 10 | 0.990 [0.984, 0.993] | 0.152 [0.146, 0.158] | 0.997 [0.993, 1.000] | 0.250 [0.185, 0.325] | 0 | 0.904 [0.891, 0.916] | 0.158 [0.151, 0.164] | 186 |
+| bubbletea/no_tests | 100 | 646 | 0 | 1850 | 1.000 [0.986, 1.000] | 0.426 [0.388, 0.464] | 1.000 [1.000, 1.000] | 0.405 [0.327, 0.481] | 0 | 0.972 [0.945, 0.986] | 0.426 [0.388, 0.464] | 2 |
+| bubbletea/tests | 100 | 2503 | 0 | 1049 | 1.000 [0.994, 1.000] | 0.244 [0.228, 0.262] | 1.000 [1.000, 1.000] | 0.338 [0.262, 0.410] | 0 | 0.998 [0.991, 1.000] | 0.253 [0.236, 0.270] | 1 |
+| chi/no_tests | 100 | 760 | 0 | 815 | 1.000 [0.979, 1.000] | 0.230 [0.202, 0.262] | 1.000 [1.000, 1.000] | 0.369 [0.270, 0.472] | 0 | 0.875 [0.822, 0.914] | 0.230 [0.202, 0.262] | 25 |
+| chi/tests | 100 | 3219 | 0 | 129 | 1.000 [0.996, 1.000] | 0.319 [0.303, 0.335] | 1.000 [1.000, 1.000] | 0.321 [0.240, 0.408] | 0 | 0.977 [0.966, 0.985] | 0.321 [0.305, 0.337] | 24 |
+| urfavecli/no_tests | 100 | 832 | 3 | 2274 | 0.994 [0.982, 0.998] | 0.581 [0.547, 0.614] | 0.993 [0.978, 1.000] | 0.676 [0.597, 0.756] | 0 | 0.942 [0.918, 0.959] | 0.581 [0.547, 0.614] | 15 |
+| urfavecli/tests | 100 | 5027 | 0 | 20 | 1.000 [0.998, 1.000] | 0.379 [0.366, 0.393] | 1.000 [1.000, 1.000] | 0.394 [0.313, 0.484] | 0 | 0.988 [0.982, 0.992] | 0.380 [0.366, 0.393] | 24 |
 | viper/no_tests | 100 | 552 | 0 | 1014 | 1.000 [0.991, 1.000] | 0.772 [0.735, 0.805] | 1.000 [1.000, 1.000] | 0.752 [0.636, 0.852] | 0 | 0.979 [0.961, 0.989] | 0.772 [0.735, 0.805] | 0 |
 | viper/tests | 100 | 1740 | 0 | 139 | 1.000 [0.997, 1.000] | 0.822 [0.803, 0.839] | 1.000 [1.000, 1.000] | 0.772 [0.677, 0.864] | 0 | 1.000 [0.997, 1.000] | 0.822 [0.803, 0.839] | 0 |
 
@@ -3661,22 +3663,22 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 
 | Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
 |---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
-| cobra/tests | 100 | 21763 | 0 | 2 | 1.000 [1.000, 1.000] | 0.445 [0.438, 0.452] | 1.000 [1.000, 1.000] | 0.523 [0.425, 0.611] | 0 | 0.999 [0.998, 1.000] | 0.445 [0.439, 0.452] | 8 |
-| cobra/no_tests | 100 | 4860 | 0 | 11767 | 1.000 [0.998, 1.000] | 0.351 [0.337, 0.364] | 1.000 [1.000, 1.000] | 0.359 [0.281, 0.439] | 0 | 1.000 [0.998, 1.000] | 0.352 [0.339, 0.366] | 0 |
+| cobra/tests | 100 | 21763 | 0 | 2 | 1.000 [1.000, 1.000] | 0.445 [0.438, 0.452] | 1.000 [1.000, 1.000] | 0.523 [0.425, 0.611] | 0 | 0.992 [0.990, 0.994] | 0.460 [0.453, 0.466] | 79 |
+| cobra/no_tests | 100 | 4860 | 0 | 11767 | 1.000 [0.998, 1.000] | 0.351 [0.337, 0.364] | 1.000 [1.000, 1.000] | 0.359 [0.281, 0.439] | 0 | 0.974 [0.966, 0.980] | 0.398 [0.385, 0.412] | 52 |
 | gitleaks/no_tests | 100 | 4186 | 0 | 316 | 1.000 [0.999, 1.000] | 0.920 [0.912, 0.928] | 1.000 [1.000, 1.000] | 0.949 [0.910, 0.978] | 0 | 1.000 [0.998, 1.000] | 0.920 [0.912, 0.928] | 2 |
 | gitleaks/tests | 100 | 5964 | 0 | 70 | 1.000 [0.999, 1.000] | 0.948 [0.942, 0.953] | 1.000 [1.000, 1.000] | 0.866 [0.809, 0.919] | 0 | 1.000 [0.999, 1.000] | 0.948 [0.942, 0.953] | 1 |
-| syft/no_tests | 100 | 32125 | 0 | 5589 | 1.000 [0.999, 1.000] | 0.128 [0.124, 0.132] | 1.000 [1.000, 1.000] | 0.149 [0.104, 0.203] | 0 | 0.955 [0.949, 0.961] | 0.141 [0.137, 0.144] | 211 |
-| syft/tests | 100 | 81766 | 67 | 84 | 0.990 [0.987, 0.992] | 0.077 [0.075, 0.079] | 0.998 [0.996, 0.999] | 0.089 [0.055, 0.130] | 0 | 0.988 [0.985, 0.990] | 0.090 [0.088, 0.092] | 22 |
-| bubbletea/no_tests | 100 | 780 | 0 | 3872 | 1.000 [0.990, 1.000] | 0.488 [0.454, 0.523] | 1.000 [1.000, 1.000] | 0.402 [0.336, 0.466] | 0 | 0.950 [0.924, 0.968] | 0.488 [0.454, 0.523] | 0 |
-| bubbletea/tests | 100 | 3256 | 0 | 2121 | 1.000 [0.997, 1.000] | 0.342 [0.326, 0.358] | 1.000 [1.000, 1.000] | 0.347 [0.276, 0.406] | 0 | 0.981 [0.971, 0.987] | 0.347 [0.331, 0.364] | 0 |
-| chi/no_tests | 100 | 1806 | 0 | 1504 | 1.000 [0.984, 1.000] | 0.135 [0.120, 0.151] | 1.000 [1.000, 1.000] | 0.306 [0.211, 0.409] | 0 | 0.927 [0.890, 0.952] | 0.147 [0.131, 0.164] | 21 |
-| chi/tests | 100 | 10113 | 0 | 193 | 1.000 [0.997, 1.000] | 0.144 [0.137, 0.150] | 1.000 [1.000, 1.000] | 0.177 [0.113, 0.254] | 0 | 0.999 [0.995, 1.000] | 0.146 [0.140, 0.153] | 2 |
-| urfavecli/no_tests | 100 | 1207 | 9 | 13152 | 0.989 [0.979, 0.994] | 0.661 [0.634, 0.687] | 0.993 [0.979, 1.000] | 0.739 [0.664, 0.818] | 0 | 0.810 [0.785, 0.834] | 0.662 [0.635, 0.688] | 4 |
-| urfavecli/tests | 100 | 33971 | 0 | 65 | 1.000 [1.000, 1.000] | 0.289 [0.284, 0.294] | 1.000 [1.000, 1.000] | 0.335 [0.264, 0.410] | 0 | 0.998 [0.997, 0.998] | 0.289 [0.285, 0.294] | 23 |
+| syft/no_tests | 100 | 32125 | 0 | 5589 | 1.000 [0.999, 1.000] | 0.128 [0.124, 0.132] | 1.000 [1.000, 1.000] | 0.149 [0.104, 0.203] | 0 | 0.945 [0.939, 0.951] | 0.147 [0.143, 0.151] | 272 |
+| syft/tests | 100 | 81766 | 67 | 84 | 0.990 [0.987, 0.992] | 0.077 [0.075, 0.079] | 0.998 [0.996, 0.999] | 0.089 [0.055, 0.130] | 0 | 0.987 [0.985, 0.990] | 0.093 [0.091, 0.095] | 30 |
+| bubbletea/no_tests | 100 | 780 | 0 | 3872 | 1.000 [0.990, 1.000] | 0.488 [0.454, 0.523] | 1.000 [1.000, 1.000] | 0.402 [0.336, 0.466] | 0 | 0.931 [0.903, 0.952] | 0.488 [0.454, 0.523] | 8 |
+| bubbletea/tests | 100 | 3256 | 0 | 2121 | 1.000 [0.997, 1.000] | 0.342 [0.326, 0.358] | 1.000 [1.000, 1.000] | 0.347 [0.276, 0.406] | 0 | 0.980 [0.971, 0.987] | 0.351 [0.335, 0.368] | 1 |
+| chi/no_tests | 100 | 1806 | 0 | 1504 | 1.000 [0.984, 1.000] | 0.135 [0.120, 0.151] | 1.000 [1.000, 1.000] | 0.306 [0.211, 0.409] | 0 | 0.917 [0.879, 0.944] | 0.147 [0.131, 0.164] | 24 |
+| chi/tests | 100 | 10113 | 0 | 193 | 1.000 [0.997, 1.000] | 0.144 [0.137, 0.150] | 1.000 [1.000, 1.000] | 0.177 [0.113, 0.254] | 0 | 0.999 [0.995, 1.000] | 0.147 [0.140, 0.154] | 2 |
+| urfavecli/no_tests | 100 | 1207 | 9 | 13152 | 0.989 [0.979, 0.994] | 0.661 [0.634, 0.687] | 0.993 [0.979, 1.000] | 0.739 [0.664, 0.818] | 0 | 0.805 [0.779, 0.828] | 0.667 [0.640, 0.693] | 12 |
+| urfavecli/tests | 100 | 33971 | 0 | 65 | 1.000 [1.000, 1.000] | 0.289 [0.284, 0.294] | 1.000 [1.000, 1.000] | 0.335 [0.264, 0.410] | 0 | 0.997 [0.995, 0.998] | 0.290 [0.285, 0.294] | 33 |
 | viper/no_tests | 100 | 1017 | 0 | 1680 | 1.000 [0.996, 1.000] | 0.890 [0.869, 0.908] | 1.000 [1.000, 1.000] | 0.780 [0.661, 0.881] | 0 | 0.978 [0.967, 0.986] | 0.890 [0.869, 0.908] | 0 |
 | viper/tests | 100 | 2469 | 0 | 395 | 1.000 [0.998, 1.000] | 0.853 [0.839, 0.866] | 1.000 [1.000, 1.000] | 0.755 [0.661, 0.848] | 0 | 1.000 [0.998, 1.000] | 0.853 [0.839, 0.866] | 0 |
 
-**Go, without function-value edges.** The Go oracle resolves the call of a function value (`parg(cmd, args)`, `p.cancel()`, `cmd()`) to every address-taken function of that signature that RTA reaches and keys a function literal at its enclosing declaration, so such an edge names the function that built the closure (or an unrelated closure of the same signature). lidx does not resolve a call of a function value. The same grading with these edges (`closure` or `dispatch` without interface alternatives in the oracle; interface invocations stay) left out of the closure (calls-only; precision differs only through the members these edges add):
+**Go, without function-value edges (upper-bound view: it excludes real function-value calls that lidx cannot resolve, and was built post hoc, after seeing lidx's misses; no verdict).** The Go oracle resolves the call of a function value (`parg(cmd, args)`, `p.cancel()`, `cmd()`) to every address-taken function of that signature that RTA reaches and keys a function literal at its enclosing declaration, so such an edge names the function that built the closure (or an unrelated closure of the same signature). lidx does not resolve a call of a function value. The same grading with these edges (`closure` or `dispatch` without interface alternatives in the oracle; interface invocations stay) left out of the closure (calls-only; precision differs only through the members these edges add):
 
 | Cell | k = 3 oracle members | precision | recall | unbounded oracle members | precision | recall |
 |---|---:|---|---|---:|---|---|
@@ -3720,16 +3722,16 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 
 | Cell | hidden (oracle) | hidden (oracle, alt. closure) | hidden (lidx) | Plain call recall | Plain call truncated seeds | beyond 10 |
 |---|---|---|---|---:|---:|
-| cobra/tests | 55/75 = 0.733 | 25/62 = 0.403 | 25/62 = 0.403 | 0.515 [0.486, 0.544] | 18 | 37 |
-| cobra/no_tests | 51/71 = 0.718 | 6/61 = 0.098 | 42/83 = 0.506 | 0.483 [0.448, 0.518] | 19 | 23 |
+| cobra/tests | 55/75 = 0.733 | 25/62 = 0.403 | 25/62 = 0.403 | 0.518 [0.489, 0.546] | 18 | 37 |
+| cobra/no_tests | 51/71 = 0.718 | 6/61 = 0.098 | 42/83 = 0.506 | 0.501 [0.466, 0.537] | 19 | 23 |
 | gitleaks/no_tests | 12/76 = 0.158 | 11/75 = 0.147 | 14/75 = 0.187 | 0.851 [0.813, 0.882] | 10 | 0 |
 | gitleaks/tests | 17/72 = 0.236 | 15/71 = 0.211 | 17/71 = 0.239 | 0.749 [0.716, 0.780] | 14 | 0 |
-| syft/no_tests | 67/75 = 0.893 | 39/62 = 0.629 | 41/63 = 0.651 | 0.080 [0.071, 0.089] | 20 | 71 |
-| syft/tests | 74/75 = 0.987 | 23/59 = 0.390 | 25/59 = 0.424 | 0.049 [0.045, 0.054] | 19 | 73 |
+| syft/no_tests | 67/75 = 0.893 | 39/62 = 0.629 | 41/63 = 0.651 | 0.082 [0.074, 0.092] | 20 | 71 |
+| syft/tests | 74/75 = 0.987 | 23/59 = 0.390 | 25/59 = 0.424 | 0.050 [0.045, 0.055] | 19 | 73 |
 | bubbletea/no_tests | 6/64 = 0.094 | 1/47 = 0.021 | 29/68 = 0.426 | 0.290 [0.243, 0.342] | 26 | 0 |
-| bubbletea/tests | 13/78 = 0.167 | 13/55 = 0.236 | 21/55 = 0.382 | 0.106 [0.093, 0.122] | 20 | 0 |
+| bubbletea/tests | 13/78 = 0.167 | 13/55 = 0.236 | 21/55 = 0.382 | 0.107 [0.094, 0.123] | 20 | 0 |
 | chi/no_tests | 43/67 = 0.642 | 3/39 = 0.077 | 6/73 = 0.082 | 0.178 [0.151, 0.208] | 5 | 1 |
-| chi/tests | 52/74 = 0.703 | 5/50 = 0.100 | 5/50 = 0.100 | 0.174 [0.160, 0.190] | 6 | 5 |
+| chi/tests | 52/74 = 0.703 | 5/50 = 0.100 | 5/50 = 0.100 | 0.176 [0.161, 0.191] | 6 | 5 |
 | urfavecli/no_tests | 10/65 = 0.154 | 4/58 = 0.069 | 56/84 = 0.667 | 0.386 [0.339, 0.435] | 21 | 0 |
 | urfavecli/tests | 70/75 = 0.933 | 37/58 = 0.638 | 42/58 = 0.724 | 0.173 [0.160, 0.187] | 19 | 25 |
 | viper/no_tests | 13/59 = 0.220 | 13/46 = 0.283 | 14/56 = 0.250 | 0.513 [0.453, 0.574] | 12 | 0 |
@@ -3740,17 +3742,17 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | Cell | k = 3 | agree | unbounded | agree |
 |---|---|---:|---|---:|
 | cobra/tests | 38 / 9 / 23 / 30 | 68.0% | 40 / 7 / 23 / 30 | 70.0% |
-| cobra/no_tests | 56 / 9 / 9 / 26 | 82.0% | 59 / 9 / 8 / 24 | 83.0% |
+| cobra/no_tests | 57 / 9 / 8 / 26 | 83.0% | 63 / 9 / 4 / 24 | 87.0% |
 | gitleaks/no_tests | 14 / 76 / 0 / 10 | 24.0% | 20 / 70 / 0 / 10 | 30.0% |
 | gitleaks/tests | 30 / 51 / 1 / 18 | 48.0% | 39 / 43 / 1 / 17 | 56.0% |
-| syft/no_tests | 50 / 19 / 9 / 22 | 72.0% | 64 / 7 / 9 / 20 | 84.0% |
+| syft/no_tests | 51 / 19 / 8 / 22 | 73.0% | 65 / 7 / 8 / 20 | 85.0% |
 | syft/tests | 51 / 10 / 17 / 22 | 73.0% | 59 / 4 / 15 / 22 | 81.0% |
-| bubbletea/no_tests | 46 / 15 / 12 / 27 | 73.0% | 51 / 10 / 12 / 27 | 78.0% |
-| bubbletea/tests | 37 / 10 / 35 / 18 | 55.0% | 43 / 6 / 33 / 18 | 61.0% |
-| chi/no_tests | 36 / 43 / 13 / 8 | 44.0% | 38 / 41 / 13 / 8 | 46.0% |
-| chi/tests | 54 / 30 / 11 / 5 | 59.0% | 61 / 23 / 11 / 5 | 66.0% |
-| urfavecli/no_tests | 28 / 45 / 9 / 18 | 46.0% | 24 / 53 / 5 / 18 | 42.0% |
-| urfavecli/tests | 55 / 10 / 15 / 20 | 75.0% | 59 / 10 / 11 / 20 | 79.0% |
+| bubbletea/no_tests | 46 / 17 / 12 / 25 | 71.0% | 51 / 12 / 12 / 25 | 76.0% |
+| bubbletea/tests | 38 / 10 / 34 / 18 | 56.0% | 44 / 6 / 32 / 18 | 62.0% |
+| chi/no_tests | 39 / 43 / 10 / 8 | 47.0% | 41 / 41 / 10 / 8 | 49.0% |
+| chi/tests | 57 / 30 / 8 / 5 | 62.0% | 64 / 23 / 8 / 5 | 69.0% |
+| urfavecli/no_tests | 31 / 45 / 6 / 18 | 49.0% | 26 / 53 / 3 / 18 | 44.0% |
+| urfavecli/tests | 56 / 10 / 14 / 20 | 76.0% | 59 / 10 / 11 / 20 | 79.0% |
 | viper/no_tests | 9 / 37 / 7 / 47 | 56.0% | 7 / 43 / 6 / 44 | 51.0% |
 | viper/tests | 23 / 38 / 8 / 31 | 54.0% | 27 / 36 / 8 / 29 | 56.0% |
 
@@ -3758,25 +3760,25 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 
 | Cell | k | Seeds | Oracle pairs | Wrong | not root | beyond calls | Precision | Recall | Macro precision | Macro recall | Upstream recall | edge recall | missed Benchmark/Fuzz | empty ok | oracle test, lidx none |
 |---|---|---:|---:|---:|---:|---:|---|---|---|---|---|---|---:|---:|---:|
-| cobra/tests | 3 | 100 | 2184 | 23 | 23 | 110 | 0.988 [0.982, 0.992] | 0.860 [0.845, 0.874] | 0.984 [0.971, 0.995] | 0.693 [0.610, 0.774] | 0.796 | 0.994 | 51 | 27 | 11 |
-| cobra/tests | inf | 100 | 16301 | 67 | 67 | 8 | 0.992 [0.989, 0.993] | 0.486 [0.478, 0.494] | 0.994 [0.990, 0.996] | 0.562 [0.459, 0.655] | 0.445 | 0.994 | 252 | 25 | 13 |
+| cobra/tests | 3 | 100 | 2184 | 23 | 23 | 115 | 0.988 [0.982, 0.992] | 0.860 [0.845, 0.874] | 0.984 [0.971, 0.995] | 0.693 [0.610, 0.774] | 0.796 | 0.994 | 51 | 27 | 11 |
+| cobra/tests | inf | 100 | 16301 | 67 | 67 | 45 | 0.992 [0.990, 0.994] | 0.500 [0.493, 0.508] | 0.994 [0.990, 0.996] | 0.575 [0.473, 0.663] | 0.445 | 0.994 | 252 | 25 | 13 |
 | gitleaks/tests | 3 | 100 | 257 | 6 | 6 | 0 | 0.971 [0.939, 0.987] | 0.786 [0.732, 0.832] | 0.988 [0.977, 0.996] | 0.691 [0.587, 0.790] | 0.938 | 0.996 | 18 | 59 | 5 |
 | gitleaks/tests | inf | 100 | 422 | 7 | 7 | 0 | 0.979 [0.958, 0.990] | 0.784 [0.743, 0.821] | 0.991 [0.985, 0.997] | 0.681 [0.594, 0.775] | 0.948 | 0.996 | 18 | 55 | 3 |
-| syft/tests | 3 | 100 | 7058 | 21 | 1 | 65 | 0.984 [0.976, 0.990] | 0.187 [0.178, 0.196] | 0.989 [0.978, 0.998] | 0.199 [0.139, 0.270] | 0.152 | 0.988 | 14 | 29 | 21 |
-| syft/tests | inf | 100 | 39656 | 68 | 1 | 0 | 0.985 [0.980, 0.988] | 0.109 [0.106, 0.112] | 0.995 [0.990, 0.999] | 0.108 [0.076, 0.138] | 0.077 | 0.988 | 74 | 26 | 18 |
+| syft/tests | 3 | 100 | 7058 | 21 | 1 | 124 | 0.985 [0.977, 0.990] | 0.191 [0.182, 0.201] | 0.989 [0.978, 0.998] | 0.203 [0.142, 0.276] | 0.152 | 0.988 | 14 | 29 | 21 |
+| syft/tests | inf | 100 | 39656 | 68 | 1 | 0 | 0.985 [0.981, 0.988] | 0.114 [0.111, 0.117] | 0.995 [0.991, 0.999] | 0.114 [0.081, 0.145] | 0.077 | 0.988 | 74 | 26 | 18 |
 | bubbletea/tests | 3 | 100 | 1441 | 15 | 15 | 1 | 0.966 [0.945, 0.979] | 0.295 [0.272, 0.319] | 0.955 [0.921, 0.981] | 0.354 [0.267, 0.447] | 0.244 | 0.982 | 1 | 30 | 20 |
-| bubbletea/tests | inf | 100 | 1890 | 66 | 48 | 1 | 0.924 [0.905, 0.940] | 0.426 [0.404, 0.448] | 0.935 [0.901, 0.960] | 0.435 [0.355, 0.505] | 0.342 | 0.982 | 1 | 22 | 14 |
-| chi/tests | 3 | 100 | 2207 | 0 | 0 | 19 | 1.000 [0.996, 1.000] | 0.390 [0.370, 0.411] | 1.000 [1.000, 1.000] | 0.347 [0.263, 0.437] | 0.319 | 0.982 | 98 | 29 | 21 |
-| chi/tests | inf | 100 | 7043 | 0 | 0 | 2 | 1.000 [0.997, 1.000] | 0.177 [0.169, 0.187] | 1.000 [1.000, 1.000] | 0.210 [0.134, 0.289] | 0.144 | 0.982 | 148 | 27 | 21 |
-| urfavecli/tests | 3 | 100 | 3856 | 0 | 0 | 2 | 1.000 [0.997, 1.000] | 0.388 [0.373, 0.404] | 1.000 [1.000, 1.000] | 0.377 [0.287, 0.474] | 0.379 | 0.959 | 0 | 25 | 19 |
-| urfavecli/tests | inf | 100 | 23812 | 0 | 0 | 19 | 1.000 [1.000, 1.000] | 0.359 [0.353, 0.365] | 1.000 [1.000, 1.000] | 0.400 [0.319, 0.487] | 0.289 | 0.959 | 0 | 25 | 17 |
+| bubbletea/tests | inf | 100 | 1890 | 66 | 48 | 1 | 0.925 [0.906, 0.941] | 0.431 [0.408, 0.453] | 0.935 [0.901, 0.961] | 0.440 [0.359, 0.511] | 0.342 | 0.982 | 1 | 22 | 14 |
+| chi/tests | 3 | 100 | 2207 | 0 | 0 | 21 | 1.000 [0.996, 1.000] | 0.392 [0.371, 0.412] | 1.000 [1.000, 1.000] | 0.348 [0.265, 0.439] | 0.319 | 0.982 | 98 | 29 | 18 |
+| chi/tests | inf | 100 | 7043 | 0 | 0 | 2 | 1.000 [0.997, 1.000] | 0.178 [0.170, 0.187] | 1.000 [1.000, 1.000] | 0.211 [0.135, 0.289] | 0.144 | 0.982 | 148 | 27 | 18 |
+| urfavecli/tests | 3 | 100 | 3856 | 0 | 0 | 11 | 1.000 [0.997, 1.000] | 0.388 [0.373, 0.404] | 1.000 [1.000, 1.000] | 0.377 [0.287, 0.474] | 0.379 | 0.959 | 0 | 25 | 19 |
+| urfavecli/tests | inf | 100 | 23812 | 0 | 0 | 27 | 1.000 [1.000, 1.000] | 0.359 [0.353, 0.365] | 1.000 [1.000, 1.000] | 0.400 [0.320, 0.488] | 0.289 | 0.959 | 0 | 25 | 17 |
 | viper/tests | 3 | 100 | 1157 | 0 | 0 | 0 | 1.000 [0.996, 1.000] | 0.838 [0.816, 0.859] | 1.000 [1.000, 1.000] | 0.808 [0.713, 0.896] | 0.822 | 0.998 | 17 | 35 | 8 |
 | viper/tests | inf | 100 | 1662 | 0 | 0 | 0 | 1.000 [0.997, 1.000] | 0.869 [0.852, 0.884] | 1.000 [1.000, 1.000] | 0.770 [0.677, 0.862] | 0.853 | 0.998 | 24 | 34 | 8 |
 
 
-**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); false alarm = a leaf marked `unresolved_calls` where the oracle shows nothing missing. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
+**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); **gap with no in-repo callee left** = a leaf marked `unresolved_calls` where the oracle has no in-scope callee. This is not a claim that lidx is wrong: lidx defines `unresolved_calls` as a resolution gap (pending unresolved references), and an unresolved external name is a true gap. The narrower point it supports is that lidx itself tags most of these names `external` and still reports `unresolved_calls`, so the signal says little. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
 
-| Cell | k | False leaf | False alarm | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
+| Cell | k | False leaf | Gap, no in-repo callee left | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
 |---|---|---|---|---|---|---|---|---:|
 | cobra/tests | 3 | 10/206 = 4.9% [2.7, 8.7] (10 function-literal callees only) | - | 1.000 [0.996, 1.000] | 0.497 [0.474, 0.521] | 1.000 [1.000, 1.000] | 0.782 [0.701, 0.853] | 0 |
 | cobra/tests | inf | 62/519 = 11.9% [9.4, 15.0] (62 function-literal callees only) | - | 1.000 [0.999, 1.000] | 0.275 [0.268, 0.282] | 1.000 [1.000, 1.000] | 0.478 [0.399, 0.564] | 0 |
@@ -3879,9 +3881,9 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 
 **Test reach**: void for TypeScript. Test files are out of scope on both sides (the oracle does not analyse them, lidx's test layer would be graded against nothing), so no figure is reported.
 
-**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); false alarm = a leaf marked `unresolved_calls` where the oracle shows nothing missing. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
+**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); **gap with no in-repo callee left** = a leaf marked `unresolved_calls` where the oracle has no in-scope callee. This is not a claim that lidx is wrong: lidx defines `unresolved_calls` as a resolution gap (pending unresolved references), and an unresolved external name is a true gap. The narrower point it supports is that lidx itself tags most of these names `external` and still reports `unresolved_calls`, so the signal says little. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
 
-| Cell | k | False leaf | False alarm | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
+| Cell | k | False leaf | Gap, no in-repo callee left | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
 |---|---|---|---|---|---|---|---|---:|
 | zod | 3 | 7/91 = 7.7% [3.8, 15.0] | 104/109 = 95.4% [89.7, 98.0] (85 external-only) | 0.795 [0.754, 0.831] | 0.548 [0.508, 0.588] | 0.983 [0.933, 1.000] | 0.716 [0.635, 0.794] | 0 |
 | zod | inf | 7/109 = 6.4% [3.1, 12.7] | 118/124 = 95.2% [89.8, 97.8] (95 external-only) | 0.822 [0.785, 0.854] | 0.224 [0.205, 0.244] | 0.983 [0.933, 1.000] | 0.661 [0.560, 0.757] | 0 |
@@ -3903,7 +3905,7 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
 |---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
 | ripgrep/path_tests_excluded | 100 | 4886 | 0 | 7 | 1.000 [0.996, 1.000] | 0.199 [0.188, 0.211] | 1.000 [1.000, 1.000] | 0.358 [0.254, 0.462] | 0 | 0.222 [0.210, 0.234] | 0.199 [0.188, 0.211] | 3416 |
-| ripgrep/no_tests | 100 | 1300 | 11 | 1100 | 0.985 [0.974, 0.992] | 0.559 [0.532, 0.586] | 0.910 [0.820, 0.998] | 0.380 [0.279, 0.482] | 0 | 0.170 [0.159, 0.181] | 0.578 [0.551, 0.604] | 3663 |
+| ripgrep/no_tests | 100 | 1300 | 11 | 1100 | 0.985 [0.974, 0.992] | 0.561 [0.534, 0.588] | 0.910 [0.820, 0.998] | 0.382 [0.281, 0.484] | 0 | 0.170 [0.160, 0.182] | 0.580 [0.553, 0.607] | 3663 |
 | ripgrep/tests | 100 | 4667 | 10 | 3 | 0.984 [0.971, 0.992] | 0.135 [0.125, 0.145] | 0.936 [0.841, 1.000] | 0.376 [0.267, 0.483] | 0 | 0.169 [0.157, 0.181] | 0.137 [0.128, 0.147] | 3148 |
 | fd/path_tests_excluded | 100 | 359 | 0 | 98 | 1.000 [0.989, 1.000] | 0.964 [0.939, 0.979] | 1.000 [1.000, 1.000] | 0.982 [0.963, 1.000] | 0 | 0.935 [0.905, 0.956] | 0.964 [0.939, 0.979] | 24 |
 | fd/no_tests | 100 | 379 | 2 | 183 | 0.995 [0.981, 0.999] | 0.971 [0.949, 0.984] | 0.987 [0.962, 1.000] | 0.976 [0.948, 0.995] | 0 | 0.932 [0.902, 0.953] | 0.971 [0.949, 0.984] | 25 |
@@ -3911,8 +3913,8 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | bat/path_tests_excluded | 100 | 675 | 6 | 9 | 0.990 [0.977, 0.995] | 0.834 [0.804, 0.860] | 0.990 [0.976, 0.999] | 0.844 [0.758, 0.922] | 0 | 0.943 [0.921, 0.959] | 0.834 [0.804, 0.860] | 28 |
 | just/path_tests_excluded | 100 | 1552 | 37 | 7 | 0.971 [0.961, 0.979] | 0.808 [0.788, 0.827] | 0.960 [0.911, 0.998] | 0.824 [0.750, 0.895] | 0 | 0.832 [0.812, 0.850] | 0.814 [0.794, 0.832] | 219 |
 | lidx/path_tests_excluded | 100 | 1892 | 0 | 735 | 1.000 [0.998, 1.000] | 0.960 [0.950, 0.968] | 1.000 [1.000, 1.000] | 0.933 [0.887, 0.970] | 0 | 0.892 [0.878, 0.905] | 0.960 [0.951, 0.968] | 219 |
-| nextest/path_tests_excluded | 100 | 660 | 10 | 132 | 0.981 [0.965, 0.990] | 0.771 [0.738, 0.802] | 0.974 [0.940, 0.998] | 0.749 [0.659, 0.837] | 0 | 0.963 [0.943, 0.976] | 0.779 [0.746, 0.809] | 10 |
-| tokei/path_tests_excluded | 100 | 213 | 48 | 6 | 0.786 [0.727, 0.834] | 0.826 [0.770, 0.871] | 0.802 [0.709, 0.889] | 0.865 [0.774, 0.946] | 0 | 0.752 [0.693, 0.803] | 0.826 [0.770, 0.871] | 10 |
+| nextest/path_tests_excluded | 100 | 660 | 12 | 134 | 0.979 [0.963, 0.988] | 0.826 [0.795, 0.853] | 0.966 [0.926, 0.995] | 0.809 [0.719, 0.888] | 0 | 0.932 [0.909, 0.950] | 0.833 [0.803, 0.860] | 28 |
+| tokei/path_tests_excluded | 100 | 213 | 48 | 6 | 0.788 [0.730, 0.836] | 0.836 [0.780, 0.879] | 0.806 [0.708, 0.889] | 0.883 [0.795, 0.955] | 0 | 0.754 [0.696, 0.805] | 0.836 [0.780, 0.879] | 10 |
 | xsv/path_tests_excluded | 100 | 631 | 0 | 0 | 1.000 [0.993, 1.000] | 0.899 [0.873, 0.920] | 1.000 [1.000, 1.000] | 0.887 [0.826, 0.941] | 0 | 1.000 [0.993, 1.000] | 0.899 [0.873, 0.920] | 0 |
 
 **Upstream set, unbounded (lidx caps at 10)**
@@ -3920,7 +3922,7 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | Cell | Seeds | Oracle members | Wrong | Ungr. | Precision | Recall | Macro precision | Macro recall | Truncated | Default call precision | Default call recall | Default call beyond calls |
 |---|---:|---:|---:|---:|---|---|---|---|---:|---|---|---:|
 | ripgrep/path_tests_excluded | 100 | 7218 | 4 | 20 | 0.998 [0.995, 0.999] | 0.262 [0.252, 0.272] | 0.998 [0.996, 1.000] | 0.283 [0.182, 0.386] | 0 | 0.356 [0.344, 0.369] | 0.266 [0.256, 0.276] | 3466 |
-| ripgrep/no_tests | 100 | 2009 | 16 | 2038 | 0.984 [0.975, 0.990] | 0.498 [0.476, 0.520] | 0.910 [0.821, 0.998] | 0.332 [0.236, 0.424] | 0 | 0.233 [0.221, 0.244] | 0.567 [0.545, 0.589] | 3744 |
+| ripgrep/no_tests | 100 | 2009 | 16 | 2038 | 0.984 [0.975, 0.990] | 0.499 [0.477, 0.521] | 0.910 [0.821, 0.998] | 0.333 [0.236, 0.425] | 0 | 0.233 [0.221, 0.245] | 0.568 [0.546, 0.590] | 3744 |
 | ripgrep/tests | 100 | 6770 | 17 | 7 | 0.986 [0.977, 0.991] | 0.172 [0.164, 0.182] | 0.933 [0.840, 0.997] | 0.321 [0.220, 0.427] | 0 | 0.270 [0.257, 0.284] | 0.176 [0.167, 0.185] | 3199 |
 | fd/path_tests_excluded | 100 | 519 | 0 | 109 | 1.000 [0.992, 1.000] | 0.971 [0.953, 0.982] | 1.000 [1.000, 1.000] | 0.989 [0.977, 1.000] | 0 | 0.951 [0.929, 0.966] | 0.971 [0.953, 0.982] | 26 |
 | fd/no_tests | 100 | 661 | 2 | 204 | 0.997 [0.989, 0.999] | 0.974 [0.959, 0.984] | 0.987 [0.962, 1.000] | 0.981 [0.954, 0.997] | 0 | 0.956 [0.937, 0.969] | 0.974 [0.959, 0.984] | 28 |
@@ -3928,8 +3930,8 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | bat/path_tests_excluded | 100 | 1118 | 20 | 11 | 0.979 [0.967, 0.986] | 0.820 [0.797, 0.842] | 0.982 [0.967, 0.992] | 0.844 [0.755, 0.921] | 0 | 0.952 [0.937, 0.964] | 0.820 [0.797, 0.842] | 26 |
 | just/path_tests_excluded | 100 | 4776 | 259 | 1884 | 0.937 [0.929, 0.944] | 0.809 [0.798, 0.820] | 0.959 [0.916, 0.991] | 0.829 [0.751, 0.899] | 0 | 0.754 [0.742, 0.765] | 0.851 [0.841, 0.861] | 1058 |
 | lidx/path_tests_excluded | 100 | 7882 | 4 | 21563 | 0.999 [0.998, 1.000] | 0.618 [0.607, 0.628] | 1.000 [1.000, 1.000] | 0.740 [0.654, 0.815] | 0 | 0.702 [0.691, 0.713] | 0.618 [0.607, 0.629] | 2063 |
-| nextest/path_tests_excluded | 100 | 1153 | 56 | 337 | 0.935 [0.917, 0.950] | 0.704 [0.677, 0.730] | 0.952 [0.911, 0.989] | 0.749 [0.657, 0.834] | 0 | 0.924 [0.905, 0.940] | 0.709 [0.682, 0.734] | 11 |
-| tokei/path_tests_excluded | 100 | 217 | 105 | 7 | 0.632 [0.574, 0.685] | 0.830 [0.774, 0.874] | 0.705 [0.597, 0.804] | 0.867 [0.774, 0.947] | 0 | 0.610 [0.553, 0.664] | 0.830 [0.774, 0.874] | 10 |
+| nextest/path_tests_excluded | 100 | 1153 | 58 | 345 | 0.937 [0.920, 0.951] | 0.754 [0.728, 0.778] | 0.949 [0.902, 0.985] | 0.804 [0.721, 0.881] | 0 | 0.825 [0.800, 0.846] | 0.758 [0.733, 0.782] | 128 |
+| tokei/path_tests_excluded | 100 | 217 | 105 | 7 | 0.634 [0.577, 0.688] | 0.839 [0.784, 0.882] | 0.710 [0.609, 0.806] | 0.886 [0.799, 0.957] | 0 | 0.613 [0.556, 0.666] | 0.839 [0.784, 0.882] | 10 |
 | xsv/path_tests_excluded | 100 | 711 | 0 | 0 | 1.000 [0.994, 1.000] | 0.899 [0.874, 0.919] | 1.000 [1.000, 1.000] | 0.885 [0.823, 0.942] | 0 | 1.000 [0.994, 1.000] | 0.899 [0.874, 0.919] | 0 |
 
 **Rust, the compiler's edges as stated.** The graded closure expands an edge to a trait member to the members the compiler's own hierarchy lists as overriding it (what RTA does for Go, without allocation analysis). The same grading without that expansion, i.e. the call graph exactly as the oracle emits it (calls-only):
@@ -3937,7 +3939,7 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | Cell | k = 3 oracle members | precision | recall | unbounded oracle members | precision | recall |
 |---|---:|---|---|---:|---|---|
 | ripgrep/path_tests_excluded | 4886 | 1.000 [0.996, 1.000] | 0.199 [0.188, 0.211] | 7218 | 0.998 [0.995, 0.999] | 0.262 [0.252, 0.272] |
-| ripgrep/no_tests | 1300 | 0.985 [0.974, 0.992] | 0.559 [0.532, 0.586] | 2009 | 0.984 [0.975, 0.990] | 0.498 [0.476, 0.520] |
+| ripgrep/no_tests | 1300 | 0.985 [0.974, 0.992] | 0.561 [0.534, 0.588] | 2009 | 0.984 [0.975, 0.990] | 0.499 [0.477, 0.521] |
 | ripgrep/tests | 4667 | 0.984 [0.971, 0.992] | 0.135 [0.125, 0.145] | 6770 | 0.986 [0.977, 0.991] | 0.172 [0.164, 0.182] |
 | fd/path_tests_excluded | 359 | 1.000 [0.989, 1.000] | 0.964 [0.939, 0.979] | 519 | 1.000 [0.992, 1.000] | 0.971 [0.953, 0.982] |
 | fd/no_tests | 379 | 0.995 [0.981, 0.999] | 0.971 [0.949, 0.984] | 661 | 0.997 [0.989, 0.999] | 0.974 [0.959, 0.984] |
@@ -3945,8 +3947,8 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | bat/path_tests_excluded | 675 | 0.990 [0.977, 0.995] | 0.834 [0.804, 0.860] | 1118 | 0.979 [0.967, 0.986] | 0.820 [0.797, 0.842] |
 | just/path_tests_excluded | 1552 | 0.971 [0.961, 0.979] | 0.808 [0.788, 0.827] | 4776 | 0.937 [0.929, 0.944] | 0.809 [0.798, 0.820] |
 | lidx/path_tests_excluded | 1892 | 1.000 [0.998, 1.000] | 0.960 [0.950, 0.968] | 7882 | 0.999 [0.998, 1.000] | 0.618 [0.607, 0.628] |
-| nextest/path_tests_excluded | 660 | 0.981 [0.965, 0.990] | 0.771 [0.738, 0.802] | 1153 | 0.935 [0.917, 0.950] | 0.704 [0.677, 0.730] |
-| tokei/path_tests_excluded | 213 | 0.786 [0.727, 0.834] | 0.826 [0.770, 0.871] | 217 | 0.632 [0.574, 0.685] | 0.830 [0.774, 0.874] |
+| nextest/path_tests_excluded | 660 | 0.979 [0.963, 0.988] | 0.826 [0.795, 0.853] | 1153 | 0.937 [0.920, 0.951] | 0.754 [0.728, 0.778] |
+| tokei/path_tests_excluded | 213 | 0.788 [0.730, 0.836] | 0.836 [0.780, 0.879] | 217 | 0.634 [0.577, 0.688] | 0.839 [0.784, 0.882] |
 | xsv/path_tests_excluded | 631 | 1.000 [0.993, 1.000] | 0.899 [0.873, 0.920] | 711 | 1.000 [0.994, 1.000] | 0.899 [0.874, 0.919] |
 
 **What the default hides and what a plain call returns**
@@ -3956,7 +3958,7 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | Cell | hidden (oracle) | hidden (oracle, alt. closure) | hidden (lidx) | Plain call recall | Plain call truncated seeds | beyond 10 |
 |---|---|---|---|---:|---:|
 | ripgrep/path_tests_excluded | 14/75 = 0.187 | 14/75 = 0.187 | 6/31 = 0.194 | 0.513 [0.468, 0.558] | 43 | 8 |
-| ripgrep/no_tests | 13/72 = 0.181 | 13/72 = 0.181 | 6/34 = 0.176 | 0.728 [0.673, 0.776] | 51 | 5 |
+| ripgrep/no_tests | 13/72 = 0.181 | 13/72 = 0.181 | 6/34 = 0.176 | 0.726 [0.668, 0.777] | 52 | 5 |
 | ripgrep/tests | 15/73 = 0.205 | 15/73 = 0.205 | 4/33 = 0.121 | 0.632 [0.591, 0.672] | 38 | 8 |
 | fd/path_tests_excluded | 7/57 = 0.123 | 7/57 = 0.123 | 9/57 = 0.158 | 0.962 [0.935, 0.977] | 1 | 0 |
 | fd/no_tests | 18/79 = 0.228 | 18/79 = 0.228 | 19/81 = 0.235 | 0.969 [0.946, 0.983] | 1 | 0 |
@@ -3964,8 +3966,8 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | bat/path_tests_excluded | 17/68 = 0.250 | 17/68 = 0.250 | 14/59 = 0.237 | 0.834 [0.804, 0.860] | 0 | 0 |
 | just/path_tests_excluded | 46/75 = 0.613 | 46/75 = 0.613 | 44/72 = 0.611 | 0.789 [0.765, 0.812] | 8 | 1 |
 | lidx/path_tests_excluded | 40/75 = 0.533 | 40/75 = 0.533 | 35/75 = 0.467 | 0.943 [0.923, 0.958] | 22 | 35 |
-| nextest/path_tests_excluded | 18/70 = 0.257 | 18/70 = 0.257 | 20/59 = 0.339 | 0.742 [0.705, 0.776] | 3 | 4 |
-| tokei/path_tests_excluded | 0/54 = 0.000 | 0/54 = 0.000 | 10/54 = 0.185 | 0.826 [0.770, 0.871] | 0 | 0 |
+| nextest/path_tests_excluded | 18/70 = 0.257 | 18/70 = 0.257 | 22/62 = 0.355 | 0.806 [0.771, 0.836] | 3 | 4 |
+| tokei/path_tests_excluded | 0/54 = 0.000 | 0/54 = 0.000 | 10/55 = 0.182 | 0.836 [0.780, 0.879] | 0 | 0 |
 | xsv/path_tests_excluded | 1/80 = 0.013 | 1/80 = 0.013 | 1/74 = 0.013 | 0.899 [0.873, 0.920] | 0 | 0 |
 
 **`lower_bound` against per-seed completeness** (does `lower_bound: true` hold exactly when lidx misses an oracle caller?). Cells are `lb and incomplete / lb and complete / no lb and incomplete / no lb and complete` over seeds lidx did not truncate; the agreeing cells are the first and the last.
@@ -3973,7 +3975,7 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | Cell | k = 3 | agree | unbounded | agree |
 |---|---|---:|---|---:|
 | ripgrep/path_tests_excluded | 26 / 44 / 26 / 4 | 30.0% | 34 / 36 / 26 / 4 | 38.0% |
-| ripgrep/no_tests | 28 / 27 / 28 / 17 | 45.0% | 31 / 24 / 28 / 17 | 48.0% |
+| ripgrep/no_tests | 27 / 28 / 28 / 17 | 44.0% | 30 / 25 / 28 / 17 | 47.0% |
 | ripgrep/tests | 22 / 48 / 27 / 3 | 25.0% | 27 / 43 / 27 / 3 | 30.0% |
 | fd/path_tests_excluded | 3 / 79 / 0 / 18 | 21.0% | 3 / 79 / 0 / 18 | 21.0% |
 | fd/no_tests | 7 / 87 / 0 / 6 | 13.0% | 6 / 88 / 0 / 6 | 12.0% |
@@ -3981,8 +3983,8 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | bat/path_tests_excluded | 12 / 79 / 2 / 7 | 19.0% | 11 / 80 / 2 / 7 | 18.0% |
 | just/path_tests_excluded | 33 / 56 / 0 / 11 | 44.0% | 30 / 58 / 0 / 11 | 41.4% |
 | lidx/path_tests_excluded | 15 / 84 / 0 / 1 | 16.0% | 40 / 59 / 0 / 1 | 41.0% |
-| nextest/path_tests_excluded | 23 / 64 / 5 / 8 | 31.0% | 28 / 59 / 5 / 8 | 36.0% |
-| tokei/path_tests_excluded | 6 / 82 / 3 / 9 | 15.0% | 6 / 82 / 3 / 9 | 15.0% |
+| nextest/path_tests_excluded | 23 / 67 / 3 / 7 | 30.0% | 28 / 62 / 3 / 7 | 35.0% |
+| tokei/path_tests_excluded | 6 / 83 / 2 / 9 | 15.0% | 6 / 83 / 2 / 9 | 15.0% |
 | xsv/path_tests_excluded | 15 / 76 / 1 / 8 | 23.0% | 16 / 75 / 1 / 8 | 24.0% |
 
 **Test reach** (`Tests(s)`: Rust `#[test]` functions; lidx: the test layer of `analyze_impact` alone, `enable_direct=false`). A seed with no oracle test and no lidx test is a correct empty answer and is counted in `empty ok`. `not root` = wrong tests that are functions the oracle analysed that are not test roots (helpers); `beyond calls` = tests lidx reaches only through a reference, use or import hop (the test layer follows every edge kind and cannot be restricted), counted, not wrong; `missed Benchmark/Fuzz` = missing pairs whose test is a `Benchmark*` or `Fuzz*` function. `Upstream recall` is the recall of the same cell's upstream set at the same k (the transitive call recall; the test layer should not be lower), `edge recall` the call-edge benchmark's recall for the cell.
@@ -3995,15 +3997,15 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | fd/tests | inf | 100 | 538 | 108 | 11 | 3 | 0.832 [0.801, 0.859] | 0.993 [0.981, 0.997] | 0.964 [0.897, 0.999] | 0.956 [0.889, 1.000] | 0.982 | 0.992 | 0 | 68 | 0 |
 
 
-**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); false alarm = a leaf marked `unresolved_calls` where the oracle shows nothing missing. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
+**`trace_flow` stop reasons and reach** (`direction=downstream`, `max_hops=k`, `max_bytes=200000`). False leaf = a leaf marked `no_callees` where the oracle has an in-scope callee (Go: `function-literal callees only` = every such callee is an edge whose callee is a closure keyed at its builder, the call of a function value); **gap with no in-repo callee left** = a leaf marked `unresolved_calls` where the oracle has no in-scope callee. This is not a claim that lidx is wrong: lidx defines `unresolved_calls` as a resolution gap (pending unresolved references), and an unresolved external name is a true gap. The narrower point it supports is that lidx itself tags most of these names `external` and still reports `unresolved_calls`, so the signal says little. Leaves marked `truncated`, `depth_limit` (and every reason other than these two) are excluded from both. Reach is the set of symbols the trace names against `Down_k(s)`.
 
-| Cell | k | False leaf | False alarm | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
+| Cell | k | False leaf | Gap, no in-repo callee left | Reach precision | Reach recall | Macro precision | Macro recall | Byte-truncated seeds |
 |---|---|---|---|---|---|---|---|---:|
 | ripgrep/path_tests_excluded | 3 | 0/229 = 0.0% [0.0, 1.7] | 83/110 = 75.4% [66.6, 82.5] (2 external-only) | 0.999 [0.992, 1.000] | 0.191 [0.178, 0.205] | 0.996 [0.987, 1.000] | 0.772 [0.666, 0.876] | 0 |
 | ripgrep/path_tests_excluded | inf | 0/416 = 0.0% [0.0, 0.9] | 205/254 = 80.7% [75.4, 85.1] (2 external-only) | 0.994 [0.989, 0.997] | 0.238 [0.228, 0.249] | 0.992 [0.979, 0.999] | 0.698 [0.593, 0.813] | 0 |
 | ripgrep/no_tests | 3 | 0/230 = 0.0% [0.0, 1.6] | 31/43 = 72.1% [57.3, 83.2] (2 external-only) | 0.650 [0.595, 0.702] | 0.577 [0.524, 0.628] | 0.933 [0.837, 1.000] | 0.775 [0.663, 0.885] | 0 |
 | ripgrep/no_tests | inf | 0/281 = 0.0% [0.0, 1.4] | 96/112 = 85.7% [78.0, 91.0] (3 external-only) | 0.760 [0.724, 0.793] | 0.393 [0.365, 0.422] | 0.928 [0.832, 0.998] | 0.744 [0.618, 0.865] | 0 |
-| ripgrep/tests | 3 | 1/248 = 0.4% [0.1, 2.2] | 83/134 = 61.9% [53.5, 69.7] (8 external-only) | 0.991 [0.982, 0.996] | 0.247 [0.232, 0.262] | 0.920 [0.838, 0.979] | 0.719 [0.600, 0.818] | 0 |
+| ripgrep/tests | 3 | 1/249 = 0.4% [0.1, 2.2] | 83/134 = 61.9% [53.5, 69.7] (8 external-only) | 0.991 [0.982, 0.996] | 0.247 [0.232, 0.263] | 0.920 [0.838, 0.979] | 0.720 [0.601, 0.818] | 0 |
 | ripgrep/tests | inf | 1/463 = 0.2% [0.0, 1.2] | 247/323 = 76.5% [71.5, 80.8] (8 external-only) | 0.991 [0.986, 0.995] | 0.240 [0.231, 0.250] | 0.921 [0.837, 0.979] | 0.593 [0.471, 0.704] | 0 |
 | fd/path_tests_excluded | 3 | 0/30 = 0.0% [0.0, 11.3] | 78/80 = 97.5% [91.3, 99.3] (2 external-only) | 0.996 [0.978, 0.999] | 0.947 [0.914, 0.968] | 1.000 [0.999, 1.000] | 0.976 [0.940, 0.999] | 0 |
 | fd/path_tests_excluded | inf | 0/46 = 0.0% [0.0, 7.7] | 123/125 = 98.4% [94.3, 99.6] (6 external-only) | 0.998 [0.986, 1.000] | 0.951 [0.926, 0.968] | 1.000 [1.000, 1.000] | 0.972 [0.936, 0.999] | 0 |
@@ -4015,12 +4017,12 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 | bat/path_tests_excluded | inf | 0/107 = 0.0% [0.0, 3.5] | 158/167 = 94.6% [90.1, 97.1] (28 external-only) | 0.924 [0.902, 0.942] | 0.689 [0.658, 0.718] | 0.930 [0.860, 0.983] | 0.879 [0.801, 0.944] | 0 |
 | just/path_tests_excluded | 3 | 0/58 = 0.0% [0.0, 6.2] | 145/162 = 89.5% [83.8, 93.3] (34 external-only) | 0.962 [0.941, 0.975] | 0.812 [0.778, 0.841] | 0.940 [0.891, 0.977] | 0.826 [0.742, 0.898] | 0 |
 | just/path_tests_excluded | inf | 0/352 = 0.0% [0.0, 1.1] | 554/628 = 88.2% [85.5, 90.5] (103 external-only) | 0.956 [0.948, 0.963] | 0.840 [0.826, 0.852] | 0.931 [0.883, 0.970] | 0.805 [0.725, 0.882] | 0 |
-| lidx/path_tests_excluded | 3 | 0/40 = 0.0% [0.0, 8.8] | 268/268 = 100.0% [98.6, 100.0] (75 external-only) | 0.955 [0.939, 0.967] | 0.953 [0.936, 0.965] | 0.976 [0.952, 0.994] | 0.965 [0.936, 0.986] | 0 |
-| lidx/path_tests_excluded | inf | 0/115 = 0.0% [0.0, 3.2] | 763/763 = 100.0% [99.5, 100.0] (232 external-only) | 0.976 [0.969, 0.981] | 0.949 [0.936, 0.959] | 0.980 [0.963, 0.994] | 0.962 [0.929, 0.986] | 4 |
-| nextest/path_tests_excluded | 3 | 0/98 = 0.0% [0.0, 3.8] | 83/91 = 91.2% [83.6, 95.5] (4 external-only) | 0.837 [0.797, 0.870] | 0.912 [0.879, 0.937] | 0.901 [0.814, 0.967] | 0.933 [0.878, 0.979] | 0 |
-| nextest/path_tests_excluded | inf | 0/179 = 0.0% [0.0, 2.1] | 205/216 = 94.9% [91.1, 97.1] (17 external-only) | 0.858 [0.832, 0.880] | 0.740 [0.705, 0.772] | 0.891 [0.800, 0.961] | 0.917 [0.859, 0.968] | 1 |
-| tokei/path_tests_excluded | 3 | 0/50 = 0.0% [0.0, 7.1] | 97/106 = 91.5% [84.7, 95.5] (5 external-only) | 0.830 [0.772, 0.876] | 0.834 [0.776, 0.879] | 0.922 [0.841, 0.987] | 0.812 [0.711, 0.911] | 0 |
-| tokei/path_tests_excluded | inf | 0/54 = 0.0% [0.0, 6.6] | 113/124 = 91.1% [84.8, 95.0] (5 external-only) | 0.692 [0.632, 0.747] | 0.838 [0.781, 0.882] | 0.903 [0.812, 0.975] | 0.813 [0.712, 0.913] | 0 |
+| lidx/path_tests_excluded | 3 | 0/40 = 0.0% [0.0, 8.8] | 268/268 = 100.0% [98.6, 100.0] (75 external-only) | 0.957 [0.941, 0.969] | 0.957 [0.941, 0.969] | 0.976 [0.952, 0.995] | 0.967 [0.938, 0.988] | 0 |
+| lidx/path_tests_excluded | inf | 0/120 = 0.0% [0.0, 3.1] | 759/759 = 100.0% [99.5, 100.0] (230 external-only) | 0.976 [0.969, 0.981] | 0.954 [0.942, 0.964] | 0.980 [0.963, 0.994] | 0.963 [0.931, 0.987] | 4 |
+| nextest/path_tests_excluded | 3 | 0/100 = 0.0% [0.0, 3.7] | 90/98 = 91.8% [84.7, 95.8] (4 external-only) | 0.819 [0.779, 0.853] | 0.929 [0.898, 0.951] | 0.920 [0.843, 0.986] | 0.938 [0.882, 0.984] | 0 |
+| nextest/path_tests_excluded | inf | 0/188 = 0.0% [0.0, 2.0] | 218/230 = 94.8% [91.1, 97.0] (17 external-only) | 0.849 [0.823, 0.871] | 0.786 [0.753, 0.816] | 0.912 [0.829, 0.981] | 0.922 [0.865, 0.971] | 1 |
+| tokei/path_tests_excluded | 3 | 0/52 = 0.0% [0.0, 6.9] | 99/108 = 91.7% [84.9, 95.5] (5 external-only) | 0.833 [0.776, 0.878] | 0.854 [0.798, 0.897] | 0.922 [0.841, 0.987] | 0.823 [0.718, 0.922] | 0 |
+| tokei/path_tests_excluded | inf | 0/56 = 0.0% [0.0, 6.4] | 115/126 = 91.3% [85.0, 95.1] (5 external-only) | 0.697 [0.638, 0.751] | 0.858 [0.803, 0.899] | 0.903 [0.812, 0.975] | 0.824 [0.719, 0.923] | 0 |
 | xsv/path_tests_excluded | 3 | 0/67 = 0.0% [0.0, 5.4] | 89/89 = 100.0% [95.9, 100.0] (19 external-only) | 1.000 [0.992, 1.000] | 0.915 [0.888, 0.936] | 1.000 [1.000, 1.000] | 0.937 [0.879, 0.977] | 0 |
 | xsv/path_tests_excluded | inf | 0/83 = 0.0% [0.0, 4.4] | 108/108 = 100.0% [96.6, 100.0] (20 external-only) | 1.000 [0.993, 1.000] | 0.894 [0.868, 0.916] | 1.000 [1.000, 1.000] | 0.933 [0.875, 0.975] | 0 |
 
