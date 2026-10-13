@@ -7,6 +7,8 @@
 {"base":"src/command_ext.rs:8","evidence_file":"src/command_ext.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"src/command_ext.rs:42"},
 {"base":"src/invocation_parser.rs:320","evidence_file":"src/invocation_parser.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"src/invocation_parser.rs:324"},
 {"base":"src/keyed.rs:4","evidence_file":"src/keyed.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"src/keyed.rs:8"},
+{"base":"src/node.rs:4","evidence_file":"src/node.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"implements","sub":"src/assignment.rs:4"},
+{"base":"src/node.rs:4","evidence_file":"src/node.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"implements","sub":"src/unresolved_recipe.rs:3"},
 {"base":"src/node.rs:7","evidence_file":"src/node.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"src/node.rs:106"},
 {"base":"src/node.rs:7","evidence_file":"src/node.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"src/node.rs:197"},
 {"base":"src/node.rs:7","evidence_file":"src/node.rs","evidence_line":null,"kind":"IMPLEMENTS","reason":"end_not_judged","relation":"overrides","sub":"src/node.rs:349"},

@@ -38,5 +38,12 @@
 {"callee":{"file":"src/h3.ts","line":60,"name":"fetch"},"caller":{"file":"src/utils/proxy.ts","line":284,"name":"proxy"},"category":"other_call_on_line_missed","detail":null,"fanout":2,"sites":["src/utils/proxy.ts:339"]},
 {"callee":{"file":"src/h3.ts","line":60,"name":"fetch"},"caller":{"file":"src/utils/proxy.ts","line":544,"name":"fetchWithEvent"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/utils/proxy.ts:557"]},
 {"callee":{"file":"src/h3.ts","line":73,"name":"\"~request\""},"caller":{"file":"src/h3.ts","line":162,"name":"request"},"category":"other_call_on_line_missed","detail":null,"fanout":2,"sites":["src/h3.ts:167"]},
-{"callee":{"file":"src/h3.ts","line":73,"name":"\"~request\""},"caller":{"file":"src/h3.ts","line":60,"name":"fetch"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/h3.ts:61"]}
+{"callee":{"file":"src/h3.ts","line":73,"name":"\"~request\""},"caller":{"file":"src/h3.ts","line":60,"name":"fetch"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/h3.ts:61"]},
+{"callee":{"file":"src/rules/handlers/cache.ts","line":20,"name":"shouldBypass"},"caller":{"file":"src/rules/handlers/cache.ts","line":88,"name":"cacheRouteRule"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/rules/handlers/cache.ts:92"]},
+{"callee":{"file":"src/types/h3.ts","line":179,"name":"request"},"caller":{"file":"src/adapters.ts","line":24,"name":"toWebHandler"},"category":"wrong_target","detail":{"lidx_target":"src/h3.ts:162","resolution_kind":"receiver_type","same_file":false},"fanout":1,"sites":["src/adapters.ts:28"]},
+{"callee":{"file":"src/types/h3.ts","line":194,"name":"on"},"caller":{"file":"src/h3.ts","line":0,"name":"<module>"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/h3.ts:297"]},
+{"callee":{"file":"src/types/h3.ts","line":50,"name":"onRequest"},"caller":{"file":"src/h3.ts","line":73,"name":"\"~request\""},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/h3.ts:86"]},
+{"callee":{"file":"src/types/h3.ts","line":51,"name":"onResponse"},"caller":{"file":"src/response.ts","line":13,"name":"toResponse"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/response.ts:42"]},
+{"callee":{"file":"src/types/h3.ts","line":52,"name":"onError"},"caller":{"file":"src/adapters.ts","line":78,"name":"callNodeHandler"},"category":"wrong_target","detail":{"lidx_target":"src/error.ts:162","resolution_kind":"import","same_file":false},"fanout":2,"sites":["src/adapters.ts:122"]},
+{"callee":{"file":"src/types/h3.ts","line":52,"name":"onError"},"caller":{"file":"src/response.ts","line":129,"name":"prepareResponse"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["src/response.ts:163"]}
 ]

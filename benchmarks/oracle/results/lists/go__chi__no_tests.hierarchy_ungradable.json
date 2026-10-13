@@ -1,4 +1,10 @@
 [
+{"base":"_examples/rest/main.go:440","evidence_file":"_examples/rest/main.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"_examples/rest/main.go:290"},
+{"base":"_examples/rest/main.go:447","evidence_file":"_examples/rest/main.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"_examples/rest/main.go:319"},
+{"base":"_examples/rest/main.go:447","evidence_file":"_examples/rest/main.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"_examples/rest/main.go:350"},
+{"base":"_examples/versions/data/article.go:4","evidence_file":"_examples/versions/presenter/v1/article.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"_examples/versions/presenter/v1/article.go:10"},
+{"base":"_examples/versions/data/article.go:4","evidence_file":"_examples/versions/presenter/v2/article.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"_examples/versions/presenter/v2/article.go:11"},
+{"base":"_examples/versions/data/article.go:4","evidence_file":"_examples/versions/presenter/v3/article.go","evidence_line":null,"kind":"EXTENDS","reason":"file_not_analysed","relation":"embeds","sub":"_examples/versions/presenter/v3/article.go:12"},
 {"base":"middleware/logger.go:87","evidence_file":"middleware/recoverer_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"middleware/recoverer_test.go:15"},
 {"base":"middleware/logger.go:88","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"middleware/recoverer_test.go:17"}
 ]

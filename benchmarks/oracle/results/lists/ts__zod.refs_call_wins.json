@@ -1,0 +1,16 @@
+[
+{"callee":{"file":"packages/zod/src/v3/ZodError.ts","line":224,"name":"processError"},"caller":{"file":"packages/zod/src/v3/ZodError.ts","line":224,"name":"processError"},"side":"oracle","sites":["packages/zod/src/v3/ZodError.ts:227"]},
+{"callee":{"file":"packages/zod/src/v3/benchmarks/realworld.ts","line":29,"name":"str"},"caller":{"file":"packages/zod/src/v3/benchmarks/realworld.ts","line":0,"name":"<module>"},"side":"oracle","sites":["packages/zod/src/v3/benchmarks/realworld.ts:44"]},
+{"callee":{"file":"packages/zod/src/v3/helpers/errorUtil.ts","line":3,"name":"errToObj"},"caller":{"file":"packages/zod/src/v3/types.ts","line":2574,"name":"strict"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:2575"]},
+{"callee":{"file":"packages/zod/src/v3/types.ts","line":1329,"name":"create"},"caller":{"file":"packages/zod/src/v3/types.ts","line":0,"name":"<module>"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:5046"]},
+{"callee":{"file":"packages/zod/src/v3/types.ts","line":1455,"name":"create"},"caller":{"file":"packages/zod/src/v3/types.ts","line":0,"name":"<module>"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:5047"]},
+{"callee":{"file":"packages/zod/src/v3/types.ts","line":1707,"name":"create"},"caller":{"file":"packages/zod/src/v3/types.ts","line":0,"name":"<module>"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:5049"]},
+{"callee":{"file":"packages/zod/src/v3/types.ts","line":1852,"name":"create"},"caller":{"file":"packages/zod/src/v3/types.ts","line":0,"name":"<module>"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:5050"]},
+{"callee":{"file":"packages/zod/src/v3/types.ts","line":1988,"name":"create"},"caller":{"file":"packages/zod/src/v3/types.ts","line":0,"name":"<module>"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:5051"]},
+{"callee":{"file":"packages/zod/src/v3/types.ts","line":2236,"name":"ZodArray"},"caller":{"file":"packages/zod/src/v3/types.ts","line":2424,"name":"deepPartialify"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:2436"]},
+{"callee":{"file":"packages/zod/src/v3/types.ts","line":2452,"name":"ZodObject"},"caller":{"file":"packages/zod/src/v3/types.ts","line":2424,"name":"deepPartialify"},"side":"oracle","sites":["packages/zod/src/v3/types.ts:2425"]},
+{"callee":{"file":"packages/zod/src/v4/core/core.ts","line":22,"name":"init"},"caller":{"file":"packages/zod/src/v4/core/core.ts","line":17,"name":"$constructor"},"side":"oracle","sites":["packages/zod/src/v4/core/core.ts:68"]},
+{"callee":{"file":"packages/zod/src/v4/core/core.ts","line":55,"name":"Definition"},"caller":{"file":"packages/zod/src/v4/core/core.ts","line":17,"name":"$constructor"},"side":"oracle","sites":["packages/zod/src/v4/core/core.ts:56"]},
+{"callee":{"file":"packages/zod/src/v4/core/schemas.ts","line":4210,"name":"handleReadonlyResult"},"caller":{"file":"packages/zod/src/v4/core/schemas.ts","line":4197,"name":"parse"},"side":"oracle","sites":["packages/zod/src/v4/core/schemas.ts:4203"]},
+{"callee":{"file":"packages/zod/src/v4/core/util.ts","line":360,"name":"isObject"},"caller":{"file":"packages/zod/src/v4/core/schemas.ts","line":0,"name":"<module>"},"side":"oracle","sites":["packages/zod/src/v4/core/schemas.ts:1937","packages/zod/src/v4/core/schemas.ts:2095"]}
+]

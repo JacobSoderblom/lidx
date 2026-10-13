@@ -1,9 +1,7 @@
 [
-{"file":"tests/data/csharp.cs","key":"tests/data/csharp.cs:13","lidx_kind":"method","name":"MyTest","qualname":"Ns.Cls.MyTest","reason":"test_file_outside_cell"},
-{"file":"tests/data/javascript.js","key":"tests/data/javascript.js:21","lidx_kind":"method","name":"area","qualname":"tests/data/javascript.Rectangle.area","reason":"test_file_outside_cell"},
-{"file":"tests/data/python.py","key":"tests/data/python.py:4","lidx_kind":"function","name":"add","qualname":"tests.data.python.add","reason":"test_file_outside_cell"},
-{"file":"tests/data/rust.rs","key":"tests/data/rust.rs:22","lidx_kind":"function","name":"foo","qualname":"crate::tests::data::rust::foo","reason":"test_file_outside_cell"},
-{"file":"tests/data/rust.rs","key":"tests/data/rust.rs:32","lidx_kind":"function","name":"foobar","qualname":"crate::tests::data::rust::foobar","reason":"test_file_outside_cell"},
-{"file":"tests/data/rust.rs","key":"tests/data/rust.rs:43","lidx_kind":"function","name":"foo","qualname":"crate::tests::data::rust::foo","reason":"test_file_outside_cell"},
-{"file":"tests/data/tsx.tsx","key":"tests/data/tsx.tsx:4","lidx_kind":"function","name":"stringNums","qualname":"tests/data/tsx.stringNums","reason":"test_file_outside_cell"}
+{"confidence":"high","file":"tests/data/rust.rs","key":"tests/data/rust.rs:22","lidx_kind":"function","name":"foo","qualname":"crate::tests::data::rust::foo","reason":"test_file_outside_cell"},
+{"confidence":"high","file":"tests/data/rust.rs","key":"tests/data/rust.rs:32","lidx_kind":"function","name":"foobar","qualname":"crate::tests::data::rust::foobar","reason":"test_file_outside_cell"},
+{"confidence":"high","file":"tests/data/rust.rs","key":"tests/data/rust.rs:43","lidx_kind":"function","name":"foo","qualname":"crate::tests::data::rust::foo","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"tests/data/csharp.cs","key":"tests/data/csharp.cs:13","lidx_kind":"method","name":"MyTest","qualname":"Ns.Cls.MyTest","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"tests/data/python.py","key":"tests/data/python.py:4","lidx_kind":"function","name":"add","qualname":"tests.data.python.add","reason":"test_file_outside_cell"}
 ]

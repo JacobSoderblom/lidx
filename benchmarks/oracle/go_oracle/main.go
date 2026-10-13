@@ -80,6 +80,10 @@ type Output struct {
 	IfaceCalls []IfaceCall `json:"iface_calls"`
 	// Hierarchy is the type hierarchy graded by go/types (hierarchy.go).
 	Hierarchy *Hierarchy `json:"hierarchy"`
+	// Refs are the value references (refs.go): functions used as values, graded by the "Value references" tables.
+	Refs       []Ref          `json:"refs"`
+	RefCallers []Decl         `json:"ref_callers"`
+	RefDropped map[string]int `json:"refs_dropped"`
 }
 
 type IfaceCall struct {
@@ -123,6 +127,8 @@ func main() {
 	}
 
 	out.Hierarchy = computeHierarchy(pkgs, root)
+	ro := computeRefs(pkgs, root)
+	out.Refs, out.RefCallers, out.RefDropped = ro.Refs, ro.Callers, ro.Dropped
 
 	prog, ssapkgs := ssautil.AllPackages(pkgs, ssa.InstantiateGenerics)
 	prog.Build()

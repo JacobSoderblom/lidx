@@ -1,0 +1,3 @@
+[
+{"callee":{"file":"flag.go","line":106,"name":"Apply"},"caller":{"file":"sliceflag.go","line":75,"name":"Apply"},"side":"oracle","sites":["sliceflag.go:87"]}
+]

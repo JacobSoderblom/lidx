@@ -1,0 +1,4 @@
+[
+{"callee":{"file":"packages/zod/src/v4/core/core.ts","line":58,"name":"_"},"caller":{"file":"packages/zod/src/v4/core/core.ts","line":17,"name":"$constructor"},"reason":"callee_not_indexed","sites":["packages/zod/src/v4/core/core.ts:68","packages/zod/src/v4/core/core.ts:69","packages/zod/src/v4/core/core.ts:75"]},
+{"callee":{"file":"packages/zod/src/v4/core/core.ts","line":58,"name":"_"},"caller":{"file":"packages/zod/src/v4/core/core.ts","line":22,"name":"init"},"reason":"callee_not_indexed","sites":["packages/zod/src/v4/core/core.ts:27"]}
+]

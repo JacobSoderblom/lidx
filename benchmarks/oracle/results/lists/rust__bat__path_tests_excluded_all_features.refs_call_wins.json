@@ -1,0 +1,3 @@
+[
+{"callee":{"file":"build/syntax_mapping.rs","line":154,"name":"text"},"caller":{"file":"build/syntax_mapping.rs","line":68,"name":"[FromStr]from_str"},"side":"oracle","sites":["build/syntax_mapping.rs:110"]}
+]

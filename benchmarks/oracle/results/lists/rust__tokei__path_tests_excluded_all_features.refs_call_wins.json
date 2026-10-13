@@ -1,0 +1,3 @@
+[
+{"callee":{"file":"src/stats.rs","line":21,"name":"new"},"caller":{"file":"src/language/language_type.rs","line":56,"name":"parse_from_slice"},"side":"oracle","sites":["src/language/language_type.rs:62"]}
+]

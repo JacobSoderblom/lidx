@@ -1,0 +1,13 @@
+[
+{"callee":{"file":"flag.go","line":264,"name":"prefixedNames"},"caller":{"file":"flag.go","line":0,"name":"<module>"},"category":"no_edge","ctxs":["var_init"],"detail":null,"forms":["ident"],"module_level":true,"sites":["flag.go:64"]},
+{"callee":{"file":"flag.go","line":293,"name":"withEnvHint"},"caller":{"file":"flag.go","line":0,"name":"<module>"},"category":"no_edge","ctxs":["var_init"],"detail":null,"forms":["ident"],"module_level":true,"sites":["flag.go:68"]},
+{"callee":{"file":"flag.go","line":317,"name":"withFileHint"},"caller":{"file":"flag.go","line":0,"name":"<module>"},"category":"no_edge","ctxs":["var_init"],"detail":null,"forms":["ident"],"module_level":true,"sites":["flag.go:72"]},
+{"callee":{"file":"flag.go","line":329,"name":"stringifyFlag"},"caller":{"file":"flag.go","line":0,"name":"<module>"},"category":"no_edge","ctxs":["var_init"],"detail":null,"forms":["ident"],"module_level":true,"sites":["flag.go:55"]},
+{"callee":{"file":"help.go","line":144,"name":"DefaultAppComplete"},"caller":{"file":"app.go","line":165,"name":"Setup"},"category":"no_edge","ctxs":["assignment"],"detail":null,"forms":["ident"],"module_level":false,"sites":["app.go:189"]},
+{"callee":{"file":"help.go","line":317,"name":"printVersion"},"caller":{"file":"help.go","line":0,"name":"<module>"},"category":"no_edge","ctxs":["var_init"],"detail":null,"forms":["ident"],"module_level":true,"sites":["help.go:113"]},
+{"callee":{"file":"help.go","line":345,"name":"printHelpCustom"},"caller":{"file":"help.go","line":0,"name":"<module>"},"category":"no_edge","ctxs":["var_init"],"detail":null,"forms":["ident"],"module_level":true,"sites":["help.go:110"]},
+{"callee":{"file":"help.go","line":409,"name":"printHelp"},"caller":{"file":"help.go","line":0,"name":"<module>"},"category":"no_edge","ctxs":["var_init"],"detail":null,"forms":["ident"],"module_level":true,"sites":["help.go:100"]},
+{"callee":{"file":"help.go","line":542,"name":"offset"},"caller":{"file":"help.go","line":345,"name":"printHelpCustom"},"category":"no_edge","ctxs":["map_value"],"detail":null,"forms":["ident"],"module_level":false,"sites":["help.go:355"]},
+{"callee":{"file":"suggestions.go","line":26,"name":"suggestFlag"},"caller":{"file":"suggestions.go","line":12,"name":"init"},"category":"no_edge","ctxs":["assignment"],"detail":null,"forms":["ident"],"module_level":false,"sites":["suggestions.go:13"]},
+{"callee":{"file":"suggestions.go","line":55,"name":"suggestCommand"},"caller":{"file":"suggestions.go","line":12,"name":"init"},"category":"no_edge","ctxs":["assignment"],"detail":null,"forms":["ident"],"module_level":false,"sites":["suggestions.go:14"]}
+]
