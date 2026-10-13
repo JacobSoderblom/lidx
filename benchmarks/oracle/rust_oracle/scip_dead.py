@@ -266,7 +266,7 @@ def main():
             if cl is None or sym in defs:
                 continue
             defs[sym] = {"symbol": sym, "file": path, "line": l0 + 1, "col": c0, "ecol": c1, "encl": e, "kind": cl[0], "subkind": cl[1],
-                         "name": re.sub(r"^(?:\[[^\]]*\])+", "", sc.short_name(sym)) if cl[0] != "type" else sc.ctor_name(sym)}
+                         "name": (lambda n: n.rsplit("]", 1)[-1] if n.startswith("[") else n)(sc.short_name(sym)) if cl[0] != "type" else sc.ctor_name(sym)}
 
     # ---- classify each definition from its source line ------------------------------------------------------------------
     for r in defs.values():
@@ -439,6 +439,23 @@ def main():
         if r["subkind"] == "trait_impl" and r["trait_method"]:
             tm = defs[r["trait_method"]]
             r["api"] = is_api(tm["api"], r["crate_kind"], r["root"])
+
+    # ---- impls for foreign / primitive types ---------------------------------------------------------------------------------
+    # `impl Logic for bool`, `impl SliceExt for [u8]`, `impl CommandExt for Command`: the self type is not a type of the repository,
+    # so rust-analyzer's SCIP does not attach the call sites (`true.logic_not()`) to the impl method or, usually, the trait method.
+    # The methods of such impls (and trait methods all of whose impls are such) cannot be judged by SCIP: a named bucket.
+    # A blanket `impl<T> Trait for T` is not a foreign self type and keeps its verdict.
+    foreign_by_trait = defaultdict(list)
+    for r in defs.values():
+        if r["subkind"] == "trait_impl":
+            ty = r.get("recv", "")
+            r["foreign_impl"] = bool(not r.get("type_symbol") and ty and not (len(ty) <= 2 and ty.isupper() or ty in ("Self", "dyn")))
+            if r["trait_method"]:
+                foreign_by_trait[r["trait_method"]].append(r["foreign_impl"])
+    for r in defs.values():
+        if r["subkind"] == "trait_method":
+            fl = foreign_by_trait.get(r["symbol"])
+            r["foreign_impl"] = bool(fl) and all(fl)
 
     # ---- unreferenced ------------------------------------------------------------------------------------------------------------
     impls_of_trait_method = defaultdict(list)
@@ -632,7 +649,7 @@ def main():
         out_decls.append({"file": r["file"], "line": r["line"], "name": r["name"], "kind": r["kind"],
                           "subkind": r["subkind"], **({"recv": r["recv"]} if r.get("recv") else {}), "crate": r["crate"], "crate_kind": r["crate_kind"],
                           "vis": r["vis"], "exported": r["exported"], "api": r["api"], **({"generated": True} if gen else {}),
-                          **({"root": r["root"]} if r["root"] else {}), "unref": r["unref"], "unref_how": r["unref_how"],
+                          **({"root": r["root"]} if r["root"] else {}), **({"foreign_impl": True} if r.get("foreign_impl") else {}), "unref": r["unref"], "unref_how": r["unref_how"],
                           **({"refs": r["refs"]} if "refs" in r else {}), **({"reach": r["reach"]} if "reach" in r else {}),
                           **({"withheld": r.get("withheld") or r.get("withheld_reach")} if (r.get("withheld") or r.get("withheld_reach")) else {})})
     out = {"repo": repo, "tests": not (a.no_tests or a.path_tests_excluded), "files": sorted(d["path"] for d in docs),

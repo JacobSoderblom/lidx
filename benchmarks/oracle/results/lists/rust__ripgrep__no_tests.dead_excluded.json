@@ -1,6 +1,13 @@
 [
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"][`Index<Match>`]index"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"][`IndexMut<Match>`]index_mut"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":178,"name":"index"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"][`Index<Match>`]index"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"][`IndexMut<Match>`]index_mut"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":178,"name":"index"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":101,"name":"messages"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":113,"name":"ignore_messages"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":137,"name":"set_errored"},
-{"bucket":"oracle_unresolved_site","column":"unref","file":"crates/regex/src/literal.rs","kind":"method","line":459,"name":"new"}
+{"bucket":"oracle_unresolved_site","column":"unref","file":"crates/regex/src/literal.rs","kind":"method","line":459,"name":"new"},
+{"bucket":"trait_declaration","column":"unref","file":"crates/core/flags/mod.rs","kind":"type","line":71,"name":"Flag"}
 ]

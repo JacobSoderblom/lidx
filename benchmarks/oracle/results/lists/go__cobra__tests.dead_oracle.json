@@ -1,5 +1,4 @@
 [
-{"api":true,"exported":true,"file":"cobra.go","kind":"function","line":105,"name":"OnFinalize","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"cobra.go","kind":"function","line":99,"name":"OnInitialize","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"completions.go","kind":"function","line":980,"name":"CompDebugln","reach":"dead","unref":"live"}
+{"api":false,"exported":true,"file":"doc/man_examples_test.go","kind":"function","line":25,"name":"ExampleGenManTree","reach":"dead","unref":"live"},
+{"api":false,"exported":true,"file":"doc/man_examples_test.go","kind":"function","line":37,"name":"ExampleGenMan","reach":"dead","unref":"live"}
 ]

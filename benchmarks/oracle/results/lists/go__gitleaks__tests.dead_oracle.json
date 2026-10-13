@@ -1,9 +1,3 @@
 [
-{"api":false,"exported":false,"file":"config/config.go","kind":"method","line":416,"name":"extendURL","reach":"dead","unref":"dead"},
-{"api":true,"exported":true,"file":"cmd/generate/config/rules/gcp.go","kind":"function","line":11,"name":"GCPServiceAccount","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"cmd/generate/config/rules/square.go","kind":"function","line":31,"name":"SquareSecret","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"cmd/generate/config/rules/trello.go","kind":"function","line":9,"name":"TrelloAccessToken","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"detect/detect.go","kind":"method","line":196,"name":"DetectBytes","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"logging/log.go","kind":"function","line":40,"name":"Err","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"logging/log.go","kind":"function","line":48,"name":"Panic","reach":"dead","unref":"live"}
+{"api":false,"exported":false,"file":"config/config.go","kind":"method","line":416,"name":"extendURL","reach":"dead","unref":"dead"}
 ]

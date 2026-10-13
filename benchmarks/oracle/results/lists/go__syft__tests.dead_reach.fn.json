@@ -1,6 +1,4 @@
 [
-{"category":"incoming_from_dead_code_only","exported":false,"file":"internal/packagemetadata/completion_tester.go","incoming":["CALLS:deadsrc","CALLS:deadsrc"],"key":"internal/packagemetadata/completion_tester.go:87","kind":"function","line":87,"name":"keepNonNil","subkind":""},
-{"category":"incoming_from_dead_code_only","exported":false,"file":"internal/sourcemetadata/completion_tester.go","incoming":["CALLS:deadsrc","CALLS:deadsrc"],"key":"internal/sourcemetadata/completion_tester.go:87","kind":"function","line":87,"name":"keepNonNil","subkind":""},
 {"category":"incoming_from_dead_code_only","exported":true,"file":"syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go","incoming":["CALLS:deadsrc"],"key":"syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go:177","kind":"method","line":177,"name":"WithEnv","subkind":""},
 {"category":"incoming_from_tests_only","exported":false,"file":"test/cli/utils_test.go","incoming":["CALLS:test"],"key":"test/cli/utils_test.go:244","kind":"function","line":244,"name":"getCommand","subkind":""},
 {"category":"incoming_from_tests_only","exported":false,"file":"test/cli/utils_test.go","incoming":["CALLS:test"],"key":"test/cli/utils_test.go:341","kind":"function","line":341,"name":"exponentialBackoffDurations","subkind":""},

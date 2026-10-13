@@ -1,14 +1,3 @@
 [
-{"api":false,"exported":false,"file":"tree_test.go","kind":"function","line":449,"name":"debugPrintTree","reach":"dead","unref":"dead"},
-{"api":true,"exported":true,"file":"middleware/content_type.go","kind":"function","line":9,"name":"SetHeader","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/logger.go","kind":"function","line":39,"name":"Logger","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/maybe.go","kind":"function","line":8,"name":"Maybe","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/nocache.go","kind":"function","line":40,"name":"NoCache","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/page_route.go","kind":"function","line":10,"name":"PageRoute","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/profiler.go","kind":"function","line":22,"name":"Profiler","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/request_id.go","kind":"function","line":94,"name":"NextRequestID","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/request_size.go","kind":"function","line":9,"name":"RequestSize","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/supress_notfound.go","kind":"function","line":15,"name":"SupressNotFound","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/throttle.go","kind":"function","line":32,"name":"Throttle","reach":"dead","unref":"live"},
-{"api":true,"exported":true,"file":"middleware/timeout.go","kind":"function","line":32,"name":"Timeout","reach":"dead","unref":"live"}
+{"api":false,"exported":false,"file":"tree_test.go","kind":"function","line":449,"name":"debugPrintTree","reach":"dead","unref":"dead"}
 ]

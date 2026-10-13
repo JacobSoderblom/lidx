@@ -1,4 +1,6 @@
 [
+{"bucket":"impl_for_foreign_type","column":"reach","file":"src/exit_codes.rs","kind":"method","line":15,"name":"from"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"src/exit_codes.rs","kind":"method","line":15,"name":"from"},
 {"bucket":"macro_generated","column":"reach","file":"src/filter/owner.rs","kind":"function","line":126,"name":"empty"},
 {"bucket":"macro_generated","column":"reach","file":"src/filter/owner.rs","kind":"function","line":127,"name":"uid_only"},
 {"bucket":"macro_generated","column":"reach","file":"src/filter/owner.rs","kind":"function","line":128,"name":"uid_gid"},

@@ -67,7 +67,7 @@ def section(meta, cells, results_dir):
     w("")
     w("- **Unreferenced** (what `dead_symbols` and repowise's `unused_export` / `unused_internal` compute): Go `staticcheck -checks U1000` "
       "(`honnef.co/go/tools` pinned in `go_oracle/go.mod`, run as a go/analysis pass over `packages.Load`; it treats every exported identifier as used, so "
-      "the Go universe is the unexported declarations); TypeScript `noUnusedLocals` diagnostics 6133/6196 for non-exported declarations and "
+      "the Go universe is the unexported declarations); TypeScript `noUnusedLocals` diagnostics 6133/6196 for non-exported declarations (0 on zod, hono, h3, ky and trpc, whose dead set comes from `findReferences`; 8 on immer) and "
       "LanguageService `findReferences` for exported ones; Rust SCIP occurrences (a declaration with no occurrence outside its own text, `use` lines "
       "and the impl blocks of its own type). rustc's `dead_code` lint is not used: it needs `cargo check`, which runs build scripts and proc macros.")
     w("- **Unreachable** (closure from roots): Go RTA from `main`/`init`/tests (the machinery of `golang.org/x/tools/cmd/deadcode`; `res.Reachable` is "
@@ -79,7 +79,7 @@ def section(meta, cells, results_dir):
       "counts per cell in the tables below: `public_api` (exported from a library; Go: exported in an importable package, TypeScript: reachable "
       "by re-export from the package entry, Rust: `pub` in a library crate), `exported_used_by_rule` (Go, unreferenced column: U1000 treats exported "
       "identifiers as used), roots (`test_root`, `main_init`, `library_root`: live by construction), and what the oracle cannot judge (`generated`, "
-      "`macro_generated`, `cfg_twin`, `oracle_unresolved_site`, `not_a_function`). A claim on a declaration in the universe is right or wrong by "
+      "`macro_generated`, `cfg_twin`, `oracle_unresolved_site`, `impl_for_foreign_type` (Rust: methods of impls for foreign or primitive self types), `trait_declaration` (Rust), `not_a_function`). A claim on a declaration in the universe is right or wrong by "
       "the oracle's verdict; a claim on a public-API or root declaration is **wrong by construction** (counted under its bucket name, so the cost "
       "of having no exported-symbol policy is visible); a claim on anything the oracle cannot judge is ungradable (its own bucket).")
     w("")

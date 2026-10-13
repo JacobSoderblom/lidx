@@ -1,7 +1,3 @@
 [
-{"category":"kind_not_in_dead_symbols","exported":false,"file":"src/clean.rs","incoming":["IMPLEMENTS:live","IMPORTS:live","USES:live"],"key":"src/clean.rs:3","kind":"type","line":3,"name":"Clean","subkind":"trait"},
-{"category":"kind_not_in_dead_symbols","exported":false,"file":"src/command_ext.rs","incoming":["IMPLEMENTS:live","IMPORTS:live","USES:live"],"key":"src/command_ext.rs:3","kind":"type","line":3,"name":"CommandExt","subkind":"trait"},
-{"category":"kind_not_in_dead_symbols","exported":false,"file":"src/invocation_parser.rs","incoming":["IMPLEMENTS:live","USES:live"],"key":"src/invocation_parser.rs:319","kind":"type","line":319,"name":"TempDirExt","subkind":"trait"},
-{"category":"kind_not_in_dead_symbols","exported":false,"file":"src/ordinal.rs","incoming":["IMPLEMENTS:live","IMPORTS:live","USES:live"],"key":"src/ordinal.rs:1","kind":"type","line":1,"name":"Ordinal","subkind":"trait"},
-{"category":"kind_not_in_dead_symbols","exported":false,"file":"src/platform_interface.rs","incoming":["IMPLEMENTS:live","IMPLEMENTS:live","IMPORTS:live"],"key":"src/platform_interface.rs:3","kind":"type","line":3,"name":"PlatformInterface","subkind":"trait"}
+
 ]

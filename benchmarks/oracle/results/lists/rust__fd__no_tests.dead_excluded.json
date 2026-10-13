@@ -1,4 +1,6 @@
 [
+{"bucket":"impl_for_foreign_type","column":"reach","file":"src/exit_codes.rs","kind":"method","line":15,"name":"from"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"src/exit_codes.rs","kind":"method","line":15,"name":"from"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"src/cli.rs","kind":"function","line":959,"name":"parse_millis"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"src/cli.rs","kind":"method","line":776,"name":"gen_completions"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"src/filter/owner.rs","kind":"method","line":27,"name":"from_string"}

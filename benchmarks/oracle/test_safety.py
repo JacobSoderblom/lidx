@@ -130,7 +130,6 @@ class RustAnalyzerRunsNothing(unittest.TestCase):
             self.assertEqual(seen, {False: False, True: True})
 
 
-
 # ---------------------------------------------------------------- the Go dead-code oracle (staticcheck U1000 + RTA)
 GO_ORACLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "go_oracle")
 HARDENED = {"CGO_ENABLED": "0", "GOFLAGS": "-mod=readonly", "GOWORK": "off", "GOPACKAGESDRIVER": "off"}

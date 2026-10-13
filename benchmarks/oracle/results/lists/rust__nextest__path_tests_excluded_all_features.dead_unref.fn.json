@@ -1,8 +1,3 @@
 [
-{"category":"kind_not_in_dead_symbols","exported":false,"file":"cargo-nextest/src/dispatch.rs","incoming":[],"key":"cargo-nextest/src/dispatch.rs:953","kind":"type","line":953,"name":"IgnoreOverridesOpt","subkind":"enum"},
-{"category":"no_incoming_edge_but_filtered","exported":false,"file":"nextest-filtering/src/expression.rs","incoming":[],"key":"nextest-filtering/src/expression.rs:489","kind":"method","line":489,"name":"top","subkind":"trait_impl"},
-{"category":"no_incoming_edge_but_filtered","exported":false,"file":"nextest-filtering/src/expression.rs","incoming":[],"key":"nextest-filtering/src/expression.rs:494","kind":"method","line":494,"name":"bottom","subkind":"trait_impl"},
-{"category":"no_incoming_edge_but_filtered","exported":false,"file":"nextest-filtering/src/expression.rs","incoming":[],"key":"nextest-filtering/src/expression.rs:499","kind":"method","line":499,"name":"logic_and","subkind":"trait_impl"},
-{"category":"no_incoming_edge_but_filtered","exported":false,"file":"nextest-filtering/src/expression.rs","incoming":[],"key":"nextest-filtering/src/expression.rs:504","kind":"method","line":504,"name":"logic_or","subkind":"trait_impl"},
-{"category":"no_incoming_edge_but_filtered","exported":false,"file":"nextest-filtering/src/expression.rs","incoming":[],"key":"nextest-filtering/src/expression.rs:509","kind":"method","line":509,"name":"logic_not","subkind":"trait_impl"}
+{"category":"kind_not_in_dead_symbols","exported":false,"file":"cargo-nextest/src/dispatch.rs","incoming":[],"key":"cargo-nextest/src/dispatch.rs:953","kind":"type","line":953,"name":"IgnoreOverridesOpt","subkind":"enum"}
 ]

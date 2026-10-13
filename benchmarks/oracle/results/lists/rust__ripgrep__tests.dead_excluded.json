@@ -1,6 +1,12 @@
 [
 {"bucket":"cfg_twin","column":"reach","file":"tests/util.rs","kind":"method","line":199,"name":"link_dir"},
 {"bucket":"cfg_twin","column":"reach","file":"tests/util.rs","kind":"method","line":221,"name":"link_file"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"][`Index<Match>`]index"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"][`IndexMut<Match>`]index_mut"},
+{"bucket":"impl_for_foreign_type","column":"reach","file":"crates/matcher/src/lib.rs","kind":"method","line":178,"name":"index"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":162,"name":"][`Index<Match>`]index"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":169,"name":"][`IndexMut<Match>`]index_mut"},
+{"bucket":"impl_for_foreign_type","column":"unref","file":"crates/matcher/src/lib.rs","kind":"method","line":178,"name":"index"},
 {"bucket":"macro_generated","column":"reach","file":"crates/globset/src/glob.rs","kind":"function","line":1225,"name":"literal1"},
 {"bucket":"macro_generated","column":"reach","file":"crates/globset/src/glob.rs","kind":"function","line":1226,"name":"literal2"},
 {"bucket":"macro_generated","column":"reach","file":"crates/globset/src/glob.rs","kind":"function","line":1227,"name":"any1"},
@@ -1449,5 +1455,6 @@
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/regex/src/literal.rs","kind":"method","line":459,"name":"new"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/searcher/src/testutil.rs","kind":"method","line":384,"name":"multi_line"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"tests/util.rs","kind":"function","line":22,"name":"setup"},
-{"bucket":"oracle_unresolved_site","column":"unref","file":"tests/util.rs","kind":"function","line":29,"name":"setup_pcre2"}
+{"bucket":"oracle_unresolved_site","column":"unref","file":"tests/util.rs","kind":"function","line":29,"name":"setup_pcre2"},
+{"bucket":"trait_declaration","column":"unref","file":"crates/core/flags/mod.rs","kind":"type","line":71,"name":"Flag"}
 ]

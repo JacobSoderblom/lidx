@@ -164,7 +164,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.9
+    "seconds": 1.1
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 28,
@@ -431,8 +431,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 2.1,
-     "peak_rss_mb": 400,
+     "seconds": 1.0,
+     "peak_rss_mb": 444,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -440,10 +440,12 @@
     "lidx_claims": 335,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 354,
      "decls": 613,
-     "load_seconds": 0.7,
-     "rta_reachable_functions": 9608,
+     "load_seconds": 0.6,
+     "rta_reachable_functions": 9675,
      "rta_seconds": 0.2,
+     "strict_roots_unreachable_functions": 5,
      "u1000_objects": {
       "quiet": 0,
       "unused": 0,
@@ -464,9 +466,9 @@
       "dead_by_kind": {},
       "live": 129,
       "oracle_buckets": {
-       "test_root": 285,
+       "test_root": 283,
        "public_api": 194,
-       "exported_used_by_rule": 4,
+       "exported_used_by_rule": 6,
        "main_init": 1
       },
       "claims": 335,
@@ -624,10 +626,10 @@
        }
       },
       "fp_categories": {
-       "test_root": 285,
+       "test_root": 283,
        "public_api": 30,
+       "exported_used_by_rule": 6,
        "referenced_type": 5,
-       "exported_used_by_rule": 4,
        "referenced_function": 3,
        "referenced_method": 1,
        "main_init": 1
@@ -641,16 +643,18 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 125,
+      "universe": 127,
       "universe_by_kind": {
-       "function": 94,
+       "function": 96,
        "method": 31
       },
-      "dead": 0,
-      "dead_by_kind": {},
+      "dead": 2,
+      "dead_by_kind": {
+       "function": 2
+      },
       "live": 125,
       "oracle_buckets": {
-       "test_root": 285,
+       "test_root": 283,
        "public_api": 183,
        "not_a_function": 19,
        "main_init": 1
@@ -663,22 +667,22 @@
       },
       "all": {
        "graded": 321,
-       "tp": 0,
-       "fp": 321,
-       "precision": 0.0,
+       "tp": 2,
+       "fp": 319,
+       "precision": 0.0062,
        "precision_ci": [
-        0.0,
-        0.0118
+        0.0017,
+        0.0224
        ],
-       "dead": 0,
-       "found": 0,
-       "recall": null,
+       "dead": 2,
+       "found": 2,
+       "recall": 1.0,
        "recall_ci": [
-        null,
-        null
+        0.3424,
+        1.0
        ],
-       "recall_claimable_kinds": null,
-       "dead_claimable_kinds": 0
+       "recall_claimable_kinds": 1.0,
+       "dead_claimable_kinds": 2
       },
       "no_exported": {
        "graded": 5,
@@ -701,19 +705,19 @@
        "function": {
         "all": {
          "graded": 292,
-         "tp": 0,
-         "fp": 292,
-         "precision": 0.0,
+         "tp": 2,
+         "fp": 290,
+         "precision": 0.0068,
          "precision_ci": [
-          0.0,
-          0.013
+          0.0019,
+          0.0246
          ],
-         "dead": 0,
-         "found": 0,
-         "recall": null,
+         "dead": 2,
+         "found": 2,
+         "recall": 1.0,
          "recall_ci": [
-          null,
-          null
+          0.3424,
+          1.0
          ]
         },
         "no_exported": {
@@ -733,7 +737,7 @@
           null
          ]
         },
-        "universe": 94
+        "universe": 96
        },
        "method": {
         "all": {
@@ -774,7 +778,7 @@
        }
       },
       "fp_categories": {
-       "test_root": 285,
+       "test_root": 283,
        "public_api": 27,
        "reachable_method": 5,
        "reachable_function": 3,
@@ -1078,7 +1082,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 0.8,
-     "peak_rss_mb": 339,
+     "peak_rss_mb": 332,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -1087,7 +1091,7 @@
     "load_errors": 0,
     "oracle_stats": {
      "decls": 286,
-     "load_seconds": 0.5,
+     "load_seconds": 0.4,
      "rta_reachable_functions": 6706,
      "rta_seconds": 0.2,
      "u1000_objects": {
@@ -1449,11 +1453,11 @@
    "repo": "gitleaks",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 1.0,
+   "index_seconds": 0.8,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.24.11",
-    "seconds": 2.8
+    "seconds": 3.2
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 49,
@@ -1720,7 +1724,7 @@
     "oracle_meta": {
      "toolchain": "go1.24.11",
      "seconds": 3.1,
-     "peak_rss_mb": 1363,
+     "peak_rss_mb": 1439,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -1728,10 +1732,12 @@
     "lidx_claims": 116,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 417,
      "decls": 553,
-     "load_seconds": 1.6,
-     "rta_reachable_functions": 22938,
-     "rta_seconds": 0.8,
+     "load_seconds": 1.3,
+     "rta_reachable_functions": 23018,
+     "rta_seconds": 1.1,
+     "strict_roots_unreachable_functions": 7,
      "u1000_objects": {
       "quiet": 2,
       "unused": 2,
@@ -2076,11 +2082,9 @@
      "files": 203,
      "importer_candidates": 182,
      "no_importer": 0,
-     "unreachable": 1,
+     "unreachable": 0,
      "no_importer_files": [],
-     "unreachable_files": [
-      "cmd/generate/config/rules/trello.go"
-     ]
+     "unreachable_files": []
     },
     "cached_oracle": false
    }
@@ -2092,11 +2096,11 @@
    "repo": "gitleaks",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 1.0,
+   "index_seconds": 0.8,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "go1.24.11",
-    "seconds": 2.5
+    "seconds": 2.9
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 2,
@@ -2360,8 +2364,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.24.11",
-     "seconds": 2.0,
-     "peak_rss_mb": 1239,
+     "seconds": 2.3,
+     "peak_rss_mb": 1252,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -2369,10 +2373,12 @@
     "lidx_claims": 116,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 341,
      "decls": 494,
-     "load_seconds": 1.3,
-     "rta_reachable_functions": 21279,
-     "rta_seconds": 0.7,
+     "load_seconds": 1.4,
+     "rta_reachable_functions": 21305,
+     "rta_seconds": 0.8,
+     "strict_roots_unreachable_functions": 16,
      "u1000_objects": {
       "quiet": 1,
       "unused": 1,
@@ -2712,13 +2718,9 @@
      "files": 184,
      "importer_candidates": 182,
      "no_importer": 0,
-     "unreachable": 3,
+     "unreachable": 0,
      "no_importer_files": [],
-     "unreachable_files": [
-      "cmd/generate/config/rules/trello.go",
-      "detect/files.go",
-      "detect/reader.go"
-     ]
+     "unreachable_files": []
     },
     "cached_oracle": false
    }
@@ -2730,11 +2732,11 @@
    "repo": "syft",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 12.3,
+   "index_seconds": 11.1,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.26.3",
-    "seconds": 83.9
+    "seconds": 83.0
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 3416,
@@ -3006,8 +3008,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.26.3",
-     "seconds": 16.3,
-     "peak_rss_mb": 6268,
+     "seconds": 21.6,
+     "peak_rss_mb": 6475,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -3015,10 +3017,12 @@
     "lidx_claims": 2250,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 1254,
      "decls": 5751,
-     "load_seconds": 4,
-     "rta_reachable_functions": 115891,
-     "rta_seconds": 11,
+     "load_seconds": 3.4,
+     "rta_reachable_functions": 116215,
+     "rta_seconds": 17.5,
+     "strict_roots_unreachable_functions": 60,
      "u1000_objects": {
       "quiet": 46,
       "unused": 13,
@@ -3037,8 +3041,8 @@
       },
       "dead": 11,
       "dead_by_kind": {
-       "function": 9,
-       "method": 2
+       "method": 2,
+       "function": 9
       },
       "live": 2561,
       "oracle_buckets": {
@@ -3226,12 +3230,12 @@
        "function": 2189,
        "method": 801
       },
-      "dead": 40,
+      "dead": 34,
       "dead_by_kind": {
-       "function": 19,
-       "method": 21
+       "method": 17,
+       "function": 17
       },
-      "live": 2950,
+      "live": 2956,
       "oracle_buckets": {
        "test_root": 1206,
        "not_a_function": 890,
@@ -3246,22 +3250,22 @@
       },
       "all": {
        "graded": 1541,
-       "tp": 27,
-       "fp": 1514,
-       "precision": 0.0175,
+       "tp": 23,
+       "fp": 1518,
+       "precision": 0.0149,
        "precision_ci": [
-        0.0121,
-        0.0254
+        0.01,
+        0.0223
        ],
-       "dead": 40,
-       "found": 27,
-       "recall": 0.675,
+       "dead": 34,
+       "found": 23,
+       "recall": 0.6765,
        "recall_ci": [
-        0.5202,
-        0.7992
+        0.5084,
+        0.8087
        ],
-       "recall_claimable_kinds": 0.675,
-       "dead_claimable_kinds": 40
+       "recall_claimable_kinds": 0.6765,
+       "dead_claimable_kinds": 34
       },
       "no_exported": {
        "graded": 33,
@@ -3272,12 +3276,12 @@
         0.1283,
         0.4102
        ],
-       "dead": 13,
+       "dead": 11,
        "found": 8,
-       "recall": 0.6154,
+       "recall": 0.7273,
        "recall_ci": [
-        0.3552,
-        0.8229
+        0.4343,
+        0.9025
        ]
       },
       "by_kind": {
@@ -3291,12 +3295,12 @@
           0.0067,
           0.0189
          ],
-         "dead": 19,
+         "dead": 17,
          "found": 14,
-         "recall": 0.7368,
+         "recall": 0.8235,
          "recall_ci": [
-          0.5121,
-          0.8819
+          0.5897,
+          0.9381
          ]
         },
         "no_exported": {
@@ -3308,12 +3312,12 @@
           0.2321,
           0.7086
          ],
-         "dead": 11,
+         "dead": 9,
          "found": 6,
-         "recall": 0.5455,
+         "recall": 0.6667,
          "recall_ci": [
-          0.2801,
-          0.7873
+          0.3542,
+          0.8794
          ]
         },
         "universe": 2189
@@ -3321,19 +3325,19 @@
        "method": {
         "all": {
          "graded": 303,
-         "tp": 13,
-         "fp": 290,
-         "precision": 0.0429,
+         "tp": 9,
+         "fp": 294,
+         "precision": 0.0297,
          "precision_ci": [
-          0.0252,
-          0.072
+          0.0157,
+          0.0555
          ],
-         "dead": 21,
-         "found": 13,
-         "recall": 0.619,
+         "dead": 17,
+         "found": 9,
+         "recall": 0.5294,
          "recall_ci": [
-          0.4088,
-          0.7925
+          0.3096,
+          0.7384
          ]
         },
         "no_exported": {
@@ -3358,7 +3362,7 @@
       },
       "fp_categories": {
        "test_root": 1206,
-       "reachable_method": 170,
+       "reachable_method": 174,
        "public_api": 130,
        "reachable_function": 5,
        "main_init": 3
@@ -3370,8 +3374,8 @@
       },
       "fn_categories": {
        "no_incoming_edge_but_filtered": 7,
-       "incoming_from_dead_code_only": 3,
-       "incoming_from_tests_only": 3
+       "incoming_from_tests_only": 3,
+       "incoming_from_dead_code_only": 1
       }
      }
     },
@@ -3380,17 +3384,12 @@
      "files": 1110,
      "importer_candidates": 630,
      "no_importer": 1,
-     "unreachable": 6,
+     "unreachable": 1,
      "no_importer_files": [
       "syft/testutil/completion_testing.go"
      ],
      "unreachable_files": [
-      "internal/input.go",
-      "syft/file/license.go",
-      "syft/file/search_result.go",
-      "syft/lib.go",
-      "syft/pkg/cataloger/binary/deprecated.go",
-      "syft/testutil/completion_testing.go"
+      "internal/input.go"
      ]
     },
     "cached_oracle": false
@@ -3403,7 +3402,7 @@
    "repo": "syft",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 12.3,
+   "index_seconds": 11.1,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "go1.26.3",
@@ -3679,8 +3678,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.26.3",
-     "seconds": 16.3,
-     "peak_rss_mb": 5801,
+     "seconds": 20.1,
+     "peak_rss_mb": 6281,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -3688,10 +3687,12 @@
     "lidx_claims": 2250,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 718,
      "decls": 4135,
-     "load_seconds": 3,
-     "rta_reachable_functions": 106156,
-     "rta_seconds": 13,
+     "load_seconds": 3.5,
+     "rta_reachable_functions": 106256,
+     "rta_seconds": 16.3,
+     "strict_roots_unreachable_functions": 310,
      "u1000_objects": {
       "quiet": 0,
       "unused": 1,
@@ -3893,12 +3894,12 @@
        "function": 1944,
        "method": 683
       },
-      "dead": 256,
+      "dead": 243,
       "dead_by_kind": {
-       "method": 153,
-       "function": 103
+       "function": 98,
+       "method": 145
       },
-      "live": 2371,
+      "live": 2384,
       "oracle_buckets": {
        "not_a_function": 843,
        "public_api": 647,
@@ -3913,22 +3914,22 @@
       },
       "all": {
        "graded": 285,
-       "tp": 45,
-       "fp": 240,
-       "precision": 0.1579,
+       "tp": 41,
+       "fp": 244,
+       "precision": 0.1439,
        "precision_ci": [
-        0.1201,
-        0.2047
+        0.1078,
+        0.1893
        ],
-       "dead": 256,
-       "found": 45,
-       "recall": 0.1758,
+       "dead": 243,
+       "found": 41,
+       "recall": 0.1687,
        "recall_ci": [
-        0.134,
-        0.2271
+        0.1269,
+        0.2209
        ],
-       "recall_claimable_kinds": 0.1758,
-       "dead_claimable_kinds": 256
+       "recall_claimable_kinds": 0.1687,
+       "dead_claimable_kinds": 243
       },
       "no_exported": {
        "graded": 24,
@@ -3939,12 +3940,12 @@
         0.0,
         0.138
        ],
-       "dead": 65,
+       "dead": 61,
        "found": 0,
        "recall": 0.0,
        "recall_ci": [
         0.0,
-        0.0558
+        0.0592
        ]
       },
       "by_kind": {
@@ -3958,12 +3959,12 @@
           0.1941,
           0.5378
          ],
-         "dead": 103,
+         "dead": 98,
          "found": 9,
-         "recall": 0.0874,
+         "recall": 0.0918,
          "recall_ci": [
-          0.0467,
-          0.1578
+          0.0491,
+          0.1654
          ]
         },
         "no_exported": {
@@ -3975,12 +3976,12 @@
           0.0,
           0.3543
          ],
-         "dead": 40,
+         "dead": 38,
          "found": 0,
          "recall": 0.0,
          "recall_ci": [
           0.0,
-          0.0876
+          0.0918
          ]
         },
         "universe": 1944
@@ -3988,19 +3989,19 @@
        "method": {
         "all": {
          "graded": 259,
-         "tp": 36,
-         "fp": 223,
-         "precision": 0.139,
+         "tp": 32,
+         "fp": 227,
+         "precision": 0.1236,
          "precision_ci": [
-          0.1021,
-          0.1864
+          0.0889,
+          0.1692
          ],
-         "dead": 153,
-         "found": 36,
-         "recall": 0.2353,
+         "dead": 145,
+         "found": 32,
+         "recall": 0.2207,
          "recall_ci": [
-          0.1751,
-          0.3085
+          0.1609,
+          0.2949
          ]
         },
         "no_exported": {
@@ -4012,12 +4013,12 @@
           0.0,
           0.1843
          ],
-         "dead": 25,
+         "dead": 23,
          "found": 0,
          "recall": 0.0,
          "recall_ci": [
           0.0,
-          0.1332
+          0.1431
          ]
         },
         "universe": 683
@@ -4025,7 +4026,7 @@
       },
       "fp_categories": {
        "public_api": 130,
-       "reachable_method": 103,
+       "reachable_method": 107,
        "reachable_function": 4,
        "main_init": 3
       },
@@ -4035,10 +4036,10 @@
        "main_init": 3
       },
       "fn_categories": {
-       "incoming_from_dead_code_only": 100,
-       "incoming_from_tests_only": 53,
+       "incoming_from_dead_code_only": 96,
+       "incoming_from_tests_only": 51,
        "no_incoming_edge_but_filtered": 38,
-       "incoming_from_tests_or_dead_code": 20
+       "incoming_from_tests_or_dead_code": 17
       }
      }
     },
@@ -4047,7 +4048,7 @@
      "files": 663,
      "importer_candidates": 630,
      "no_importer": 12,
-     "unreachable": 33,
+     "unreachable": 24,
      "no_importer_files": [
       "syft/format/internal/testutil/directory_input.go",
       "syft/format/internal/testutil/file_relationships.go",
@@ -4071,13 +4072,7 @@
       "internal/cmptest/relationship.go",
       "internal/cmptest/set.go",
       "internal/input.go",
-      "internal/packagemetadata/completion_tester.go",
-      "internal/sourcemetadata/completion_tester.go",
-      "internal/sourcemetadata/generated.go",
       "internal/testutils/golden_files.go",
-      "syft/file/license.go",
-      "syft/file/mock_resolver.go",
-      "syft/file/search_result.go",
       "syft/format/internal/testutil/directory_input.go",
       "syft/format/internal/testutil/file_relationships.go",
       "syft/format/internal/testutil/image_input.go",
@@ -4087,15 +4082,12 @@
       "syft/internal/fileresolver/empty.go",
       "syft/internal/fileresolver/unindexed_directory.go",
       "syft/internal/testutil/chdir.go",
-      "syft/lib.go",
-      "syft/pkg/cataloger/binary/deprecated.go",
       "syft/pkg/cataloger/binary/internal/manager/internal/snippet_metadata.go",
       "syft/pkg/cataloger/binary/internal/manager/testutil/snippet_or_binary.go",
       "syft/pkg/cataloger/internal/pkgtest/metadata_tracker.go",
       "syft/pkg/cataloger/internal/pkgtest/observing_resolver.go",
       "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.go",
-      "syft/pkg/cataloger/java/internal/maven/test/mock_repo.go",
-      "syft/testutil/completion_testing.go"
+      "syft/pkg/cataloger/java/internal/maven/test/mock_repo.go"
      ]
     },
     "cached_oracle": false
@@ -4108,11 +4100,11 @@
    "repo": "chi",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.5,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 6.3
+    "seconds": 1.2
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 48,
@@ -4379,8 +4371,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.4,
-     "peak_rss_mb": 639,
+     "seconds": 1.2,
+     "peak_rss_mb": 666,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -4388,10 +4380,12 @@
     "lidx_claims": 205,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 220,
      "decls": 395,
-     "load_seconds": 0.9,
-     "rta_reachable_functions": 13947,
+     "load_seconds": 0.7,
+     "rta_reachable_functions": 14226,
      "rta_seconds": 0.4,
+     "strict_roots_unreachable_functions": 12,
      "u1000_objects": {
       "quiet": 8,
       "unused": 11,
@@ -4742,7 +4736,7 @@
      "files": 65,
      "importer_candidates": 35,
      "no_importer": 30,
-     "unreachable": 7,
+     "unreachable": 0,
      "no_importer_files": [
       "middleware/basic_auth.go",
       "middleware/clean_path.go",
@@ -4775,15 +4769,7 @@
       "middleware/value.go",
       "middleware/wrap_writer.go"
      ],
-     "unreachable_files": [
-      "middleware/maybe.go",
-      "middleware/nocache.go",
-      "middleware/page_route.go",
-      "middleware/profiler.go",
-      "middleware/request_size.go",
-      "middleware/supress_notfound.go",
-      "middleware/timeout.go"
-     ]
+     "unreachable_files": []
     },
     "cached_oracle": false
    }
@@ -4795,11 +4781,11 @@
    "repo": "chi",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.5,
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.7
+    "seconds": 1.0
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 22,
@@ -5059,8 +5045,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.1,
-     "peak_rss_mb": 519,
+     "seconds": 1.0,
+     "peak_rss_mb": 671,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -5069,7 +5055,7 @@
     "load_errors": 0,
     "oracle_stats": {
      "decls": 230,
-     "load_seconds": 0.8,
+     "load_seconds": 0.5,
      "rta_reachable_functions": 11819,
      "rta_seconds": 0.3,
      "u1000_objects": {
@@ -5458,11 +5444,11 @@
    "repo": "urfavecli",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 1.2,
+   "index_seconds": 0.9,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 2.5
+    "seconds": 1.5
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 300,
@@ -5731,8 +5717,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.6,
-     "peak_rss_mb": 754,
+     "seconds": 1.4,
+     "peak_rss_mb": 790,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -5740,10 +5726,12 @@
     "lidx_claims": 809,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 1740,
      "decls": 1365,
-     "load_seconds": 0.9,
-     "rta_reachable_functions": 16882,
+     "load_seconds": 0.7,
+     "rta_reachable_functions": 17507,
      "rta_seconds": 0.5,
+     "strict_roots_unreachable_functions": 16,
      "u1000_objects": {
       "quiet": 9,
       "unused": 25,
@@ -6118,11 +6106,11 @@
    "repo": "urfavecli",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 1.2,
+   "index_seconds": 0.9,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.5
+    "seconds": 1.0
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 8,
@@ -6389,7 +6377,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.2,
-     "peak_rss_mb": 698,
+     "peak_rss_mb": 672,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -6397,10 +6385,12 @@
     "lidx_claims": 809,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 871,
      "decls": 795,
-     "load_seconds": 0.7,
-     "rta_reachable_functions": 12396,
-     "rta_seconds": 0.3,
+     "load_seconds": 0.6,
+     "rta_reachable_functions": 13672,
+     "rta_seconds": 0.4,
+     "strict_roots_unreachable_functions": 384,
      "u1000_objects": {
       "quiet": 9,
       "unused": 13,
@@ -6606,12 +6596,12 @@
        "function": 114,
        "method": 36
       },
-      "dead": 29,
+      "dead": 4,
       "dead_by_kind": {
-       "function": 16,
-       "method": 13
+       "method": 3,
+       "function": 1
       },
-      "live": 121,
+      "live": 146,
       "oracle_buckets": {
        "public_api": 530,
        "not_a_function": 111,
@@ -6633,15 +6623,15 @@
         0.005,
         0.0423
        ],
-       "dead": 29,
+       "dead": 4,
        "found": 3,
-       "recall": 0.1034,
+       "recall": 0.75,
        "recall_ci": [
-        0.0358,
-        0.2639
+        0.3006,
+        0.9544
        ],
-       "recall_claimable_kinds": 0.1034,
-       "dead_claimable_kinds": 29
+       "recall_claimable_kinds": 0.75,
+       "dead_claimable_kinds": 4
       },
       "no_exported": {
        "graded": 7,
@@ -6652,12 +6642,12 @@
         0.0822,
         0.6411
        ],
-       "dead": 28,
+       "dead": 3,
        "found": 2,
-       "recall": 0.0714,
+       "recall": 0.6667,
        "recall_ci": [
-        0.0198,
-        0.2265
+        0.2077,
+        0.9385
        ]
       },
       "by_kind": {
@@ -6671,12 +6661,12 @@
           0.0137,
           0.3331
          ],
-         "dead": 16,
+         "dead": 1,
          "found": 1,
-         "recall": 0.0625,
+         "recall": 1.0,
          "recall_ci": [
-          0.0111,
-          0.2833
+          0.2065,
+          1.0
          ]
         },
         "no_exported": {
@@ -6688,12 +6678,12 @@
           0.0,
           0.4345
          ],
-         "dead": 15,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.2039
+          null,
+          null
          ]
         },
         "universe": 114
@@ -6708,12 +6698,12 @@
           0.0029,
           0.0374
          ],
-         "dead": 13,
+         "dead": 3,
          "found": 2,
-         "recall": 0.1538,
+         "recall": 0.6667,
          "recall_ci": [
-          0.0433,
-          0.4224
+          0.2077,
+          0.9385
          ]
         },
         "no_exported": {
@@ -6725,12 +6715,12 @@
           0.3424,
           1.0
          ],
-         "dead": 13,
+         "dead": 3,
          "found": 2,
-         "recall": 0.1538,
+         "recall": 0.6667,
          "recall_ci": [
-          0.0433,
-          0.4224
+          0.2077,
+          0.9385
          ]
         },
         "universe": 36
@@ -6746,9 +6736,6 @@
        "main_init": 1
       },
       "fn_categories": {
-       "incoming_from_dead_code_only": 21,
-       "no_incoming_edge_but_filtered": 2,
-       "incoming_from_tests_or_dead_code": 2,
        "incoming_from_tests_only": 1
       }
      }
@@ -6758,7 +6745,7 @@
      "files": 47,
      "importer_candidates": 44,
      "no_importer": 8,
-     "unreachable": 7,
+     "unreachable": 0,
      "no_importer_files": [
       "altsrc/default_input_source.go",
       "altsrc/flag.go",
@@ -6769,15 +6756,7 @@
       "altsrc/toml_file_loader.go",
       "altsrc/yaml_file_loader.go"
      ],
-     "unreachable_files": [
-      "altsrc/default_input_source.go",
-      "altsrc/flag.go",
-      "altsrc/flag_generated.go",
-      "altsrc/json_source_context.go",
-      "altsrc/map_input_source.go",
-      "altsrc/toml_file_loader.go",
-      "altsrc/yaml_file_loader.go"
-     ]
+     "unreachable_files": []
     },
     "cached_oracle": false
    }
@@ -6793,7 +6772,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.7
+    "seconds": 1.3
    },
    "oracle_dropped": {
     "caller_package_initializer": 2307,
@@ -7059,7 +7038,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.4,
-     "peak_rss_mb": 856,
+     "peak_rss_mb": 777,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -7067,10 +7046,12 @@
     "lidx_claims": 229,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 349,
      "decls": 407,
-     "load_seconds": 0.8,
-     "rta_reachable_functions": 15639,
-     "rta_seconds": 0.4,
+     "load_seconds": 0.9,
+     "rta_reachable_functions": 15990,
+     "rta_seconds": 0.5,
+     "strict_roots_unreachable_functions": 71,
      "u1000_objects": {
       "quiet": 0,
       "unused": 0,
@@ -7441,7 +7422,7 @@
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.5
+    "seconds": 1.2
    },
    "oracle_dropped": {
     "caller_package_initializer": 1985,
@@ -7672,8 +7653,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.2,
-     "peak_rss_mb": 788,
+     "seconds": 1.0,
+     "peak_rss_mb": 734,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -7682,7 +7663,7 @@
     "load_errors": 0,
     "oracle_stats": {
      "decls": 283,
-     "load_seconds": 0.7,
+     "load_seconds": 0.6,
      "rta_reachable_functions": 13583,
      "rta_seconds": 0.3,
      "u1000_objects": {
@@ -8293,7 +8274,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 0.8,
-     "peak_rss_mb": 267,
+     "peak_rss_mb": 436,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -8301,10 +8282,12 @@
     "lidx_claims": 206,
     "load_errors": 0,
     "oracle_stats": {
+     "api_roots": 161,
      "decls": 297,
-     "load_seconds": 0.6,
-     "rta_reachable_functions": 7241,
+     "load_seconds": 0.5,
+     "rta_reachable_functions": 7555,
      "rta_seconds": 0.2,
+     "strict_roots_unreachable_functions": 24,
      "u1000_objects": {
       "quiet": 0,
       "unused": 0,
@@ -8683,7 +8666,7 @@
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.9
+    "seconds": 0.7
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 4,
@@ -8913,7 +8896,7 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 0.8,
-     "peak_rss_mb": 221,
+     "peak_rss_mb": 349,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
@@ -8922,7 +8905,7 @@
     "load_errors": 0,
     "oracle_stats": {
      "decls": 234,
-     "load_seconds": 0.6,
+     "load_seconds": 0.5,
      "rta_reachable_functions": 5066,
      "rta_seconds": 0.2,
      "u1000_objects": {
@@ -9304,10 +9287,10 @@
    "repo": "zod",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 6.1,
+   "index_seconds": 5.4,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 3.3
+    "seconds": 2.9
    },
    "oracle_dropped": {
     "callee_external": 1393,
@@ -9551,8 +9534,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.4,
-     "peak_rss_mb": 507,
+     "seconds": 3.0,
+     "peak_rss_mb": 504,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -9560,7 +9543,7 @@
     "lidx_claims": 800,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 3.1,
+     "seconds": 2.7,
      "find_references_calls": 68,
      "diagnostics_6133_6196": 0,
      "api_declarations": 1932,
@@ -9960,10 +9943,10 @@
    "repo": "hono",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 5.5,
+   "index_seconds": 6.6,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 2.2
+    "seconds": 2.3
    },
    "oracle_dropped": {
     "callee_external": 1833,
@@ -10207,8 +10190,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.6,
-     "peak_rss_mb": 391,
+     "seconds": 2.4,
+     "peak_rss_mb": 394,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -10216,7 +10199,7 @@
     "lidx_claims": 143,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 2.3,
+     "seconds": 2.1,
      "find_references_calls": 247,
      "diagnostics_6133_6196": 0,
      "api_declarations": 492,
@@ -10611,10 +10594,10 @@
    "repo": "trpc",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 10.3,
+   "index_seconds": 15.0,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 1.3
+    "seconds": 2.3
    },
    "oracle_dropped": {
     "callee_parameter": 33,
@@ -10823,8 +10806,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.3,
-     "peak_rss_mb": 259,
+     "seconds": 3.3,
+     "peak_rss_mb": 252,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -10832,7 +10815,7 @@
     "lidx_claims": 1509,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 1,
+     "seconds": 2.6,
      "find_references_calls": 19,
      "diagnostics_6133_6196": 0,
      "api_declarations": 338,
@@ -11209,7 +11192,7 @@
    "repo": "ky",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 2.0,
+   "index_seconds": 2.9,
    "oracle_mode": null,
    "oracle_meta": {
     "seconds": 0.9
@@ -11402,8 +11385,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.1,
-     "peak_rss_mb": 244,
+     "seconds": 1.2,
+     "peak_rss_mb": 246,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -11781,10 +11764,10 @@
    "repo": "immer",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 1.0,
+   "index_seconds": 1.3,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 0.8
+    "seconds": 1.0
    },
    "oracle_dropped": {
     "callee_external": 201,
@@ -11967,8 +11950,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.0,
-     "peak_rss_mb": 227,
+     "seconds": 1.3,
+     "peak_rss_mb": 231,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -11976,7 +11959,7 @@
     "lidx_claims": 39,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 0.7,
+     "seconds": 0.9,
      "find_references_calls": 77,
      "diagnostics_6133_6196": 8,
      "api_declarations": 32,
@@ -11993,8 +11976,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "type": 3
+       "type": 3,
+       "function": 2
       },
       "live": 116,
       "oracle_buckets": {
@@ -12367,7 +12350,7 @@
    "index_seconds": 3.2,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 1.3
+    "seconds": 1.2
    },
    "oracle_dropped": {
     "callee_external": 1101,
@@ -12596,8 +12579,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.7,
-     "peak_rss_mb": 273,
+     "seconds": 1.9,
+     "peak_rss_mb": 270,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -12605,7 +12588,7 @@
     "lidx_claims": 94,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 1.3,
+     "seconds": 1.6,
      "find_references_calls": 159,
      "diagnostics_6133_6196": 0,
      "api_declarations": 287,
@@ -12624,8 +12607,8 @@
       "dead": 4,
       "dead_by_kind": {
        "type": 2,
-       "const": 1,
-       "function": 1
+       "function": 1,
+       "const": 1
       },
       "live": 408,
       "oracle_buckets": {
@@ -12990,13 +12973,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 3.7,
+   "index_seconds": 3.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.5
+    "seconds": 8.1
    },
    "oracle_dropped": {
     "caller_not_in_function": 1539,
@@ -13131,8 +13114,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.0,
-     "peak_rss_mb": 98,
+     "seconds": 1.9,
+     "peak_rss_mb": 99,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -13148,23 +13131,25 @@
     "decls": 3427,
     "columns": {
      "unref": {
-      "universe": 1942,
+      "universe": 1938,
       "universe_by_kind": {
        "function": 200,
-       "type": 268,
-       "method": 1474
+       "type": 267,
+       "method": 1471
       },
       "dead": 6,
       "dead_by_kind": {
        "method": 6
       },
-      "live": 1936,
+      "live": 1932,
       "oracle_buckets": {
        "public_api": 648,
        "test_root": 435,
        "macro_generated": 390,
        "oracle_unresolved_site": 8,
-       "main_init": 4
+       "main_init": 4,
+       "impl_for_foreign_type": 3,
+       "trait_declaration": 1
       },
       "claims": 303,
       "claims_ungradable": {
@@ -13282,7 +13267,7 @@
           1.0
          ]
         },
-        "universe": 1474
+        "universe": 1471
        },
        "type": {
         "all": {
@@ -13319,7 +13304,7 @@
           null
          ]
         },
-        "universe": 268
+        "universe": 267
        }
       },
       "fp_categories": {
@@ -13338,23 +13323,24 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 1680,
+      "universe": 1677,
       "universe_by_kind": {
        "function": 202,
-       "method": 1478
+       "method": 1475
       },
       "dead": 9,
       "dead_by_kind": {
        "method": 6,
        "function": 3
       },
-      "live": 1671,
+      "live": 1668,
       "oracle_buckets": {
        "public_api": 553,
        "test_root": 435,
        "macro_generated": 390,
        "not_a_function": 363,
        "main_init": 4,
+       "impl_for_foreign_type": 3,
        "oracle_unresolved_site": 2
       },
       "claims": 303,
@@ -13474,7 +13460,7 @@
           1.0
          ]
         },
-        "universe": 1478
+        "universe": 1475
        }
       },
       "fp_categories": {
@@ -13516,13 +13502,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "no_tests",
-   "index_seconds": 3.7,
+   "index_seconds": 3.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.2
+    "seconds": 7.6
    },
    "oracle_dropped": {
     "caller_not_in_function": 1391,
@@ -13654,7 +13640,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.3,
+     "seconds": 2.1,
      "peak_rss_mb": 95,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -13671,22 +13657,24 @@
     "decls": 2495,
     "columns": {
      "unref": {
-      "universe": 1839,
+      "universe": 1835,
       "universe_by_kind": {
        "function": 140,
-       "type": 261,
-       "method": 1438
+       "type": 260,
+       "method": 1435
       },
       "dead": 3,
       "dead_by_kind": {
        "method": 3
       },
-      "live": 1836,
+      "live": 1832,
       "oracle_buckets": {
        "public_api": 637,
        "test_root": 11,
        "main_init": 4,
-       "oracle_unresolved_site": 4
+       "oracle_unresolved_site": 4,
+       "impl_for_foreign_type": 3,
+       "trait_declaration": 1
       },
       "claims": 303,
       "claims_ungradable": {
@@ -13804,7 +13792,7 @@
           1.0
          ]
         },
-        "universe": 1438
+        "universe": 1435
        },
        "type": {
         "all": {
@@ -13841,7 +13829,7 @@
           null
          ]
         },
-        "universe": 261
+        "universe": 260
        }
       },
       "fp_categories": {
@@ -13860,21 +13848,22 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 1582,
+      "universe": 1579,
       "universe_by_kind": {
        "function": 143,
-       "method": 1439
+       "method": 1436
       },
       "dead": 3,
       "dead_by_kind": {
        "method": 3
       },
-      "live": 1579,
+      "live": 1576,
       "oracle_buckets": {
        "public_api": 543,
        "not_a_function": 355,
        "test_root": 11,
-       "main_init": 4
+       "main_init": 4,
+       "impl_for_foreign_type": 3
       },
       "claims": 303,
       "claims_ungradable": {
@@ -13992,7 +13981,7 @@
           1.0
          ]
         },
-        "universe": 1439
+        "universe": 1436
        }
       },
       "fp_categories": {
@@ -14034,13 +14023,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "with_tests",
-   "index_seconds": 3.7,
+   "index_seconds": 3.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 13.7
+    "seconds": 7.9
    },
    "oracle_dropped": {
     "caller_not_in_function": 1606,
@@ -14184,8 +14173,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
-     "peak_rss_mb": 107,
+     "seconds": 2.1,
+     "peak_rss_mb": 108,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -14201,23 +14190,25 @@
     "decls": 3844,
     "columns": {
      "unref": {
-      "universe": 2018,
+      "universe": 2014,
       "universe_by_kind": {
        "function": 214,
-       "type": 285,
-       "method": 1519
+       "type": 284,
+       "method": 1516
       },
       "dead": 6,
       "dead_by_kind": {
        "method": 6
       },
-      "live": 2012,
+      "live": 2008,
       "oracle_buckets": {
        "macro_generated": 713,
        "public_api": 648,
        "test_root": 451,
        "oracle_unresolved_site": 10,
-       "main_init": 4
+       "main_init": 4,
+       "impl_for_foreign_type": 3,
+       "trait_declaration": 1
       },
       "claims": 303,
       "claims_ungradable": {
@@ -14334,7 +14325,7 @@
           1.0
          ]
         },
-        "universe": 1519
+        "universe": 1516
        },
        "type": {
         "all": {
@@ -14371,7 +14362,7 @@
           null
          ]
         },
-        "universe": 285
+        "universe": 284
        }
       },
       "fp_categories": {
@@ -14390,17 +14381,17 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 1728,
+      "universe": 1725,
       "universe_by_kind": {
        "function": 218,
-       "method": 1510
+       "method": 1507
       },
       "dead": 27,
       "dead_by_kind": {
        "method": 19,
        "function": 8
       },
-      "live": 1701,
+      "live": 1698,
       "oracle_buckets": {
        "macro_generated": 713,
        "public_api": 553,
@@ -14408,6 +14399,7 @@
        "not_a_function": 380,
        "oracle_unresolved_site": 13,
        "main_init": 4,
+       "impl_for_foreign_type": 3,
        "cfg_twin": 2
       },
       "claims": 303,
@@ -14527,7 +14519,7 @@
           1.0
          ]
         },
-        "universe": 1510
+        "universe": 1507
        }
       },
       "fp_categories": {
@@ -14574,13 +14566,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 3.7,
+   "index_seconds": 3.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 35.0
+    "seconds": 9.1
    },
    "oracle_dropped": {
     "caller_not_in_function": 1552,
@@ -14716,8 +14708,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.3,
-     "peak_rss_mb": 99,
+     "seconds": 2.1,
+     "peak_rss_mb": 98,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -14733,23 +14725,25 @@
     "decls": 3441,
     "columns": {
      "unref": {
-      "universe": 1952,
+      "universe": 1948,
       "universe_by_kind": {
        "function": 200,
-       "type": 270,
-       "method": 1482
+       "type": 269,
+       "method": 1479
       },
       "dead": 7,
       "dead_by_kind": {
        "method": 7
       },
-      "live": 1945,
+      "live": 1941,
       "oracle_buckets": {
        "public_api": 648,
        "test_root": 440,
        "macro_generated": 390,
        "oracle_unresolved_site": 7,
-       "main_init": 4
+       "main_init": 4,
+       "impl_for_foreign_type": 3,
+       "trait_declaration": 1
       },
       "claims": 303,
       "claims_ungradable": {
@@ -14866,7 +14860,7 @@
           1.0
          ]
         },
-        "universe": 1482
+        "universe": 1479
        },
        "type": {
         "all": {
@@ -14903,7 +14897,7 @@
           null
          ]
         },
-        "universe": 270
+        "universe": 269
        }
       },
       "fp_categories": {
@@ -14922,23 +14916,24 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 1687,
+      "universe": 1684,
       "universe_by_kind": {
        "function": 202,
-       "method": 1485
+       "method": 1482
       },
       "dead": 10,
       "dead_by_kind": {
        "method": 7,
        "function": 3
       },
-      "live": 1677,
+      "live": 1674,
       "oracle_buckets": {
        "public_api": 553,
        "test_root": 440,
        "macro_generated": 390,
        "not_a_function": 365,
        "main_init": 4,
+       "impl_for_foreign_type": 3,
        "oracle_unresolved_site": 2
       },
       "claims": 303,
@@ -15057,7 +15052,7 @@
           1.0
          ]
         },
-        "universe": 1485
+        "universe": 1482
        }
       },
       "fp_categories": {
@@ -15105,7 +15100,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 11.4
+    "seconds": 5.3
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -15232,7 +15227,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 5,
+     "peak_rss_mb": 6,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -15248,19 +15243,20 @@
     "decls": 345,
     "columns": {
      "unref": {
-      "universe": 183,
+      "universe": 182,
       "universe_by_kind": {
        "type": 32,
-       "method": 94,
+       "method": 93,
        "function": 57
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 183,
+      "live": 182,
       "oracle_buckets": {
        "macro_generated": 105,
        "test_root": 52,
        "oracle_unresolved_site": 4,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -15377,7 +15373,7 @@
           null
          ]
         },
-        "universe": 94
+        "universe": 93
        },
        "type": {
         "all": {
@@ -15428,18 +15424,19 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 155,
+      "universe": 154,
       "universe_by_kind": {
-       "method": 96,
+       "method": 95,
        "function": 59
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 155,
+      "live": 154,
       "oracle_buckets": {
        "macro_generated": 105,
        "test_root": 52,
        "not_a_function": 32,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -15555,7 +15552,7 @@
           null
          ]
         },
-        "universe": 96
+        "universe": 95
        }
       },
       "fp_categories": {
@@ -15596,7 +15593,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.6
+    "seconds": 10.4
    },
    "oracle_dropped": {
     "caller_not_in_function": 134,
@@ -15723,8 +15720,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.2,
-     "peak_rss_mb": 7,
+     "seconds": 0.4,
+     "peak_rss_mb": 10,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -15740,18 +15737,19 @@
     "decls": 181,
     "columns": {
      "unref": {
-      "universe": 174,
+      "universe": 173,
       "universe_by_kind": {
        "type": 30,
-       "method": 89,
+       "method": 88,
        "function": 55
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 174,
+      "live": 173,
       "oracle_buckets": {
        "oracle_unresolved_site": 3,
        "test_root": 3,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -15868,7 +15866,7 @@
           null
          ]
         },
-        "universe": 89
+        "universe": 88
        },
        "type": {
         "all": {
@@ -15919,17 +15917,18 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 147,
+      "universe": 146,
       "universe_by_kind": {
-       "method": 91,
+       "method": 90,
        "function": 56
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 147,
+      "live": 146,
       "oracle_buckets": {
        "not_a_function": 30,
        "test_root": 3,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -16045,7 +16044,7 @@
           null
          ]
         },
-        "universe": 91
+        "universe": 90
        }
       },
       "fp_categories": {
@@ -16086,7 +16085,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 5.2
+    "seconds": 16.1
    },
    "oracle_dropped": {
     "callee_external": 1629,
@@ -16212,8 +16211,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.4,
-     "peak_rss_mb": 6,
+     "seconds": 0.9,
+     "peak_rss_mb": 12,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -16229,19 +16228,20 @@
     "decls": 475,
     "columns": {
      "unref": {
-      "universe": 214,
+      "universe": 213,
       "universe_by_kind": {
        "type": 33,
-       "method": 110,
+       "method": 109,
        "function": 71
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 214,
+      "live": 213,
       "oracle_buckets": {
        "test_root": 151,
        "macro_generated": 105,
        "oracle_unresolved_site": 4,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -16358,7 +16358,7 @@
           null
          ]
         },
-        "universe": 110
+        "universe": 109
        },
        "type": {
         "all": {
@@ -16409,18 +16409,19 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 185,
+      "universe": 184,
       "universe_by_kind": {
-       "method": 112,
+       "method": 111,
        "function": 73
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 185,
+      "live": 184,
       "oracle_buckets": {
        "test_root": 151,
        "macro_generated": 105,
        "not_a_function": 33,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -16536,7 +16537,7 @@
           null
          ]
         },
-        "universe": 112
+        "universe": 111
        }
       },
       "fp_categories": {
@@ -16578,7 +16579,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 5.1
+    "seconds": 25.2
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -16722,19 +16723,20 @@
     "decls": 345,
     "columns": {
      "unref": {
-      "universe": 183,
+      "universe": 182,
       "universe_by_kind": {
        "type": 32,
-       "method": 94,
+       "method": 93,
        "function": 57
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 183,
+      "live": 182,
       "oracle_buckets": {
        "macro_generated": 105,
        "test_root": 52,
        "oracle_unresolved_site": 4,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -16851,7 +16853,7 @@
           null
          ]
         },
-        "universe": 94
+        "universe": 93
        },
        "type": {
         "all": {
@@ -16902,18 +16904,19 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 155,
+      "universe": 154,
       "universe_by_kind": {
-       "method": 96,
+       "method": 95,
        "function": 59
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 155,
+      "live": 154,
       "oracle_buckets": {
        "macro_generated": 105,
        "test_root": 52,
        "not_a_function": 32,
+       "impl_for_foreign_type": 1,
        "main_init": 1
       },
       "claims": 13,
@@ -17029,7 +17032,7 @@
           null
          ]
         },
-        "universe": 96
+        "universe": 95
        }
       },
       "fp_categories": {
@@ -17064,13 +17067,13 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.9,
+   "index_seconds": 4.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 10.6
+    "seconds": 18.6
    },
    "oracle_dropped": {
     "callee_external": 2966,
@@ -17198,8 +17201,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.4,
-     "peak_rss_mb": 38,
+     "seconds": 1.0,
+     "peak_rss_mb": 39,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -17215,21 +17218,23 @@
     "decls": 535,
     "columns": {
      "unref": {
-      "universe": 252,
+      "universe": 246,
       "universe_by_kind": {
-       "method": 152,
-       "type": 35,
+       "method": 149,
+       "type": 32,
        "function": 65
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
-      "live": 247,
+      "live": 241,
       "oracle_buckets": {
        "public_api": 188,
        "test_root": 94,
+       "impl_for_foreign_type": 3,
+       "trait_declaration": 3,
        "main_init": 1
       },
       "claims": 644,
@@ -17347,7 +17352,7 @@
           1.0
          ]
         },
-        "universe": 152
+        "universe": 149
        },
        "type": {
         "all": {
@@ -17384,7 +17389,7 @@
           null
          ]
         },
-        "universe": 35
+        "universe": 32
        }
       },
       "fp_categories": {
@@ -17401,21 +17406,22 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 217,
+      "universe": 214,
       "universe_by_kind": {
-       "method": 152,
+       "method": 149,
        "function": 65
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
-      "live": 212,
+      "live": 209,
       "oracle_buckets": {
        "public_api": 140,
        "test_root": 94,
        "not_a_function": 83,
+       "impl_for_foreign_type": 3,
        "main_init": 1
       },
       "claims": 644,
@@ -17534,7 +17540,7 @@
           1.0
          ]
         },
-        "universe": 152
+        "universe": 149
        }
       },
       "fp_categories": {
@@ -17580,13 +17586,13 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.9,
+   "index_seconds": 4.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 9.4
+    "seconds": 32.6
    },
    "oracle_dropped": {
     "callee_external": 3074,
@@ -17731,21 +17737,23 @@
     "decls": 552,
     "columns": {
      "unref": {
-      "universe": 263,
+      "universe": 257,
       "universe_by_kind": {
-       "method": 159,
-       "type": 38,
+       "method": 156,
+       "type": 35,
        "function": 66
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
-      "live": 258,
+      "live": 252,
       "oracle_buckets": {
        "public_api": 189,
        "test_root": 99,
+       "impl_for_foreign_type": 3,
+       "trait_declaration": 3,
        "main_init": 1
       },
       "claims": 644,
@@ -17863,7 +17871,7 @@
           1.0
          ]
         },
-        "universe": 159
+        "universe": 156
        },
        "type": {
         "all": {
@@ -17900,7 +17908,7 @@
           null
          ]
         },
-        "universe": 38
+        "universe": 35
        }
       },
       "fp_categories": {
@@ -17917,21 +17925,22 @@
       "fn_categories": {}
      },
      "reach": {
-      "universe": 225,
+      "universe": 222,
       "universe_by_kind": {
-       "method": 159,
+       "method": 156,
        "function": 66
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
-      "live": 220,
+      "live": 217,
       "oracle_buckets": {
        "public_api": 140,
        "test_root": 99,
        "not_a_function": 87,
+       "impl_for_foreign_type": 3,
        "main_init": 1
       },
       "claims": 644,
@@ -18050,7 +18059,7 @@
           1.0
          ]
         },
-        "universe": 159
+        "universe": 156
        }
       },
       "fp_categories": {
@@ -18102,7 +18111,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 6.8
+    "seconds": 8.3
    },
    "oracle_dropped": {
     "callee_external": 1349,
@@ -18233,7 +18242,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 6,
+     "peak_rss_mb": 0,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -18249,23 +18258,24 @@
     "decls": 149,
     "columns": {
      "unref": {
-      "universe": 76,
+      "universe": 60,
       "universe_by_kind": {
        "function": 6,
-       "method": 58,
-       "type": 12
+       "method": 44,
+       "type": 10
       },
-      "dead": 11,
+      "dead": 7,
       "dead_by_kind": {
-       "type": 2,
-       "function": 2,
-       "method": 7
+       "method": 5,
+       "function": 2
       },
-      "live": 65,
+      "live": 53,
       "oracle_buckets": {
        "public_api": 53,
        "test_root": 16,
+       "impl_for_foreign_type": 14,
        "oracle_unresolved_site": 3,
+       "trait_declaration": 2,
        "main_init": 1
       },
       "claims": 16,
@@ -18282,15 +18292,15 @@
         0.1368,
         0.6943
        ],
-       "dead": 11,
+       "dead": 7,
        "found": 3,
-       "recall": 0.2727,
+       "recall": 0.4286,
        "recall_ci": [
-        0.0975,
-        0.5657
+        0.1582,
+        0.7495
        ],
-       "recall_claimable_kinds": 0.3333,
-       "dead_claimable_kinds": 9
+       "recall_claimable_kinds": 0.4286,
+       "dead_claimable_kinds": 7
       },
       "no_exported": {
        "graded": 3,
@@ -18301,12 +18311,12 @@
         0.4385,
         1.0
        ],
-       "dead": 11,
+       "dead": 7,
        "found": 3,
-       "recall": 0.2727,
+       "recall": 0.4286,
        "recall_ci": [
-        0.0975,
-        0.5657
+        0.1582,
+        0.7495
        ]
       },
       "by_kind": {
@@ -18357,12 +18367,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
         "no_exported": {
@@ -18374,15 +18384,15 @@
           0.2065,
           1.0
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
-        "universe": 58
+        "universe": 44
        },
        "type": {
         "all": {
@@ -18394,12 +18404,12 @@
           null,
           null
          ],
-         "dead": 2,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ]
         },
         "no_exported": {
@@ -18411,15 +18421,15 @@
           null,
           null
          ],
-         "dead": 2,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ]
         },
-        "universe": 12
+        "universe": 10
        }
       },
       "fp_categories": {
@@ -18427,28 +18437,26 @@
       },
       "fp_categories_no_exported": {},
       "fn_categories": {
-       "incoming_type_edge_from_live_code": 4,
-       "kind_not_in_dead_symbols": 2,
-       "no_incoming_edge_but_filtered": 1,
-       "incoming_from_dead_code_only": 1
+       "incoming_type_edge_from_live_code": 4
       }
      },
      "reach": {
-      "universe": 67,
+      "universe": 53,
       "universe_by_kind": {
        "function": 7,
-       "method": 60
+       "method": 46
       },
-      "dead": 9,
+      "dead": 7,
       "dead_by_kind": {
-       "function": 2,
-       "method": 7
+       "method": 5,
+       "function": 2
       },
-      "live": 58,
+      "live": 46,
       "oracle_buckets": {
        "public_api": 44,
        "not_a_function": 21,
        "test_root": 16,
+       "impl_for_foreign_type": 14,
        "main_init": 1
       },
       "claims": 16,
@@ -18464,15 +18472,15 @@
         0.1206,
         0.6458
        ],
-       "dead": 9,
+       "dead": 7,
        "found": 3,
-       "recall": 0.3333,
+       "recall": 0.4286,
        "recall_ci": [
-        0.1206,
-        0.6458
+        0.1582,
+        0.7495
        ],
-       "recall_claimable_kinds": 0.3333,
-       "dead_claimable_kinds": 9
+       "recall_claimable_kinds": 0.4286,
+       "dead_claimable_kinds": 7
       },
       "no_exported": {
        "graded": 4,
@@ -18483,12 +18491,12 @@
         0.3006,
         0.9544
        ],
-       "dead": 9,
+       "dead": 7,
        "found": 3,
-       "recall": 0.3333,
+       "recall": 0.4286,
        "recall_ci": [
-        0.1206,
-        0.6458
+        0.1582,
+        0.7495
        ]
       },
       "by_kind": {
@@ -18539,12 +18547,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
         "no_exported": {
@@ -18556,15 +18564,15 @@
           0.2065,
           1.0
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
-        "universe": 60
+        "universe": 46
        }
       },
       "fp_categories": {
@@ -18575,9 +18583,7 @@
        "reachable_function": 1
       },
       "fn_categories": {
-       "incoming_type_edge_from_live_code": 4,
-       "no_incoming_edge_but_filtered": 1,
-       "incoming_from_dead_code_only": 1
+       "incoming_type_edge_from_live_code": 4
       }
      }
     },
@@ -18609,7 +18615,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 7.8
+    "seconds": 9.3
    },
    "oracle_dropped": {
     "callee_external": 1360,
@@ -18757,23 +18763,24 @@
     "decls": 149,
     "columns": {
      "unref": {
-      "universe": 76,
+      "universe": 60,
       "universe_by_kind": {
        "function": 6,
-       "method": 58,
-       "type": 12
+       "method": 44,
+       "type": 10
       },
-      "dead": 11,
+      "dead": 7,
       "dead_by_kind": {
-       "type": 2,
-       "function": 2,
-       "method": 7
+       "method": 5,
+       "function": 2
       },
-      "live": 65,
+      "live": 53,
       "oracle_buckets": {
        "public_api": 53,
        "test_root": 16,
+       "impl_for_foreign_type": 14,
        "oracle_unresolved_site": 3,
+       "trait_declaration": 2,
        "main_init": 1
       },
       "claims": 16,
@@ -18790,15 +18797,15 @@
         0.1368,
         0.6943
        ],
-       "dead": 11,
+       "dead": 7,
        "found": 3,
-       "recall": 0.2727,
+       "recall": 0.4286,
        "recall_ci": [
-        0.0975,
-        0.5657
+        0.1582,
+        0.7495
        ],
-       "recall_claimable_kinds": 0.3333,
-       "dead_claimable_kinds": 9
+       "recall_claimable_kinds": 0.4286,
+       "dead_claimable_kinds": 7
       },
       "no_exported": {
        "graded": 3,
@@ -18809,12 +18816,12 @@
         0.4385,
         1.0
        ],
-       "dead": 11,
+       "dead": 7,
        "found": 3,
-       "recall": 0.2727,
+       "recall": 0.4286,
        "recall_ci": [
-        0.0975,
-        0.5657
+        0.1582,
+        0.7495
        ]
       },
       "by_kind": {
@@ -18865,12 +18872,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
         "no_exported": {
@@ -18882,15 +18889,15 @@
           0.2065,
           1.0
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
-        "universe": 58
+        "universe": 44
        },
        "type": {
         "all": {
@@ -18902,12 +18909,12 @@
           null,
           null
          ],
-         "dead": 2,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ]
         },
         "no_exported": {
@@ -18919,15 +18926,15 @@
           null,
           null
          ],
-         "dead": 2,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ]
         },
-        "universe": 12
+        "universe": 10
        }
       },
       "fp_categories": {
@@ -18935,28 +18942,26 @@
       },
       "fp_categories_no_exported": {},
       "fn_categories": {
-       "incoming_type_edge_from_live_code": 4,
-       "kind_not_in_dead_symbols": 2,
-       "no_incoming_edge_but_filtered": 1,
-       "incoming_from_dead_code_only": 1
+       "incoming_type_edge_from_live_code": 4
       }
      },
      "reach": {
-      "universe": 67,
+      "universe": 53,
       "universe_by_kind": {
        "function": 7,
-       "method": 60
+       "method": 46
       },
-      "dead": 9,
+      "dead": 7,
       "dead_by_kind": {
-       "function": 2,
-       "method": 7
+       "method": 5,
+       "function": 2
       },
-      "live": 58,
+      "live": 46,
       "oracle_buckets": {
        "public_api": 44,
        "not_a_function": 21,
        "test_root": 16,
+       "impl_for_foreign_type": 14,
        "main_init": 1
       },
       "claims": 16,
@@ -18972,15 +18977,15 @@
         0.1206,
         0.6458
        ],
-       "dead": 9,
+       "dead": 7,
        "found": 3,
-       "recall": 0.3333,
+       "recall": 0.4286,
        "recall_ci": [
-        0.1206,
-        0.6458
+        0.1582,
+        0.7495
        ],
-       "recall_claimable_kinds": 0.3333,
-       "dead_claimable_kinds": 9
+       "recall_claimable_kinds": 0.4286,
+       "dead_claimable_kinds": 7
       },
       "no_exported": {
        "graded": 4,
@@ -18991,12 +18996,12 @@
         0.3006,
         0.9544
        ],
-       "dead": 9,
+       "dead": 7,
        "found": 3,
-       "recall": 0.3333,
+       "recall": 0.4286,
        "recall_ci": [
-        0.1206,
-        0.6458
+        0.1582,
+        0.7495
        ]
       },
       "by_kind": {
@@ -19047,12 +19052,12 @@
           0.0456,
           0.6994
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
         "no_exported": {
@@ -19064,15 +19069,15 @@
           0.2065,
           1.0
          ],
-         "dead": 7,
+         "dead": 5,
          "found": 1,
-         "recall": 0.1429,
+         "recall": 0.2,
          "recall_ci": [
-          0.0257,
-          0.5131
+          0.0362,
+          0.6245
          ]
         },
-        "universe": 60
+        "universe": 46
        }
       },
       "fp_categories": {
@@ -19083,9 +19088,7 @@
        "reachable_function": 1
       },
       "fn_categories": {
-       "incoming_type_edge_from_live_code": 4,
-       "no_incoming_edge_but_filtered": 1,
-       "incoming_from_dead_code_only": 1
+       "incoming_type_edge_from_live_code": 4
       }
      }
     },
@@ -19117,7 +19120,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 9.7
+    "seconds": 7.8
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -19235,7 +19238,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 1,
+     "peak_rss_mb": 4,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -19595,7 +19598,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 9.9
+    "seconds": 7.1
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -19714,7 +19717,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 6,
+     "peak_rss_mb": 11,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -20068,13 +20071,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 10.6,
+   "index_seconds": 11.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 27.4
+    "seconds": 29.0
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -20204,8 +20207,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.6,
-     "peak_rss_mb": 196,
+     "seconds": 3.9,
+     "peak_rss_mb": 199,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -20221,20 +20224,19 @@
     "decls": 3251,
     "columns": {
      "unref": {
-      "universe": 1794,
+      "universe": 1792,
       "universe_by_kind": {
        "method": 237,
        "function": 1352,
-       "type": 205
+       "type": 203
       },
-      "dead": 1,
-      "dead_by_kind": {
-       "type": 1
-      },
-      "live": 1793,
+      "dead": 0,
+      "dead_by_kind": {},
+      "live": 1792,
       "oracle_buckets": {
        "test_root": 778,
        "public_api": 675,
+       "trait_declaration": 2,
        "oracle_unresolved_site": 2,
        "macro_generated": 1,
        "main_init": 1
@@ -20255,12 +20257,12 @@
         0.0,
         0.07
        ],
-       "dead": 1,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.7935
+        null,
+        null
        ],
        "recall_claimable_kinds": null,
        "dead_claimable_kinds": 0
@@ -20274,12 +20276,12 @@
         0.0,
         0.1611
        ],
-       "dead": 1,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.7935
+        null,
+        null
        ]
       },
       "by_kind": {
@@ -20367,12 +20369,12 @@
           0.0,
           0.2281
          ],
-         "dead": 1,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ]
         },
         "no_exported": {
@@ -20384,15 +20386,15 @@
           0.0,
           0.6576
          ],
-         "dead": 1,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ]
         },
-        "universe": 205
+        "universe": 203
        }
       },
       "fp_categories": {
@@ -20408,9 +20410,7 @@
        "referenced_function": 3,
        "referenced_type": 2
       },
-      "fn_categories": {
-       "kind_not_in_dead_symbols": 1
-      }
+      "fn_categories": {}
      },
      "reach": {
       "universe": 1591,
@@ -20584,13 +20584,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 10.6,
+   "index_seconds": 11.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 29.5
+    "seconds": 27.4
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -20721,8 +20721,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.5,
-     "peak_rss_mb": 195,
+     "seconds": 3.3,
+     "peak_rss_mb": 196,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -20738,20 +20738,19 @@
     "decls": 3251,
     "columns": {
      "unref": {
-      "universe": 1794,
+      "universe": 1792,
       "universe_by_kind": {
        "method": 237,
        "function": 1352,
-       "type": 205
+       "type": 203
       },
-      "dead": 1,
-      "dead_by_kind": {
-       "type": 1
-      },
-      "live": 1793,
+      "dead": 0,
+      "dead_by_kind": {},
+      "live": 1792,
       "oracle_buckets": {
        "test_root": 778,
        "public_api": 675,
+       "trait_declaration": 2,
        "oracle_unresolved_site": 2,
        "macro_generated": 1,
        "main_init": 1
@@ -20772,12 +20771,12 @@
         0.0,
         0.07
        ],
-       "dead": 1,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.7935
+        null,
+        null
        ],
        "recall_claimable_kinds": null,
        "dead_claimable_kinds": 0
@@ -20791,12 +20790,12 @@
         0.0,
         0.1611
        ],
-       "dead": 1,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.7935
+        null,
+        null
        ]
       },
       "by_kind": {
@@ -20884,12 +20883,12 @@
           0.0,
           0.2281
          ],
-         "dead": 1,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ]
         },
         "no_exported": {
@@ -20901,15 +20900,15 @@
           0.0,
           0.6576
          ],
-         "dead": 1,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ]
         },
-        "universe": 205
+        "universe": 203
        }
       },
       "fp_categories": {
@@ -20925,9 +20924,7 @@
        "referenced_function": 3,
        "referenced_type": 2
       },
-      "fn_categories": {
-       "kind_not_in_dead_symbols": 1
-      }
+      "fn_categories": {}
      },
      "reach": {
       "universe": 1591,
@@ -21101,13 +21098,13 @@
    "repo": "just",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.7,
+   "index_seconds": 4.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 10.9
+    "seconds": 8.2
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -21252,8 +21249,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.8,
-     "peak_rss_mb": 72,
+     "seconds": 0.9,
+     "peak_rss_mb": 69,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -21269,21 +21266,21 @@
     "decls": 1551,
     "columns": {
      "unref": {
-      "universe": 945,
+      "universe": 914,
       "universe_by_kind": {
-       "type": 157,
+       "type": 148,
        "function": 117,
-       "method": 671
+       "method": 649
       },
-      "dead": 5,
-      "dead_by_kind": {
-       "type": 5
-      },
-      "live": 940,
+      "dead": 0,
+      "dead_by_kind": {},
+      "live": 914,
       "oracle_buckets": {
        "macro_generated": 441,
        "test_root": 134,
        "oracle_unresolved_site": 22,
+       "impl_for_foreign_type": 22,
+       "trait_declaration": 9,
        "public_api": 5,
        "main_init": 3,
        "ffi_or_macro_entry": 1
@@ -21302,12 +21299,12 @@
         0.0,
         0.1246
        ],
-       "dead": 5,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.4345
+        null,
+        null
        ],
        "recall_claimable_kinds": null,
        "dead_claimable_kinds": 0
@@ -21321,12 +21318,12 @@
         0.0,
         0.1246
        ],
-       "dead": 5,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.4345
+        null,
+        null
        ]
       },
       "by_kind": {
@@ -21402,7 +21399,7 @@
           null
          ]
         },
-        "universe": 671
+        "universe": 649
        },
        "type": {
         "all": {
@@ -21414,12 +21411,12 @@
           0.0,
           0.7935
          ],
-         "dead": 5,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.4345
+          null,
+          null
          ]
         },
         "no_exported": {
@@ -21431,15 +21428,15 @@
           0.0,
           0.7935
          ],
-         "dead": 5,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.4345
+          null,
+          null
          ]
         },
-        "universe": 157
+        "universe": 148
        }
       },
       "fp_categories": {
@@ -21452,23 +21449,22 @@
        "referenced_type": 1,
        "referenced_function": 1
       },
-      "fn_categories": {
-       "kind_not_in_dead_symbols": 5
-      }
+      "fn_categories": {}
      },
      "reach": {
-      "universe": 809,
+      "universe": 787,
       "universe_by_kind": {
        "function": 128,
-       "method": 681
+       "method": 659
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 809,
+      "live": 787,
       "oracle_buckets": {
        "macro_generated": 441,
        "not_a_function": 161,
        "test_root": 134,
+       "impl_for_foreign_type": 22,
        "main_init": 3,
        "public_api": 2,
        "ffi_or_macro_entry": 1
@@ -21587,7 +21583,7 @@
           null
          ]
         },
-        "universe": 681
+        "universe": 659
        }
       },
       "fp_categories": {
@@ -21624,13 +21620,13 @@
    "repo": "just",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.7,
+   "index_seconds": 4.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 9.2
+    "seconds": 9.7
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -21776,8 +21772,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.8,
-     "peak_rss_mb": 70,
+     "seconds": 0.7,
+     "peak_rss_mb": 71,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -21793,21 +21789,21 @@
     "decls": 1551,
     "columns": {
      "unref": {
-      "universe": 945,
+      "universe": 914,
       "universe_by_kind": {
-       "type": 157,
+       "type": 148,
        "function": 117,
-       "method": 671
+       "method": 649
       },
-      "dead": 5,
-      "dead_by_kind": {
-       "type": 5
-      },
-      "live": 940,
+      "dead": 0,
+      "dead_by_kind": {},
+      "live": 914,
       "oracle_buckets": {
        "macro_generated": 441,
        "test_root": 134,
        "oracle_unresolved_site": 22,
+       "impl_for_foreign_type": 22,
+       "trait_declaration": 9,
        "public_api": 5,
        "main_init": 3,
        "ffi_or_macro_entry": 1
@@ -21826,12 +21822,12 @@
         0.0,
         0.1246
        ],
-       "dead": 5,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.4345
+        null,
+        null
        ],
        "recall_claimable_kinds": null,
        "dead_claimable_kinds": 0
@@ -21845,12 +21841,12 @@
         0.0,
         0.1246
        ],
-       "dead": 5,
+       "dead": 0,
        "found": 0,
-       "recall": 0.0,
+       "recall": null,
        "recall_ci": [
-        0.0,
-        0.4345
+        null,
+        null
        ]
       },
       "by_kind": {
@@ -21926,7 +21922,7 @@
           null
          ]
         },
-        "universe": 671
+        "universe": 649
        },
        "type": {
         "all": {
@@ -21938,12 +21934,12 @@
           0.0,
           0.7935
          ],
-         "dead": 5,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.4345
+          null,
+          null
          ]
         },
         "no_exported": {
@@ -21955,15 +21951,15 @@
           0.0,
           0.7935
          ],
-         "dead": 5,
+         "dead": 0,
          "found": 0,
-         "recall": 0.0,
+         "recall": null,
          "recall_ci": [
-          0.0,
-          0.4345
+          null,
+          null
          ]
         },
-        "universe": 157
+        "universe": 148
        }
       },
       "fp_categories": {
@@ -21976,23 +21972,22 @@
        "referenced_type": 1,
        "referenced_function": 1
       },
-      "fn_categories": {
-       "kind_not_in_dead_symbols": 5
-      }
+      "fn_categories": {}
      },
      "reach": {
-      "universe": 809,
+      "universe": 787,
       "universe_by_kind": {
        "function": 128,
-       "method": 681
+       "method": 659
       },
       "dead": 0,
       "dead_by_kind": {},
-      "live": 809,
+      "live": 787,
       "oracle_buckets": {
        "macro_generated": 441,
        "not_a_function": 161,
        "test_root": 134,
+       "impl_for_foreign_type": 22,
        "main_init": 3,
        "public_api": 2,
        "ffi_or_macro_entry": 1
@@ -22111,7 +22106,7 @@
           null
          ]
         },
-        "universe": 681
+        "universe": 659
        }
       },
       "fp_categories": {
@@ -22148,13 +22143,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.0,
+   "index_seconds": 3.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 17.9
+    "seconds": 15.1
    },
    "oracle_dropped": {
     "callee_external": 8747,
@@ -22291,7 +22286,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 1.1,
-     "peak_rss_mb": 98,
+     "peak_rss_mb": 99,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -22307,24 +22302,26 @@
     "decls": 2042,
     "columns": {
      "unref": {
-      "universe": 1180,
+      "universe": 1158,
       "universe_by_kind": {
        "function": 238,
-       "type": 251,
-       "method": 691
+       "type": 249,
+       "method": 671
       },
-      "dead": 31,
+      "dead": 26,
       "dead_by_kind": {
-       "method": 12,
        "function": 17,
+       "method": 7,
        "type": 2
       },
-      "live": 1149,
+      "live": 1132,
       "oracle_buckets": {
        "public_api": 699,
        "test_root": 130,
        "oracle_unresolved_site": 27,
-       "main_init": 6
+       "impl_for_foreign_type": 20,
+       "main_init": 6,
+       "trait_declaration": 2
       },
       "claims": 264,
       "claims_ungradable": {
@@ -22342,15 +22339,15 @@
         0.0875,
         0.1806
        ],
-       "dead": 31,
+       "dead": 26,
        "found": 25,
-       "recall": 0.8065,
+       "recall": 0.9615,
        "recall_ci": [
-        0.6372,
-        0.9081
+        0.8111,
+        0.9932
        ],
-       "recall_claimable_kinds": 0.8333,
-       "dead_claimable_kinds": 30
+       "recall_claimable_kinds": 1.0,
+       "dead_claimable_kinds": 25
       },
       "no_exported": {
        "graded": 137,
@@ -22361,12 +22358,12 @@
         0.1146,
         0.2393
        ],
-       "dead": 29,
+       "dead": 24,
        "found": 23,
-       "recall": 0.7931,
+       "recall": 0.9583,
        "recall_ci": [
-        0.6161,
-        0.9015
+        0.7976,
+        0.9926
        ]
       },
       "by_kind": {
@@ -22417,12 +22414,12 @@
           0.0293,
           0.1184
          ],
-         "dead": 12,
+         "dead": 7,
          "found": 7,
-         "recall": 0.5833,
+         "recall": 1.0,
          "recall_ci": [
-          0.3195,
-          0.8067
+          0.6457,
+          1.0
          ]
         },
         "no_exported": {
@@ -22434,15 +22431,15 @@
           0.0367,
           0.1835
          ],
-         "dead": 10,
+         "dead": 5,
          "found": 5,
-         "recall": 0.5,
+         "recall": 1.0,
          "recall_ci": [
-          0.2366,
-          0.7634
+          0.5655,
+          1.0
          ]
         },
-        "universe": 691
+        "universe": 671
        },
        "type": {
         "all": {
@@ -22479,7 +22476,7 @@
           0.9055
          ]
         },
-        "universe": 251
+        "universe": 249
        }
       },
       "fp_categories": {
@@ -22494,26 +22491,26 @@
        "referenced_type": 23
       },
       "fn_categories": {
-       "no_incoming_edge_but_filtered": 5,
        "kind_not_in_dead_symbols": 1
       }
      },
      "reach": {
-      "universe": 955,
+      "universe": 935,
       "universe_by_kind": {
        "function": 258,
-       "method": 697
+       "method": 677
       },
       "dead": 28,
       "dead_by_kind": {
-       "method": 10,
-       "function": 18
+       "function": 18,
+       "method": 10
       },
-      "live": 927,
+      "live": 907,
       "oracle_buckets": {
        "not_a_function": 534,
        "public_api": 416,
        "test_root": 130,
+       "impl_for_foreign_type": 20,
        "main_init": 6,
        "oracle_unresolved_site": 1
       },
@@ -22633,7 +22630,7 @@
           0.9776
          ]
         },
-        "universe": 697
+        "universe": 677
        }
       },
       "fp_categories": {
@@ -22678,13 +22675,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.0,
+   "index_seconds": 3.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 18.6
+    "seconds": 16.1
    },
    "oracle_dropped": {
     "callee_external": 8752,
@@ -22822,7 +22819,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.3,
+     "seconds": 1.1,
      "peak_rss_mb": 97,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
@@ -22839,24 +22836,26 @@
     "decls": 2043,
     "columns": {
      "unref": {
-      "universe": 1180,
+      "universe": 1158,
       "universe_by_kind": {
        "function": 238,
-       "type": 251,
-       "method": 691
+       "type": 249,
+       "method": 671
       },
-      "dead": 31,
+      "dead": 26,
       "dead_by_kind": {
-       "method": 12,
        "function": 17,
+       "method": 7,
        "type": 2
       },
-      "live": 1149,
+      "live": 1132,
       "oracle_buckets": {
        "public_api": 700,
        "test_root": 130,
        "oracle_unresolved_site": 27,
-       "main_init": 6
+       "impl_for_foreign_type": 20,
+       "main_init": 6,
+       "trait_declaration": 2
       },
       "claims": 264,
       "claims_ungradable": {
@@ -22874,15 +22873,15 @@
         0.087,
         0.1797
        ],
-       "dead": 31,
+       "dead": 26,
        "found": 25,
-       "recall": 0.8065,
+       "recall": 0.9615,
        "recall_ci": [
-        0.6372,
-        0.9081
+        0.8111,
+        0.9932
        ],
-       "recall_claimable_kinds": 0.8333,
-       "dead_claimable_kinds": 30
+       "recall_claimable_kinds": 1.0,
+       "dead_claimable_kinds": 25
       },
       "no_exported": {
        "graded": 137,
@@ -22893,12 +22892,12 @@
         0.1146,
         0.2393
        ],
-       "dead": 29,
+       "dead": 24,
        "found": 23,
-       "recall": 0.7931,
+       "recall": 0.9583,
        "recall_ci": [
-        0.6161,
-        0.9015
+        0.7976,
+        0.9926
        ]
       },
       "by_kind": {
@@ -22949,12 +22948,12 @@
           0.0293,
           0.1184
          ],
-         "dead": 12,
+         "dead": 7,
          "found": 7,
-         "recall": 0.5833,
+         "recall": 1.0,
          "recall_ci": [
-          0.3195,
-          0.8067
+          0.6457,
+          1.0
          ]
         },
         "no_exported": {
@@ -22966,15 +22965,15 @@
           0.0367,
           0.1835
          ],
-         "dead": 10,
+         "dead": 5,
          "found": 5,
-         "recall": 0.5,
+         "recall": 1.0,
          "recall_ci": [
-          0.2366,
-          0.7634
+          0.5655,
+          1.0
          ]
         },
-        "universe": 691
+        "universe": 671
        },
        "type": {
         "all": {
@@ -23011,7 +23010,7 @@
           0.9055
          ]
         },
-        "universe": 251
+        "universe": 249
        }
       },
       "fp_categories": {
@@ -23026,26 +23025,26 @@
        "referenced_type": 23
       },
       "fn_categories": {
-       "no_incoming_edge_but_filtered": 5,
        "kind_not_in_dead_symbols": 1
       }
      },
      "reach": {
-      "universe": 955,
+      "universe": 935,
       "universe_by_kind": {
        "function": 258,
-       "method": 697
+       "method": 677
       },
       "dead": 28,
       "dead_by_kind": {
-       "method": 10,
-       "function": 18
+       "function": 18,
+       "method": 10
       },
-      "live": 927,
+      "live": 907,
       "oracle_buckets": {
        "not_a_function": 534,
        "public_api": 417,
        "test_root": 130,
+       "impl_for_foreign_type": 20,
        "main_init": 6,
        "oracle_unresolved_site": 1
       },
@@ -23165,7 +23164,7 @@
           0.9776
          ]
         },
-        "universe": 697
+        "universe": 677
        }
       },
       "fp_categories": {

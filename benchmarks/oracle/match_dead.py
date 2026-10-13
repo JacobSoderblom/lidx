@@ -13,6 +13,9 @@ bucket** that is excluded from precision and recall as a root or as something th
   exported_used_by_rule  Go, unreferenced column: U1000 treats every exported identifier as used.
   test_root, main_init, library_root, ffi_or_macro_entry
                          live by construction (test functions, `main`/`init`, the exported surface a library cell uses as roots).
+  impl_for_foreign_type  Rust: a method of an impl whose self type is foreign or primitive (`impl Logic for bool`), or a trait method
+                         all of whose impls are such; SCIP does not resolve the call sites, so the oracle cannot judge it.
+  trait_declaration      Rust: a `trait` item itself (not a kind `dead_symbols` returns, so it is not claimable).
   generated, macro_generated, cfg_twin, oracle_unresolved_site, not_a_function, no_verdict
                          the oracle cannot judge or does not examine (the reachable column judges functions and methods only).
 
@@ -68,6 +71,10 @@ def bucket(d, column, lang):
         return "public_api"
     if lang == "go" and column == "unref" and d.get("exported"):
         return "exported_used_by_rule"
+    if lang == "rust" and d.get("subkind") == "trait":
+        return "trait_declaration"  # dead_symbols has no trait kind: lidx can never claim it
+    if d.get("foreign_impl"):
+        return "impl_for_foreign_type"
     if not d.get(column):
         return d.get("withheld") or "no_verdict"
     return None

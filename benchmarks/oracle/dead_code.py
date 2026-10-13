@@ -294,7 +294,7 @@ def run_cell(cell, repo, repo_dir, cache, binary, db, syms, force, results_dir, 
     for d in oracle["decls"]:
         for col in match_dead.COLUMNS:
             b = match_dead.bucket(d, col, lang)
-            if b in ("generated", "macro_generated", "cfg_twin", "oracle_unresolved_site", "no_verdict"):
+            if b in ("generated", "macro_generated", "cfg_twin", "oracle_unresolved_site", "impl_for_foreign_type", "trait_declaration", "no_verdict"):
                 excluded.append({"column": col, "bucket": b, "file": d["file"], "line": d["line"], "name": d["name"], "kind": d["kind"]})
     dump_list(os.path.join(results_dir, "lists", "%s.dead_excluded.json" % fid), excluded)
     out["file_level"] = file_level(oracle, lang)

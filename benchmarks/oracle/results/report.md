@@ -311,7 +311,7 @@ Lists: `results/lists/go__cobra__no_tests.fn.json`, `go__cobra__no_tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.982 [0.975, 0.988]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.999 (1557 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1690 resolved in-repo CALLS pairs; 1558 graded (1558 correct, 0 wrong); lidx indexed in 1.0s
+- lidx: 1690 resolved in-repo CALLS pairs; 1558 graded (1558 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 100, caller_not_judged 32
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -332,7 +332,7 @@ Lists: `results/lists/go__gitleaks__no_tests.fn.json`, `go__gitleaks__no_tests.f
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.957 [0.946, 0.965]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.996 (1678 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1690 resolved in-repo CALLS pairs; 1673 graded (1673 correct, 0 wrong); lidx indexed in 1.0s
+- lidx: 1690 resolved in-repo CALLS pairs; 1673 graded (1673 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 1, caller_not_judged 16
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -353,7 +353,7 @@ Lists: `results/lists/go__gitleaks__tests.fn.json`, `go__gitleaks__tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.999, 1.000], R 0.584 [0.573, 0.594]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.992 (4653 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9372 resolved in-repo CALLS pairs; 4858 graded (4858 correct, 0 wrong); lidx indexed in 12.3s
+- lidx: 9372 resolved in-repo CALLS pairs; 4858 graded (4858 correct, 0 wrong); lidx indexed in 11.1s
 - ungradable lidx pairs: caller_file_not_covered 4190, caller_not_judged 324
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -374,7 +374,7 @@ Lists: `results/lists/go__syft__no_tests.fn.json`, `go__syft__no_tests.fp.json`,
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [1.000, 1.000], R 0.337 [0.331, 0.343]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.988 (8778 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9372 resolved in-repo CALLS pairs; 9156 graded (9156 correct, 0 wrong); lidx indexed in 12.3s
+- lidx: 9372 resolved in-repo CALLS pairs; 9156 graded (9156 correct, 0 wrong); lidx indexed in 11.1s
 - ungradable lidx pairs: caller_file_not_covered 148, caller_not_judged 68
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -395,7 +395,7 @@ Lists: `results/lists/go__syft__tests.fn.json`, `go__syft__tests.fp.json`, `go__
 - repowise-comparable scope: 1626 oracle edges (112 module-level and 215 abstract-target edges removed), P 0.999 [0.996, 1.000], R 0.933 [0.920, 0.944]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.993 if they were counted wrong
 - recall when both ends are indexed symbols: 0.924 (1716 oracle edges); caller lifted to an enclosing declaration for 257 edges; capture gap reasons: {'callee_not_indexed': 216}
-- lidx: 1970 resolved in-repo CALLS pairs; 1600 graded (1589 correct, 11 wrong); lidx indexed in 6.1s
+- lidx: 1970 resolved in-repo CALLS pairs; 1600 graded (1589 correct, 11 wrong); lidx indexed in 5.4s
 - ungradable lidx pairs: caller_file_not_covered 370
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -419,7 +419,7 @@ Lists: `results/lists/ts__zod.fn.json`, `ts__zod.fp.json`, `ts__zod.capture_gap.
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 4 oracle edges, 4 matched by lidx
 - unresolved-site exclusion: 5 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.984 (812 oracle edges); caller lifted to an enclosing declaration for 94 edges; capture gap reasons: {'callee_not_indexed': 96}
-- lidx: 1758 resolved in-repo CALLS pairs; 812 graded (808 correct, 4 wrong); lidx indexed in 5.5s
+- lidx: 1758 resolved in-repo CALLS pairs; 812 graded (808 correct, 4 wrong); lidx indexed in 6.6s
 - ungradable lidx pairs: caller_file_not_covered 941, oracle_unresolved_site 5
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -441,7 +441,7 @@ Lists: `results/lists/ts__hono.fn.json`, `ts__hono.fp.json`, `ts__hono.capture_g
 - oracle: None, 4796 edges: 4567 static with an indexed caller, 167 dispatch (40 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.943 (4567 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4510 resolved in-repo CALLS pairs; 4403 graded (4346 correct, 57 wrong); lidx indexed in 3.7s
+- lidx: 4510 resolved in-repo CALLS pairs; 4403 graded (4346 correct, 57 wrong); lidx indexed in 3.6s
 - ungradable lidx pairs: caller_file_not_covered 95, caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -463,7 +463,7 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded.fn.json`, `rust__ripgre
 - oracle: None, 2315 edges: 2176 static with an indexed caller, 139 dispatch (40 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.974 if they were counted wrong
 - recall when both ends are indexed symbols: 0.918 (2176 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 4510 resolved in-repo CALLS pairs; 2092 graded (2037 correct, 55 wrong); lidx indexed in 3.7s
+- lidx: 4510 resolved in-repo CALLS pairs; 2092 graded (2037 correct, 55 wrong); lidx indexed in 3.6s
 - ungradable lidx pairs: caller_file_not_covered 141, caller_not_judged 2277
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -485,7 +485,7 @@ Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests
 - oracle: None, 6072 edges: 4662 static with an indexed caller, 181 dispatch (44 of them found), 1229 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.941 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1229}
-- lidx: 4510 resolved in-repo CALLS pairs; 4489 graded (4430 correct, 59 wrong); lidx indexed in 3.7s
+- lidx: 4510 resolved in-repo CALLS pairs; 4489 graded (4430 correct, 59 wrong); lidx indexed in 3.6s
 - ungradable lidx pairs: caller_file_not_covered 9, caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -574,7 +574,7 @@ Lists: `results/lists/rust__fd__tests.fn.json`, `rust__fd__tests.fp.json`, `rust
 - oracle: None, 4819 edges: 4590 static with an indexed caller, 167 dispatch (40 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.992 if they were counted wrong
 - recall when both ends are indexed symbols: 0.943 (4590 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4510 resolved in-repo CALLS pairs; 4405 graded (4369 correct, 36 wrong); lidx indexed in 3.7s
+- lidx: 4510 resolved in-repo CALLS pairs; 4405 graded (4369 correct, 36 wrong); lidx indexed in 3.6s
 - ungradable lidx pairs: caller_file_not_covered 86, caller_not_judged 12, cfg_gated_evidence 7
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -619,7 +619,7 @@ Lists: `results/lists/rust__fd__path_tests_excluded_all_features.fn.json`, `rust
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.977, 1.000], R 0.396 [0.350, 0.444]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.981 (161 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 852 resolved in-repo CALLS pairs; 171 graded (171 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 852 resolved in-repo CALLS pairs; 171 graded (171 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 681
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -640,7 +640,7 @@ Lists: `results/lists/go__chi__no_tests.fn.json`, `go__chi__no_tests.fp.json`, `
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.995, 1.000], R 0.479 [0.455, 0.504]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.982 (716 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 852 resolved in-repo CALLS pairs; 740 graded (740 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 852 resolved in-repo CALLS pairs; 740 graded (740 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 101, caller_not_judged 11
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -661,7 +661,7 @@ Lists: `results/lists/go__chi__tests.fn.json`, `go__chi__tests.fp.json`, `go__ch
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.987, 1.000], R 0.536 [0.494, 0.578]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.989 (271 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2310 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 1.2s
+- lidx: 2310 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 0.9s
 - ungradable lidx pairs: caller_file_not_covered 1671, caller_not_judged 311
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -682,7 +682,7 @@ Lists: `results/lists/go__urfavecli__no_tests.fn.json`, `go__urfavecli__no_tests
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.336 [0.325, 0.347]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.959 (2168 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2310 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 1.2s
+- lidx: 2310 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 0.9s
 - ungradable lidx pairs: caller_file_not_covered 20, caller_not_judged 24
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -785,7 +785,7 @@ Lists: `results/lists/go__bubbletea__tests.fn.json`, `go__bubbletea__tests.fp.js
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 2 oracle edges, 2 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.980 if they were counted wrong
 - recall when both ends are indexed symbols: 0.979 (376 oracle edges); caller lifted to an enclosing declaration for 65 edges; capture gap reasons: {'callee_not_indexed': 135}
-- lidx: 2591 resolved in-repo CALLS pairs; 352 graded (345 correct, 7 wrong); lidx indexed in 10.3s
+- lidx: 2591 resolved in-repo CALLS pairs; 352 graded (345 correct, 7 wrong); lidx indexed in 15.0s
 - ungradable lidx pairs: callee_file_not_covered 5, caller_file_not_covered 2234
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -807,7 +807,7 @@ Lists: `results/lists/ts__trpc.fn.json`, `ts__trpc.fp.json`, `ts__trpc.capture_g
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 5 oracle edges, 5 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (255 oracle edges); caller lifted to an enclosing declaration for 10 edges; capture gap reasons: {'callee_not_indexed': 10}
-- lidx: 447 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 2.0s
+- lidx: 447 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 2.9s
 - ungradable lidx pairs: caller_file_not_covered 195
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -828,7 +828,7 @@ Lists: `results/lists/ts__ky.fn.json`, `ts__ky.fp.json`, `ts__ky.capture_gap.jso
 - repowise-comparable scope: 282 oracle edges (1 module-level and 14 abstract-target edges removed), P 0.956 [0.920, 0.976], R 0.766 [0.713, 0.812]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.956 if they were counted wrong
 - recall when both ends are indexed symbols: 0.813 (267 oracle edges); caller lifted to an enclosing declaration for 73 edges; capture gap reasons: {'callee_not_indexed': 30}
-- lidx: 485 resolved in-repo CALLS pairs; 226 graded (216 correct, 10 wrong); lidx indexed in 1.0s
+- lidx: 485 resolved in-repo CALLS pairs; 226 graded (216 correct, 10 wrong); lidx indexed in 1.3s
 - ungradable lidx pairs: caller_file_not_covered 259
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -870,7 +870,7 @@ Lists: `results/lists/ts__h3.fn.json`, `ts__h3.fp.json`, `ts__h3.capture_gap.jso
 - oracle: None, 622 edges: 614 static with an indexed caller, 8 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.972 (614 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 983 resolved in-repo CALLS pairs; 605 graded (597 correct, 8 wrong); lidx indexed in 4.9s
+- lidx: 983 resolved in-repo CALLS pairs; 605 graded (597 correct, 8 wrong); lidx indexed in 4.8s
 - ungradable lidx pairs: callee_file_not_covered 2, caller_file_not_covered 376
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -935,7 +935,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded.fn.json`, `rust__xsv__path_
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (1 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.987 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.6s
+- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 11.9s
 - ungradable lidx pairs: caller_file_not_covered 6356
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -957,7 +957,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded.fn.json`, `rust__lidx__pat
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (21 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.837 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.7s
+- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.5s
 - ungradable lidx pairs: caller_file_not_covered 8687, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -980,7 +980,7 @@ Lists: `results/lists/rust__just__path_tests_excluded.fn.json`, `rust__just__pat
 - oracle: None, 2022 edges: 1930 static with an indexed caller, 22 dispatch (2 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.956 if they were counted wrong
 - recall when both ends are indexed symbols: 0.867 (1930 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2342 resolved in-repo CALLS pairs; 1751 graded (1674 correct, 77 wrong); lidx indexed in 4.0s
+- lidx: 2342 resolved in-repo CALLS pairs; 1751 graded (1674 correct, 77 wrong); lidx indexed in 3.9s
 - ungradable lidx pairs: caller_file_not_covered 535, caller_not_judged 56
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1002,7 +1002,7 @@ Lists: `results/lists/rust__nextest__path_tests_excluded.fn.json`, `rust__nextes
 - oracle: None, 639 edges: 631 static with an indexed caller, 8 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.973 (631 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 983 resolved in-repo CALLS pairs; 621 graded (614 correct, 7 wrong); lidx indexed in 4.9s
+- lidx: 983 resolved in-repo CALLS pairs; 621 graded (614 correct, 7 wrong); lidx indexed in 4.8s
 - ungradable lidx pairs: caller_file_not_covered 361, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1067,7 +1067,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded_all_features.fn.json`, `rus
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (1 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.987 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.6s
+- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 11.9s
 - ungradable lidx pairs: caller_file_not_covered 6356
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1089,7 +1089,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (21 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.837 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.7s
+- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.5s
 - ungradable lidx pairs: caller_file_not_covered 8687, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1112,7 +1112,7 @@ Lists: `results/lists/rust__just__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 2023 edges: 1931 static with an indexed caller, 22 dispatch (2 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.957 if they were counted wrong
 - recall when both ends are indexed symbols: 0.866 (1931 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2342 resolved in-repo CALLS pairs; 1750 graded (1674 correct, 76 wrong); lidx indexed in 4.0s
+- lidx: 2342 resolved in-repo CALLS pairs; 1750 graded (1674 correct, 76 wrong); lidx indexed in 3.9s
 - ungradable lidx pairs: caller_file_not_covered 535, caller_not_judged 56, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1461,10 +1461,10 @@ Categories that dominate each language drive the next fixes: see the per-cell FN
 
 lidx's `dead_symbols` (`src/db/analytics.rs`) graded against oracles that neither lidx nor repowise wrote. Two columns, because the tools make the weaker claim and users want the stronger one:
 
-- **Unreferenced** (what `dead_symbols` and repowise's `unused_export` / `unused_internal` compute): Go `staticcheck -checks U1000` (`honnef.co/go/tools` pinned in `go_oracle/go.mod`, run as a go/analysis pass over `packages.Load`; it treats every exported identifier as used, so the Go universe is the unexported declarations); TypeScript `noUnusedLocals` diagnostics 6133/6196 for non-exported declarations and LanguageService `findReferences` for exported ones; Rust SCIP occurrences (a declaration with no occurrence outside its own text, `use` lines and the impl blocks of its own type). rustc's `dead_code` lint is not used: it needs `cargo check`, which runs build scripts and proc macros.
+- **Unreferenced** (what `dead_symbols` and repowise's `unused_export` / `unused_internal` compute): Go `staticcheck -checks U1000` (`honnef.co/go/tools` pinned in `go_oracle/go.mod`, run as a go/analysis pass over `packages.Load`; it treats every exported identifier as used, so the Go universe is the unexported declarations); TypeScript `noUnusedLocals` diagnostics 6133/6196 for non-exported declarations (0 on zod, hono, h3, ky and trpc, whose dead set comes from `findReferences`; 8 on immer) and LanguageService `findReferences` for exported ones; Rust SCIP occurrences (a declaration with no occurrence outside its own text, `use` lines and the impl blocks of its own type). rustc's `dead_code` lint is not used: it needs `cargo check`, which runs build scripts and proc macros.
 - **Unreachable** (closure from roots): Go RTA from `main`/`init`/tests (the machinery of `golang.org/x/tools/cmd/deadcode`; `res.Reachable` is emitted instead of running the binary), TypeScript and Rust the reference closure (calls, `new`, callbacks and every other mention the checker or SCIP resolves) from the package entry / `main` / tests / library `pub` items. Only functions and methods get this verdict.
 
-Universe: functions, methods and types of the cell's scope (TypeScript also module-level consts, shown as their own kind); lidx claims are all `dead_symbols` rows (per-category limit raised past the repository size). Excluded from the universe, each a **named bucket** with counts per cell in the tables below: `public_api` (exported from a library; Go: exported in an importable package, TypeScript: reachable by re-export from the package entry, Rust: `pub` in a library crate), `exported_used_by_rule` (Go, unreferenced column: U1000 treats exported identifiers as used), roots (`test_root`, `main_init`, `library_root`: live by construction), and what the oracle cannot judge (`generated`, `macro_generated`, `cfg_twin`, `oracle_unresolved_site`, `not_a_function`). A claim on a declaration in the universe is right or wrong by the oracle's verdict; a claim on a public-API or root declaration is **wrong by construction** (counted under its bucket name, so the cost of having no exported-symbol policy is visible); a claim on anything the oracle cannot judge is ungradable (its own bucket).
+Universe: functions, methods and types of the cell's scope (TypeScript also module-level consts, shown as their own kind); lidx claims are all `dead_symbols` rows (per-category limit raised past the repository size). Excluded from the universe, each a **named bucket** with counts per cell in the tables below: `public_api` (exported from a library; Go: exported in an importable package, TypeScript: reachable by re-export from the package entry, Rust: `pub` in a library crate), `exported_used_by_rule` (Go, unreferenced column: U1000 treats exported identifiers as used), roots (`test_root`, `main_init`, `library_root`: live by construction), and what the oracle cannot judge (`generated`, `macro_generated`, `cfg_twin`, `oracle_unresolved_site`, `impl_for_foreign_type` (Rust: methods of impls for foreign or primitive self types), `trait_declaration` (Rust), `not_a_function`). A claim on a declaration in the universe is right or wrong by the oracle's verdict; a claim on a public-API or root declaration is **wrong by construction** (counted under its bucket name, so the cost of having no exported-symbol policy is visible); a claim on anything the oracle cannot judge is ungradable (its own bucket).
 
 Two readings per cell. **All claims**: every `dead_symbols` row. **Without exported/`pub` symbols**: the same rows after dropping every one on an exported (Go identifier rule, TypeScript `export`, Rust `pub`) declaration, with recall over the unexported dead declarations: what an exported-symbol policy would buy. Every figure carries a 95% Wilson interval; recall is over oracle-dead declarations in the universe. Cells without tests judge a repository index that includes its tests against a production-only program, so a declaration used only by tests is dead for the oracle and live for lidx (`incoming_from_tests_only` in the missed-declaration categories).
 
@@ -1494,41 +1494,41 @@ Tools: staticcheck (honnef.co/go/tools) v0.6.1; golang.org/x/tools (RTA, go/anal
 | ts/ky | library | 176 | 0 | 0 | - | - | - | - |
 | ts/immer | library | 121 | 5 | 7 | 0.286 [0.082, 0.641] | 0.400 [0.118, 0.769] | - | - |
 | ts/h3 | library | 412 | 4 | 64 | 0.047 [0.016, 0.129] | 0.750 [0.301, 0.954] | - | - |
-| rust/ripgrep/path_tests_excluded | library + binary crates | 1942 | 6 | 247 | 0.024 [0.011, 0.052] | 1.000 [0.610, 1.000] | 0.035 [0.016, 0.075] | 1.000 [0.610, 1.000] |
-| rust/ripgrep/no_tests | library + binary crates | 1839 | 3 | 239 | 0.013 [0.004, 0.036] | 1.000 [0.439, 1.000] | 0.019 [0.006, 0.053] | 1.000 [0.439, 1.000] |
-| rust/ripgrep/tests | library + binary crates | 2018 | 6 | 272 | 0.022 [0.010, 0.047] | 1.000 [0.610, 1.000] | 0.033 [0.015, 0.071] | 1.000 [0.610, 1.000] |
-| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1952 | 7 | 250 | 0.028 [0.014, 0.057] | 1.000 [0.646, 1.000] | 0.041 [0.020, 0.082] | 1.000 [0.646, 1.000] |
-| rust/fd/path_tests_excluded | binary | 183 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
-| rust/fd/no_tests | binary | 174 | 0 | 3 | 0.000 [0.000, 0.561] | - | 0.000 [0.000, 0.561] | - |
-| rust/fd/tests | binary | 214 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
-| rust/fd/path_tests_excluded_all_features | binary | 183 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
-| rust/bat/path_tests_excluded | library + binary crates | 252 | 5 | 33 | 0.151 [0.067, 0.309] | 1.000 [0.566, 1.000] | 0.455 [0.213, 0.720] | 1.000 [0.566, 1.000] |
-| rust/bat/path_tests_excluded_all_features | library + binary crates | 263 | 5 | 34 | 0.147 [0.065, 0.301] | 1.000 [0.566, 1.000] | 0.455 [0.213, 0.720] | 1.000 [0.566, 1.000] |
-| rust/tokei/path_tests_excluded | library + binary crates | 76 | 11 | 8 | 0.375 [0.137, 0.694] | 0.273 [0.098, 0.566] | 1.000 [0.439, 1.000] | 0.273 [0.098, 0.566] |
-| rust/tokei/path_tests_excluded_all_features | library + binary crates | 76 | 11 | 8 | 0.375 [0.137, 0.694] | 0.273 [0.098, 0.566] | 1.000 [0.439, 1.000] | 0.273 [0.098, 0.566] |
+| rust/ripgrep/path_tests_excluded | library + binary crates | 1938 | 6 | 247 | 0.024 [0.011, 0.052] | 1.000 [0.610, 1.000] | 0.035 [0.016, 0.075] | 1.000 [0.610, 1.000] |
+| rust/ripgrep/no_tests | library + binary crates | 1835 | 3 | 239 | 0.013 [0.004, 0.036] | 1.000 [0.439, 1.000] | 0.019 [0.006, 0.053] | 1.000 [0.439, 1.000] |
+| rust/ripgrep/tests | library + binary crates | 2014 | 6 | 272 | 0.022 [0.010, 0.047] | 1.000 [0.610, 1.000] | 0.033 [0.015, 0.071] | 1.000 [0.610, 1.000] |
+| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1948 | 7 | 250 | 0.028 [0.014, 0.057] | 1.000 [0.646, 1.000] | 0.041 [0.020, 0.082] | 1.000 [0.646, 1.000] |
+| rust/fd/path_tests_excluded | binary | 182 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
+| rust/fd/no_tests | binary | 173 | 0 | 3 | 0.000 [0.000, 0.561] | - | 0.000 [0.000, 0.561] | - |
+| rust/fd/tests | binary | 213 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
+| rust/fd/path_tests_excluded_all_features | binary | 182 | 0 | 4 | 0.000 [0.000, 0.490] | - | 0.000 [0.000, 0.490] | - |
+| rust/bat/path_tests_excluded | library + binary crates | 246 | 5 | 33 | 0.151 [0.067, 0.309] | 1.000 [0.566, 1.000] | 0.455 [0.213, 0.720] | 1.000 [0.566, 1.000] |
+| rust/bat/path_tests_excluded_all_features | library + binary crates | 257 | 5 | 34 | 0.147 [0.065, 0.301] | 1.000 [0.566, 1.000] | 0.455 [0.213, 0.720] | 1.000 [0.566, 1.000] |
+| rust/tokei/path_tests_excluded | library + binary crates | 60 | 7 | 8 | 0.375 [0.137, 0.694] | 0.429 [0.158, 0.750] | 1.000 [0.439, 1.000] | 0.429 [0.158, 0.750] |
+| rust/tokei/path_tests_excluded_all_features | library + binary crates | 60 | 7 | 8 | 0.375 [0.137, 0.694] | 0.429 [0.158, 0.750] | 1.000 [0.439, 1.000] | 0.429 [0.158, 0.750] |
 | rust/xsv/path_tests_excluded | binary | 229 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
 | rust/xsv/path_tests_excluded_all_features | binary | 229 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
-| rust/lidx/path_tests_excluded | library + binary crates | 1794 | 1 | 51 | 0.000 [0.000, 0.070] | 0.000 [0.000, 0.793] | 0.000 [0.000, 0.161] | 0.000 [0.000, 0.793] |
-| rust/lidx/path_tests_excluded_all_features | library + binary crates | 1794 | 1 | 51 | 0.000 [0.000, 0.070] | 0.000 [0.000, 0.793] | 0.000 [0.000, 0.161] | 0.000 [0.000, 0.793] |
-| rust/just/path_tests_excluded | library + binary crates | 945 | 5 | 27 | 0.000 [0.000, 0.125] | 0.000 [0.000, 0.434] | 0.000 [0.000, 0.125] | 0.000 [0.000, 0.434] |
-| rust/just/path_tests_excluded_all_features | library + binary crates | 945 | 5 | 27 | 0.000 [0.000, 0.125] | 0.000 [0.000, 0.434] | 0.000 [0.000, 0.125] | 0.000 [0.000, 0.434] |
-| rust/nextest/path_tests_excluded | library + binary crates | 1180 | 31 | 197 | 0.127 [0.087, 0.181] | 0.806 [0.637, 0.908] | 0.168 [0.115, 0.239] | 0.793 [0.616, 0.901] |
-| rust/nextest/path_tests_excluded_all_features | library + binary crates | 1180 | 31 | 198 | 0.126 [0.087, 0.180] | 0.806 [0.637, 0.908] | 0.168 [0.115, 0.239] | 0.793 [0.616, 0.901] |
+| rust/lidx/path_tests_excluded | library + binary crates | 1792 | 0 | 51 | 0.000 [0.000, 0.070] | - | 0.000 [0.000, 0.161] | - |
+| rust/lidx/path_tests_excluded_all_features | library + binary crates | 1792 | 0 | 51 | 0.000 [0.000, 0.070] | - | 0.000 [0.000, 0.161] | - |
+| rust/just/path_tests_excluded | library + binary crates | 914 | 0 | 27 | 0.000 [0.000, 0.125] | - | 0.000 [0.000, 0.125] | - |
+| rust/just/path_tests_excluded_all_features | library + binary crates | 914 | 0 | 27 | 0.000 [0.000, 0.125] | - | 0.000 [0.000, 0.125] | - |
+| rust/nextest/path_tests_excluded | library + binary crates | 1158 | 26 | 197 | 0.127 [0.087, 0.181] | 0.962 [0.811, 0.993] | 0.168 [0.115, 0.239] | 0.958 [0.798, 0.993] |
+| rust/nextest/path_tests_excluded_all_features | library + binary crates | 1158 | 26 | 198 | 0.126 [0.087, 0.180] | 0.962 [0.811, 0.993] | 0.168 [0.115, 0.239] | 0.958 [0.798, 0.993] |
 
 ### Unreachable: per cell
 
 | Cell | Library / binary | Universe | Oracle-dead | Claims graded | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] | R without exported [95% CI] |
 |---|---|---:|---:|---:|---|---|---|---|
-| go/cobra/tests | library (no main package) | 125 | 0 | 321 | 0.000 [0.000, 0.012] | - | 0.000 [0.000, 0.434] | - |
+| go/cobra/tests | library (no main package) | 127 | 2 | 321 | 0.006 [0.002, 0.022] | 1.000 [0.342, 1.000] | 0.000 [0.000, 0.434] | - |
 | go/cobra/no_tests | library (no main package) | 86 | 0 | 30 | 0.000 [0.000, 0.114] | - | 0.000 [0.000, 0.561] | - |
 | go/gitleaks/tests | binary | 93 | 1 | 74 | 0.013 [0.002, 0.073] | 1.000 [0.206, 1.000] | 0.071 [0.013, 0.315] | 1.000 [0.206, 1.000] |
 | go/gitleaks/no_tests | binary | 86 | 1 | 23 | 0.043 [0.008, 0.210] | 1.000 [0.206, 1.000] | 0.071 [0.013, 0.315] | 1.000 [0.206, 1.000] |
-| go/syft/tests | binary | 2990 | 40 | 1541 | 0.018 [0.012, 0.025] | 0.675 [0.520, 0.799] | 0.242 [0.128, 0.410] | 0.615 [0.355, 0.823] |
-| go/syft/no_tests | binary | 2627 | 256 | 285 | 0.158 [0.120, 0.205] | 0.176 [0.134, 0.227] | 0.000 [0.000, 0.138] | 0.000 [0.000, 0.056] |
+| go/syft/tests | binary | 2990 | 34 | 1541 | 0.015 [0.010, 0.022] | 0.676 [0.508, 0.809] | 0.242 [0.128, 0.410] | 0.727 [0.434, 0.902] |
+| go/syft/no_tests | binary | 2627 | 243 | 285 | 0.144 [0.108, 0.189] | 0.169 [0.127, 0.221] | 0.000 [0.000, 0.138] | 0.000 [0.000, 0.059] |
 | go/chi/tests | library (no main package) | 72 | 1 | 135 | 0.000 [0.000, 0.028] | 0.000 [0.000, 0.793] | 0.000 [0.000, 0.490] | 0.000 [0.000, 0.793] |
 | go/chi/no_tests | library (no main package) | 50 | 0 | 34 | 0.000 [0.000, 0.102] | - | 0.000 [0.000, 0.561] | - |
 | go/urfavecli/tests | binary | 182 | 3 | 734 | 0.004 [0.001, 0.012] | 1.000 [0.439, 1.000] | 0.222 [0.063, 0.547] | 1.000 [0.342, 1.000] |
-| go/urfavecli/no_tests | binary | 150 | 29 | 204 | 0.015 [0.005, 0.042] | 0.103 [0.036, 0.264] | 0.286 [0.082, 0.641] | 0.071 [0.020, 0.227] |
+| go/urfavecli/no_tests | binary | 150 | 4 | 204 | 0.015 [0.005, 0.042] | 0.750 [0.301, 0.954] | 0.286 [0.082, 0.641] | 0.667 [0.208, 0.939] |
 | go/viper/tests | library (no main package) | 86 | 0 | 190 | 0.000 [0.000, 0.020] | - | 0.000 [0.000, 0.793] | - |
 | go/viper/no_tests | library (no main package) | 59 | 0 | 86 | 0.000 [0.000, 0.043] | - | 0.000 [0.000, 0.793] | - |
 | go/bubbletea/tests | library (no main package) | 113 | 0 | 69 | 0.000 [0.000, 0.053] | - | 0.000 [0.000, 0.793] | - |
@@ -1539,26 +1539,26 @@ Tools: staticcheck (honnef.co/go/tools) v0.6.1; golang.org/x/tools (RTA, go/anal
 | ts/ky | library | 102 | 0 | 0 | - | - | - | - |
 | ts/immer | library | 52 | 2 | 4 | 0.000 [0.000, 0.490] | 0.000 [0.000, 0.658] | - | - |
 | ts/h3 | library | 240 | 1 | 42 | 0.024 [0.004, 0.123] | 1.000 [0.206, 1.000] | - | - |
-| rust/ripgrep/path_tests_excluded | library + binary crates | 1680 | 9 | 153 | 0.059 [0.031, 0.108] | 1.000 [0.701, 1.000] | 0.120 [0.064, 0.213] | 1.000 [0.701, 1.000] |
-| rust/ripgrep/no_tests | library + binary crates | 1582 | 3 | 143 | 0.021 [0.007, 0.060] | 1.000 [0.439, 1.000] | 0.046 [0.016, 0.127] | 1.000 [0.439, 1.000] |
-| rust/ripgrep/tests | library + binary crates | 1728 | 27 | 171 | 0.146 [0.101, 0.207] | 0.926 [0.766, 0.979] | 0.202 [0.130, 0.300] | 1.000 [0.816, 1.000] |
-| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1687 | 10 | 153 | 0.065 [0.036, 0.116] | 1.000 [0.723, 1.000] | 0.133 [0.074, 0.228] | 1.000 [0.723, 1.000] |
-| rust/fd/path_tests_excluded | binary | 155 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
-| rust/fd/no_tests | binary | 147 | 0 | 5 | 0.000 [0.000, 0.434] | - | 0.000 [0.000, 0.490] | - |
-| rust/fd/tests | binary | 185 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
-| rust/fd/path_tests_excluded_all_features | binary | 155 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
-| rust/bat/path_tests_excluded | library + binary crates | 217 | 5 | 32 | 0.156 [0.069, 0.318] | 1.000 [0.566, 1.000] | 0.500 [0.237, 0.763] | 1.000 [0.566, 1.000] |
-| rust/bat/path_tests_excluded_all_features | library + binary crates | 225 | 5 | 32 | 0.156 [0.069, 0.318] | 1.000 [0.566, 1.000] | 0.500 [0.237, 0.763] | 1.000 [0.566, 1.000] |
-| rust/tokei/path_tests_excluded | library + binary crates | 67 | 9 | 9 | 0.333 [0.121, 0.646] | 0.333 [0.121, 0.646] | 0.750 [0.301, 0.954] | 0.333 [0.121, 0.646] |
-| rust/tokei/path_tests_excluded_all_features | library + binary crates | 67 | 9 | 9 | 0.333 [0.121, 0.646] | 0.333 [0.121, 0.646] | 0.750 [0.301, 0.954] | 0.333 [0.121, 0.646] |
+| rust/ripgrep/path_tests_excluded | library + binary crates | 1677 | 9 | 153 | 0.059 [0.031, 0.108] | 1.000 [0.701, 1.000] | 0.120 [0.064, 0.213] | 1.000 [0.701, 1.000] |
+| rust/ripgrep/no_tests | library + binary crates | 1579 | 3 | 143 | 0.021 [0.007, 0.060] | 1.000 [0.439, 1.000] | 0.046 [0.016, 0.127] | 1.000 [0.439, 1.000] |
+| rust/ripgrep/tests | library + binary crates | 1725 | 27 | 171 | 0.146 [0.101, 0.207] | 0.926 [0.766, 0.979] | 0.202 [0.130, 0.300] | 1.000 [0.816, 1.000] |
+| rust/ripgrep/path_tests_excluded_all_features | library + binary crates | 1684 | 10 | 153 | 0.065 [0.036, 0.116] | 1.000 [0.723, 1.000] | 0.133 [0.074, 0.228] | 1.000 [0.723, 1.000] |
+| rust/fd/path_tests_excluded | binary | 154 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
+| rust/fd/no_tests | binary | 146 | 0 | 5 | 0.000 [0.000, 0.434] | - | 0.000 [0.000, 0.490] | - |
+| rust/fd/tests | binary | 184 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
+| rust/fd/path_tests_excluded_all_features | binary | 154 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.390] | - |
+| rust/bat/path_tests_excluded | library + binary crates | 214 | 5 | 32 | 0.156 [0.069, 0.318] | 1.000 [0.566, 1.000] | 0.500 [0.237, 0.763] | 1.000 [0.566, 1.000] |
+| rust/bat/path_tests_excluded_all_features | library + binary crates | 222 | 5 | 32 | 0.156 [0.069, 0.318] | 1.000 [0.566, 1.000] | 0.500 [0.237, 0.763] | 1.000 [0.566, 1.000] |
+| rust/tokei/path_tests_excluded | library + binary crates | 53 | 7 | 9 | 0.333 [0.121, 0.646] | 0.429 [0.158, 0.750] | 0.750 [0.301, 0.954] | 0.429 [0.158, 0.750] |
+| rust/tokei/path_tests_excluded_all_features | library + binary crates | 53 | 7 | 9 | 0.333 [0.121, 0.646] | 0.429 [0.158, 0.750] | 0.750 [0.301, 0.954] | 0.429 [0.158, 0.750] |
 | rust/xsv/path_tests_excluded | binary | 176 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
 | rust/xsv/path_tests_excluded_all_features | binary | 176 | 0 | 14 | 0.000 [0.000, 0.215] | - | 0.000 [0.000, 0.242] | - |
 | rust/lidx/path_tests_excluded | library + binary crates | 1591 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.161] | - |
 | rust/lidx/path_tests_excluded_all_features | library + binary crates | 1591 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.161] | - |
-| rust/just/path_tests_excluded | library + binary crates | 809 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.088] | - |
-| rust/just/path_tests_excluded_all_features | library + binary crates | 809 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.088] | - |
-| rust/nextest/path_tests_excluded | library + binary crates | 955 | 28 | 195 | 0.133 [0.093, 0.188] | 0.929 [0.773, 0.980] | 0.178 [0.122, 0.251] | 0.923 [0.759, 0.979] |
-| rust/nextest/path_tests_excluded_all_features | library + binary crates | 955 | 28 | 196 | 0.133 [0.092, 0.187] | 0.929 [0.773, 0.980] | 0.178 [0.122, 0.251] | 0.923 [0.759, 0.979] |
+| rust/just/path_tests_excluded | library + binary crates | 787 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.088] | - |
+| rust/just/path_tests_excluded_all_features | library + binary crates | 787 | 0 | 40 | 0.000 [0.000, 0.088] | - | 0.000 [0.000, 0.088] | - |
+| rust/nextest/path_tests_excluded | library + binary crates | 935 | 28 | 195 | 0.133 [0.093, 0.188] | 0.929 [0.773, 0.980] | 0.178 [0.122, 0.251] | 0.923 [0.759, 0.979] |
+| rust/nextest/path_tests_excluded_all_features | library + binary crates | 935 | 28 | 196 | 0.133 [0.092, 0.187] | 0.929 [0.773, 0.980] | 0.178 [0.122, 0.251] | 0.923 [0.759, 0.979] |
 
 ### Library or binary, and the universe that applies
 
@@ -1610,11 +1610,11 @@ Sums over the cells of a language (the `tests` and `no_tests` cells of one repos
 | Language | Column | Oracle-dead | Claims graded | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] | R without exported [95% CI] |
 |---|---|---:|---:|---|---|---|---|
 | Go | Unreferenced | 15 | 5081 | 0.002 [0.001, 0.004] | 0.667 [0.417, 0.848] | 0.013 [0.007, 0.023] | 0.667 [0.417, 0.848] |
-| Go | Unreachable | 332 | 3756 | 0.021 [0.017, 0.026] | 0.241 [0.198, 0.290] | 0.117 [0.071, 0.186] | 0.125 [0.076, 0.199] |
+| Go | Unreachable | 290 | 3756 | 0.020 [0.016, 0.025] | 0.255 [0.208, 0.308] | 0.117 [0.071, 0.186] | 0.173 [0.106, 0.270] |
 | TypeScript | Unreferenced | 41 | 785 | 0.024 [0.015, 0.037] | 0.463 [0.321, 0.613] | 0.000 [0.000, 0.793] | - |
 | TypeScript | Unreachable | 25 | 490 | 0.025 [0.014, 0.042] | 0.480 [0.300, 0.665] | 0.000 [0.000, 0.793] | 0.000 [0.000, 0.299] |
-| Rust | Unreferenced | 128 | 1685 | 0.052 [0.043, 0.064] | 0.688 [0.603, 0.761] | 0.075 [0.061, 0.092] | 0.677 [0.591, 0.753] |
-| Rust | Unreachable | 133 | 1307 | 0.088 [0.074, 0.105] | 0.865 [0.796, 0.913] | 0.135 [0.113, 0.161] | 0.866 [0.793, 0.915] |
+| Rust | Unreferenced | 98 | 1685 | 0.052 [0.043, 0.064] | 0.898 [0.822, 0.944] | 0.075 [0.061, 0.092] | 0.894 [0.815, 0.941] |
+| Rust | Unreachable | 129 | 1307 | 0.088 [0.074, 0.105] | 0.891 [0.826, 0.934] | 0.135 [0.113, 0.161] | 0.896 [0.826, 0.939] |
 
 ### Per symbol kind
 
@@ -1622,7 +1622,7 @@ Precision is tp/graded over lidx claims whose oracle declaration has that kind; 
 
 | Cell | Kind | Unreferenced P [95% CI] | Unreferenced R [95% CI] | Unreachable P [95% CI] | Unreachable R [95% CI] |
 |---|---|---|---|---|---|
-| go/cobra/tests | function | 0.000 [0.000, 0.013] (0/292) | - (0/0) | 0.000 [0.000, 0.013] (0/292) | - (0/0) |
+| go/cobra/tests | function | 0.000 [0.000, 0.013] (0/292) | - (0/0) | 0.007 [0.002, 0.025] (2/292) | 1.000 [0.342, 1.000] (2/2) |
 | go/cobra/tests | method | 0.000 [0.000, 0.117] (0/29) | - (0/0) | 0.000 [0.000, 0.117] (0/29) | - (0/0) |
 | go/cobra/tests | type | 0.000 [0.000, 0.324] (0/8) | - (0/0) | - | - |
 | go/cobra/no_tests | function | 0.000 [0.000, 0.390] (0/6) | - (0/0) | 0.000 [0.000, 0.390] (0/6) | - (0/0) |
@@ -1634,11 +1634,11 @@ Precision is tp/graded over lidx claims whose oracle declaration has that kind; 
 | go/gitleaks/no_tests | function | 0.000 [0.000, 0.176] (0/18) | - (0/0) | 0.000 [0.000, 0.176] (0/18) | - (0/0) |
 | go/gitleaks/no_tests | method | 0.200 [0.036, 0.625] (1/5) | 1.000 [0.206, 1.000] (1/1) | 0.200 [0.036, 0.625] (1/5) | 1.000 [0.206, 1.000] (1/1) |
 | go/gitleaks/no_tests | type | 0.000 [0.000, 0.096] (0/36) | - (0/0) | - | - |
-| go/syft/tests | function | 0.005 [0.002, 0.011] (6/1238) | 0.667 [0.354, 0.879] (6/9) | 0.011 [0.007, 0.019] (14/1238) | 0.737 [0.512, 0.882] (14/19) |
-| go/syft/tests | method | 0.007 [0.002, 0.024] (2/303) | 1.000 [0.342, 1.000] (2/2) | 0.043 [0.025, 0.072] (13/303) | 0.619 [0.409, 0.792] (13/21) |
+| go/syft/tests | function | 0.005 [0.002, 0.011] (6/1238) | 0.667 [0.354, 0.879] (6/9) | 0.011 [0.007, 0.019] (14/1238) | 0.824 [0.590, 0.938] (14/17) |
+| go/syft/tests | method | 0.007 [0.002, 0.024] (2/303) | 1.000 [0.342, 1.000] (2/2) | 0.030 [0.016, 0.056] (9/303) | 0.529 [0.310, 0.738] (9/17) |
 | go/syft/tests | type | 0.000 [0.000, 0.007] (0/555) | - (0/0) | - | - |
-| go/syft/no_tests | function | 0.000 [0.000, 0.129] (0/26) | - (0/0) | 0.346 [0.194, 0.538] (9/26) | 0.087 [0.047, 0.158] (9/103) |
-| go/syft/no_tests | method | 0.000 [0.000, 0.015] (0/259) | - (0/0) | 0.139 [0.102, 0.186] (36/259) | 0.235 [0.175, 0.308] (36/153) |
+| go/syft/no_tests | function | 0.000 [0.000, 0.129] (0/26) | - (0/0) | 0.346 [0.194, 0.538] (9/26) | 0.092 [0.049, 0.165] (9/98) |
+| go/syft/no_tests | method | 0.000 [0.000, 0.015] (0/259) | - (0/0) | 0.124 [0.089, 0.169] (32/259) | 0.221 [0.161, 0.295] (32/145) |
 | go/syft/no_tests | type | 0.000 [0.000, 0.007] (0/517) | - (0/0) | - | - |
 | go/chi/tests | function | 0.000 [0.000, 0.035] (0/106) | 0.000 [0.000, 0.793] (0/1) | 0.000 [0.000, 0.035] (0/106) | 0.000 [0.000, 0.793] (0/1) |
 | go/chi/tests | method | 0.000 [0.000, 0.117] (0/29) | - (0/0) | 0.000 [0.000, 0.117] (0/29) | - (0/0) |
@@ -1649,8 +1649,8 @@ Precision is tp/graded over lidx claims whose oracle declaration has that kind; 
 | go/urfavecli/tests | function | 0.000 [0.000, 0.007] (0/537) | - (0/0) | 0.002 [0.000, 0.011] (1/537) | 1.000 [0.206, 1.000] (1/1) |
 | go/urfavecli/tests | method | 0.000 [0.000, 0.019] (0/197) | - (0/0) | 0.010 [0.003, 0.036] (2/197) | 1.000 [0.342, 1.000] (2/2) |
 | go/urfavecli/tests | type | 0.000 [0.000, 0.104] (0/33) | - (0/0) | - | - |
-| go/urfavecli/no_tests | function | 0.000 [0.000, 0.228] (0/13) | - (0/0) | 0.077 [0.014, 0.333] (1/13) | 0.062 [0.011, 0.283] (1/16) |
-| go/urfavecli/no_tests | method | 0.000 [0.000, 0.020] (0/191) | 0.000 [0.000, 0.793] (0/1) | 0.011 [0.003, 0.037] (2/191) | 0.154 [0.043, 0.422] (2/13) |
+| go/urfavecli/no_tests | function | 0.000 [0.000, 0.228] (0/13) | - (0/0) | 0.077 [0.014, 0.333] (1/13) | 1.000 [0.206, 1.000] (1/1) |
+| go/urfavecli/no_tests | method | 0.000 [0.000, 0.020] (0/191) | 0.000 [0.000, 0.793] (0/1) | 0.011 [0.003, 0.037] (2/191) | 0.667 [0.208, 0.939] (2/3) |
 | go/urfavecli/no_tests | type | 0.000 [0.000, 0.143] (0/23) | - (0/0) | - | - |
 | go/viper/tests | function | 0.000 [0.000, 0.022] (0/173) | - (0/0) | 0.000 [0.000, 0.022] (0/173) | - (0/0) |
 | go/viper/tests | method | 0.000 [0.000, 0.184] (0/17) | - (0/0) | 0.000 [0.000, 0.184] (0/17) | - (0/0) |
@@ -1719,11 +1719,11 @@ Precision is tp/graded over lidx claims whose oracle declaration has that kind; 
 | rust/bat/path_tests_excluded_all_features | method | 0.103 [0.036, 0.264] (3/29) | 1.000 [0.439, 1.000] (3/3) | 0.103 [0.036, 0.264] (3/29) | 1.000 [0.439, 1.000] (3/3) |
 | rust/bat/path_tests_excluded_all_features | type | 0.000 [0.000, 0.658] (0/2) | - (0/0) | - | - |
 | rust/tokei/path_tests_excluded | function | 0.500 [0.150, 0.850] (2/4) | 1.000 [0.342, 1.000] (2/2) | 0.400 [0.118, 0.769] (2/5) | 1.000 [0.342, 1.000] (2/2) |
-| rust/tokei/path_tests_excluded | method | 0.250 [0.046, 0.699] (1/4) | 0.143 [0.026, 0.513] (1/7) | 0.250 [0.046, 0.699] (1/4) | 0.143 [0.026, 0.513] (1/7) |
-| rust/tokei/path_tests_excluded | type | - (0/0) | 0.000 [0.000, 0.658] (0/2) | - | - |
+| rust/tokei/path_tests_excluded | method | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) |
+| rust/tokei/path_tests_excluded | type | - (0/0) | - (0/0) | - | - |
 | rust/tokei/path_tests_excluded_all_features | function | 0.500 [0.150, 0.850] (2/4) | 1.000 [0.342, 1.000] (2/2) | 0.400 [0.118, 0.769] (2/5) | 1.000 [0.342, 1.000] (2/2) |
-| rust/tokei/path_tests_excluded_all_features | method | 0.250 [0.046, 0.699] (1/4) | 0.143 [0.026, 0.513] (1/7) | 0.250 [0.046, 0.699] (1/4) | 0.143 [0.026, 0.513] (1/7) |
-| rust/tokei/path_tests_excluded_all_features | type | - (0/0) | 0.000 [0.000, 0.658] (0/2) | - | - |
+| rust/tokei/path_tests_excluded_all_features | method | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) | 0.250 [0.046, 0.699] (1/4) | 0.200 [0.036, 0.625] (1/5) |
+| rust/tokei/path_tests_excluded_all_features | type | - (0/0) | - (0/0) | - | - |
 | rust/xsv/path_tests_excluded | function | 0.000 [0.000, 0.658] (0/2) | - (0/0) | 0.000 [0.000, 0.658] (0/2) | - (0/0) |
 | rust/xsv/path_tests_excluded | method | 0.000 [0.000, 0.242] (0/12) | - (0/0) | 0.000 [0.000, 0.242] (0/12) | - (0/0) |
 | rust/xsv/path_tests_excluded | type | - (0/0) | - (0/0) | - | - |
@@ -1732,21 +1732,21 @@ Precision is tp/graded over lidx claims whose oracle declaration has that kind; 
 | rust/xsv/path_tests_excluded_all_features | type | - (0/0) | - (0/0) | - | - |
 | rust/lidx/path_tests_excluded | function | 0.000 [0.000, 0.161] (0/20) | - (0/0) | 0.000 [0.000, 0.149] (0/22) | - (0/0) |
 | rust/lidx/path_tests_excluded | method | 0.000 [0.000, 0.176] (0/18) | - (0/0) | 0.000 [0.000, 0.176] (0/18) | - (0/0) |
-| rust/lidx/path_tests_excluded | type | 0.000 [0.000, 0.228] (0/13) | 0.000 [0.000, 0.793] (0/1) | - | - |
+| rust/lidx/path_tests_excluded | type | 0.000 [0.000, 0.228] (0/13) | - (0/0) | - | - |
 | rust/lidx/path_tests_excluded_all_features | function | 0.000 [0.000, 0.161] (0/20) | - (0/0) | 0.000 [0.000, 0.149] (0/22) | - (0/0) |
 | rust/lidx/path_tests_excluded_all_features | method | 0.000 [0.000, 0.176] (0/18) | - (0/0) | 0.000 [0.000, 0.176] (0/18) | - (0/0) |
-| rust/lidx/path_tests_excluded_all_features | type | 0.000 [0.000, 0.228] (0/13) | 0.000 [0.000, 0.793] (0/1) | - | - |
+| rust/lidx/path_tests_excluded_all_features | type | 0.000 [0.000, 0.228] (0/13) | - (0/0) | - | - |
 | rust/just/path_tests_excluded | function | 0.000 [0.000, 0.793] (0/1) | - (0/0) | 0.000 [0.000, 0.259] (0/11) | - (0/0) |
 | rust/just/path_tests_excluded | method | 0.000 [0.000, 0.133] (0/25) | - (0/0) | 0.000 [0.000, 0.117] (0/29) | - (0/0) |
-| rust/just/path_tests_excluded | type | 0.000 [0.000, 0.793] (0/1) | 0.000 [0.000, 0.434] (0/5) | - | - |
+| rust/just/path_tests_excluded | type | 0.000 [0.000, 0.793] (0/1) | - (0/0) | - | - |
 | rust/just/path_tests_excluded_all_features | function | 0.000 [0.000, 0.793] (0/1) | - (0/0) | 0.000 [0.000, 0.259] (0/11) | - (0/0) |
 | rust/just/path_tests_excluded_all_features | method | 0.000 [0.000, 0.133] (0/25) | - (0/0) | 0.000 [0.000, 0.117] (0/29) | - (0/0) |
-| rust/just/path_tests_excluded_all_features | type | 0.000 [0.000, 0.793] (0/1) | 0.000 [0.000, 0.434] (0/5) | - | - |
+| rust/just/path_tests_excluded_all_features | type | 0.000 [0.000, 0.793] (0/1) | - (0/0) | - | - |
 | rust/nextest/path_tests_excluded | function | 0.309 [0.203, 0.440] (17/55) | 1.000 [0.816, 1.000] (17/17) | 0.239 [0.155, 0.350] (17/71) | 0.944 [0.742, 0.990] (17/18) |
-| rust/nextest/path_tests_excluded | method | 0.060 [0.029, 0.118] (7/117) | 0.583 [0.320, 0.807] (7/12) | 0.073 [0.039, 0.132] (9/124) | 0.900 [0.596, 0.982] (9/10) |
+| rust/nextest/path_tests_excluded | method | 0.060 [0.029, 0.118] (7/117) | 1.000 [0.646, 1.000] (7/7) | 0.073 [0.039, 0.132] (9/124) | 0.900 [0.596, 0.982] (9/10) |
 | rust/nextest/path_tests_excluded | type | 0.040 [0.007, 0.195] (1/25) | 0.500 [0.095, 0.905] (1/2) | - | - |
 | rust/nextest/path_tests_excluded_all_features | function | 0.304 [0.199, 0.433] (17/56) | 1.000 [0.816, 1.000] (17/17) | 0.236 [0.153, 0.346] (17/72) | 0.944 [0.742, 0.990] (17/18) |
-| rust/nextest/path_tests_excluded_all_features | method | 0.060 [0.029, 0.118] (7/117) | 0.583 [0.320, 0.807] (7/12) | 0.073 [0.039, 0.132] (9/124) | 0.900 [0.596, 0.982] (9/10) |
+| rust/nextest/path_tests_excluded_all_features | method | 0.060 [0.029, 0.118] (7/117) | 1.000 [0.646, 1.000] (7/7) | 0.073 [0.039, 0.132] (9/124) | 0.900 [0.596, 0.982] (9/10) |
 | rust/nextest/path_tests_excluded_all_features | type | 0.040 [0.007, 0.195] (1/25) | 0.500 [0.095, 0.905] (1/2) | - | - |
 
 ### The exported-symbol reading
@@ -1755,8 +1755,8 @@ What an exported-symbol policy (never claim an exported / `pub` declaration) buy
 
 | Language | Column | Graded claims | Dropped by the policy | of them wrong | P all claims | P without exported | Wrong claims, by category (all claims) |
 |---|---|---:|---:|---:|---|---|---|
-| Go | Unreferenced | 5081 | 4292 | 4292 | 0.002 | 0.013 | test_root 2298, public_api 1316, referenced_type 669, exported_used_by_rule 542, library_root 136, main_init 48, referenced_method 40, referenced_function 22 |
-| Go | Unreachable | 3756 | 3636 | 3570 | 0.021 | 0.117 | test_root 2298, public_api 878, reachable_method 293, library_root 136, main_init 48, reachable_function 23 |
+| Go | Unreferenced | 5081 | 4292 | 4292 | 0.002 | 0.013 | test_root 2296, public_api 1316, referenced_type 669, exported_used_by_rule 544, library_root 136, main_init 48, referenced_method 40, referenced_function 22 |
+| Go | Unreachable | 3756 | 3636 | 3576 | 0.020 | 0.117 | test_root 2296, public_api 878, reachable_method 301, library_root 136, main_init 48, reachable_function 23 |
 | TypeScript | Unreferenced | 785 | 784 | 765 | 0.024 | 0.000 | public_api 742, overrides_or_implements 24 |
 | TypeScript | Unreachable | 490 | 489 | 477 | 0.025 | 0.000 | public_api 456, overrides_or_implements 22 |
 | Rust | Unreferenced | 1685 | 568 | 564 | 0.052 | 0.075 | public_api 546, referenced_type 457, referenced_method 407, referenced_function 133, test_root 54 |
@@ -1766,12 +1766,12 @@ What an exported-symbol policy (never claim an exported / `pub` declaration) buy
 
 Wrong claims (lidx says dead, oracle says live, or live by construction), pooled per language and column. Categories are in `results/lists/<cell>.dead_<column>.fp.json`. Missed declarations (oracle-dead, lidx does not claim) are labelled from lidx's own incoming reachability edges to the declaration: `incoming_from_tests_only`, `incoming_from_dead_code_only` (a dead cluster keeps itself alive), `incoming_call_from_live_code` (an edge the oracle contradicts), `kind_not_in_dead_symbols` (interfaces, enums and traits are not in `dead_symbols`' kind list), `no_incoming_edge_but_filtered` (a filter in the query rescued it).
 
-- **Go, unreferenced.** Wrong claims: test_root 2298, public_api 1316, referenced_type 669, exported_used_by_rule 542, library_root 136, main_init 48, referenced_method 40, referenced_function 22. Missed: incoming_from_tests_only 4, incoming_self_edge_only 1.
-- **Go, unreachable.** Wrong claims: test_root 2298, public_api 878, reachable_method 293, library_root 136, main_init 48, reachable_function 23. Missed: incoming_from_dead_code_only 124, incoming_from_tests_only 58, no_incoming_edge_but_filtered 47, incoming_from_tests_or_dead_code 22, incoming_self_edge_only 1.
+- **Go, unreferenced.** Wrong claims: test_root 2296, public_api 1316, referenced_type 669, exported_used_by_rule 544, library_root 136, main_init 48, referenced_method 40, referenced_function 22. Missed: incoming_from_tests_only 4, incoming_self_edge_only 1.
+- **Go, unreachable.** Wrong claims: test_root 2296, public_api 878, reachable_method 301, library_root 136, main_init 48, reachable_function 23. Missed: incoming_from_dead_code_only 97, incoming_from_tests_only 56, no_incoming_edge_but_filtered 45, incoming_from_tests_or_dead_code 17, incoming_self_edge_only 1.
 - **TypeScript, unreferenced.** Wrong claims: public_api 742, overrides_or_implements 24. Missed: kind_not_in_dead_symbols 17, incoming_from_tests_only 3, no_incoming_edge_but_filtered 2.
 - **TypeScript, unreachable.** Wrong claims: public_api 456, overrides_or_implements 22. Missed: incoming_from_dead_code_only 6, incoming_call_from_live_code 4, incoming_from_tests_only 2, no_incoming_edge_but_filtered 1.
-- **Rust, unreferenced.** Wrong claims: public_api 546, referenced_type 457, referenced_method 407, referenced_function 133, test_root 54. Missed: kind_not_in_dead_symbols 18, no_incoming_edge_but_filtered 12, incoming_type_edge_from_live_code 8, incoming_from_dead_code_only 2.
-- **Rust, unreachable.** Wrong claims: public_api 521, reachable_method 421, reachable_function 196, test_root 54. Missed: incoming_type_edge_from_live_code 8, no_incoming_edge_but_filtered 4, incoming_from_dead_code_only 4, incoming_from_tests_only 2.
+- **Rust, unreferenced.** Wrong claims: public_api 546, referenced_type 457, referenced_method 407, referenced_function 133, test_root 54. Missed: incoming_type_edge_from_live_code 8, kind_not_in_dead_symbols 2.
+- **Rust, unreachable.** Wrong claims: public_api 521, reachable_method 421, reachable_function 196, test_root 54. Missed: incoming_type_edge_from_live_code 8, incoming_from_tests_only 2, incoming_from_dead_code_only 2, no_incoming_edge_but_filtered 2.
 
 ### Exclusion buckets
 
@@ -1779,8 +1779,8 @@ Oracle side: declarations left out of the universe, per cell and column (every b
 
 | Cell | Column | Oracle-side buckets | Ungradable lidx claims |
 |---|---|---|---|
-| go/cobra/tests | Unreferenced | test_root 285, public_api 194, exported_used_by_rule 4, main_init 1 | not_a_judged_declaration 5, file_not_in_program 1 |
-| go/cobra/tests | Unreachable | test_root 285, public_api 183, not_a_function 19, main_init 1 | not_a_function 8, not_a_judged_declaration 5, file_not_in_program 1 |
+| go/cobra/tests | Unreferenced | test_root 283, public_api 194, exported_used_by_rule 6, main_init 1 | not_a_judged_declaration 5, file_not_in_program 1 |
+| go/cobra/tests | Unreachable | test_root 283, public_api 183, not_a_function 19, main_init 1 | not_a_function 8, not_a_judged_declaration 5, file_not_in_program 1 |
 | go/cobra/no_tests | Unreferenced | library_root 176, public_api 18 | test_file_outside_cell 296, file_not_in_program 1, not_a_judged_declaration 1 |
 | go/cobra/no_tests | Unreachable | library_root 176, not_a_function 17, public_api 7 | test_file_outside_cell 296, not_a_function 7, file_not_in_program 1, not_a_judged_declaration 1 |
 | go/gitleaks/tests | Unreferenced | public_api 384, test_root 49, main_init 15, exported_used_by_rule 2 | file_not_in_program 3 |
@@ -1819,46 +1819,46 @@ Oracle side: declarations left out of the universe, per cell and column (every b
 | ts/immer | Unreachable | not_a_function 88, public_api 17 | test_file_outside_cell 15, not_a_judged_declaration 9, outside_scope_directory 7, not_a_function 3, file_not_in_program 1 |
 | ts/h3 | Unreferenced | public_api 287 | not_a_judged_declaration 23, test_file_outside_cell 5, outside_scope_directory 2 |
 | ts/h3 | Unreachable | not_a_function 295, public_api 164 | not_a_judged_declaration 23, not_a_function 22, test_file_outside_cell 5, outside_scope_directory 2 |
-| rust/ripgrep/path_tests_excluded | Unreferenced | public_api 648, test_root 435, macro_generated 390, oracle_unresolved_site 8, main_init 4 | test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 8, file_not_in_program 2 |
-| rust/ripgrep/path_tests_excluded | Unreachable | public_api 553, test_root 435, macro_generated 390, not_a_function 363, main_init 4, oracle_unresolved_site 2 | not_a_function 100, test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 2, file_not_in_program 2 |
-| rust/ripgrep/no_tests | Unreferenced | public_api 637, test_root 11, main_init 4, oracle_unresolved_site 4 | test_file_outside_cell 29, not_a_judged_declaration 25, file_not_in_program 6, oracle_unresolved_site 4 |
-| rust/ripgrep/no_tests | Unreachable | public_api 543, not_a_function 355, test_root 11, main_init 4 | not_a_function 100, test_file_outside_cell 29, not_a_judged_declaration 25, file_not_in_program 6 |
-| rust/ripgrep/tests | Unreferenced | macro_generated 713, public_api 648, test_root 451, oracle_unresolved_site 10, main_init 4 | not_a_judged_declaration 20, oracle_unresolved_site 9, file_not_in_program 2 |
-| rust/ripgrep/tests | Unreachable | macro_generated 713, public_api 553, test_root 451, not_a_function 380, oracle_unresolved_site 13, main_init 4, cfg_twin 2 | not_a_function 101, not_a_judged_declaration 20, oracle_unresolved_site 8, file_not_in_program 2, cfg_twin 1 |
-| rust/ripgrep/path_tests_excluded_all_features | Unreferenced | public_api 648, test_root 440, macro_generated 390, oracle_unresolved_site 7, main_init 4 | test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 7 |
-| rust/ripgrep/path_tests_excluded_all_features | Unreachable | public_api 553, test_root 440, macro_generated 390, not_a_function 365, main_init 4, oracle_unresolved_site 2 | not_a_function 102, test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 2 |
-| rust/fd/path_tests_excluded | Unreferenced | macro_generated 105, test_root 52, oracle_unresolved_site 4, main_init 1 | not_a_judged_declaration 6, oracle_unresolved_site 3 |
-| rust/fd/path_tests_excluded | Unreachable | macro_generated 105, test_root 52, not_a_function 32, main_init 1 | not_a_judged_declaration 6 |
-| rust/fd/no_tests | Unreferenced | oracle_unresolved_site 3, test_root 3, main_init 1 | not_a_judged_declaration 8, oracle_unresolved_site 2 |
-| rust/fd/no_tests | Unreachable | not_a_function 30, test_root 3, main_init 1 | not_a_judged_declaration 8 |
-| rust/fd/tests | Unreferenced | test_root 151, macro_generated 105, oracle_unresolved_site 4, main_init 1 | not_a_judged_declaration 6, oracle_unresolved_site 3 |
-| rust/fd/tests | Unreachable | test_root 151, macro_generated 105, not_a_function 33, main_init 1 | not_a_judged_declaration 6 |
-| rust/fd/path_tests_excluded_all_features | Unreferenced | macro_generated 105, test_root 52, oracle_unresolved_site 4, main_init 1 | not_a_judged_declaration 6, oracle_unresolved_site 3 |
-| rust/fd/path_tests_excluded_all_features | Unreachable | macro_generated 105, test_root 52, not_a_function 32, main_init 1 | not_a_judged_declaration 6 |
-| rust/bat/path_tests_excluded | Unreferenced | public_api 188, test_root 94, main_init 1 | test_file_outside_cell 608, file_not_in_program 2, not_a_judged_declaration 1 |
-| rust/bat/path_tests_excluded | Unreachable | public_api 140, test_root 94, not_a_function 83, main_init 1 | test_file_outside_cell 608, file_not_in_program 2, not_a_judged_declaration 1, not_a_function 1 |
-| rust/bat/path_tests_excluded_all_features | Unreferenced | public_api 189, test_root 99, main_init 1 | test_file_outside_cell 608, file_not_in_program 1, not_a_judged_declaration 1 |
-| rust/bat/path_tests_excluded_all_features | Unreachable | public_api 140, test_root 99, not_a_function 87, main_init 1 | test_file_outside_cell 608, not_a_function 2, file_not_in_program 1, not_a_judged_declaration 1 |
-| rust/tokei/path_tests_excluded | Unreferenced | public_api 53, test_root 16, oracle_unresolved_site 3, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
-| rust/tokei/path_tests_excluded | Unreachable | public_api 44, not_a_function 21, test_root 16, main_init 1 | test_file_outside_cell 7 |
-| rust/tokei/path_tests_excluded_all_features | Unreferenced | public_api 53, test_root 16, oracle_unresolved_site 3, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
-| rust/tokei/path_tests_excluded_all_features | Unreachable | public_api 44, not_a_function 21, test_root 16, main_init 1 | test_file_outside_cell 7 |
+| rust/ripgrep/path_tests_excluded | Unreferenced | public_api 648, test_root 435, macro_generated 390, oracle_unresolved_site 8, main_init 4, impl_for_foreign_type 3, trait_declaration 1 | test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 8, file_not_in_program 2 |
+| rust/ripgrep/path_tests_excluded | Unreachable | public_api 553, test_root 435, macro_generated 390, not_a_function 363, main_init 4, impl_for_foreign_type 3, oracle_unresolved_site 2 | not_a_function 100, test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 2, file_not_in_program 2 |
+| rust/ripgrep/no_tests | Unreferenced | public_api 637, test_root 11, main_init 4, oracle_unresolved_site 4, impl_for_foreign_type 3, trait_declaration 1 | test_file_outside_cell 29, not_a_judged_declaration 25, file_not_in_program 6, oracle_unresolved_site 4 |
+| rust/ripgrep/no_tests | Unreachable | public_api 543, not_a_function 355, test_root 11, main_init 4, impl_for_foreign_type 3 | not_a_function 100, test_file_outside_cell 29, not_a_judged_declaration 25, file_not_in_program 6 |
+| rust/ripgrep/tests | Unreferenced | macro_generated 713, public_api 648, test_root 451, oracle_unresolved_site 10, main_init 4, impl_for_foreign_type 3, trait_declaration 1 | not_a_judged_declaration 20, oracle_unresolved_site 9, file_not_in_program 2 |
+| rust/ripgrep/tests | Unreachable | macro_generated 713, public_api 553, test_root 451, not_a_function 380, oracle_unresolved_site 13, main_init 4, impl_for_foreign_type 3, cfg_twin 2 | not_a_function 101, not_a_judged_declaration 20, oracle_unresolved_site 8, file_not_in_program 2, cfg_twin 1 |
+| rust/ripgrep/path_tests_excluded_all_features | Unreferenced | public_api 648, test_root 440, macro_generated 390, oracle_unresolved_site 7, main_init 4, impl_for_foreign_type 3, trait_declaration 1 | test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 7 |
+| rust/ripgrep/path_tests_excluded_all_features | Unreachable | public_api 553, test_root 440, macro_generated 390, not_a_function 365, main_init 4, impl_for_foreign_type 3, oracle_unresolved_site 2 | not_a_function 102, test_file_outside_cell 29, not_a_judged_declaration 17, oracle_unresolved_site 2 |
+| rust/fd/path_tests_excluded | Unreferenced | macro_generated 105, test_root 52, oracle_unresolved_site 4, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 6, oracle_unresolved_site 3 |
+| rust/fd/path_tests_excluded | Unreachable | macro_generated 105, test_root 52, not_a_function 32, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 6 |
+| rust/fd/no_tests | Unreferenced | oracle_unresolved_site 3, test_root 3, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 8, oracle_unresolved_site 2 |
+| rust/fd/no_tests | Unreachable | not_a_function 30, test_root 3, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 8 |
+| rust/fd/tests | Unreferenced | test_root 151, macro_generated 105, oracle_unresolved_site 4, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 6, oracle_unresolved_site 3 |
+| rust/fd/tests | Unreachable | test_root 151, macro_generated 105, not_a_function 33, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 6 |
+| rust/fd/path_tests_excluded_all_features | Unreferenced | macro_generated 105, test_root 52, oracle_unresolved_site 4, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 6, oracle_unresolved_site 3 |
+| rust/fd/path_tests_excluded_all_features | Unreachable | macro_generated 105, test_root 52, not_a_function 32, impl_for_foreign_type 1, main_init 1 | not_a_judged_declaration 6 |
+| rust/bat/path_tests_excluded | Unreferenced | public_api 188, test_root 94, impl_for_foreign_type 3, trait_declaration 3, main_init 1 | test_file_outside_cell 608, file_not_in_program 2, not_a_judged_declaration 1 |
+| rust/bat/path_tests_excluded | Unreachable | public_api 140, test_root 94, not_a_function 83, impl_for_foreign_type 3, main_init 1 | test_file_outside_cell 608, file_not_in_program 2, not_a_judged_declaration 1, not_a_function 1 |
+| rust/bat/path_tests_excluded_all_features | Unreferenced | public_api 189, test_root 99, impl_for_foreign_type 3, trait_declaration 3, main_init 1 | test_file_outside_cell 608, file_not_in_program 1, not_a_judged_declaration 1 |
+| rust/bat/path_tests_excluded_all_features | Unreachable | public_api 140, test_root 99, not_a_function 87, impl_for_foreign_type 3, main_init 1 | test_file_outside_cell 608, not_a_function 2, file_not_in_program 1, not_a_judged_declaration 1 |
+| rust/tokei/path_tests_excluded | Unreferenced | public_api 53, test_root 16, impl_for_foreign_type 14, oracle_unresolved_site 3, trait_declaration 2, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
+| rust/tokei/path_tests_excluded | Unreachable | public_api 44, not_a_function 21, test_root 16, impl_for_foreign_type 14, main_init 1 | test_file_outside_cell 7 |
+| rust/tokei/path_tests_excluded_all_features | Unreferenced | public_api 53, test_root 16, impl_for_foreign_type 14, oracle_unresolved_site 3, trait_declaration 2, main_init 1 | test_file_outside_cell 7, oracle_unresolved_site 1 |
+| rust/tokei/path_tests_excluded_all_features | Unreachable | public_api 44, not_a_function 21, test_root 16, impl_for_foreign_type 14, main_init 1 | test_file_outside_cell 7 |
 | rust/xsv/path_tests_excluded | Unreferenced | main_init 1 | test_file_outside_cell 18, not_a_judged_declaration 1 |
 | rust/xsv/path_tests_excluded | Unreachable | not_a_function 53, main_init 1 | test_file_outside_cell 18, not_a_judged_declaration 1 |
 | rust/xsv/path_tests_excluded_all_features | Unreferenced | main_init 1 | test_file_outside_cell 18, not_a_judged_declaration 1 |
 | rust/xsv/path_tests_excluded_all_features | Unreachable | not_a_function 53, main_init 1 | test_file_outside_cell 18, not_a_judged_declaration 1 |
-| rust/lidx/path_tests_excluded | Unreferenced | test_root 778, public_api 675, oracle_unresolved_site 2, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, oracle_unresolved_site 2, not_a_judged_declaration 1 |
+| rust/lidx/path_tests_excluded | Unreferenced | test_root 778, public_api 675, trait_declaration 2, oracle_unresolved_site 2, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, oracle_unresolved_site 2, not_a_judged_declaration 1 |
 | rust/lidx/path_tests_excluded | Unreachable | test_root 778, public_api 473, not_a_function 407, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, not_a_function 13, not_a_judged_declaration 1 |
-| rust/lidx/path_tests_excluded_all_features | Unreferenced | test_root 778, public_api 675, oracle_unresolved_site 2, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, oracle_unresolved_site 2, not_a_judged_declaration 1 |
+| rust/lidx/path_tests_excluded_all_features | Unreferenced | test_root 778, public_api 675, trait_declaration 2, oracle_unresolved_site 2, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, oracle_unresolved_site 2, not_a_judged_declaration 1 |
 | rust/lidx/path_tests_excluded_all_features | Unreachable | test_root 778, public_api 473, not_a_function 407, macro_generated 1, main_init 1 | test_file_outside_cell 382, file_not_in_program 76, not_a_function 13, not_a_judged_declaration 1 |
-| rust/just/path_tests_excluded | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
-| rust/just/path_tests_excluded | Unreachable | macro_generated 441, not_a_function 161, test_root 134, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
-| rust/just/path_tests_excluded_all_features | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
-| rust/just/path_tests_excluded_all_features | Unreachable | macro_generated 441, not_a_function 161, test_root 134, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
-| rust/nextest/path_tests_excluded | Unreferenced | public_api 699, test_root 130, oracle_unresolved_site 27, main_init 6 | oracle_unresolved_site 23, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 12 |
-| rust/nextest/path_tests_excluded | Unreachable | not_a_function 534, public_api 416, test_root 130, main_init 6, oracle_unresolved_site 1 | not_a_function 25, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 12 |
-| rust/nextest/path_tests_excluded_all_features | Unreferenced | public_api 700, test_root 130, oracle_unresolved_site 27, main_init 6 | oracle_unresolved_site 23, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 11 |
-| rust/nextest/path_tests_excluded_all_features | Unreachable | not_a_function 534, public_api 417, test_root 130, main_init 6, oracle_unresolved_site 1 | not_a_function 25, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 11 |
+| rust/just/path_tests_excluded | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, impl_for_foreign_type 22, trait_declaration 9, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
+| rust/just/path_tests_excluded | Unreachable | macro_generated 441, not_a_function 161, test_root 134, impl_for_foreign_type 22, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
+| rust/just/path_tests_excluded_all_features | Unreferenced | macro_generated 441, test_root 134, oracle_unresolved_site 22, impl_for_foreign_type 22, trait_declaration 9, public_api 5, main_init 3, ffi_or_macro_entry 1 | oracle_unresolved_site 14, test_file_outside_cell 1 |
+| rust/just/path_tests_excluded_all_features | Unreachable | macro_generated 441, not_a_function 161, test_root 134, impl_for_foreign_type 22, main_init 3, public_api 2, ffi_or_macro_entry 1 | not_a_function 1, test_file_outside_cell 1 |
+| rust/nextest/path_tests_excluded | Unreferenced | public_api 699, test_root 130, oracle_unresolved_site 27, impl_for_foreign_type 20, main_init 6, trait_declaration 2 | oracle_unresolved_site 23, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 12 |
+| rust/nextest/path_tests_excluded | Unreachable | not_a_function 534, public_api 416, test_root 130, impl_for_foreign_type 20, main_init 6, oracle_unresolved_site 1 | not_a_function 25, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 12 |
+| rust/nextest/path_tests_excluded_all_features | Unreferenced | public_api 700, test_root 130, oracle_unresolved_site 27, impl_for_foreign_type 20, main_init 6, trait_declaration 2 | oracle_unresolved_site 23, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 11 |
+| rust/nextest/path_tests_excluded_all_features | Unreachable | not_a_function 534, public_api 417, test_root 130, impl_for_foreign_type 20, main_init 6, oracle_unresolved_site 1 | not_a_function 25, not_a_judged_declaration 18, test_file_outside_cell 14, file_not_in_program 11 |
 
 ### File level
 
@@ -1868,14 +1868,14 @@ lidx has no file-level dead answer today. The oracle records the two facts a fil
 |---|---:|---:|---:|---:|
 | go/cobra/tests | 35 | 18 | 5 | 0 |
 | go/cobra/no_tests | 18 | 18 | 5 | 0 |
-| go/gitleaks/tests | 203 | 182 | 0 | 1 |
-| go/gitleaks/no_tests | 184 | 182 | 0 | 3 |
-| go/syft/tests | 1110 | 630 | 1 | 6 |
-| go/syft/no_tests | 663 | 630 | 12 | 33 |
-| go/chi/tests | 65 | 35 | 30 | 7 |
+| go/gitleaks/tests | 203 | 182 | 0 | 0 |
+| go/gitleaks/no_tests | 184 | 182 | 0 | 0 |
+| go/syft/tests | 1110 | 630 | 1 | 1 |
+| go/syft/no_tests | 663 | 630 | 12 | 24 |
+| go/chi/tests | 65 | 35 | 30 | 0 |
 | go/chi/no_tests | 35 | 35 | 30 | 0 |
 | go/urfavecli/tests | 67 | 44 | 8 | 0 |
-| go/urfavecli/no_tests | 47 | 44 | 8 | 7 |
+| go/urfavecli/no_tests | 47 | 44 | 8 | 0 |
 | go/viper/tests | 29 | 17 | 9 | 0 |
 | go/viper/no_tests | 17 | 17 | 10 | 0 |
 | go/bubbletea/tests | 28 | 19 | 19 | 0 |
@@ -1913,48 +1913,48 @@ Wall-clock seconds and peak resident set of the oracle process tree (sampled eve
 
 | Cell | Oracle | Seconds | Peak RSS (MB) |
 |---|---|---:|---:|
-| go/cobra/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 2.1 | 400 |
-| go/cobra/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 339 |
-| go/gitleaks/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 3.1 | 1363 |
-| go/gitleaks/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 2.0 | 1239 |
-| go/syft/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 16.3 | 6268 |
-| go/syft/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 16.3 | 5801 |
-| go/chi/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.4 | 639 |
-| go/chi/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.1 | 519 |
-| go/urfavecli/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.6 | 754 |
-| go/urfavecli/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 698 |
-| go/viper/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.4 | 856 |
-| go/viper/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 788 |
-| go/bubbletea/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 267 |
-| go/bubbletea/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 221 |
-| ts/zod | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 3.4 | 507 |
-| ts/hono | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 2.6 | 391 |
-| ts/trpc | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.3 | 259 |
-| ts/ky | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.1 | 244 |
-| ts/immer | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.0 | 227 |
-| ts/h3 | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.7 | 273 |
-| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP occurrences | 2.0 | 98 |
-| rust/ripgrep/no_tests | rust-analyzer SCIP occurrences | 2.3 | 95 |
-| rust/ripgrep/tests | rust-analyzer SCIP occurrences | 2.4 | 107 |
-| rust/ripgrep/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 2.3 | 99 |
-| rust/fd/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 5 |
-| rust/fd/no_tests | rust-analyzer SCIP occurrences | 0.2 | 7 |
-| rust/fd/tests | rust-analyzer SCIP occurrences | 0.4 | 6 |
+| go/cobra/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 444 |
+| go/cobra/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 332 |
+| go/gitleaks/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 3.1 | 1439 |
+| go/gitleaks/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 2.3 | 1252 |
+| go/syft/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 21.6 | 6475 |
+| go/syft/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 20.1 | 6281 |
+| go/chi/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 666 |
+| go/chi/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 671 |
+| go/urfavecli/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.4 | 790 |
+| go/urfavecli/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.2 | 672 |
+| go/viper/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.4 | 777 |
+| go/viper/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 1.0 | 734 |
+| go/bubbletea/tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 436 |
+| go/bubbletea/no_tests | staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA | 0.8 | 349 |
+| ts/zod | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 3.0 | 504 |
+| ts/hono | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 2.4 | 394 |
+| ts/trpc | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 3.3 | 252 |
+| ts/ky | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.2 | 246 |
+| ts/immer | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.3 | 231 |
+| ts/h3 | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.9 | 270 |
+| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP occurrences | 1.9 | 99 |
+| rust/ripgrep/no_tests | rust-analyzer SCIP occurrences | 2.1 | 95 |
+| rust/ripgrep/tests | rust-analyzer SCIP occurrences | 2.1 | 108 |
+| rust/ripgrep/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 2.1 | 98 |
+| rust/fd/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
+| rust/fd/no_tests | rust-analyzer SCIP occurrences | 0.4 | 10 |
+| rust/fd/tests | rust-analyzer SCIP occurrences | 0.9 | 12 |
 | rust/fd/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 0 |
-| rust/bat/path_tests_excluded | rust-analyzer SCIP occurrences | 0.4 | 38 |
+| rust/bat/path_tests_excluded | rust-analyzer SCIP occurrences | 1.0 | 39 |
 | rust/bat/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.4 | 38 |
-| rust/tokei/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
+| rust/tokei/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 0 |
 | rust/tokei/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 0 |
-| rust/xsv/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 1 |
-| rust/xsv/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 6 |
-| rust/lidx/path_tests_excluded | rust-analyzer SCIP occurrences | 3.6 | 196 |
-| rust/lidx/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 3.5 | 195 |
-| rust/just/path_tests_excluded | rust-analyzer SCIP occurrences | 0.8 | 72 |
-| rust/just/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.8 | 70 |
-| rust/nextest/path_tests_excluded | rust-analyzer SCIP occurrences | 1.1 | 98 |
-| rust/nextest/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 1.3 | 97 |
+| rust/xsv/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 4 |
+| rust/xsv/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 11 |
+| rust/lidx/path_tests_excluded | rust-analyzer SCIP occurrences | 3.9 | 199 |
+| rust/lidx/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 3.3 | 196 |
+| rust/just/path_tests_excluded | rust-analyzer SCIP occurrences | 0.9 | 69 |
+| rust/just/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.7 | 71 |
+| rust/nextest/path_tests_excluded | rust-analyzer SCIP occurrences | 1.1 | 99 |
+| rust/nextest/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 1.1 | 97 |
 
-`go/syft/tests` (the largest cell): 16.3 s, 6268 MB peak, recorded in `cells.json` under `cells['go/syft/tests']['dead']['oracle_meta']`.
+`go/syft/tests` (the largest cell): 21.6 s, 6475 MB peak, recorded in `cells.json` under `cells['go/syft/tests']['dead']['oracle_meta']`.
 
 ### Dead-code spot-check
 

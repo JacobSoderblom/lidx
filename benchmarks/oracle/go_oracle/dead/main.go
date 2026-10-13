@@ -55,7 +55,7 @@ type Decl struct {
 	API       bool `json:"api"`
 	Generated bool `json:"generated,omitempty"`
 	TestFile  bool `json:"test_file,omitempty"`
-	// Root: the analysis treats it as live by construction (main, init, Test*/Benchmark*/Fuzz*/Example*, and in a library
+	// Root: the analysis treats it as live by construction (main, init, Test*/Benchmark*/Fuzz*/Example* with an Output comment, and in a library
 	// without a main package every exported function and the exported methods of exported types).
 	Root string `json:"root,omitempty"`
 	// Unref is U1000's verdict: "dead", "dead_quiet" (unused, but reported only through its owner, e.g. a method of an
@@ -144,6 +144,24 @@ func main() {
 		line int
 	}
 	declIdx := map[pos]int{}
+	// Example functions without an `// Output:` comment are compiled but never run by go test (and so by deadcode -test)
+	exampleNoOutput := map[pos]bool{}
+	hasOutput := func(f *ast.File, fd *ast.FuncDecl) bool {
+		if fd.Body == nil {
+			return false
+		}
+		var last *ast.CommentGroup
+		for _, cg := range f.Comments {
+			if cg.Pos() >= fd.Body.Lbrace && cg.End() <= fd.Body.Rbrace {
+				last = cg
+			}
+		}
+		if last == nil {
+			return false
+		}
+		t := strings.ToLower(strings.TrimSpace(last.Text()))
+		return strings.HasPrefix(t, "output:") || strings.HasPrefix(t, "unordered output:")
+	}
 	fileSeen := map[string]bool{}
 	importable := func(pkgPath, pkgName, file string) bool {
 		if pkgName == "main" || strings.HasSuffix(file, "_test.go") || strings.HasSuffix(pkgName, "_test") {
@@ -194,6 +212,9 @@ func main() {
 			for _, d := range f.Decls {
 				switch d := d.(type) {
 				case *ast.FuncDecl:
+					if isTest && d.Recv == nil && strings.HasPrefix(d.Name.Name, "Example") && !hasOutput(f, d) {
+						exampleNoOutput[pos{rel, p.Fset.Position(d.Name.Pos()).Line}] = true
+					}
 					if d.Recv != nil && len(d.Recv.List) > 0 {
 						add(d.Name, "method", "", recvName(d.Recv.List[0].Type))
 					} else {
@@ -286,13 +307,71 @@ func main() {
 	prog.Build()
 	var roots []*ssa.Function
 	seenRoot := map[*ssa.Function]bool{}
-	addRoot := func(f *ssa.Function) {
+	var addRoot func(f *ssa.Function)
+	// A generic function (or method of a generic type) cannot be an RTA root: its body has type-parameter-typed values and rta
+	// panics converting them to interfaces. Its static callees and function values are the roots instead (a generic body is
+	// walked, an instantiation of it is not RTA's business until a non-generic root instantiates it).
+	walkedGeneric := map[*ssa.Function]bool{}
+	var walkGeneric func(f *ssa.Function)
+	walkGeneric = func(f *ssa.Function) {
+		if o := f.Origin(); o != nil {
+			f = o
+		}
+		if walkedGeneric[f] {
+			return
+		}
+		walkedGeneric[f] = true
+		for _, b := range f.Blocks {
+			for _, in := range b.Instrs {
+				for _, op := range in.Operands(nil) {
+					if g, ok := (*op).(*ssa.Function); ok && g != nil {
+						addRoot(g)
+					}
+				}
+			}
+		}
+		for _, anon := range f.AnonFuncs {
+			addRoot(anon)
+		}
+	}
+	isGeneric := func(f *ssa.Function) bool {
+		for g := f; g != nil; g = g.Parent() {
+			sig := g.Signature
+			if sig.TypeParams().Len() > 0 || sig.RecvTypeParams().Len() > 0 {
+				return true
+			}
+			for _, ta := range g.TypeArgs() {
+				if hasTypeParam(ta, 0) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	addRoot = func(f *ssa.Function) {
 		if f != nil && !seenRoot[f] {
 			seenRoot[f] = true
+			if isGeneric(f) {
+				walkGeneric(f)
+				return
+			}
 			roots = append(roots, f)
 		}
 	}
 	libRoots := false
+	// apiRoots: besides main/init/tests, the exported declarations of importable packages are roots (they are the "public_api" bucket,
+	// excluded from the universe because code outside the repository may use them, so what only they reach is not dead either).
+	apiRoots := false
+	rootOK := func(sp *ssa.Package, filename string) bool {
+		rel, ok := inRepo(filename)
+		if !ok {
+			return false
+		}
+		if libRoots {
+			return true
+		}
+		return apiRoots && importable(strings.TrimSuffix(strings.Fields(sp.Pkg.Path())[0], ".test"), sp.Pkg.Name(), rel)
+	}
 	collect := func() {
 		for _, sp := range ssapkgs {
 			if sp == nil {
@@ -312,22 +391,44 @@ func main() {
 					if rel, ok := inRepo(prog.Fset.Position(fn.Pos()).Filename); ok && strings.HasSuffix(rel, "_test.go") {
 						n := fn.Name()
 						if strings.HasPrefix(n, "Test") || strings.HasPrefix(n, "Benchmark") || strings.HasPrefix(n, "Fuzz") || strings.HasPrefix(n, "Example") {
+							if strings.HasPrefix(n, "Example") {
+								if syn, ok := fn.Syntax().(*ast.FuncDecl); ok && exampleNoOutput[pos{rel, prog.Fset.Position(syn.Name.Pos()).Line}] {
+									continue
+								}
+							}
 							addRoot(fn)
 							addRoot(sp.Func("init"))
 						}
 					}
 				}
-				if libRoots && fn.Pos().IsValid() && token.IsExported(fn.Name()) {
-					if _, ok := inRepo(prog.Fset.Position(fn.Pos()).Filename); ok {
+				if (libRoots || apiRoots) && fn.Pos().IsValid() && token.IsExported(fn.Name()) {
+					if rootOK(sp, prog.Fset.Position(fn.Pos()).Filename) {
 						addRoot(fn)
 						addRoot(sp.Func("init"))
 					}
 				}
 			}
-			if libRoots {
+			if libRoots || apiRoots {
 				for _, m := range sp.Members {
 					t, ok := m.(*ssa.Type)
 					if !ok || !token.IsExported(t.Name()) {
+						continue
+					}
+					if nt, ok := t.Type().(*types.Named); ok && nt.TypeParams().Len() > 0 {
+						// a generic type has no method set of its own to enumerate; root the exported methods it declares
+						// (the generic bodies; their callees are reached through the instantiations RTA follows)
+						for i := 0; i < nt.NumMethods(); i++ {
+							mo := nt.Method(i)
+							if !token.IsExported(mo.Name()) {
+								continue
+							}
+							f := prog.FuncValue(mo)
+							if f != nil && f.Pos().IsValid() {
+								if rootOK(sp, prog.Fset.Position(f.Pos()).Filename) {
+									addRoot(f)
+								}
+							}
+						}
 						continue
 					}
 					for _, s := range []*types.MethodSet{prog.MethodSets.MethodSet(t.Type()), prog.MethodSets.MethodSet(types.NewPointer(t.Type()))} {
@@ -338,7 +439,7 @@ func main() {
 							}
 							f := prog.MethodValue(sel)
 							if f != nil && f.Pos().IsValid() {
-								if _, ok := inRepo(prog.Fset.Position(f.Pos()).Filename); ok {
+								if rootOK(sp, prog.Fset.Position(f.Pos()).Filename) {
 									addRoot(f)
 								}
 							}
@@ -349,11 +450,18 @@ func main() {
 		}
 	}
 	collect()
+	var strictRoots []*ssa.Function
 	if len(roots) == 0 && !*tests {
 		// a library without a main package: fall back to its exported surface (the same rule as the call-graph oracle)
 		libRoots = true
 		out.AutoLibrary = true
 		collect()
+	}
+	if !libRoots {
+		strictRoots = append([]*ssa.Function(nil), roots...)
+		apiRoots = true
+		collect()
+		out.Stats["api_roots"] = len(roots) - len(strictRoots)
 	}
 	out.Roots = len(roots)
 	switch {
@@ -402,6 +510,32 @@ func main() {
 			reach[k] = true
 		}
 	}
+	for fn := range walkedGeneric {
+		// a generic body entered through a root is reachable even though RTA never sees it as a node
+		if k, ok := declOf(fn); ok {
+			reach[k] = true
+		}
+	}
+	if len(strictRoots) > 0 {
+		// the same analysis without the API roots: what cmd/deadcode reports (kept as a validation figure)
+		strict := map[pos]bool{}
+		for fn := range rta.Analyze(strictRoots, true).Reachable {
+			if fn == nil {
+				continue
+			}
+			if k, ok := declOf(fn); ok {
+				strict[k] = true
+			}
+		}
+		n := 0
+		for i := range out.Decls {
+			d := &out.Decls[i]
+			if d.Kind != "type" && !d.Generated && !strict[pos{d.File, d.Line}] {
+				n++
+			}
+		}
+		out.Stats["strict_roots_unreachable_functions"] = n
+	}
 	rootAt := map[pos]bool{}
 	for _, r := range roots {
 		if k, ok := declOf(r); ok {
@@ -423,7 +557,7 @@ func main() {
 			d.Root = "main_init"
 		case d.Kind == "function" && d.Name == "init":
 			d.Root = "main_init"
-		case d.TestFile && d.Kind == "function" && (strings.HasPrefix(d.Name, "Test") || strings.HasPrefix(d.Name, "Benchmark") ||
+		case d.TestFile && d.Kind == "function" && !exampleNoOutput[k] && (strings.HasPrefix(d.Name, "Test") || strings.HasPrefix(d.Name, "Benchmark") ||
 			strings.HasPrefix(d.Name, "Fuzz") || strings.HasPrefix(d.Name, "Example")):
 			d.Root = "test_root"
 		case out.AutoLibrary && rootAt[k]:
@@ -536,4 +670,49 @@ func recvName(e ast.Expr) string {
 			return ""
 		}
 	}
+}
+
+// hasTypeParam reports whether t mentions a type parameter.
+func hasTypeParam(t types.Type, depth int) bool {
+	if t == nil || depth > 8 {
+		return false
+	}
+	switch t := t.(type) {
+	case *types.TypeParam:
+		return true
+	case *types.Named:
+		for i := 0; i < t.TypeArgs().Len(); i++ {
+			if hasTypeParam(t.TypeArgs().At(i), depth+1) {
+				return true
+			}
+		}
+	case *types.Pointer:
+		return hasTypeParam(t.Elem(), depth+1)
+	case *types.Slice:
+		return hasTypeParam(t.Elem(), depth+1)
+	case *types.Array:
+		return hasTypeParam(t.Elem(), depth+1)
+	case *types.Chan:
+		return hasTypeParam(t.Elem(), depth+1)
+	case *types.Map:
+		return hasTypeParam(t.Key(), depth+1) || hasTypeParam(t.Elem(), depth+1)
+	case *types.Signature:
+		for i := 0; i < t.Params().Len(); i++ {
+			if hasTypeParam(t.Params().At(i).Type(), depth+1) {
+				return true
+			}
+		}
+		for i := 0; i < t.Results().Len(); i++ {
+			if hasTypeParam(t.Results().At(i).Type(), depth+1) {
+				return true
+			}
+		}
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if hasTypeParam(t.Field(i).Type(), depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
