@@ -20,6 +20,7 @@ mod graph_query;
 pub use graph_query::{DispatchPeers, EntryArgs, closed_impl_args, dispatch_compatible, type_args};
 mod migrations;
 mod overview;
+mod public_api;
 pub(crate) mod resolver;
 
 #[derive(Debug, Clone)]
@@ -1787,8 +1788,12 @@ impl Db {
             decls,
             static_lines,
             file_wide,
+            public,
+            example_output,
         } = modifiers;
         if private.is_empty()
+            && public.is_empty()
+            && example_output.is_empty()
             && statics.is_empty()
             && local.is_empty()
             && overrides.is_empty()
@@ -1809,6 +1814,8 @@ impl Db {
         let private_ph = placeholders(private.len());
         let static_ph = placeholders(statics.len());
         let local_ph = placeholders(local.len());
+        let public_ph = placeholders(public.len());
+        let example_ph = placeholders(example_output.len());
         // Overloads share a qualname, so an override is keyed by its line too.
         let line_test = |pairs: &[(String, i64)]| {
             if pairs.is_empty() {
@@ -1829,6 +1836,8 @@ impl Db {
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
                     || CASE WHEN qualname IN ({static_ph}) OR {static_line_test} THEN ' static' ELSE '' END
                     || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
+                    || CASE WHEN qualname IN ({public_ph}) THEN ' public' ELSE '' END
+                    || CASE WHEN qualname IN ({example_ph}) THEN ' example_output' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END
                     || CASE WHEN {decl_test} THEN ' {decl_modifier}' ELSE '' END
                     || ?), '')
@@ -1857,6 +1866,8 @@ impl Db {
         params.extend(
             local
                 .iter()
+                .chain(public)
+                .chain(example_output)
                 .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>),
         );
         params.extend(line_params(overrides));

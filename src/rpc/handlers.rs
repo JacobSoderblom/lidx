@@ -1606,11 +1606,14 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
     let include_unused_imports = params.include_unused_imports.unwrap_or(true);
     let include_orphan_tests = params.include_orphan_tests.unwrap_or(true);
 
-    let dead_syms = indexer.db().dead_symbols(
+    let include_public_api = params.include_public_api.unwrap_or(false);
+    let dead = indexer.db().dead_symbols(
         limit,
         ctx.languages.as_deref(),
         ctx.paths.as_deref(),
         ctx.graph_version,
+        indexer.repo_root(),
+        include_public_api,
     )?;
 
     let unused_imports = if include_unused_imports {
@@ -1636,20 +1639,27 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
         vec![]
     };
 
-    let ds_count = dead_syms.len();
+    let ds_count = dead.dead.len();
     let ui_count = unused_imports.len();
     let ot_count = orphan_tests.len();
 
-    Ok(json!({
-        "dead_symbols": dead_syms,
+    let mut result = json!({
+        "dead_symbols": dead.dead,
         "unused_imports": unused_imports,
         "orphan_tests": orphan_tests,
         "counts": {
             "dead_symbols": ds_count,
             "unused_imports": ui_count,
             "orphan_tests": ot_count,
+            // Public-API declarations with no incoming reference: left out of
+            // `dead_symbols` unless `include_public_api` asks for them.
+            "public_api": dead.public_api_total,
         }
-    }))
+    });
+    if include_public_api {
+        result["public_api"] = json!(dead.public_api);
+    }
+    Ok(result)
 }
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {

@@ -36,6 +36,7 @@ use tree_sitter::{Node, Parser};
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
     deferred_receiver: Some(resolve_deferred),
+    public_api: crate::db::resolver::PublicApiRule::EntryExports,
     ..LanguageProfile::DEFAULT
 };
 
@@ -7570,15 +7571,15 @@ fn handle_function_named(
     }
 }
 
-/// Whether `node` (a `method_definition`) is private: an explicit
-/// `private` accessibility modifier (TypeScript), or a `#`-prefixed name
-/// (a JS/TS private class field/method).
 /// Whether the class member `node` carries the `static` keyword.
 fn is_static_member(node: Node<'_>) -> bool {
     let mut cursor = node.walk();
     node.children(&mut cursor).any(|c| c.kind() == "static")
 }
 
+/// Whether `node` (a `method_definition`) is private: an explicit
+/// `private` accessibility modifier (TypeScript), or a `#`-prefixed name
+/// (a JS/TS private class field/method).
 fn is_private_member(node: Node<'_>, source: &str) -> bool {
     let mut cursor = node.walk();
     let has_modifier = node
@@ -10560,4 +10561,82 @@ export function b() { return cn('y'); }
             Some("ext:react:useState")
         );
     }
+}
+
+/// The declarations a package's entry files export, for `dead_symbols`:
+/// `(declaring file, local name)` pairs reached from each of `entries`
+/// (repo-relative paths) through `export ... from` chains, `export *` and
+/// import-then-export barrels, namespaces included.
+pub fn public_api_declarations(repo_root: &Path, entries: &[String]) -> HashSet<(String, String)> {
+    let mut cache = ExportCache::new();
+    let mut out = HashSet::new();
+    let mut modules = HashSet::new();
+    for entry in entries {
+        add_module_exports(repo_root, entry, &mut cache, &mut out, &mut modules);
+    }
+    out
+}
+
+/// Adds everything module `path` exports to `out` (each module once).
+fn add_module_exports(
+    repo_root: &Path,
+    path: &str,
+    cache: &mut ExportCache,
+    out: &mut HashSet<(String, String)>,
+    modules: &mut HashSet<String>,
+) {
+    if !modules.insert(path.to_string()) {
+        return;
+    }
+    let Some(exports) = cache
+        .entry(path.to_string())
+        .or_insert_with(|| scan_exports(repo_root, path).map(Rc::new))
+        .clone()
+    else {
+        return;
+    };
+    // An anonymous default export is indexed under `DEFAULT_EXPORT`.
+    out.insert((path.to_string(), DEFAULT_EXPORT.to_string()));
+    let mut names: HashSet<String> = exports.names.iter().cloned().collect();
+    names.extend(exports.aliases.keys().cloned());
+    names.extend(exports.reexports.iter().map(|r| r.exported.clone()));
+    names.extend(exports.namespaces.keys().cloned());
+    if exports.default_local.is_some() {
+        names.insert(DEFAULT_EXPORT.to_string());
+    }
+    for name in names {
+        match chase_export(repo_root, path, &name, cache, &mut Visited::new()) {
+            Some(ExportTarget::Symbol(file, local)) => {
+                if name == DEFAULT_EXPORT && exports.default_local.is_none() {
+                    out.insert((file.clone(), DEFAULT_EXPORT.to_string()));
+                }
+                out.insert((file, local));
+            }
+            Some(ExportTarget::Namespace(dst)) => {
+                add_module_exports(repo_root, &dst, cache, out, modules)
+            }
+            None => {}
+        }
+    }
+    for r in &exports.reexports {
+        if r.orig == DEFAULT_EXPORT
+            && let Some(dst) = resolve_import_path(repo_root, path, &r.spec)
+        {
+            out.insert((dst, DEFAULT_EXPORT.to_string()));
+        }
+    }
+    for spec in &exports.stars {
+        if let Some(dst) = resolve_import_path(repo_root, path, spec) {
+            add_module_exports(repo_root, &dst, cache, out, modules);
+        }
+    }
+}
+
+/// The module-level name `qualname` (a symbol of `rel_path`) lives under:
+/// the first segment after the file's module qualname (`mod.Class.method`
+/// -> `Class`). `None` when `qualname` is not inside that module.
+pub fn top_level_name<'a>(rel_path: &str, qualname: &'a str) -> Option<&'a str> {
+    let module = module_name_from_rel_path(rel_path);
+    let rest = qualname.strip_prefix(module.as_str())?.strip_prefix('.')?;
+    rest.split('.').next()
 }

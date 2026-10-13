@@ -90,6 +90,21 @@ struct RepoMapParams {
 struct DeadSymbolsParams {
     /// Maximum number of results per category (default: 50)
     limit: Option<usize>,
+    /// Also return declarations that are public API (an exported Go
+    /// identifier of an importable package, a `pub` item of a Rust library
+    /// crate (module path not checked), what a TypeScript package entry exports) in a separate
+    /// `public_api` group, each with confidence `low`. Default false: such
+    /// declarations may be used from outside the repository, so they are
+    /// left out of `dead_symbols` and only counted in `counts.public_api`.
+    /// Every `dead_symbols` row carries `confidence` and `reason`: `high` =
+    /// not public API, no incoming reference, no unresolved reference names
+    /// it; `medium` = not public API but something is unproven (an
+    /// unresolved reference with the same name exists, the declaration is
+    /// exported from a package nobody can import, or the language's
+    /// visibility is not modelled); `low` = public API (opt-in only).
+    /// Roots are never reported: Go Test*/Benchmark*/Fuzz*/Example* in
+    /// _test.go, `init`, `main`; Rust #[test]/#[bench]/main.
+    include_public_api: Option<bool>,
     /// Include unused imports (default: true)
     include_unused_imports: Option<bool>,
     /// Include orphan tests (default: true)
@@ -698,7 +713,7 @@ const METHOD_SPECS: &[MethodSpec] = &[
     },
     MethodSpec {
         name: "dead_symbols",
-        summary: "Symbols with no incoming references",
+        summary: "Symbols with no incoming references (public API excluded; each claim has a confidence tier)",
         sizing: Sizing::Capped,
         run: handlers::handle_dead_symbols,
     },

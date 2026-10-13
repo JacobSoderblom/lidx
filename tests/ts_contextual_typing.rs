@@ -385,12 +385,13 @@ fn local_functions_are_not_dead_and_not_listed_at_the_top_level() {
     let dead = rpc_call(
         &files,
         "dead_symbols",
-        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false}),
+        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false, "include_public_api": true}),
     );
     let dead: Vec<&str> = dead["dead_symbols"]
         .as_array()
         .unwrap()
         .iter()
+        .chain(dead["public_api"].as_array().unwrap())
         .filter_map(|s| s["qualname"].as_str())
         .collect();
     assert!(dead.contains(&"src/hidden.deadTopLevel"), "{dead:?}");
