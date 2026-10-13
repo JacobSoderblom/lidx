@@ -1,3 +1,5 @@
 [
-
+{"category":"exported_used_by_rule","confidence":"medium","exported":true,"file":"viper_test.go","key":"viper_test.go:161","kind":"method","lidx_kind":"method","line":161,"name":"Set","policy":true,"qualname":"viper_test.stringValue.Set","subkind":""},
+{"category":"exported_used_by_rule","confidence":"medium","exported":true,"file":"viper_test.go","key":"viper_test.go:166","kind":"method","lidx_kind":"method","line":166,"name":"Type","policy":true,"qualname":"viper_test.stringValue.Type","subkind":""},
+{"category":"exported_used_by_rule","confidence":"medium","exported":true,"file":"viper_test.go","key":"viper_test.go:170","kind":"method","lidx_kind":"method","line":170,"name":"String","policy":true,"qualname":"viper_test.stringValue.String","subkind":""}
 ]

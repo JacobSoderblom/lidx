@@ -29,5 +29,9 @@
 {"confidence":"medium","file":"crates/matcher/tests/test_matcher.rs","key":"crates/matcher/tests/test_matcher.rs:130","lidx_kind":"struct","name":"MyError","qualname":"crate::tests::test_matcher::MyError","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"crates/matcher/tests/test_matcher.rs","key":"crates/matcher/tests/test_matcher.rs:52","lidx_kind":"struct","name":"MyError","qualname":"crate::tests::test_matcher::MyError","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"crates/searcher/src/testutil.rs","key":"crates/searcher/src/testutil.rs:305","lidx_kind":"method","name":"filter","qualname":"crate::testutil::SearcherTester::filter","reason":"file_not_in_program"},
-{"confidence":"medium","file":"tests/util.rs","key":"tests/util.rs:146","lidx_kind":"method","name":"remove","qualname":"crate::tests::util::Dir::remove","reason":"test_file_outside_cell"}
+{"confidence":"medium","file":"tests/util.rs","key":"tests/util.rs:146","lidx_kind":"method","name":"remove","qualname":"crate::tests::util::Dir::remove","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"tests/util.rs","key":"tests/util.rs:262","lidx_kind":"method","name":"arg","qualname":"crate::tests::util::TestCommand::arg","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"tests/util.rs","key":"tests/util.rs:268","lidx_kind":"method","name":"args","qualname":"crate::tests::util::TestCommand::args","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"tests/util.rs","key":"tests/util.rs:278","lidx_kind":"method","name":"env","qualname":"crate::tests::util::TestCommand::env","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"tests/util.rs","key":"tests/util.rs:295","lidx_kind":"method","name":"current_dir","qualname":"crate::tests::util::TestCommand::current_dir","reason":"test_file_outside_cell"}
 ]

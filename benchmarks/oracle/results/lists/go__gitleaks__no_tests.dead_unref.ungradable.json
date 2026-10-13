@@ -1,3 +1,4 @@
 [
-
+{"confidence":"medium","file":"detect/reader_test.go","key":"detect/reader_test.go:25","lidx_kind":"method","name":"Read","qualname":"detect/reader_test.mockReader.Read","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"report/report_test.go","key":"report/report_test.go:40","lidx_kind":"method","name":"Close","qualname":"report/report_test.testWriter.Close","reason":"test_file_outside_cell"}
 ]

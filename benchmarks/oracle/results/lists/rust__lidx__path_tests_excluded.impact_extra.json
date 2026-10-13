@@ -1,6 +1,3 @@
 [
-{"k":"inf","member":"src/indexer/csharp.rs:7618 generic_method_calls_get_same_target_as_non_generic","node":"src/indexer/csharp.rs|crate::indexer::csharp::tests::generic_method_calls_get_same_target_as_non_generic","seed":"src/config.rs:90","seed_name":"get"},
-{"k":"inf","member":"src/indexer/csharp.rs:7618 generic_method_calls_get_same_target_as_non_generic","node":"src/indexer/csharp.rs|crate::indexer::csharp::tests::generic_method_calls_get_same_target_as_non_generic","seed":"src/db/resolver.rs:4641","seed_name":"qualname_trailing_name"},
-{"k":"inf","member":"src/indexer/csharp.rs:7618 generic_method_calls_get_same_target_as_non_generic","node":"src/indexer/csharp.rs|crate::indexer::csharp::tests::generic_method_calls_get_same_target_as_non_generic","seed":"src/indexer/rust.rs:216","seed_name":"new"},
-{"k":"inf","member":"src/indexer/csharp.rs:7618 generic_method_calls_get_same_target_as_non_generic","node":"src/indexer/csharp.rs|crate::indexer::csharp::tests::generic_method_calls_get_same_target_as_non_generic","seed":"src/indexer/scan.rs:481","seed_name":"hash_bytes"}
+
 ]

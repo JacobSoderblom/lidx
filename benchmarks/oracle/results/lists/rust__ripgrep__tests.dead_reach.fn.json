@@ -16,7 +16,5 @@
 {"category":"incoming_from_tests_only","exported":true,"file":"tests/util.rs","incoming":["CALLS:test","CALLS:test","CALLS:test"],"key":"tests/util.rs:39","kind":"function","line":39,"name":"sort_lines","subkind":"fn"},
 {"category":"incoming_from_tests_only","exported":true,"file":"tests/util.rs","incoming":["CALLS:test","CALLS:test","CALLS:test"],"key":"tests/util.rs:47","kind":"function","line":47,"name":"cmd_exists","subkind":"fn"},
 {"category":"incoming_from_tests_only","exported":true,"file":"tests/util.rs","incoming":["CALLS:test","CALLS:test","CALLS:test"],"key":"tests/util.rs:508","kind":"function","line":508,"name":"is_cross","subkind":"fn"},
-{"category":"incoming_from_tests_only","exported":true,"file":"tests/util.rs","incoming":["CALLS:test","CALLS:test"],"key":"tests/util.rs:278","kind":"method","line":278,"name":"env","subkind":"inherent"},
-{"category":"incoming_from_tests_only","exported":true,"file":"tests/util.rs","incoming":["CALLS:test"],"key":"tests/util.rs:109","kind":"method","line":109,"name":"try_create","subkind":"inherent"},
-{"category":"no_incoming_edge_but_filtered","exported":true,"file":"tests/util.rs","incoming":[],"key":"tests/util.rs:295","kind":"method","line":295,"name":"current_dir","subkind":"inherent"}
+{"category":"incoming_from_tests_only","exported":true,"file":"tests/util.rs","incoming":["CALLS:test"],"key":"tests/util.rs:109","kind":"method","line":109,"name":"try_create","subkind":"inherent"}
 ]

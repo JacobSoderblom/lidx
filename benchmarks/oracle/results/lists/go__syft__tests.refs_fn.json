@@ -1,3 +1,3 @@
 [
-{"callee":{"file":"syft/pkg/package.go","line":108,"name":"Less"},"caller":{"file":"internal/cmptest/common_options.go","line":22,"name":"BuildOptions"},"category":"no_edge","ctxs":["call_argument"],"detail":null,"forms":["qualified"],"module_level":false,"sites":["internal/cmptest/common_options.go:34"]}
+
 ]

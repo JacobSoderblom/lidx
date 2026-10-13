@@ -1,4 +1,5 @@
 [
+{"confidence":"medium","file":"_examples/custom-handler/main.go","key":"_examples/custom-handler/main.go:12","lidx_kind":"method","name":"ServeHTTP","qualname":"_examples/custom-handler/main.Handler.ServeHTTP","reason":"file_not_in_program"},
 {"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:301","lidx_kind":"method","name":"Bind","qualname":"_examples/rest/main.UserPayload.Bind","reason":"file_not_in_program"},
 {"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:305","lidx_kind":"method","name":"Render","qualname":"_examples/rest/main.UserPayload.Render","reason":"file_not_in_program"},
 {"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:327","lidx_kind":"method","name":"Bind","qualname":"_examples/rest/main.ArticleRequest.Bind","reason":"file_not_in_program"},
