@@ -542,6 +542,8 @@ pub struct Declaration {
     pub signature: Option<String>,
     pub visibility: Option<String>,
     pub file_id: i64,
+    /// Repo-relative path of the declaring file.
+    pub path: String,
 }
 
 /// What a `ResolveDeferred` hook may ask the index for. Every query is
@@ -775,7 +777,7 @@ pub(crate) enum ImportMissPolicy {
 /// -- every repo qualname is `crate::`-rooted, so this is a path into `std`/
 /// `core`/`alloc`, a third-party crate, or a type outside the repo.
 fn is_foreign_rust_path(target_qualname: &str) -> bool {
-    target_qualname.contains("::") && !target_qualname.starts_with("crate::")
+    target_qualname.contains("::") && !target_qualname.starts_with(RUST_CRATE_ROOT)
 }
 
 /// Whether `path` lives under a `tests/fixtures/` tree: test data indexed
@@ -1019,6 +1021,30 @@ fn live_symbols(n: usize) -> String {
 
 impl DeclarationIndex for LanguageIndex<'_, '_> {
     fn declarations(&self, query: DeclarationQuery<'_>) -> Result<Vec<Declaration>> {
+        // A callable pinned to a package of this repository (`@dir|path`).
+        if let DeclarationQuery::Callable(pin) = query
+            && self.lang == "rust"
+            && let Some((dir, path)) = parse_rust_crate_pin(pin)
+        {
+            let items = rust_package_items(
+                self.resolver.conn,
+                self.resolver.graph_version,
+                dir,
+                path,
+                None,
+            )?;
+            return Ok(items
+                .into_iter()
+                .filter(|item| matches!(item.kind.as_str(), "function" | "method"))
+                .map(|item| Declaration {
+                    qualname: item.qualname,
+                    signature: item.signature,
+                    visibility: item.visibility,
+                    file_id: item.file_id,
+                    path: item.path,
+                })
+                .collect());
+        }
         // (filter over ?1, ?4 = method name, ?5 = qualname suffix; ?1 the arg)
         let (filter, arg, name, suffix) = match query {
             DeclarationQuery::Callable(qualname) => (
@@ -1060,7 +1086,7 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
             ),
         };
         let mut stmt = self.resolver.conn.prepare_cached(&format!(
-            "SELECT s.qualname, s.signature, s.visibility, s.file_id
+            "SELECT s.qualname, s.signature, s.visibility, s.file_id, f.path
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE {filter} AND f.language = ?3 AND {}
                AND (?4 IS NOT NULL AND ?5 IS NOT NULL)",
@@ -1074,6 +1100,7 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                     signature: row.get(1)?,
                     visibility: row.get(2)?,
                     file_id: row.get(3)?,
+                    path: row.get(4)?,
                 })
             },
         )?;
@@ -1294,6 +1321,9 @@ pub(crate) struct Resolver<'c> {
     external_file_id: Option<i64>,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
+    /// Whether the exact tier drops `module` symbols for the current
+    /// reference (a Rust call).
+    exact_skips_modules: bool,
 }
 
 impl<'c> Resolver<'c> {
@@ -1323,6 +1353,7 @@ impl<'c> Resolver<'c> {
             call_scope: TypeScope::default(),
             external_file_id: None,
             repo_entity_memo: HashMap::new(),
+            exact_skips_modules: false,
         })
     }
 
@@ -1335,6 +1366,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.caller_scope = r.source_qualname.map(str::to_string);
+        self.exact_skips_modules = r.source_lang == "rust" && r.edge_kind == "CALLS";
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             return self.refuse_uncallable_kind(r, resolution);
@@ -1748,6 +1780,18 @@ impl<'c> Resolver<'c> {
                     return Ok(miss);
                 }
             } else if !types_only
+                && r.source_lang == "rust"
+                && r.import_candidates
+                    .iter()
+                    .any(|c| c.starts_with(RUST_CRATE_PIN))
+            {
+                // Pinned to a package of this repository: its public items
+                // are the only candidates, whatever other packages declare.
+                match self.resolve_rust_crate_member(r.import_candidates)? {
+                    Ok(id) => return Ok(resolved(id, ResolutionKind::Import)),
+                    Err(reason) => return Ok(Resolution::Unresolved(reason)),
+                }
+            } else if !types_only
                 && let Some(id) = self.resolve_import(
                     r.import_candidates,
                     symbol_map,
@@ -1756,6 +1800,23 @@ impl<'c> Resolver<'c> {
                 )?
             {
                 return Ok(resolved(id, ResolutionKind::Import));
+            }
+            // A path rooted at a dependency from outside the repository is
+            // external: no name guess may bind it to a repo item that happens
+            // to share the type's or function's name.
+            if !types_only
+                && r.source_lang == "rust"
+                && !never_external(r)
+                && r.import_candidates.iter().any(|c| c == RUST_EXTERNAL_CRATE)
+                && let Some(stub) = self.stub_resolution(
+                    r.source_lang,
+                    r.target_qualname,
+                    r.import_candidates,
+                    r.bare_call,
+                    false,
+                )?
+            {
+                return Ok(stub);
             }
         }
         // `new T()` / `: base()` whose `using`s name two repo types `T` is
@@ -1975,6 +2036,11 @@ impl<'c> Resolver<'c> {
         )?;
         if types_only {
             candidates.retain(|c| !matches!(c.kind.as_str(), "module" | "namespace"));
+        }
+        // A Rust call never targets a module: `exec::job(..)` with `mod job;
+        // pub use job::job;` names the function, not the module `exec::job`.
+        if self.exact_skips_modules {
+            candidates.retain(|c| c.kind != "module");
         }
         // Issue #123: an overload set is told apart by the call's arity, and
         // never collapsed to "the lowest id" -- 2+ admitted overloads refuse.
@@ -2299,11 +2365,32 @@ impl<'c> Resolver<'c> {
 
             Some(known_type) => {
                 let method = qualname_trailing_name(target_qualname);
+                // A Rust type of another workspace package (`@dir|Type`): a
+                // public method of that package's type, else the plain name.
+                let mut known_type = known_type;
+                if source_lang == "rust"
+                    && let Some((dir, ty)) = rust_pinned_type(known_type)
+                {
+                    let items = rust_package_items(
+                        self.conn,
+                        self.graph_version,
+                        dir,
+                        &format!("{ty}::{method}"),
+                        self.caller_scope.as_deref(),
+                    )?;
+                    match items.as_slice() {
+                        [] => known_type = qualname_trailing_name(ty),
+                        [item] => return Ok(Some((item.id, ResolutionKind::ReceiverType))),
+                        _ => {
+                            self.saw_ambiguous = true;
+                            return Ok(None);
+                        }
+                    }
+                }
                 // A type the extractor pinned to one declaration binds only
                 // through that class and its ancestors: another class of the
                 // same name is never a candidate. A pin naming no indexed
                 // type falls back to the bare name.
-                let mut known_type = known_type;
                 if let Some(pinned) =
                     crate::indexer::extract::ReceiverType::decode_pinned(known_type)
                 {
@@ -2897,6 +2984,37 @@ impl<'c> Resolver<'c> {
         Ok(found)
     }
 
+    /// Resolve the `@<package dir>|<path>` candidates of a Rust reference
+    /// (see [`RUST_CRATE_PIN`]) to the one public item of that package's
+    /// library they name (`rust_package_items`). Several pins must agree.
+    /// `Err` is the reason nothing bound: the package declares no such item
+    /// (retried when it does), or declares several.
+    fn resolve_rust_crate_member(
+        &mut self,
+        candidates: &[String],
+    ) -> Result<std::result::Result<i64, UnresolvedReason>> {
+        let mut found: Option<i64> = None;
+        for candidate in candidates {
+            let Some((dir, path)) = parse_rust_crate_pin(candidate) else {
+                continue;
+            };
+            let items = rust_package_items(
+                self.conn,
+                self.graph_version,
+                dir,
+                path,
+                self.caller_scope.as_deref(),
+            )?;
+            match (items.as_slice(), found) {
+                ([], _) => {}
+                ([item], None) => found = Some(item.id),
+                ([item], Some(existing)) if existing == item.id => {}
+                _ => return Ok(Err(UnresolvedReason::Ambiguous)),
+            }
+        }
+        Ok(found.ok_or(UnresolvedReason::NoCandidates))
+    }
+
     /// A Go call whose package candidate (`=dir|Name`, `>dir|Name`,
     /// `<import path>|Name`) found no member. The name tiers must not guess
     /// then: in Go a bare name and a package-qualified name each denote one
@@ -3098,6 +3216,17 @@ impl<'c> Resolver<'c> {
         bare_call: bool,
         via_language_fallback: bool,
     ) -> Result<Option<Resolution>> {
+        let named: Vec<String>;
+        let import_candidates = if import_candidates.iter().any(|c| is_rust_crate_marker(c)) {
+            named = import_candidates
+                .iter()
+                .filter(|c| !is_rust_crate_marker(c))
+                .cloned()
+                .collect();
+            &named[..]
+        } else {
+            import_candidates
+        };
         let Some(qualname) = external_stub_qualname(target_qualname, import_candidates, bare_call)
         else {
             return Ok(Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)));
@@ -3340,6 +3469,45 @@ pub(crate) const GO_IMPORTED_PACKAGE: char = '>';
 /// element. Only the Go import hook, which can read the imported package's own
 /// `package` clause, tells them apart.
 pub(crate) const GO_UNKNOWN_QUALIFIER: char = '?';
+
+/// Rust: an `import_candidates` entry `@<package dir>|<path>` pins a path
+/// whose first segment names another package of this repository
+/// (`grep_regex::RegexMatcher::new` written in the `printer` package is
+/// `@crates/regex|RegexMatcher::new`); the Rust extractor writes it from the
+/// Cargo manifests (`crate::indexer::rust_workspace`). It binds only to a
+/// public item of that package's library, never to a same-named item of
+/// another package. [`RUST_EXTERNAL_CRATE`] marks a path whose first segment
+/// is a dependency from outside the repository, which no name guess may bind.
+pub(crate) const RUST_CRATE_PIN: char = '@';
+/// Separates a pin's package directory from the path in it.
+pub(crate) const RUST_PIN_SEPARATOR: char = '|';
+/// The root every Rust repo qualname starts with.
+pub(crate) const RUST_CRATE_ROOT: &str = "crate::";
+
+/// The pin for `path` (`Type::method`, as written after the crate's name) in
+/// the package at `dir`.
+pub(crate) fn rust_crate_pin(dir: &str, path: &str) -> String {
+    format!("{RUST_CRATE_PIN}{dir}{RUST_PIN_SEPARATOR}{path}")
+}
+
+/// `(package dir, path)` of a pin; `None` for any other import candidate.
+pub(crate) fn parse_rust_crate_pin(candidate: &str) -> Option<(&str, &str)> {
+    candidate
+        .strip_prefix(RUST_CRATE_PIN)
+        .and_then(|rest| rest.split_once(RUST_PIN_SEPARATOR))
+}
+pub(crate) const RUST_EXTERNAL_CRATE: &str = "~";
+
+/// A Rust receiver type pinned to a package: `@<package dir>|<Type path>`.
+pub(crate) fn rust_pinned_type(receiver_type: &str) -> Option<(&str, &str)> {
+    parse_rust_crate_pin(receiver_type)
+}
+
+/// Whether an import candidate is one of the Rust markers above rather than a
+/// qualname.
+fn is_rust_crate_marker(candidate: &str) -> bool {
+    candidate == RUST_EXTERNAL_CRATE || candidate.starts_with(RUST_CRATE_PIN)
+}
 
 /// The `ext:` marker every external stub qualname starts with.
 const EXTERNAL_STUB_PREFIX: &str = "ext:";
@@ -3748,6 +3916,140 @@ enum PinnedMember {
     Missing,
     /// No indexed type has the pinned qualname.
     NoType,
+}
+
+/// The public item of the library of the Cargo package at `dir` that `path`
+/// (`Type::method`, `module::f`, `f`: as written after the crate's name)
+/// names: by exact qualname (`crate::<path>`), else by the whole path as the
+/// tail of a qualname (a type re-exported at the crate root is declared in a
+/// module), else by its last two segments (a module path that differs from
+/// where the item is declared), else -- for a path through a module -- by
+/// the item's name alone. Only the first tier that matches counts;
+/// more than one item in it is an ambiguity the caller reports.
+fn rust_package_items(
+    conn: &Connection,
+    graph_version: i64,
+    dir: &str,
+    path: &str,
+    caller_scope: Option<&str>,
+) -> Result<Vec<PackageItem>> {
+    let segments: Vec<&str> = path.split("::").collect();
+    let name = segments[segments.len() - 1];
+    let rows: Vec<PackageItem> = conn
+        .prepare_cached(
+            "SELECT s.id, s.qualname, s.kind, f.path, s.visibility, s.signature, s.file_id
+             FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.name = ?1 AND s.graph_version = ?2 AND f.language = 'rust'
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?2)
+               AND s.kind IN ('function', 'method', 'struct', 'enum', 'trait', 'type',
+                              'class', 'const', 'static')
+             ORDER BY s.id",
+        )?
+        .query_map(params![name, graph_version], |row| {
+            Ok(PackageItem {
+                id: row.get(0)?,
+                qualname: row.get(1)?,
+                kind: row.get(2)?,
+                path: row.get(3)?,
+                visibility: row.get(4)?,
+                signature: row.get(5)?,
+                file_id: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let items: Vec<PackageItem> = collapse_cfg_twins(
+        rows.into_iter()
+            .filter(|item| {
+                item.in_library_of(dir)
+                    && !is_private(item.visibility.as_deref())
+                    // `f()` names a free function, never a method.
+                    && !(segments.len() == 1 && item.kind == "method")
+            })
+            .collect(),
+        PackageItem::twin_view,
+        caller_scope,
+    );
+    let exact = format!("{RUST_CRATE_ROOT}{path}");
+    let tail = |n: usize| {
+        let from = segments.len().saturating_sub(n);
+        format!("::{}", segments[from..].join("::"))
+    };
+    let (whole, last_two, name_only) = (tail(segments.len()), tail(2), tail(1));
+    // `pkg::helpers::f`, with `f` declared in a private submodule of
+    // `helpers` and re-exported (`pub use imp::*`): the path names a module,
+    // so the item is the package's one public free item of that name.
+    let module = segments
+        .len()
+        .checked_sub(2)
+        .map(|i| segments[i])
+        .filter(|segment| segment.starts_with(char::is_lowercase));
+    let tiers: [&dyn Fn(&PackageItem) -> bool; 4] = [
+        &|i| i.qualname == exact,
+        &|i| i.qualname.ends_with(&whole),
+        &|i| i.qualname.ends_with(&last_two),
+        // ... and only one that passes through the module the path names
+        // (`helpers` may re-export an outside crate's `f`).
+        &|i| {
+            module.is_some_and(|m| i.qualname.rsplit("::").skip(1).any(|part| part == m))
+                && i.kind != "method"
+                && i.qualname.ends_with(&name_only)
+        },
+    ];
+    for tier in tiers {
+        let hits: Vec<&PackageItem> = items.iter().filter(|i| tier(i)).collect();
+        if !hits.is_empty() {
+            return Ok(hits.into_iter().cloned().collect());
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// One public-item candidate of `Resolver::resolve_rust_crate_member`.
+#[derive(Clone)]
+struct PackageItem {
+    id: i64,
+    qualname: String,
+    kind: String,
+    path: String,
+    visibility: Option<String>,
+    signature: Option<String>,
+    file_id: i64,
+}
+
+impl PackageItem {
+    fn twin_view(&self) -> TwinView<'_> {
+        TwinView {
+            id: self.id,
+            path: &self.path,
+            qualname: &self.qualname,
+            kind: &self.kind,
+            signature: self.signature.as_deref(),
+            language: "rust",
+        }
+    }
+
+    /// Whether the item belongs to the library of the Cargo package at `dir`:
+    /// declared in that package, and not in its tests, benches, examples or
+    /// binaries.
+    fn in_library_of(&self, dir: &str) -> bool {
+        let Some(inside) = (if dir.is_empty() {
+            Some(self.path.as_str())
+        } else {
+            self.path
+                .strip_prefix(dir)
+                .and_then(|rest| rest.strip_prefix('/'))
+        }) else {
+            return false;
+        };
+        let package_of = profile_for("rust").package_dir;
+        package_of.is_none_or(|of| of(&self.path) == dir)
+            && !matches!(
+                inside.split('/').next(),
+                Some("tests" | "benches" | "examples")
+            )
+            && inside != "src/main.rs"
+            && !inside.starts_with("src/bin/")
+    }
 }
 
 /// One `EXACT_SQL` row.
