@@ -2578,7 +2578,7 @@ Pooled over every sampled item: 13/355 = 3.7% [2.2%, 6.2%].
 
 ## Value references
 
-A *value reference* is a function, method or class used as a value rather than called: a callback argument, a handler-table entry, a struct-field handler (`cobra.Command{RunE: run}`), a method value, `.map(f)`. It is what keeps a handler layer out of `dead_symbols` and what `explain_symbol` shows under `other_edges`. The compiler is the only source of the oracle pairs. The lidx side is its `REFERENCES` rows plus its `USES` rows whose target is a function, both ends in-repo symbols, deduplicated to (referencing declaration, referenced declaration) pairs. Precision = lidx pairs the compiler confirms / lidx pairs it can judge; recall = oracle pairs lidx has / oracle pairs whose ends are both lidx symbols (pairs with no lidx symbol at an end are listed as capture gaps). **A pair that is also called is a call, on both sides**: the oracle pair is dropped when the compiler also sees a call from the same declaration to the same function, and the lidx pair is dropped when lidx has a `CALLS` / `DISPATCH` edge for it. Intervals are 95% Wilson. Definitions, keying and exclusions: README, "Value references". The "Alongside REFERENCES and USES" table of the call tables says what adding these edges does to a *call* grading; this section grades the edges themselves.
+A *value reference* is a function, method or class used as a value rather than called: a callback argument, a handler-table entry, a struct-field handler (`cobra.Command{RunE: run}`), a method value, `.map(f)`. It is what keeps a handler layer out of `dead_symbols` and what `explain_symbol` shows under `other_edges`. The compiler is the only source of the oracle pairs. The lidx side is its `REFERENCES` rows plus its `USES` rows whose target is a function, both ends in-repo symbols, deduplicated to (referencing declaration, referenced declaration) pairs. Precision = lidx pairs the compiler confirms / lidx pairs it can judge; recall = oracle pairs lidx has / oracle pairs whose ends are both lidx symbols (pairs with no lidx symbol at an end are listed as capture gaps). **Read each precision figure with the note beside it**: Rust precision is over pairs with a source line only, and the lineless module-level USES rows lidx records for `Type::f` paths are ungraded (their count and share of lidx's pairs is printed); pairs dropped because lidx also has a call are not graded either, and a cell where they exceed 20% of the graded pairs is marked weakly supported. **A pair that is also called is a call, on both sides**: the oracle pair is dropped when the compiler also sees a call from the same declaration to the same function, and the lidx pair is dropped when lidx has a `CALLS` / `DISPATCH` edge for it. Intervals are 95% Wilson. Definitions, keying and exclusions: README, "Value references". The "Alongside REFERENCES and USES" table of the call tables says what adding these edges does to a *call* grading; this section grades the edges themselves.
 
 ### Go
 
@@ -2590,8 +2590,8 @@ Oracle: every identifier in `types.Info.Uses` whose object is a `*types.Func` an
 | go/cobra/no_tests | 1.000 [0.723, 1.000] | 10 (0) | 0.769 [0.497, 0.918] | 13 (10) | 0 / 0 | 0 | caller_file_not_covered 247 |
 | go/gitleaks/no_tests | 1.000 [0.741, 1.000] | 11 (0) | 1.000 [0.741, 1.000] | 11 (11) | 0 / 0 | 0 | 0 |
 | go/gitleaks/tests | 1.000 [0.741, 1.000] | 11 (0) | 1.000 [0.741, 1.000] | 11 (11) | 0 / 0 | 0 | 0 |
-| go/syft/no_tests | 1.000 [0.980, 1.000] | 188 (0) | 0.755 [0.698, 0.804] | 249 (188) | 0 / 1 | 0 | caller_file_not_covered 143 |
-| go/syft/tests | 1.000 [0.988, 1.000] | 310 (0) | 0.745 [0.701, 0.785] | 416 (310) | 2 / 1 | 0 | caller_file_not_covered 21 |
+| go/syft/no_tests | 1.000 [0.980, 1.000] (1 dropped as calls) | 188 (0) | 0.755 [0.698, 0.804] | 249 (188) | 0 / 1 | 0 | caller_file_not_covered 143 |
+| go/syft/tests | 1.000 [0.988, 1.000] (1 dropped as calls) | 310 (0) | 0.745 [0.701, 0.785] | 416 (310) | 2 / 1 | 0 | caller_file_not_covered 21 |
 | go/chi/no_tests | 1.000 [0.566, 1.000] | 5 (0) | 0.833 [0.436, 0.970] | 6 (5) | 0 / 0 | 0 | caller_file_not_covered 69 |
 | go/chi/tests | 1.000 [0.871, 1.000] | 26 (0) | 0.929 [0.773, 0.980] | 28 (26) | 0 / 0 | 0 | caller_file_not_covered 48 |
 | go/urfavecli/no_tests | 1.000 [0.867, 1.000] | 25 (0) | 0.694 [0.531, 0.820] | 36 (25) | 1 / 0 | 0 | caller_file_not_covered 1 |
@@ -2666,11 +2666,11 @@ Oracle: identifiers and property accesses whose checker symbol is a function, me
 | Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle refs (matched) | removed: also called, oracle / lidx | capture gap | ungradable lidx pairs |
 |---|---|---:|---|---:|---|---:|---|
 | ts/zod | 0.721 [0.598, 0.818] | 61 (17) | 0.321 [0.250, 0.403] | 140 (45) | 14 / 0 | 2 | caller_file_not_covered 20, oracle_call_wins 2 |
-| ts/hono | 0.974 [0.926, 0.991] | 115 (3) | 0.830 [0.757, 0.884] | 135 (112) | 13 / 3 | 3 | caller_file_not_covered 56, oracle_call_wins 2 |
-| ts/trpc | 0.867 [0.621, 0.963] | 15 (2) | 0.302 [0.186, 0.451] | 43 (13) | 13 / 7 | 13 | caller_file_not_covered 204, oracle_call_wins 2 |
+| ts/hono | 0.974 [0.926, 0.991] (3 dropped as calls) | 115 (3) | 0.830 [0.757, 0.884] | 135 (112) | 13 / 3 | 3 | caller_file_not_covered 56, oracle_call_wins 2 |
+| ts/trpc | 0.867 [0.621, 0.963] (7 dropped as calls; weakly supported) | 15 (2) | 0.302 [0.186, 0.451] | 43 (13) | 13 / 7 | 13 | caller_file_not_covered 204, oracle_call_wins 2 |
 | ts/ky | 0.875 [0.529, 0.978] | 8 (1) | 0.700 [0.397, 0.892] | 10 (7) | 0 / 0 | 0 | caller_file_not_covered 62 |
-| ts/immer | 1.000 [0.342, 1.000] | 2 (0) | 0.111 [0.031, 0.328] | 18 (2) | 3 / 1 | 0 | caller_file_not_covered 59 |
-| ts/h3 | 0.854 [0.716, 0.931] | 41 (6) | 0.633 [0.493, 0.753] | 49 (31) | 5 / 6 | 0 | caller_file_not_covered 12, oracle_call_wins 1 |
+| ts/immer | 1.000 [0.342, 1.000] (1 dropped as calls; weakly supported) | 2 (0) | 0.111 [0.031, 0.328] | 18 (2) | 3 / 1 | 0 | caller_file_not_covered 59 |
+| ts/h3 | 0.854 [0.716, 0.931] (6 dropped as calls) | 41 (6) | 0.633 [0.493, 0.753] | 49 (31) | 5 / 6 | 0 | caller_file_not_covered 12, oracle_call_wins 1 |
 
 **Precision by lidx resolution kind** (the resolution kind of the pair's rows; `same_name_elsewhere` is a wrong pair whose target has the name of the reference at the site but is another declaration, the failure a name-tier guess produces)
 
@@ -2716,26 +2716,26 @@ Oracle: rust-analyzer SCIP references to a function symbol not followed by `(` (
 
 | Cell | P [95% CI] | graded (wrong) | R [95% CI] | oracle refs (matched) | removed: also called, oracle / lidx | capture gap | ungradable lidx pairs |
 |---|---|---:|---|---:|---|---:|---|
-| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
-| rust/ripgrep/no_tests | 1.000 [0.832, 1.000] | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
-| rust/ripgrep/tests | 1.000 [0.832, 1.000] | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
-| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 3 | no_evidence_line 6 |
-| rust/fd/no_tests | 1.000 [0.610, 1.000] | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 0 | no_evidence_line 6 |
-| rust/fd/tests | 1.000 [0.610, 1.000] | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 3 | no_evidence_line 6 |
-| rust/ripgrep/path_tests_excluded_all_features | 1.000 [0.832, 1.000] | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
-| rust/fd/path_tests_excluded_all_features | 1.000 [0.610, 1.000] | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 3 | no_evidence_line 6 |
-| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 1 / 0 | 0 | caller_file_not_covered 12, no_evidence_line 5 |
-| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] | 2 (0) | 0.667 [0.208, 0.939] | 3 (2) | 1 / 0 | 0 | no_evidence_line 2 |
+| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] (+14 lineless ungraded (42% of pairs)) | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
+| rust/ripgrep/no_tests | 1.000 [0.832, 1.000] (+14 lineless ungraded (42% of pairs)) | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
+| rust/ripgrep/tests | 1.000 [0.832, 1.000] (+14 lineless ungraded (42% of pairs)) | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
+| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] (+6 lineless ungraded (50% of pairs)) | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 3 | no_evidence_line 6 |
+| rust/fd/no_tests | 1.000 [0.610, 1.000] (+6 lineless ungraded (50% of pairs)) | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 0 | no_evidence_line 6 |
+| rust/fd/tests | 1.000 [0.610, 1.000] (+6 lineless ungraded (50% of pairs)) | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 3 | no_evidence_line 6 |
+| rust/ripgrep/path_tests_excluded_all_features | 1.000 [0.832, 1.000] (+14 lineless ungraded (42% of pairs)) | 19 (0) | 0.679 [0.493, 0.821] | 28 (19) | 1 / 0 | 0 | no_evidence_line 14 |
+| rust/fd/path_tests_excluded_all_features | 1.000 [0.610, 1.000] (+6 lineless ungraded (50% of pairs)) | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 2 / 0 | 3 | no_evidence_line 6 |
+| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] (+5 lineless ungraded (45% of pairs)) | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 1 / 0 | 0 | caller_file_not_covered 12, no_evidence_line 5 |
+| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] (+2 lineless ungraded (50% of pairs)) | 2 (0) | 0.667 [0.208, 0.939] | 3 (2) | 1 / 0 | 0 | no_evidence_line 2 |
 | rust/xsv/path_tests_excluded | -  | 0 (0) | 0.000 [0.000, 0.354] | 7 (0) | 0 / 0 | 0 | caller_file_not_covered 4 |
-| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] | 58 (0) | 0.935 [0.846, 0.975] | 62 (58) | 9 / 0 | 12 | caller_file_not_covered 27, no_evidence_line 9 |
-| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] | 80 (0) | 0.862 [0.778, 0.917] | 94 (81) | 5 / 0 | 0 | no_evidence_line 13 |
-| rust/nextest/path_tests_excluded | 0.909 [0.722, 0.975] | 22 (2) | 0.400 [0.276, 0.538] | 50 (20) | 0 / 0 | 0 | caller_file_not_covered 3, no_evidence_line 9 |
-| rust/bat/path_tests_excluded_all_features | 1.000 [0.610, 1.000] | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 1 / 0 | 0 | caller_file_not_covered 12, no_evidence_line 5 |
-| rust/tokei/path_tests_excluded_all_features | 1.000 [0.342, 1.000] | 2 (0) | 0.667 [0.208, 0.939] | 3 (2) | 1 / 0 | 0 | no_evidence_line 2 |
+| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] (+9 lineless ungraded (13% of pairs)) | 58 (0) | 0.935 [0.846, 0.975] | 62 (58) | 9 / 0 | 12 | caller_file_not_covered 27, no_evidence_line 9 |
+| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] (+13 lineless ungraded (14% of pairs)) | 80 (0) | 0.862 [0.778, 0.917] | 94 (81) | 5 / 0 | 0 | no_evidence_line 13 |
+| rust/nextest/path_tests_excluded | 0.909 [0.722, 0.975] (+9 lineless ungraded (29% of pairs)) | 22 (2) | 0.400 [0.276, 0.538] | 50 (20) | 0 / 0 | 0 | caller_file_not_covered 3, no_evidence_line 9 |
+| rust/bat/path_tests_excluded_all_features | 1.000 [0.610, 1.000] (+5 lineless ungraded (45% of pairs)) | 6 (0) | 0.857 [0.487, 0.974] | 7 (6) | 1 / 0 | 0 | caller_file_not_covered 12, no_evidence_line 5 |
+| rust/tokei/path_tests_excluded_all_features | 1.000 [0.342, 1.000] (+2 lineless ungraded (50% of pairs)) | 2 (0) | 0.667 [0.208, 0.939] | 3 (2) | 1 / 0 | 0 | no_evidence_line 2 |
 | rust/xsv/path_tests_excluded_all_features | -  | 0 (0) | 0.000 [0.000, 0.354] | 7 (0) | 0 / 0 | 0 | caller_file_not_covered 4 |
-| rust/lidx/path_tests_excluded_all_features | 1.000 [0.938, 1.000] | 58 (0) | 0.935 [0.846, 0.975] | 62 (58) | 9 / 0 | 12 | caller_file_not_covered 27, no_evidence_line 9 |
-| rust/just/path_tests_excluded_all_features | 1.000 [0.954, 1.000] | 80 (0) | 0.862 [0.778, 0.917] | 94 (81) | 5 / 0 | 0 | no_evidence_line 13 |
-| rust/nextest/path_tests_excluded_all_features | 0.909 [0.722, 0.975] | 22 (2) | 0.400 [0.276, 0.538] | 50 (20) | 0 / 0 | 0 | caller_file_not_covered 3, no_evidence_line 9 |
+| rust/lidx/path_tests_excluded_all_features | 1.000 [0.938, 1.000] (+9 lineless ungraded (13% of pairs)) | 58 (0) | 0.935 [0.846, 0.975] | 62 (58) | 9 / 0 | 12 | caller_file_not_covered 27, no_evidence_line 9 |
+| rust/just/path_tests_excluded_all_features | 1.000 [0.954, 1.000] (+13 lineless ungraded (14% of pairs)) | 80 (0) | 0.862 [0.778, 0.917] | 94 (81) | 5 / 0 | 0 | no_evidence_line 13 |
+| rust/nextest/path_tests_excluded_all_features | 0.909 [0.722, 0.975] (+9 lineless ungraded (29% of pairs)) | 22 (2) | 0.400 [0.276, 0.538] | 50 (20) | 0 / 0 | 0 | caller_file_not_covered 3, no_evidence_line 9 |
 
 **Precision by lidx resolution kind** (the resolution kind of the pair's rows; `same_name_elsewhere` is a wrong pair whose target has the name of the reference at the site but is another declaration, the failure a name-tier guess produces)
 

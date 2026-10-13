@@ -31,6 +31,21 @@ def _ci(c):
     return report.ci(c) if c and c[0] is not None else ""
 
 
+def pnote(r, lang):
+    """What stands next to a precision figure: lidx pairs left out of it. Rust: the lineless module-level USES rows (`no_evidence_line`), whose share of
+    lidx's pairs can be large; every language: pairs dropped because lidx also has a call (call wins), `weakly supported` when they exceed 20% of the graded pairs."""
+    out = []
+    nel = r["ungradable"].get("no_evidence_line", 0)
+    if lang == "rust" and nel:
+        out.append("+%d lineless ungraded (%d%% of pairs)" % (nel, round(100 * nel / (nel + r["graded"]))))
+    d = r["lidx_pairs_with_call_dropped"]
+    if d:
+        out.append("%d dropped as calls" % d)
+        if r["graded"] and d / r["graded"] > 0.2:
+            out.append("weakly supported")
+    return " (%s)" % "; ".join(out) if out else ""
+
+
 def section(meta, results_dir):
     cells = meta["cells"]
     if not any("refs" in c for c in cells.values()):
@@ -44,6 +59,7 @@ def section(meta, results_dir):
       "`other_edges`. The compiler is the only source of the oracle pairs. The lidx side is its `REFERENCES` rows plus its `USES` rows whose target is a function, "
       "both ends in-repo symbols, deduplicated to (referencing declaration, referenced declaration) pairs. Precision = lidx pairs the compiler confirms / lidx pairs "
       "it can judge; recall = oracle pairs lidx has / oracle pairs whose ends are both lidx symbols (pairs with no lidx symbol at an end are listed as capture gaps). "
+      "**Read each precision figure with the note beside it**: Rust precision is over pairs with a source line only, and the lineless module-level USES rows lidx records for `Type::f` paths are ungraded (their count and share of lidx's pairs is printed); pairs dropped because lidx also has a call are not graded either, and a cell where they exceed 20% of the graded pairs is marked weakly supported. "
       "**A pair that is also called is a call, on both sides**: the oracle pair is dropped when the compiler also sees a call from the same declaration to the same "
       "function, and the lidx pair is dropped when lidx has a `CALLS` / `DISPATCH` edge for it. Intervals are 95% Wilson. Definitions, keying and exclusions: README, "
       "\"Value references\". The \"Alongside REFERENCES and USES\" table of the call tables says what adding these edges does to a *call* grading; this section grades "
@@ -62,8 +78,8 @@ def section(meta, results_dir):
         for cid in ids:
             r = cells[cid]["refs"]
             ung = ", ".join("%s %d" % kv for kv in sorted(r["ungradable"].items())) or "0"
-            w("| %s | %s %s | %d (%d) | %s %s | %d (%d) | %d / %d | %d | %s |" % (
-                cid, _p(r["precision"]), _ci(r["precision_ci"]), r["graded"], r["fp"], _p(r["recall"]), _ci(r["recall_ci"]),
+            w("| %s | %s %s%s | %d (%d) | %s %s | %d (%d) | %d / %d | %d | %s |" % (
+                cid, _p(r["precision"]), _ci(r["precision_ci"]), pnote(r, lang), r["graded"], r["fp"], _p(r["recall"]), _ci(r["recall_ci"]),
                 r["oracle_refs_caller_and_callee_indexed"], r["matched_oracle_refs"], r["oracle_refs_called_removed"], r["lidx_pairs_with_call_dropped"],
                 r["capture_gap_refs"], ung))
         w("")

@@ -435,26 +435,28 @@ bucket), 0 oracle or matching artefacts, 0 mis-bucketed exclusions, all 60 sampl
 |---|---|---|---:|---:|
 | go/cobra/tests | 1.000 [0.985, 1.000] | 0.985 [0.961, 0.994] | 257 (0) | 261 (257) |
 | go/gitleaks/tests | 1.000 [0.741, 1.000] | 1.000 [0.741, 1.000] | 11 (0) | 11 (11) |
-| go/syft/tests | 1.000 [0.988, 1.000] | 0.745 [0.701, 0.785] | 310 (0) | 416 (310) |
-| go/syft/no_tests | 1.000 [0.980, 1.000] | 0.755 [0.698, 0.804] | 188 (0) | 249 (188) |
+| go/syft/tests | 1.000 [0.988, 1.000] (1 dropped as calls) | 0.745 [0.701, 0.785] | 310 (0) | 416 (310) |
+| go/syft/no_tests | 1.000 [0.980, 1.000] (1 dropped as calls) | 0.755 [0.698, 0.804] | 188 (0) | 249 (188) |
 | go/chi/tests | 1.000 [0.871, 1.000] | 0.929 [0.773, 0.980] | 26 (0) | 28 (26) |
 | go/urfavecli/tests | 1.000 [0.867, 1.000] | 0.694 [0.531, 0.820] | 25 (0) | 36 (25) |
 | go/bubbletea/tests | 1.000 [0.839, 1.000] | 0.909 [0.722, 0.975] | 20 (0) | 22 (20) |
 | go/viper | no value reference in the repository | | 0 | 0 |
 | ts/zod | 0.721 [0.598, 0.818] | 0.321 [0.250, 0.403] | 61 (17) | 140 (45) |
-| ts/hono | 0.974 [0.926, 0.991] | 0.830 [0.757, 0.884] | 115 (3) | 135 (112) |
-| ts/trpc | 0.867 [0.621, 0.963] | 0.302 [0.186, 0.451] | 15 (2) | 43 (13) |
+| ts/hono | 0.974 [0.926, 0.991] (3 dropped as calls) | 0.830 [0.757, 0.884] | 115 (3) | 135 (112) |
+| ts/trpc | 0.867 [0.621, 0.963] (7 dropped as calls; weakly supported) | 0.302 [0.186, 0.451] | 15 (2) | 43 (13) |
 | ts/ky | 0.875 [0.529, 0.978] | 0.700 [0.397, 0.892] | 8 (1) | 10 (7) |
-| ts/immer | 1.000 [0.342, 1.000] | 0.111 [0.031, 0.328] | 2 (0) | 18 (2) |
-| ts/h3 | 0.854 [0.716, 0.931] | 0.633 [0.493, 0.753] | 41 (6) | 49 (31) |
-| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] | 0.679 [0.493, 0.821] | 19 (0) | 28 (19) |
-| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
-| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
-| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] | 0.667 [0.208, 0.939] | 2 (0) | 3 (2) |
+| ts/immer | 1.000 [0.342, 1.000] (1 dropped as calls; weakly supported) | 0.111 [0.031, 0.328] | 2 (0) | 18 (2) |
+| ts/h3 | 0.854 [0.716, 0.931] (6 dropped as calls) | 0.633 [0.493, 0.753] | 41 (6) | 49 (31) |
+| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] (+14 lineless ungraded, 42% of pairs) | 0.679 [0.493, 0.821] | 19 (0) | 28 (19) |
+| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] (+6 lineless ungraded, 50% of pairs) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] (+5 lineless ungraded, 45% of pairs) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] (+2 lineless ungraded, 50% of pairs) | 0.667 [0.208, 0.939] | 2 (0) | 3 (2) |
 | rust/xsv/path_tests_excluded | no pair graded | 0.000 [0.000, 0.354] | 0 | 7 (0) |
-| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] | 0.935 [0.846, 0.975] | 58 (0) | 62 (58) |
-| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] | 0.862 [0.778, 0.917] | 80 (0) | 94 (81) |
-| rust/nextest/path_tests_excluded | 0.909 [0.722, 0.975] | 0.400 [0.276, 0.538] | 22 (2) | 50 (20) |
+| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] (+9 lineless ungraded, 13% of pairs) | 0.935 [0.846, 0.975] | 58 (0) | 62 (58) |
+| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] (+13 lineless ungraded, 14% of pairs) | 0.862 [0.778, 0.917] | 80 (0) | 94 (81) |
+| rust/nextest/path_tests_excluded | 0.909 [0.722, 0.975] (+9 lineless ungraded, 29% of pairs) | 0.400 [0.276, 0.538] | 22 (2) | 50 (20) |
+
+**Read the notes beside P.** Rust precision is over pairs with a source line only: the lineless module-level USES rows lidx records for `Type::f` paths (`no_evidence_line`) are not graded and are 29-50% of lidx's pairs in several cells, so the Rust 1.000 figures say little about them. Pairs dropped because lidx also has a call are not graded either; cells where they exceed 20% of the graded pairs are weakly supported. The Rust cell variants (`path_tests_excluded`, `no_tests`, `tests`, `_all_features`) duplicate each other for value references (identical or nearly so), so do not count them as independent evidence.
 
 (The `no_tests` and `tests` cells of a repository overlap; the other Go `no_tests` cells, the Rust `no_tests` / `tests` / `all_features` cells and the per-cell lists are in the report.)
 
