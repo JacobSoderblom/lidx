@@ -31,7 +31,7 @@ caller.callReceiverTyped CALLS greeter.Greeter.greet receiver_type
 caller.callInherited CALLS animals.Animal.speak inherited
 
 # Interface call through Speaker. Cat.say is a same-named decoy.
-caller.callInterface CALLS animals.Speaker.say  # xfail: interface method signatures are not extracted as symbols
+caller.callInterface CALLS animals.Speaker.say
 
 # Ambiguous name: run exists in ambiguous_a and ambiguous_b; the import
 # picks ambiguous_a.

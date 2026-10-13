@@ -3993,6 +3993,11 @@ fn collect_type_references(
     source: &str,
     output: &mut ExtractedFile,
 ) {
+    let decl: HashSet<(&str, i64)> = output
+        .decl_symbols
+        .iter()
+        .map(|(q, line)| (q.as_str(), *line))
+        .collect();
     let mut scan = Scan {
         ctx,
         source,
@@ -4000,6 +4005,9 @@ fn collect_type_references(
             .symbols
             .iter()
             .filter(|s| s.kind != "module")
+            // A bodiless member's references belong to its type, as they did
+            // before the member was a symbol.
+            .filter(|s| !decl.contains(&(s.qualname.as_str(), s.start_line)))
             .map(|s| (s.start_byte, s.end_byte, s.qualname.as_str()))
             .collect(),
         symbols: output.symbols.iter().map(|s| s.qualname.as_str()).collect(),
