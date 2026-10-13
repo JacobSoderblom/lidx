@@ -545,3 +545,100 @@ fn a_type_declared_inside_pin_project_is_a_symbol_with_its_impls() {
         "{got:#?}"
     );
 }
+
+// ---- a package with a library and binaries ----
+
+fn lib_and_bins(main: &'static str, bin: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Cargo.toml", MANIFEST),
+        ("src/lib.rs", "pub struct Error;\nmod m;\n"),
+        (
+            "src/m.rs",
+            "use crate::Error;\npub trait T { fn f(&self); }\nimpl T for Error { fn f(&self) {} }\n",
+        ),
+        ("src/main.rs", main),
+        ("src/bin/x.rs", bin),
+    ]
+}
+
+#[test]
+fn a_library_module_resolves_crate_against_the_library_root() {
+    // the binaries import a std `Error`; the library's `Error` is the one
+    // the impl is for, however the roots are ordered
+    for (main, bin) in [
+        (
+            "use std::io::Error;\nfn main() {}\n",
+            "use std::io::Error;\nfn main() {}\n",
+        ),
+        ("fn main() {}\n", "use std::fmt::Error;\nfn main() {}\n"),
+        ("use std::fmt::Error;\nfn main() {}\n", "fn main() {}\n"),
+    ] {
+        let (_tmp, indexer) = index(&lib_and_bins(main, bin));
+        let got = implements(&indexer);
+        assert!(
+            has(&got, "src/lib.rs", "crate::Error", "crate::m::T"),
+            "{main:?} {bin:?}: {got:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_binary_crate_is_never_read_as_the_library() {
+    // `crate::Error` in a binary is the binary's own, which no indexed
+    // `crate` module stands for: it must not become the library's `Error`
+    let files = vec![
+        ("Cargo.toml", MANIFEST),
+        ("src/lib.rs", "pub struct Error;\n"),
+        (
+            "src/bin/tool.rs",
+            "use std::io::Error;\npub trait U { fn g(&self); }\nimpl U for Error { fn g(&self) {} }\nfn main() {}\n",
+        ),
+        (
+            "tests/it.rs",
+            "use crate::Error;\npub trait V { fn g(&self); }\nimpl V for Error { fn g(&self) {} }\n",
+        ),
+    ];
+    let (_tmp, indexer) = index(&files);
+    let got = implements(&indexer);
+    assert!(!got.iter().any(|(f, ..)| f == "src/lib.rs"), "{got:#?}");
+}
+
+// ---- a method calling itself through its own type ----
+
+#[test]
+fn a_recursive_trait_method_call_is_not_bound_to_the_trait_declaration() {
+    let files = vec![
+        ("Cargo.toml", MANIFEST),
+        ("src/lib.rs", "mod node;\nmod expr;\n"),
+        ("src/node.rs", "pub trait Node { fn tree(&self) -> u32; }\n"),
+        (
+            "src/expr.rs",
+            "use crate::node::Node;\npub struct Expression { lhs: Option<Box<Expression>> }\nimpl Node for Expression {\n    fn tree(&self) -> u32 {\n        match &self.lhs { Some(lhs) => lhs.tree(), None => 0 }\n    }\n}\n",
+        ),
+    ];
+    let got = common::call_targets(&files, "crate::expr::Expression::tree");
+    assert!(
+        !got.iter().any(|t| t == "crate::node::Node::tree"),
+        "{got:#?}"
+    );
+}
+
+// ---- the prelude depends on the edition ----
+
+#[test]
+fn from_iterator_is_in_the_prelude_from_edition_2021_only() {
+    let src = "pub struct S;\nimpl FromIterator<u8> for S {\n    fn from_iter<I: IntoIterator<Item = u8>>(_: I) -> S { S }\n}\n";
+    for (manifest, external) in [
+        ("[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2021\"\n", true),
+        ("[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2018\"\n", false),
+        ("[package]\nname = \"d\"\nversion = \"0.1.0\"\n", false),
+        ("[package]\nname = \"d\"\nversion = \"0.1.0\"\nedition = \"2024\"\n", true),
+    ] {
+        let (_tmp, indexer) = index(&[("Cargo.toml", manifest), ("src/lib.rs", src)]);
+        let got = implements(&indexer);
+        let has_ext = got
+            .iter()
+            .any(|(_, s, t, k)| s == "crate::S" && k == "external" && t.ends_with("FromIterator"));
+        assert_eq!(has_ext, external, "{manifest}: {got:#?}");
+    }
+}

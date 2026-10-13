@@ -1596,10 +1596,16 @@ impl<'c> Resolver<'c> {
                         resolver: self,
                         lang: "rust",
                     };
-                    crate::indexer::rust::follow_path(&index, package, candidate)?
+                    crate::indexer::rust::follow_path(
+                        &index,
+                        package,
+                        Some(r.source_file_path),
+                        candidate,
+                    )?
                 };
                 match followed {
                     crate::indexer::rust::Followed::External => external = true,
+                    crate::indexer::rust::Followed::Unknown => {}
                     crate::indexer::rust::Followed::Repo { path, .. } => {
                         if let Some(id) = self.rust_item_in_package(package, &path, &["trait"])? {
                             return Ok(Some(resolved(id, ResolutionKind::Import)));
@@ -1674,7 +1680,7 @@ impl<'c> Resolver<'c> {
                     resolver: self,
                     lang: "rust",
                 };
-                crate::indexer::rust::follow_path(&index, package, candidate)?
+                crate::indexer::rust::follow_path(&index, package, Some(file_path), candidate)?
             };
             if let crate::indexer::rust::Followed::Repo { path, .. } = followed
                 && let Some(id) =
@@ -2744,6 +2750,17 @@ impl<'c> Resolver<'c> {
                 // precedence) are more specific than any ancestor's
                 // declaration, which would be the wrong target.
                 if source_lang == "rust" && self.saw_ambiguous {
+                    return Ok(None);
+                }
+                // ... and a method calling itself through its own type
+                // (`lhs.tree()` inside `Expression::tree`): the candidate the
+                // lookup skipped is the caller, whose own impl Rust picks over
+                // the trait's declaration.
+                if source_lang == "rust"
+                    && caller
+                        .qualname
+                        .is_some_and(|q| q.ends_with(&format!("::{known_type}::{method}")))
+                {
                     return Ok(None);
                 }
                 // The receiver's own type declares no matching method (or

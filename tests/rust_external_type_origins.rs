@@ -623,3 +623,24 @@ fn editing_a_long_chain_matches_a_fresh_reindex() {
     let (_t, fresh) = common::index_files(&borrowed);
     common::assert_matches_fresh(&incremental, &fresh);
 }
+
+#[test]
+fn a_diamond_of_globs_reaches_the_far_end_by_both_paths() {
+    // walk -> {a, b} -> d, two ways to the same module
+    let user = "pub fn go(e: &crate::walk::DirEntry) -> u32 { e.path() }\n";
+    for (d, repo_binds) in [
+        ("pub use walkdir::DirEntry;\n", false),
+        ("pub use crate::entry::DirEntry;\n", true),
+    ] {
+        let mut t = tree(
+            MAKER_REPO,
+            user,
+            "pub use crate::a::*;\npub use crate::b::*;\n",
+        );
+        t.push(("src/a.rs", "pub use crate::d::*;\n"));
+        t.push(("src/b.rs", "pub use crate::d::*;\n"));
+        t.push(("src/d.rs", d));
+        t[1].1 = "pub mod entry;\npub mod maker;\npub mod user;\npub mod walk;\npub mod facade;\npub mod holder;\npub mod alias;\npub mod a;\npub mod b;\npub mod d;\n";
+        assert_eq!(binds(&t, "crate::user::go"), repo_binds, "{d}");
+    }
+}

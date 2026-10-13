@@ -3402,26 +3402,88 @@ pub(crate) enum Followed {
     /// best guess where the chain ended (a module the index lacks, a glob
     /// that names nothing, a cycle).
     Repo { path: String, declared: bool },
+    /// The path is read from a crate no indexed module stands for (a binary,
+    /// a test): it names nothing the index can find.
+    Unknown,
 }
 
 /// The type at the absolute path `path` (`crate::walk::DirEntry`), written in
-/// the Cargo package at `package`: external when the module it names imports it
-/// from std or a dependency (`pub use walkdir::DirEntry;`, `pub use
-/// walkdir::*;`), possibly through any number of other modules' re-exports.
+/// the Cargo package at `package` (in the file `from`, when known): external
+/// when the module it names imports it from std or a dependency (`pub use
+/// walkdir::DirEntry;`, `pub use walkdir::*;`), possibly through any number
+/// of other modules' re-exports.
 pub(crate) fn follow_path(
     index: &dyn DeclarationIndex,
     package: &str,
+    from: Option<&str>,
     path: &str,
 ) -> anyhow::Result<Followed> {
-    follow_path_in(index, package, path, false, &mut HashSet::new())
+    follow_path_in(index, package, from, path, false, &mut HashSet::new())
+}
+
+/// The crate roots among `roots` (declarations of the module `crate`, with
+/// their file) that a file `from` of the package resolves `crate::` against:
+/// the root of a file that is one (`src/main.rs`), else the library root,
+/// else the package's `main.rs`; none for a binary under `src/bin/`, a test,
+/// example or bench, which are crates no indexed `crate` module stands for.
+/// All of them when `from` is unknown.
+fn crate_roots_for<T>(roots: Vec<(&str, T)>, from: Option<&str>) -> Vec<T> {
+    let Some(from) = from else {
+        return roots.into_iter().map(|(_, t)| t).collect();
+    };
+    let inside = from
+        .strip_prefix(cargo_package_dir(from))
+        .unwrap_or(from)
+        .trim_start_matches('/');
+    if ["src/bin/", "tests/", "benches/", "examples/"]
+        .iter()
+        .any(|dir| inside.starts_with(dir))
+        || inside == "build.rs"
+    {
+        return Vec::new();
+    }
+    let at = roots
+        .iter()
+        .position(|(path, _)| *path == from)
+        .or_else(|| roots.iter().position(|(p, _)| p.ends_with("src/lib.rs")))
+        .or_else(|| roots.iter().position(|(p, _)| p.ends_with("src/main.rs")));
+    match at {
+        Some(i) => roots
+            .into_iter()
+            .nth(i)
+            .map(|(_, t)| vec![t])
+            .unwrap_or_default(),
+        None => roots.into_iter().map(|(_, t)| t).collect(),
+    }
 }
 
 /// [`follow_path`], with `verify` asking the repo outcome to be a declaration
 /// found rather than a guess (globs are searched for the name, not assumed to
-/// hold it), and `seen` guarding against a cycle of re-exports.
+/// hold it), and `seen` the paths being followed now, guarding against a
+/// cycle of re-exports (a diamond of globs reaches its far end twice).
 fn follow_path_in(
     index: &dyn DeclarationIndex,
     package: &str,
+    from: Option<&str>,
+    path: &str,
+    verify: bool,
+    seen: &mut HashSet<String>,
+) -> anyhow::Result<Followed> {
+    if !seen.insert(path.to_string()) {
+        return Ok(Followed::Repo {
+            path: path.to_string(),
+            declared: false,
+        });
+    }
+    let followed = follow_step(index, package, from, path, verify, seen);
+    seen.remove(path);
+    followed
+}
+
+fn follow_step(
+    index: &dyn DeclarationIndex,
+    package: &str,
+    from: Option<&str>,
     path: &str,
     verify: bool,
     seen: &mut HashSet<String>,
@@ -3433,31 +3495,53 @@ fn follow_path_in(
     let Some((module, name)) = path.rsplit_once("::") else {
         return Ok(guess());
     };
-    if !seen.insert(path.to_string()) {
-        return Ok(guess());
-    }
-    let uses: Vec<ModuleUses> = index
+    let declared_here = |index: &dyn DeclarationIndex| -> anyhow::Result<bool> {
+        Ok(index
+            .declarations(DeclarationQuery::Item(path))?
+            .iter()
+            .any(|d| cargo_package_dir(&d.path) == package))
+    };
+    let decls: Vec<_> = index
         .declarations(DeclarationQuery::Module(module))?
-        .iter()
+        .into_iter()
         .filter(|d| cargo_package_dir(&d.path) == package)
-        .map(|d| module_uses(d.signature.as_deref(), name))
         .collect();
-    // Twins (`cfg` variants of a module) must agree. The crate root of a
-    // package with a library and a binary is two modules of one name: the one
-    // that imports the name is the library's, whatever the other leaves out.
-    let named: Vec<&ModuleUses> = uses
-        .iter()
-        .filter(|u| module != "crate" || u.name != ModuleUse::Absent)
-        .collect();
-    let Some(first) = named.first().copied().or(uses.first()) else {
+    // The crate root of a package with a library and a binaries is several
+    // modules of one name: `crate::` means the root of the file's own crate.
+    let uses: Vec<ModuleUses> = if module == "crate" {
+        let roots = decls
+            .iter()
+            .map(|d| (d.path.as_str(), module_uses(d.signature.as_deref(), name)))
+            .collect();
+        let uses = crate_roots_for(roots, from);
+        if uses.is_empty() && from.is_some() && !decls.is_empty() {
+            return Ok(Followed::Unknown);
+        }
+        // Without a root to read it from, a declaration found in the package
+        // beats an import of the name by one of several roots.
+        if uses.len() > 1 && declared_here(index)? {
+            return Ok(Followed::Repo {
+                path: path.to_string(),
+                declared: true,
+            });
+        }
+        uses
+    } else {
+        decls
+            .iter()
+            .map(|d| module_uses(d.signature.as_deref(), name))
+            .collect()
+    };
+    // Twins (`cfg` variants of a module) must agree.
+    let Some(first) = uses.first() else {
         return Ok(guess());
     };
-    if named.iter().any(|u| u.name != first.name) {
+    if uses.iter().any(|u| u.name != first.name) {
         return Ok(guess());
     }
     match &first.name {
         ModuleUse::External => return Ok(Followed::External),
-        ModuleUse::From(next) => return follow_path_in(index, package, next, verify, seen),
+        ModuleUse::From(next) => return follow_path_in(index, package, from, next, verify, seen),
         ModuleUse::Absent => {}
     }
     let mut globs: Vec<Glob> = Vec::new();
@@ -3470,11 +3554,7 @@ fn follow_path_in(
         return Ok(guess());
     }
     // Declared in the module itself: wins over every glob.
-    if index
-        .declarations(DeclarationQuery::Item(path))?
-        .iter()
-        .any(|d| cargo_package_dir(&d.path) == package)
-    {
+    if declared_here(index)? {
         return Ok(Followed::Repo {
             path: path.to_string(),
             declared: true,
@@ -3486,7 +3566,14 @@ fn follow_path_in(
         match glob {
             Glob::External => external = true,
             Glob::Repo(source) => {
-                match follow_path_in(index, package, &format!("{source}::{name}"), true, seen)? {
+                match follow_path_in(
+                    index,
+                    package,
+                    from,
+                    &format!("{source}::{name}"),
+                    true,
+                    seen,
+                )? {
                     Followed::External => external = true,
                     Followed::Repo {
                         path,
@@ -3495,7 +3582,7 @@ fn follow_path_in(
                         Some(other) if *other != path => return Ok(guess()),
                         _ => found = Some(path),
                     },
-                    Followed::Repo { .. } => {}
+                    Followed::Repo { .. } | Followed::Unknown => {}
                 }
             }
         }
@@ -3535,11 +3622,12 @@ fn resolve_path_type(
     package: &str,
     path: &str,
 ) -> anyhow::Result<PathType> {
-    Ok(match follow_path(index, package, path)? {
+    Ok(match follow_path(index, package, None, path)? {
         Followed::External => PathType::External,
         Followed::Repo { path, .. } => {
             PathType::Repo(path.rsplit("::").next().unwrap_or(&path).to_string())
         }
+        Followed::Unknown => PathType::Repo(path.rsplit("::").next().unwrap_or(path).to_string()),
     })
 }
 
@@ -5362,8 +5450,6 @@ const PRELUDE_TRAITS: &[(&str, &str)] = &[
     ("Drop", "std::ops::Drop"),
     ("From", "std::convert::From"),
     ("Into", "std::convert::Into"),
-    ("TryFrom", "std::convert::TryFrom"),
-    ("TryInto", "std::convert::TryInto"),
     ("AsRef", "std::convert::AsRef"),
     ("AsMut", "std::convert::AsMut"),
     ("Default", "std::default::Default"),
@@ -5383,6 +5469,12 @@ const PRELUDE_TRAITS: &[(&str, &str)] = &[
     ("Ord", "std::cmp::Ord"),
     ("ToOwned", "std::borrow::ToOwned"),
     ("ToString", "std::string::ToString"),
+];
+
+/// Traits only the 2021 edition's prelude has.
+const PRELUDE_TRAITS_2021: &[(&str, &str)] = &[
+    ("TryFrom", "std::convert::TryFrom"),
+    ("TryInto", "std::convert::TryInto"),
     ("FromIterator", "std::iter::FromIterator"),
 ];
 
@@ -5426,7 +5518,12 @@ fn qualify_trait_name(ctx: &Context, trait_name: &str) -> String {
     if ctx.local_traits.contains(&local) {
         return local;
     }
-    match PRELUDE_TRAITS.iter().find(|(name, _)| *name == trait_name) {
+    // Without a manifest the edition is unknown: the current one.
+    let edition_2021 = ctx.crates.as_ref().is_none_or(|c| c.edition_2021());
+    let prelude = PRELUDE_TRAITS
+        .iter()
+        .chain(PRELUDE_TRAITS_2021.iter().filter(|_| edition_2021));
+    match prelude.clone().find(|(name, _)| *name == trait_name) {
         Some((_, path)) => (*path).to_string(),
         None => trait_name.to_string(),
     }
