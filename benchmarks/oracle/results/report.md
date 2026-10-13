@@ -96,6 +96,20 @@ Two blind spots of the oracle, not errors of lidx. Neither changes a head-to-hea
 | rust/tokei/path_tests_excluded_all_features | all | 127 / 127 | 0.927 [0.862, 0.962] | 0.927 [0.862, 0.962] | 0.795 | 0.795 | 0 |
 | rust/xsv/path_tests_excluded_all_features | all | 376 / 376 | 1.000 [0.989, 1.000] | 1.000 [0.989, 1.000] | 0.923 | 0.923 | 0 |
 
+cfg-gated edges left ungraded, for audit (each is a lidx edge whose evidence lies inside a definitely-false `#[cfg]` item):
+
+- rust/ripgrep/path_tests_excluded_all_features: `crate::walk::DirEntryRaw::from_entry_os` -> `crate::Error::with_path` at crates/ignore/src/walk.rs:344
+- rust/ripgrep/path_tests_excluded_all_features: `crate::walk::DirEntryRaw::from_entry_os` -> `crate::Error::with_depth` at crates/ignore/src/walk.rs:344
+- rust/ripgrep/path_tests_excluded_all_features: `crate::pathutil::is_hidden` -> `crate::walk::DirEntry::metadata` at crates/ignore/src/pathutil.rs:35
+- rust/ripgrep/path_tests_excluded_all_features: `crate::hostname::hostname` -> `crate::error::Error::new` at crates/cli/src/hostname.rs:28
+- rust/ripgrep/path_tests_excluded_all_features: `crate::walk::device_num` -> `crate::error::Error::new` at crates/ignore/src/walk.rs:2110
+- rust/ripgrep/path_tests_excluded_all_features: `crate::walk::DirEntryRaw::from_entry_os` -> `crate::error::Error::new` at crates/ignore/src/walk.rs:381
+- rust/ripgrep/path_tests_excluded_all_features: `crate::walk::DirEntryRaw::from_path` -> `crate::error::Error::new` at crates/ignore/src/walk.rs:431
+- rust/bat/path_tests_excluded_all_features: `crate::controller::Controller::run_with_error_handler` -> `crate::output::OutputType::stdout` at src/controller.rs:81
+- rust/nextest/path_tests_excluded_all_features: `crate::helpers::display_abort_status` -> `crate::helpers::display_nt_status` at nextest-runner/src/helpers.rs:326
+
+Four of the ripgrep ones (`crate::error::Error::new` from `from_entry_os`, `from_path`, `device_num` and `hostname`) are really lidx errors: the call is `io::Error::new` from std, which lidx resolves to the regex crate's `Error::new`. The gate takes them out of the precision denominator; they are listed here so the exclusion cannot hide them (tracked in https://github.com/JacobSoderblom/lidx/issues/454).
+
 Cells that fell back to default features: none.
 
 ### Held-out cells (no repowise figure)

@@ -21,7 +21,8 @@ class Detection(unittest.TestCase):
     def test_forbidden_process_command_lines(self):
         bad = ["/x/target/debug/build/bat-0123456789abcdef/build-script-main",
                "/r/libexec/rust-analyzer-proc-macro-srv",
-               "/r/bin/cargo check --workspace --message-format=json", "cargo -q build", "cargo rustc --release", "cargo rustc -- -O"]
+               "/r/bin/cargo check --workspace --message-format=json", "cargo -q build", "cargo rustc --release", "cargo rustc -- -O",
+               "cargo rustc --release -- --print cfg", "cargo rustc -- -C x --print=cfg"]
         ok = ["/r/bin/cargo metadata --format-version 1", "rustc --print sysroot", "rust-analyzer scip /repo", "/usr/bin/true"]
         for c in bad:
             self.assertTrue(safety.FORBIDDEN_PROCESS.search(c), c)
@@ -33,7 +34,8 @@ class Detection(unittest.TestCase):
         for c in ["cargo metadata --format-version 1 --all-features --filter-platform aarch64-apple-darwin",
                   "cargo locate-project",
                   "/c/bin/cargo rustc -Z unstable-options --print cfg --target aarch64-apple-darwin -- -O",
-                  "cargo rustc -Z unstable-options --print target-spec-json --target aarch64-apple-darwin -- -Z unstable-options", "/r/bin/rustc -vV", "rustc - --crate-name ___ --print=file-names --print=cfg",
+                  "cargo rustc -Z unstable-options --print target-spec-json --target aarch64-apple-darwin"
+                  " -- -Z unstable-options", "/r/bin/rustc -vV", "rustc - --crate-name ___ --print=file-names --print=cfg",
                   "rustc --print sysroot", "rust-analyzer scip /repo --output x.scip", "true"]:
             self.assertFalse(safety.FORBIDDEN_PROCESS.search(c), c)
 

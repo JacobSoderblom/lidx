@@ -272,7 +272,8 @@ def super_edge_stats(oracle, repo_dir, missed):
         for s in e["sites"]:
             f, _, ln = s.rpartition(":")
             if f not in cache:
-                cache[f] = open(os.path.join(repo_dir, f), encoding="utf-8", errors="replace").read().split("\n")
+                with open(os.path.join(repo_dir, f), encoding="utf-8", errors="replace") as fh:
+                    cache[f] = fh.read().split("\n")
             if 0 < int(ln) <= len(cache[f]) and SUPER_CALL.search(cache[f][int(ln) - 1]):
                 is_super = True
         if is_super:

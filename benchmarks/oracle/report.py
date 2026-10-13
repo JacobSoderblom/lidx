@@ -178,7 +178,7 @@ def build(results_dir):
                 pct(d["precision"]), ci(d["precision_ci"]), pct(d["recall_comparable"]), ci(d["recall_comparable_ci"]),
                 d["dispatch_matched"], d["dispatch_edges"]))
         w("")
-    w(artefact_section(meta, cells))
+    w(artefact_section(meta, cells, results_dir))
     held = held_out_ids(meta)
     if held:
         w("### Held-out cells (no repowise figure)")
@@ -333,7 +333,7 @@ def build(results_dir):
     print("wrote", os.path.join(results_dir, "report.md"))
 
 
-def artefact_section(meta, cells):
+def artefact_section(meta, cells, results_dir):
     L = []
     w = L.append
     w("### Oracle artefacts removed (diagnostic, no verdict)")
@@ -380,6 +380,19 @@ def artefact_section(meta, cells):
                 cid, feat, b["oracle_edges"] if b else "-", s["oracle_edges"], (pct(b["precision"]) + " " + ci(b["precision_ci"])) if b else "-",
                 pct(s["precision"]), ci(s["precision_ci"]), pct(b["recall_comparable"]) if b else "-", pct(s["recall_comparable"]),
                 s["ungradable"].get("cfg_gated_evidence", 0)))
+        w("")
+        w("cfg-gated edges left ungraded, for audit (each is a lidx edge whose evidence lies inside a definitely-false `#[cfg]` item):")
+        w("")
+        for cid in rs:
+            lp = os.path.join(results_dir, "lists", "%s.ungradable.json" % cid.replace("/", "__"))
+            for x in json.load(open(lp)) if os.path.exists(lp) else []:
+                if x["reason"] == "cfg_gated_evidence":
+                    w("- %s: `%s` -> `%s` at %s:%s" % (cid, x["caller"]["qualname"], x["callee"]["qualname"], x["evidence_file"],
+                                                      ",".join(str(l) for l in x["evidence_lines"])))
+        w("")
+        w("Four of the ripgrep ones (`crate::error::Error::new` from `from_entry_os`, `from_path`, `device_num` and `hostname`) are really "
+          "lidx errors: the call is `io::Error::new` from std, which lidx resolves to the regex crate's `Error::new`. The gate takes them out "
+          "of the precision denominator; they are listed here so the exclusion cannot hide them (tracked in https://github.com/JacobSoderblom/lidx/issues/454).")
         w("")
         fb = [cid for cid in rs if cells[cid].get("features_fallback")]
         w("Cells that fell back to default features: %s." % (", ".join("%s (%s)" % (cid, cells[cid]["features_fallback"]) for cid in fb) if fb else "none"))

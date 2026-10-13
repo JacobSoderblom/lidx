@@ -20,8 +20,9 @@ import time
 # command lines that mean corpus code (or a build of it) runs: build-script executables, the proc-macro server, and a cargo
 # subcommand that compiles. `cargo metadata` (reads manifests only) and rustc's own `--print` probes are allowed.
 # `cargo rustc ... --print ...` is rust-analyzer asking rustc for the target's cfg / target-spec: cargo runs rustc to print and
-# compiles nothing (no build script, no proc macro), so that one form is allowed; any other `cargo rustc` compiles.
-FORBIDDEN_PROCESS = re.compile(r"proc-macro-srv|(^|/)build-script-|\bcargo\s+(-\S+\s+)*(check|build|clippy|test|run|bench|doc|rustc\b(?!.*\s--print\b))")
+# compiles nothing (no build script, no proc macro), so that one form is allowed; any other `cargo rustc` compiles. `--print` only counts
+# before a standalone ` -- `: after it the flag goes to rustc while cargo still builds (`cargo rustc --release -- --print cfg`).
+FORBIDDEN_PROCESS = re.compile(r"proc-macro-srv|(^|/)build-script-|\bcargo\s+(-\S+\s+)*(check|build|clippy|test|run|bench|doc|rustc\b(?!(?:(?!\s--\s).)*\s--print\b))")
 
 
 class UnsafeRun(RuntimeError):
