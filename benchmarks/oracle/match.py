@@ -211,11 +211,24 @@ def repowise_go_scope(oracle):
     return out
 
 
+def drop_closure_self(oracle):
+    """Go: remove oracle self-edges F -> F that exist only because a closure is keyed at its enclosing declaration.
+
+    The Go oracle flags (`closure_self`) an edge F -> F when every call site behind it is a function literal invoked where it is
+    written (`func(){...}()`, `go func(){...}()`, `defer func(){...}()`) inside F: that is F running part of its own body, not F
+    calling F. No graph that keys symbols at declarations can hold it. A named function calling itself is never flagged and stays.
+    Returns (oracle without those edges, how many were removed)."""
+    kept = [e for e in oracle["edges"] if not (e.get("closure_self") and okey_of(e["caller"]) == okey_of(e["callee"]))]
+    out = dict(oracle)
+    out["edges"] = kept
+    return out, len(oracle["edges"]) - len(kept)
+
+
 def okey_of(d):
     return "%s:%d" % (d["file"], d["line"])
 
 
-def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_callers=None, dispatch_pairs=None):
+def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_callers=None, dispatch_pairs=None, cfg_gate=None):
     """Compare lidx edges of the given kinds against the oracle. Returns (summary, fn_list, fp_list, extra).
 
     withheld_callers: caller keys the oracle declines to judge (see repowise_ts_scope); an unmatched lidx edge from one is
@@ -226,7 +239,11 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
     with such a site, is a true edge (the call exists), and it covers the oracle edge to a concrete implementation only
     when lidx's graph links that implementation to the interface method. The oracle also lists every interface invocation
     of a reachable function (`iface_calls`), including those RTA found no in-repo target behind. Without such a site the edge is a
-    wrong edge."""
+    wrong edge.
+
+    cfg_gate (Rust): callable (file, [evidence lines]) -> True when every one of those lines lies inside an item behind a
+    `#[cfg(...)]` that is definitely false in the configuration the oracle analysed (see rust_cfg.py). Such an unmatched lidx
+    edge is ungradable (`cfg_gated_evidence`): the compiler never saw the call. Matched edges and ungated code are untouched."""
     sym_keys = {s["key"] for s in syms.values() if "key" in s}
     # Declaration merging (an interface and a const of the same name, overloads) is one declaration: compare
     # declarations by (file, qualname) whenever lidx has a symbol at the position.
@@ -389,6 +406,8 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
             reason = "callee_file_not_covered"
         elif unresolved_hit(csym["file"], p["span"], tsym["name"].split(".")[-1]):
             reason = "oracle_unresolved_site"
+        elif cfg_gate and len(p["epaths"]) == 1 and cfg_gate(sorted(p["epaths"])[0], sorted(l for l in p["lines"] if l)):
+            reason = "cfg_gated_evidence"
         if reason:
             ungradable[reason] += 1
             ungr_list.append({"caller": {k: csym[k] for k in ("file", "line", "name", "qualname")},

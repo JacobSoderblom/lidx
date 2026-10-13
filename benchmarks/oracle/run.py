@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import match  # noqa: E402
 import report  # noqa: E402
+import rust_cfg  # noqa: E402
 import safety  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -47,17 +48,22 @@ def cells_for(repo):
     if lang == "go":
         return [{"id": "go/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": ["-tests"]},
                 {"id": "go/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
+    # diagnostic twin of path_tests_excluded: rust-analyzer analyses every cargo feature, and lidx edges inside `#[cfg(...)]`
+    # items that are definitely off in that configuration are ungradable (rust_cfg.py). repowise analyses the default
+    # features and grades those edges, so this cell is never given a verdict; `path_tests_excluded` stays repowise's cell.
+    allfeat = {"id": "rust/%s/path_tests_excluded_all_features" % n, "repo": n, "lang": lang, "variant": "path_tests_excluded_all_features",
+               "args": ["--path-tests-excluded"], "features": "all"}
     if lang == "rust" and repo.get("held_out"):
         # held-out repositories (not used while developing the extractors) get only the repowise-comparable scope
         return [{"id": "rust/%s/path_tests_excluded" % n, "repo": n, "lang": lang, "variant": "path_tests_excluded",
-                 "args": ["--path-tests-excluded"]}]
+                 "args": ["--path-tests-excluded"]}, allfeat]
     if lang == "rust":
         # path_tests_excluded is repowise's cell (test files by path only, #[cfg(test)] code kept); no_tests is our stricter
         # variant (also drops #[cfg(test)] items and modules gated in their parent) and is a diagnostic row only
         return [{"id": "rust/%s/path_tests_excluded" % n, "repo": n, "lang": lang, "variant": "path_tests_excluded",
                  "args": ["--path-tests-excluded"]},
                 {"id": "rust/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": ["--no-tests"]},
-                {"id": "rust/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": []}]
+                {"id": "rust/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": []}, allfeat]
     return [{"id": "%s/%s" % (lang, n), "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
 
 
@@ -144,29 +150,74 @@ def run_ts_oracle(repo_dir, cell, cache, repo):
     return json.loads(r.stdout), {}
 
 
-def run_rust_oracle(repo_dir, cell, cache, repo):
-    scip = os.path.join(cache, "scip", "%s.scip" % repo["name"])
+def run_scip(repo_dir, cache, repo, all_features):
+    """One `rust-analyzer scip` run under the sandbox; returns (scip path, return code). Raises UnsafeRun if anything from the
+    corpus ran."""
+    tag = "-allfeat" if all_features else ""
+    scip = os.path.join(cache, "scip", "%s%s.scip" % (repo["name"], tag))
     os.makedirs(os.path.dirname(scip), exist_ok=True)
     # nothing from the corpus is executed: no build scripts, no proc macros (see safety.rust_config). The target dir is
     # emptied first so the check afterwards sees only what this run produced.
-    cfg = safety.rust_config(cache, repo["name"])
-    target = os.path.join(cache, "target-%s" % repo["name"])
+    cfg = safety.rust_config(cache, repo["name"], all_features=all_features)
+    target = os.path.join(cache, "target-%s%s" % (repo["name"], tag))
     safety.clean_dir(target, cache)
+    if os.path.exists(scip):
+        os.remove(scip)
     env = safety.hardened_env(target)
     rc, bad = safety.run_watched(["rust-analyzer", "scip", repo_dir, "--output", scip, "--config-path", cfg, "--exclude-vendored-libraries"],
                                  env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     safety.assert_clean_run(bad, repo_dir, target)
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, "rust-analyzer scip")
+    return scip, rc
+
+
+def run_rust_oracle(repo_dir, cell, cache, repo):
+    features = "default"
+    fallback = None
+    scip = None
+    if cell.get("features") == "all":
+        scip, rc = run_scip(repo_dir, cache, repo, True)
+        if rc == 0 and os.path.exists(scip):
+            features = "all"
+        else:
+            fallback = "rust-analyzer scip with cargo.features=all exited %s; this cell is analysed with default features" % rc
+    if features == "default":
+        scip, rc = run_scip(repo_dir, cache, repo, False)
+        if rc != 0:
+            raise subprocess.CalledProcessError(rc, "rust-analyzer scip")
     r = sh([sys.executable, "-I", os.path.join(HERE, "rust_oracle", "scip_calls.py"), "--repo", repo_dir, "--scip", scip] + cell["args"],
            capture_output=True)
-    return json.loads(r.stdout), {"build_scripts_run": False, "proc_macros_run": False}
+    meta = {"build_scripts_run": False, "proc_macros_run": False, "features": features}
+    if fallback:
+        meta["features_fallback"] = fallback
+    return json.loads(r.stdout), meta
+
+
+def host_cfg():
+    """The configuration rust-analyzer analyses: the host's `rustc --print cfg`. Run outside any corpus directory."""
+    out = sh(["rustc", "--print", "cfg"], capture_output=True, cwd="/").stdout
+    return out
+
+
+def make_cfg_gate(repo_dir, features):
+    """Callable for match.grade: are all these evidence lines inside items behind a definitely-false #[cfg] of this configuration?"""
+    host = rust_cfg.host_from_rustc(host_cfg(), features)
+    cache = {}
+
+    def gate(path, lines):
+        if path not in cache:
+            try:
+                with open(os.path.join(repo_dir, path), encoding="utf-8", errors="replace") as f:
+                    cache[path] = rust_cfg.gated_ranges(f.read(), host)
+            except OSError:
+                cache[path] = []
+        return rust_cfg.lines_gated(cache[path], lines)
+    return gate
 
 
 def get_oracle(cell, repo, repo_dir, cache, force):
     key_src = {"go": ["go_oracle/main.go"], "ts": ["ts_oracle/oracle.mjs", "ts_oracle/package-lock.json"],
                "rust": ["rust_oracle/scip_calls.py", "safety.py"]}[cell["lang"]]
-    st = stamp([os.path.join(HERE, p) for p in key_src], repo["sha"] + " ".join(cell["args"]) + ",".join(repo.get("subdirs", [])))
+    st = stamp([os.path.join(HERE, p) for p in key_src], repo["sha"] + " ".join(cell["args"]) + ",".join(repo.get("subdirs", [])) + cell.get("features", ""))
     path = os.path.join(cache, "oracle", "%s.json" % cell["id"].replace("/", "__"))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not force and os.path.exists(path):
@@ -221,7 +272,8 @@ def super_edge_stats(oracle, repo_dir, missed):
         for s in e["sites"]:
             f, _, ln = s.rpartition(":")
             if f not in cache:
-                cache[f] = open(os.path.join(repo_dir, f), encoding="utf-8", errors="replace").read().split("\n")
+                with open(os.path.join(repo_dir, f), encoding="utf-8", errors="replace") as fh:
+                    cache[f] = fh.read().split("\n")
             if 0 < int(ln) <= len(cache[f]) and SUPER_CALL.search(cache[f][int(ln) - 1]):
                 is_super = True
         if is_super:
@@ -289,8 +341,20 @@ def main():
                    "cell": cell["id"], "repo": repo["name"], "lang": repo["lang"], "variant": cell["variant"],
                    "index_seconds": secs, "oracle_mode": oracle.get("mode"), "oracle_meta": oracle.get("_meta", {}),
                    "oracle_dropped": oracle.get("dropped", {})}
-            summ, fn, fp, gap, ungr = match.grade(oracle, syms, edges, repo["lang"], src, native_kinds, dispatch_pairs=dpairs)
-            summ_r, fn_r, fp_r, _, _ = match.grade(oracle, syms, edges, repo["lang"], src, native_kinds + ("REFERENCES", "USES"), dispatch_pairs=dpairs)
+            # Go: the lidx-native (diagnostic) grading leaves out closure self-edges F -> F, an artefact of keying closures at their
+            # enclosing declaration; repowise's denominator keeps them (as F -> literal, which nobody can match), so the
+            # repowise-comparable grading below keeps them too and reports the without-them figure next to it
+            graded_oracle, n_closure_self = (match.drop_closure_self(oracle) if cell["lang"] == "go" else (oracle, 0))
+            gate = None
+            if cell.get("features"):
+                gate = make_cfg_gate(repo_dir, oracle.get("_meta", {}).get("features", "default"))
+            summ, fn, fp, gap, ungr = match.grade(graded_oracle, syms, edges, repo["lang"], src, native_kinds, dispatch_pairs=dpairs, cfg_gate=gate)
+            summ_r, fn_r, fp_r, _, _ = match.grade(graded_oracle, syms, edges, repo["lang"], src, native_kinds + ("REFERENCES", "USES"),
+                                                   dispatch_pairs=dpairs, cfg_gate=gate)
+            if cell.get("features"):
+                res["features"] = oracle.get("_meta", {}).get("features", "default")
+                if oracle.get("_meta", {}).get("features_fallback"):
+                    res["features_fallback"] = oracle["_meta"]["features_fallback"]
             res["calls"] = summ
             if cell["lang"] == "ts":
                 # the repowise-comparable TypeScript grading: no module-level callers, no abstract targets (see
@@ -305,6 +369,10 @@ def main():
                 # the repowise-comparable Go grading: no interface edges, no dispatch credit (match.repowise_go_scope);
                 # `calls` stays the dispatch-credited, lidx-native grading (a labelled diagnostic)
                 res["comparable"] = match.grade(match.repowise_go_scope(oracle), syms, edges, repo["lang"], src, ("CALLS",))[0]
+                res["closure_self_edges_dropped"] = n_closure_self
+                res["comparable_without_closure_self"] = match.grade(match.repowise_go_scope(graded_oracle), syms, edges, repo["lang"], src, ("CALLS",))[0]
+                dump_list(os.path.join(a.results, "lists", "%s.closure_self.json" % cell["id"].replace("/", "__")),
+                          [e for e in oracle["edges"] if e.get("closure_self") and match.okey_of(e["caller"]) == match.okey_of(e["callee"])])
             res["calls_plus_references"] = {k: summ_r[k] for k in ("graded", "tp", "fp", "precision", "precision_ci", "recall", "recall_ci",
                                                                    "matched_oracle_edges")}
             res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES", "USES")}

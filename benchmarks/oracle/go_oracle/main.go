@@ -48,7 +48,14 @@ type Edge struct {
 	// found; a graph that points a call at the interface method instead is describing the
 	// same call (see README, "Dispatch edges").
 	CalleeAlts []string `json:"callee_alts,omitempty"`
-	static     int
+	// ClosureSelf marks a self-edge F -> F whose every call site is a closure collapsed into its enclosing
+	// declaration F and invoked on the spot: `func(){...}()`, `go func(){...}()` or `defer func(){...}()`. It is
+	// not recursion; it exists only because closures are keyed at their enclosing declaration. A named
+	// function calling itself never carries this flag.
+	ClosureSelf bool `json:"closure_self,omitempty"`
+	static      int
+	selfIIFE    int // sites that are such an invoked closure
+	other       int // every other site
 }
 
 type Output struct {
@@ -251,6 +258,37 @@ func main() {
 		return Decl{File: rel, Line: pos.Line, Name: fn.Name()}, ""
 	}
 	isClosure := func(fn *ssa.Function) bool { return fn.Parent() != nil }
+	// invokedOnTheSpot: the call site starts a closure where it is written: `go`/`defer` of a function literal, or a
+	// literal called immediately. The callee must be a closure (the caller checks), so `defer cleanup()` of a named
+	// function is never one, and neither is a named function that calls itself.
+	invokedOnTheSpot := func(site ssa.CallInstruction) bool {
+		switch site.(type) {
+		case *ssa.Go, *ssa.Defer:
+			// go/defer start work that runs inside F's own frame or goroutine; when the callee is a closure of F (the caller checks)
+			// this is F running part of its body. It covers `defer cancel()` too, where RTA lists the closures of F as possible
+			// targets of a function value.
+			return true
+		}
+		var lit *ssa.Function
+		switch v := site.Common().Value.(type) {
+		case *ssa.MakeClosure:
+			lit, _ = v.Fn.(*ssa.Function)
+		case *ssa.Function:
+			lit = v
+		}
+		if lit == nil || lit.Parent() == nil {
+			return false
+		}
+		// A plain call is "immediate" only when the literal is the thing being called: `func(){...}()` or
+		// `(func(){...})()`. SSA lifts `f := func(){...}; f()` to the same call, so the syntax decides: the call's
+		// opening parenthesis must follow the literal's closing brace.
+		fl, ok := lit.Syntax().(*ast.FuncLit)
+		if !ok || !site.Pos().IsValid() {
+			return false
+		}
+		end, lp := prog.Fset.Position(fl.End()), prog.Fset.Position(site.Pos())
+		return end.Filename == lp.Filename && end.Line == lp.Line && (lp.Column == end.Column || lp.Column == end.Column+1)
+	}
 
 	type key struct{ a, b Decl }
 	seen := map[key]int{}
@@ -293,6 +331,7 @@ func main() {
 		}
 		callerSeen[ct] = true
 		k := key{cf, ct}
+		selfIIFE := cf == ct && closure && site != nil && invokedOnTheSpot(site)
 		siteStr := ""
 		if site != nil && site.Pos().IsValid() {
 			p := prog.Fset.Position(site.Pos())
@@ -333,6 +372,11 @@ func main() {
 		}
 		if idx, ok := seen[k]; ok {
 			e := &out.Edges[idx]
+			if selfIIFE {
+				e.selfIIFE++
+			} else {
+				e.other++
+			}
 			addAlt(e)
 			if isStatic {
 				e.static++
@@ -348,6 +392,11 @@ func main() {
 		}
 		seen[k] = len(out.Edges)
 		e := Edge{Caller: cf, Callee: ct, Dispatch: !isStatic, Closure: closure}
+		if selfIIFE {
+			e.selfIIFE = 1
+		} else {
+			e.other = 1
+		}
 		addAlt(&e)
 		if isStatic {
 			e.static = 1
@@ -462,6 +511,11 @@ func main() {
 		return a.Method < b.Method
 	})
 
+	for i := range out.Edges {
+		if e := &out.Edges[i]; e.selfIIFE > 0 && e.other == 0 {
+			e.ClosureSelf = true
+		}
+	}
 	for f := range fileSet {
 		out.Files = append(out.Files, f)
 	}
