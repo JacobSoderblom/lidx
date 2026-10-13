@@ -275,6 +275,11 @@ pub enum DeferredSource {
     /// Type of a field of the struct/enum `owner`: `field` is `name`, `0`, or
     /// `Variant::name` / `Variant::0` for an enum variant.
     Field { owner: String, field: String },
+    /// A type written as a `crate::`-rooted path (`crate::walk::DirEntry`, `self::`
+    /// and `super::` already made absolute) in the package at `package`: the
+    /// module it names may declare the type or re-export one from a
+    /// dependency, which only the resolver can read.
+    Path { package: String, path: String },
 }
 
 /// One projection applied to a declared type to reach the receiver's type.
@@ -294,6 +299,9 @@ pub enum Step {
     Method(String),
     /// `.await` of a future.
     Await,
+    /// A named field of the struct the type is (`param.field`), read from its
+    /// declaration.
+    Field(String),
 }
 
 /// A Rust receiver type the extractor could only trace to a declaration in
