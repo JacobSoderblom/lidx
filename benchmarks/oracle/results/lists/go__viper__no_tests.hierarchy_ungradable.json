@@ -1,0 +1,13 @@
+[
+{"base":"encoding.go:16","evidence_file":"encoding_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"encoding_test.go:10"},
+{"base":"encoding.go:17","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"encoding_test.go:12"},
+{"base":"encoding.go:22","evidence_file":"encoding_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"encoding_test.go:10"},
+{"base":"encoding.go:23","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"encoding_test.go:16"},
+{"base":"encoding.go:27","evidence_file":"encoding_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"encoding_test.go:10"},
+{"base":"finder.go:21","evidence_file":"finder_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"finder_test.go:11"},
+{"base":"finder.go:22","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"finder_test.go:15"},
+{"base":"remote.go:18","evidence_file":"remote/remote.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"remote/remote.go:20"},
+{"base":"remote.go:19","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"remote/remote.go:22"},
+{"base":"remote.go:20","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"remote/remote.go:34"},
+{"base":"remote.go:21","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"remote/remote.go:47"}
+]

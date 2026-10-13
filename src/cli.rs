@@ -76,6 +76,14 @@ pub enum Command {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+    /// Print every (base member id, implementing member id) pair of the dispatch query as a JSON array.
+    /// The type-hierarchy benchmark (benchmarks/oracle) grades these against compiler output.
+    DispatchPairs {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
     /// Run a single JSONL request and exit.
     Request {
         #[arg(long, default_value = ".")]
@@ -148,6 +156,7 @@ impl Command {
             | Command::Reindex { repo, .. }
             | Command::ChangedFiles { repo, .. }
             | Command::Overview { repo, .. }
+            | Command::DispatchPairs { repo, .. }
             | Command::Request { repo, .. }
             | Command::McpServe { repo, .. }
             | Command::Context { repo, .. }

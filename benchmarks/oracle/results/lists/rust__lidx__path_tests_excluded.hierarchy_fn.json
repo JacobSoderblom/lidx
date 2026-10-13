@@ -1,0 +1,4 @@
+[
+{"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"src/indexer/channel.rs:240"},
+{"base":"src/indexer/csharp.rs:7788","base_name":"WithNameOnly","category":"no_edge","relation":"implements","sub":"src/indexer/extract.rs:82","sub_name":"ReceiverType"}
+]

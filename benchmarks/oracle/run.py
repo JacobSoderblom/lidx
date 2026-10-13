@@ -24,6 +24,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import hierarchy  # noqa: E402
 import match  # noqa: E402
 import report  # noqa: E402
 import rust_cfg  # noqa: E402
@@ -125,7 +126,7 @@ def run_go_oracle(repo_dir, cell, cache):
         env["GOTOOLCHAIN"] = tc
     exe = os.path.join(cache, "bin", "gooracle-%s" % tc)
     src = os.path.join(HERE, "go_oracle")
-    st = stamp([os.path.join(src, "main.go"), os.path.join(src, "go.mod")])
+    st = stamp([os.path.join(src, "main.go"), os.path.join(src, "hierarchy.go"), os.path.join(src, "go.mod")])
     stf = exe + ".stamp"
     if not (os.path.exists(exe) and os.path.exists(stf) and open(stf).read() == st):
         os.makedirs(os.path.dirname(exe), exist_ok=True)
@@ -186,10 +187,14 @@ def run_rust_oracle(repo_dir, cell, cache, repo):
             raise subprocess.CalledProcessError(rc, "rust-analyzer scip")
     r = sh([sys.executable, "-I", os.path.join(HERE, "rust_oracle", "scip_calls.py"), "--repo", repo_dir, "--scip", scip] + cell["args"],
            capture_output=True)
+    d = json.loads(r.stdout)
+    # type hierarchy (issue #449): the impl symbols and header occurrences of the same SCIP index, same file scope
+    d["hierarchy"] = json.loads(sh([sys.executable, "-I", os.path.join(HERE, "rust_oracle", "scip_hierarchy.py"), "--repo", repo_dir, "--scip", scip]
+                                   + cell["args"], capture_output=True).stdout)
     meta = {"build_scripts_run": False, "proc_macros_run": False, "features": features}
     if fallback:
         meta["features_fallback"] = fallback
-    return json.loads(r.stdout), meta
+    return d, meta
 
 
 def host_cfg():
@@ -215,8 +220,8 @@ def make_cfg_gate(repo_dir, features):
 
 
 def get_oracle(cell, repo, repo_dir, cache, force):
-    key_src = {"go": ["go_oracle/main.go"], "ts": ["ts_oracle/oracle.mjs", "ts_oracle/package-lock.json"],
-               "rust": ["rust_oracle/scip_calls.py", "safety.py"]}[cell["lang"]]
+    key_src = {"go": ["go_oracle/main.go", "go_oracle/hierarchy.go"], "ts": ["ts_oracle/oracle.mjs", "ts_oracle/hierarchy.mjs", "ts_oracle/package-lock.json"],
+               "rust": ["rust_oracle/scip_calls.py", "rust_oracle/scip_hierarchy.py", "safety.py"]}[cell["lang"]]
     st = stamp([os.path.join(HERE, p) for p in key_src], repo["sha"] + " ".join(cell["args"]) + ",".join(repo.get("subdirs", [])) + cell.get("features", ""))
     path = os.path.join(cache, "oracle", "%s.json" % cell["id"].replace("/", "__"))
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -282,6 +287,29 @@ def super_edge_stats(oracle, repo_dir, missed):
     return {"oracle": total, "matched": total - lost}
 
 
+def hierarchy_inputs(binary, repo_dir, db, lang):
+    """lidx's own hierarchy rows, and for Go and TypeScript its dispatch pairs (`lidx dispatch-pairs`: the query behind
+    explain_symbol / analyze_impact / dead_symbols), as (base member id, implementing member id)."""
+    edges = hierarchy.load_hier_edges(db)
+    pairs = None
+    if lang in ("go", "ts"):
+        r = sh([binary, "dispatch-pairs", "--repo", repo_dir, "--db", db], capture_output=True)
+        pairs = [tuple(p) for p in json.loads(r.stdout)]
+    return edges, pairs
+
+
+def grade_hierarchy(res, cell, oracle, syms, hier_edges, dispatch_ids, results_dir):
+    """Type hierarchy section of one cell (issue #449): graded by hierarchy.py, lists in results/lists/<cell>.hierarchy_{fn,fp}.json."""
+    summ, fn, fp, ungr = hierarchy.grade_cell(cell["lang"], oracle, syms, hier_edges, dispatch_ids)
+    if summ is None:
+        return
+    res["hierarchy"] = summ
+    fid = cell["id"].replace("/", "__")
+    dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_fn.json" % fid), fn)
+    dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_fp.json" % fid), fp)
+    dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_ungradable.json" % fid), ungr)
+
+
 def dump_list(path, data):
     """One compact JSON object per line: diff-friendly and about a third the size of indented JSON."""
     rows = sorted(json.dumps(x, separators=(",", ":"), sort_keys=True) for x in data)  # stable across runs
@@ -331,6 +359,7 @@ def main():
         syms, edges = match.load_lidx(db, repo_dir, repo["lang"])
         src = match.Sources(repo_dir)
         dpairs = match.go_dispatch_pairs(db, syms) if repo["lang"] == "go" else None
+        hier_edges, dispatch_ids = hierarchy_inputs(binary, repo_dir, db, repo["lang"])
         # lidx-native Go grading also counts its DISPATCH edges (a call left on an interface method); the repowise-rules
         # grading and every other language see CALLS only
         native_kinds = ("CALLS", "DISPATCH") if repo["lang"] == "go" else ("CALLS",)
@@ -385,6 +414,7 @@ def main():
             fn = [x for x in fn if x["category"] != "dispatch"]
             for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap), ("ungradable", ungr), ("dispatch_fn", dispatch_fn)):
                 dump_list(os.path.join(a.results, "lists", "%s.%s.json" % (fid, suffix)), data)
+            grade_hierarchy(res, cell, oracle, syms, hier_edges, dispatch_ids, a.results)
             out["cells"][cell["id"]] = res
             print("   %s: P=%s R=%s (graded=%d, oracle=%d)" % (cell["id"], summ["precision"], summ["recall"], summ["graded"],
                                                               summ["oracle_edges_caller_indexed"]), flush=True)

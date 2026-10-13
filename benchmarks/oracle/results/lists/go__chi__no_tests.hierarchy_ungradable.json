@@ -1,0 +1,4 @@
+[
+{"base":"middleware/logger.go:87","evidence_file":"middleware/recoverer_test.go","evidence_line":null,"kind":"IMPLEMENTS","reason":"file_not_analysed","relation":"implements","sub":"middleware/recoverer_test.go:15"},
+{"base":"middleware/logger.go:88","evidence_file":null,"evidence_line":null,"kind":"DISPATCH_PAIR","reason":"file_not_analysed","relation":"overrides","sub":"middleware/recoverer_test.go:17"}
+]

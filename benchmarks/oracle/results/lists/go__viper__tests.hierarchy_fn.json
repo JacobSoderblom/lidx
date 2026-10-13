@@ -1,0 +1,6 @@
+[
+{"base":"encoding.go:16","base_name":"Encoder","category":"no_edge","relation":"extends","sub":"encoding.go:27","sub_name":"Codec"},
+{"base":"encoding.go:22","base_name":"Decoder","category":"no_edge","relation":"extends","sub":"encoding.go:27","sub_name":"Codec"},
+{"base":"flags.go:7","base_name":"FlagValueSet","category":"no_edge","relation":"implements","sub":"flags.go:22","sub_name":"pflagValueSet"},
+{"base":"flags.go:8","base_name":"VisitAll","base_type":"FlagValueSet@flags.go:7","category":"type_edge_missing","relation":"overrides","sub":"flags.go:27","sub_name":"VisitAll","sub_type":"pflagValueSet@flags.go:22"}
+]

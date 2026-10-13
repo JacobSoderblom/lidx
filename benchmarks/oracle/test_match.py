@@ -267,5 +267,170 @@ class GoInterfaceDispatch(unittest.TestCase):
         self.assertEqual(match.grade(match.repowise_go_scope(oracle), syms, both, "go", src)[0]["recall_comparable"], 0.5)
 
 
+# ---------------------------------------------------------------- type hierarchy (issue #449)
+import hierarchy  # noqa: E402
+import json  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+
+
+def decl(path, line, name):
+    return {"file": path, "line": line, "name": name}
+
+
+def hedge(kind, s, t, tq=None):
+    return {"kind": kind, "s": s, "t": t, "tq": tq, "res": "structural", "line": 1, "epath": "a.go"}
+
+
+def hsym(i, path, line, name, kind, qual=None):
+    return sym(i, path, line, name, kind, qual)
+
+
+class Hierarchy(unittest.TestCase):
+    def go_oracle(self, **h):
+        base = {"implements": [], "embeds": [], "extends": [], "overrides": [], "external_base": [], "ungradable": [], "excluded": {},
+                "types": [decl("a.go", 10, "T")], "ifaces": [decl("a.go", 1, "I")]}
+        base.update(h)
+        return {"files": ["a.go"], "hierarchy": base}
+
+    def test_go_pointer_receiver_implementation(self):
+        """`*T` implements `I` (pointer-receiver methods): the pair is an oracle pair like any other and lidx's edge matches it;
+        the method pair comes back through lidx's dispatch pairs."""
+        oracle = self.go_oracle(
+            implements=[{"sub": decl("a.go", 10, "T"), "base": decl("a.go", 1, "I"), "ptr": True}],
+            overrides=[{"sub": decl("a.go", 12, "Do"), "base": decl("a.go", 2, "Do"), "ptr": True}])
+        syms = {1: hsym(1, "a.go", 1, "I", "interface"), 2: hsym(2, "a.go", 2, "Do", "method", "I.Do"),
+                3: hsym(3, "a.go", 10, "T", "class"), 4: hsym(4, "a.go", 12, "Do", "method", "T.Do")}
+        summ, fn, fp, _ = hierarchy.grade_cell("go", oracle, syms, [hedge("IMPLEMENTS", 3, 1)], [(2, 4)])
+        r = summ["relations"]
+        self.assertEqual((r["implements"]["tp"], r["implements"]["fp"], r["implements"]["recall"]), (1, 0, 1.0))
+        self.assertEqual((r["overrides"]["tp"], r["overrides"]["recall"]), (1, 1.0))
+        self.assertEqual(fn + fp, [])
+
+    def test_go_embedded_interface_chain(self):
+        """A embeds B embeds C: the oracle has A->B and B->C. lidx with only A->B recalls half and is never wrong; a lidx
+        A->C edge (transitive, not embedded) is a wrong edge for `extends`."""
+        oracle = self.go_oracle(
+            extends=[{"sub": decl("a.go", 1, "A"), "base": decl("a.go", 5, "B")}, {"sub": decl("a.go", 5, "B"), "base": decl("a.go", 9, "C")}],
+            ifaces=[decl("a.go", 1, "A"), decl("a.go", 5, "B"), decl("a.go", 9, "C")], types=[])
+        syms = {1: hsym(1, "a.go", 1, "A", "interface"), 2: hsym(2, "a.go", 5, "B", "interface"), 3: hsym(3, "a.go", 9, "C", "interface")}
+        summ, fn, fp, _ = hierarchy.grade_cell("go", oracle, syms, [hedge("EXTENDS", 1, 2)], [])
+        e = summ["relations"]["extends"]
+        self.assertEqual((e["tp"], e["fp"], e["matched"], e["oracle_pairs"]), (1, 0, 1, 2))
+        self.assertEqual([(x["sub"], x["base"], x["category"]) for x in fn], [("a.go:5", "a.go:9", "no_edge")])
+        summ, fn, fp, _ = hierarchy.grade_cell("go", oracle, syms, [hedge("EXTENDS", 1, 2), hedge("EXTENDS", 1, 3)], [])
+        self.assertEqual(summ["relations"]["extends"]["fp"], 1)
+        self.assertEqual(fp[0]["category"], "other")
+
+    def test_go_struct_embedding_is_not_extends(self):
+        """Struct embedding is its own relation: an EXTENDS row from a struct is graded as `embeds`, not as interface `extends`."""
+        oracle = self.go_oracle(embeds=[{"sub": decl("a.go", 10, "T"), "base": decl("a.go", 20, "U")}],
+                                types=[decl("a.go", 10, "T"), decl("a.go", 20, "U")])
+        syms = {1: hsym(1, "a.go", 10, "T", "class"), 2: hsym(2, "a.go", 20, "U", "class")}
+        summ, fn, fp, _ = hierarchy.grade_cell("go", oracle, syms, [hedge("EXTENDS", 1, 2)], [])
+        self.assertEqual(summ["relations"]["embeds"]["tp"], 1)
+        self.assertEqual(summ["relations"]["extends"]["graded"], 0)
+
+    def test_ts_interface_extends_interface(self):
+        oracle = {"files": ["a.ts"], "hierarchy": {
+            "extends": [{"sub": decl("a.ts", 5, "Child"), "base": decl("a.ts", 1, "Parent"), "base_alts": []}],
+            "implements": [], "overrides": [], "external_base": [], "structural_implements": [], "ungradable": [], "excluded": {},
+            "types": [decl("a.ts", 1, "Parent"), decl("a.ts", 5, "Child")]}}
+        syms = {1: hsym(1, "a.ts", 1, "Parent", "interface"), 2: hsym(2, "a.ts", 5, "Child", "interface")}
+        summ, fn, fp, _ = hierarchy.grade_cell("ts", oracle, syms, [hedge("EXTENDS", 2, 1)], [])
+        self.assertEqual((summ["relations"]["extends"]["tp"], summ["relations"]["extends"]["recall"]), (1, 1.0))
+        # the reverse edge is wrong and says so
+        summ, fn, fp, _ = hierarchy.grade_cell("ts", oracle, syms, [hedge("EXTENDS", 1, 2)], [])
+        self.assertEqual((summ["relations"]["extends"]["fp"], fp[0]["category"]), (1, "reverse_direction"))
+
+    def test_external_base_lands_in_its_bucket(self):
+        """`class E extends Error`: the base is outside the repository, so it is never a precision or recall pair; it is
+        judged for existence only (lidx has any EXTENDS row from E naming it)."""
+        oracle = {"files": ["a.ts"], "hierarchy": {
+            "extends": [], "implements": [], "overrides": [], "structural_implements": [], "ungradable": [], "excluded": {},
+            "external_base": [{"sub": decl("a.ts", 3, "E"), "base": "Error", "base_kind": "external", "relation": "extends"}],
+            "types": [decl("a.ts", 3, "E")]}}
+        syms = {1: hsym(1, "a.ts", 3, "E", "class")}
+        have = hierarchy.grade_cell("ts", oracle, syms, [hedge("EXTENDS", 1, None, "Error")], [])[0]
+        self.assertEqual((have["external_base"]["oracle"], have["external_base"]["found"]), (1, 1))
+        self.assertEqual(have["relations"]["extends"]["oracle_pairs"], 0)
+        none, fn, _, _ = hierarchy.grade_cell("ts", oracle, syms, [], [])
+        self.assertEqual((none["external_base"]["found"], fn[0]["bucket"]), (0, "external_base"))
+        self.assertTrue(hierarchy.ext_match("Display::fmt", "ext:std::fmt::Display::fmt"))
+        self.assertFalse(hierarchy.ext_match("Display", "ext:std::default::Default"))
+
+    def test_structural_only_edge_is_reported_apart(self):
+        oracle = {"files": ["a.ts"], "hierarchy": {
+            "extends": [], "implements": [], "overrides": [], "external_base": [], "ungradable": [], "excluded": {},
+            "structural_implements": [{"sub": decl("a.ts", 5, "C"), "base": decl("a.ts", 1, "I")}],
+            "types": [decl("a.ts", 1, "I"), decl("a.ts", 5, "C")]}}
+        syms = {1: hsym(1, "a.ts", 1, "I", "interface"), 2: hsym(2, "a.ts", 5, "C", "class")}
+        summ, fn, fp, _ = hierarchy.grade_cell("ts", oracle, syms, [hedge("IMPLEMENTS", 2, 1)], [])
+        r = summ["relations"]["implements"]
+        self.assertEqual((r["fp"], r["fp_structural_only"], fp[0]["category"]), (1, 1, "structural_only"))
+
+    def test_rust_blanket_impl_is_excluded_and_external_trait_is_bucketed(self):
+        """Through a synthetic SCIP index: `impl Shape for Circle` is an implements pair with an override, `impl<T> Shape for T`
+        has no in-repo type and is left out as `blanket_impl`, and `impl Display for Circle` is an external base."""
+        with tempfile.TemporaryDirectory() as td:
+            src = ("pub trait Shape {\n    fn area(&self) -> f64;\n}\npub struct Circle;\n"
+                   "impl Shape for Circle {\n    fn area(&self) -> f64 { 1.0 }\n}\n"
+                   "impl<T> Shape for T {\n    fn area(&self) -> f64 { 0.0 }\n}\n"
+                   "impl Display for Circle {\n    fn fmt(&self) {}\n}\n")
+            os.makedirs(os.path.join(td, "src"))
+            with open(os.path.join(td, "src", "lib.rs"), "w") as f:
+                f.write(src)
+            P = "rust-analyzer cargo demo 0.1.0 "
+            shape, circle = P + "Shape#", P + "Circle#"
+            disp = "rust-analyzer cargo core 0.0.0 fmt/Display#"
+            occ = [  # (symbol, line0, col, end col, role)
+                (shape, 0, 10, 15, 1), (P + "Shape#area().", 1, 7, 11, 1), (circle, 3, 11, 17, 1),
+                (shape, 4, 5, 10, 0), (circle, 4, 15, 21, 0), (P + "impl#[Circle][Shape]area().", 5, 7, 11, 1),
+                (shape, 7, 8, 13, 0), (P + "impl#[T][Shape]area().", 8, 7, 11, 1),
+                (disp, 10, 5, 12, 0), (circle, 10, 17, 23, 0), (P + "impl#[Circle][Display]fmt().", 11, 7, 10, 1),
+            ]
+            kinds = {shape: 53, circle: 49}
+            idx = _scip_index("src/lib.rs", occ, kinds)
+            scip = os.path.join(td, "x.scip")
+            with open(scip, "wb") as f:
+                f.write(idx)
+            here = os.path.dirname(os.path.abspath(__file__))
+            out = subprocess.run([sys.executable, "-I", os.path.join(here, "rust_oracle", "scip_hierarchy.py"), "--repo", td, "--scip", scip],
+                                 capture_output=True, text=True, check=True).stdout
+            h = json.loads(out)
+        self.assertEqual([(p["sub"]["name"], p["base"]["name"]) for p in h["implements"]], [("Circle", "Shape")])
+        self.assertEqual([(p["sub"]["line"], p["base"]["line"]) for p in h["overrides"]], [(6, 2)])
+        self.assertEqual(h["excluded"].get("blanket_impl"), 1)
+        self.assertEqual({(x["base"], x["relation"]) for x in h["external_base"]}, {("Display", "implements"), ("Display::fmt", "overrides")})
+        self.assertEqual([t["name"] for t in h["types"]], ["Circle"])
+
+
+def _varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def _field(num, wire, payload):
+    tag = _varint((num << 3) | wire)
+    return tag + (_varint(len(payload)) + payload if wire == 2 else payload)
+
+
+def _scip_index(path, occs, kinds):
+    """A minimal SCIP Index (documents only) in protobuf wire format, enough for scip_calls.fields()."""
+    doc = _field(1, 2, path.encode())
+    for sym, line, c0, c1, role in occs:
+        rng = b"".join(_varint(x) for x in (line, c0, c1))
+        o = _field(1, 2, rng) + _field(2, 2, sym.encode()) + (_field(3, 0, _varint(role)) if role else b"")
+        doc += _field(2, 2, o)
+    for sym, kind in kinds.items():
+        doc += _field(3, 2, _field(1, 2, sym.encode()) + _field(5, 0, _varint(kind)))
+    return _field(2, 2, doc)
+
+
 if __name__ == "__main__":
     unittest.main()
