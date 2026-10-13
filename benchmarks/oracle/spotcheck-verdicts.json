@@ -1476,5 +1476,297 @@
   "verdict": "correct_exclusion",
   "note": "src/platform/windows.rs is not under tests/ but is `#[cfg(windows)] mod windows`, so rust-analyzer on this host never analysed it; the impl PlatformInterface for Platform is real and lidx does index it."
  },
- "_hierarchy_notes": "Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where fewer wrong pairs exist every one is read (Go and Rust have none: lidx's precision is 1.00 on the pairs the oracle judges; TypeScript has one), plus up to 10 items from every exclusion bucket. Read against the source by Sonnet subagents with access to the checked-out corpus and lidx's index. The first TypeScript sample found 12 of 61 items to be matching artefacts (a type alias named in an `extends` clause was keyed at its target, and the bases of merged interface declarations were all attributed to the first declaration); the oracle now reads each `extends` clause where it is written and the sample was redrawn."
+ "_hierarchy_notes": "Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where fewer wrong pairs exist every one is read (Go and Rust have none: lidx's precision is 1.00 on the pairs the oracle judges; TypeScript has one), plus up to 10 items from every exclusion bucket. Read against the source by Sonnet subagents with access to the checked-out corpus and lidx's index. The first TypeScript sample found 12 of 61 items to be matching artefacts (a type alias named in an `extends` clause was keyed at its target, and the bases of merged interface declarations were all attributed to the first declaration); the oracle now reads each `extends` clause where it is written and the sample was redrawn.",
+ "h408b747d": {
+  "verdict": "correct",
+  "note": "customBoolFlag.Apply (app_test.go:2497) is the pointer-receiver implementer of Flag.Apply(*flag.FlagSet) error at flag.go:106."
+ },
+ "hfc0eedda": {
+  "verdict": "correct",
+  "note": "(*Deferred).FilesByGlob(patterns ...string) matches PathResolver.FilesByGlob at resolver.go:45 with identical signature."
+ },
+ "h49adb017": {
+  "verdict": "correct",
+  "note": "HashiGoGetter.GetFile (value receiver, variadic monitors) implements Getter.GetFile at getter.go:24; parameter-name difference is irrelevant."
+ },
+ "hc36e369f": {
+  "verdict": "correct",
+  "note": "altsrc.DurationFlag embeds *cli.DurationFlag (promoting IsVisible/GetCategory/Names/IsSet/String) and defines Apply on *DurationFlag, so *DurationFlag satisfies CategorizableFlag."
+ },
+ "haa5a694d": {
+  "verdict": "correct",
+  "note": "*excluding defines AllLocations(ctx) <-chan file.Location (excluding_file.go:73), the sole method of LocationResolver."
+ },
+ "hf095d732": {
+  "verdict": "correct",
+  "note": "*Int64Slice has WithSeparatorSpec(spec separatorSpec) at flag_int64_slice.go:33, the sole method of customizedSeparator."
+ },
+ "hbba172d6": {
+  "verdict": "correct",
+  "note": "*directorySource.FileResolver(Scope)(file.Resolver,error) at directory_source.go:92 implements Source.FileResolver at source.go:18."
+ },
+ "h2583164f": {
+  "verdict": "correct",
+  "note": "*genericType.String() string (flag_test.go:3004) implements Generic.String at flag_generic.go:11 (Set also present)."
+ },
+ "hc540c7a7": {
+  "verdict": "correct",
+  "note": "*extFlag.IsVisible (flag_ext.go:26) implements VisibleFlag.IsVisible at flag.go:153."
+ },
+ "h7264c79b": {
+  "verdict": "correct",
+  "note": "request embeds file.Location (Location->LocationData->Coordinates, which has ID() artifact.ID at coordinates.go:26) and the method-less func type Parser, so ID() is promoted and Identifiable is satisfied."
+ },
+ "hcf2dad1b": {
+  "verdict": "correct",
+  "note": "*ContainerImageAllLayers.FilesByPath(paths ...string) matches PathResolver.FilesByPath at resolver.go:38."
+ },
+ "hf06c025b": {
+  "verdict": "correct",
+  "note": "LocationReadCloser embeds Location, promoting Coordinates.ID() artifact.ID; io.ReadCloser adds no conflicting ID, so Identifiable is satisfied."
+ },
+ "h0e58ff81": {
+  "verdict": "correct",
+  "note": "*mockFileGetter.GetFile (snap_test.go:623) overrides the embedded file.Getter's GetFile and implements Getter.GetFile at getter.go:24 with identical signature."
+ },
+ "hbeb69c8d": {
+  "verdict": "correct",
+  "note": "*Int64SliceFlag.IsVisible (zz_generated.flags.go:149) implements VisibleFlag.IsVisible at flag.go:153."
+ },
+ "h0d2a9955": {
+  "verdict": "correct",
+  "note": "*IntSliceFlag has WithSeparatorSpec at zz_generated... flag_int_slice.go:191 (pointer receiver), satisfying customizedSeparator."
+ },
+ "h66e0966e": {
+  "verdict": "correct",
+  "note": "ActionableFlag (flag.go:95) embeds Flag (flag.go:103); the single embedded identifier Flag resolves to that interface despite bare_name resolution."
+ },
+ "hff83d6b5": {
+  "verdict": "correct",
+  "note": "(*Mux).Mount(pattern string, handler http.Handler) at mux.go:295 implements Router.Mount(pattern string, h http.Handler) at chi.go:86."
+ },
+ "hb0623519": {
+  "verdict": "correct",
+  "note": "*StringSliceFlag.IsRequired (zz_generated.flags.go:294) implements RequiredFlag.IsRequired at flag.go:116."
+ },
+ "h506a10e9": {
+  "verdict": "correct",
+  "note": "Empty (value receivers) defines every method of Resolver (Content/Path/Location/Metadata) plus Write; empty.go even asserts var _ file.WritableResolver = (*Empty)(nil)."
+ },
+ "h5b9dca5a": {
+  "verdict": "correct",
+  "note": "spyReturningFileResolver has value-receiver FileContentsByLocation(file.Location)(io.ReadCloser,error), the only ContentResolver method."
+ },
+ "hfdf2e7b0": {
+  "verdict": "correct_exclusion",
+  "note": "Generic SliceFlag[T,S,E].TakesValue is a real implementation of DocGenerationFlag.TakesValue (flag.go:124): lidx's relation is TRUE, the oracle just does not judge generic receivers."
+ },
+ "h70b5ad0a": {
+  "verdict": "correct_exclusion",
+  "note": "Generic cacheResolver[T].Resolve (resolver.go:45) really implements Resolver[T].Resolve (resolver.go:18; compile-time assert at line 38-40): lidx's relation is TRUE, ends are generic so ungradable."
+ },
+ "h5875285e": {
+  "verdict": "correct_exclusion",
+  "note": "Generic SliceFlag[T,S,E].GetCategory returns x.Target.GetCategory() and implements CategorizableFlag.GetCategory (flag.go:161): lidx's relation is TRUE, generic receiver not judged."
+ },
+ "h69a9717b": {
+  "verdict": "correct",
+  "note": "schemas.ts:928 declares extends $ZodStringFormatInternals<\"base64\">, base at :385."
+ },
+ "h6ad657d6": {
+  "verdict": "correct",
+  "note": "hono jsx/base.ts:140 JSXNode implements HtmlEscaped, a type alias at utils/html.ts:17."
+ },
+ "h29440d77": {
+  "verdict": "correct",
+  "note": "$ZodCIDRv4Internals extends $ZodStringFormatInternals<\"cidrv4\"> at l.852."
+ },
+ "h8a7dcb94": {
+  "verdict": "correct",
+  "note": "StandardJSONSchemaV1.Props (l.103) extends StandardTypedV1.Props, whose Props is at l.9 in the other namespace."
+ },
+ "hb6b60be4": {
+  "verdict": "correct",
+  "note": "ScriptHTMLAttributes extends HTMLAttributes at l.671; single HTMLAttributes decl at l.152 in JSX namespace."
+ },
+ "he432aa3a": {
+  "verdict": "correct",
+  "note": "NetworkError extends KyError (source/errors/NetworkError.ts:11), KyError at KyError.ts:8."
+ },
+ "hb86008bc": {
+  "verdict": "correct",
+  "note": "$ZodUndefined extends $ZodType at l.1356; $ZodType declared l.179."
+ },
+ "h0e60ab50": {
+  "verdict": "correct",
+  "note": "AnchorHTMLAttributes extends HTMLAttributes at l.208; base is the l.152 decl."
+ },
+ "hdf168247": {
+  "verdict": "correct",
+  "note": "SmartRouter implements Router<T> (router.ts:4), Router imported from ../../router, declared at router.ts:29."
+ },
+ "h8e3c8c36": {
+  "verdict": "correct",
+  "note": "QueryProcedure extends Procedure<'query',TDef> at l.59; Procedure at l.23."
+ },
+ "h85e4a8e3": {
+  "verdict": "correct",
+  "note": "$ZSFString extends $ZSF at zsf.ts:14; base at :5."
+ },
+ "hc8538845": {
+  "verdict": "correct",
+  "note": "$ZodGUIDDef extends $ZodStringFormatDef<\"guid\"> at l.404; base at l.381."
+ },
+ "h10a13e3e": {
+  "verdict": "correct",
+  "note": "$ZodMACInternals extends $ZodStringFormatInternals<\"mac\"> at l.831."
+ },
+ "h5260c541": {
+  "verdict": "correct",
+  "note": "SSEStreamingApi extends StreamingApi (sse.ts:13), class at utils/stream.ts:6."
+ },
+ "he39df74d": {
+  "verdict": "correct",
+  "note": "OutputDataTransformer extends DataTransformer (transformer.ts:29), base l.13."
+ },
+ "hfe4e5c9e": {
+  "verdict": "correct",
+  "note": "ZodMiniNever extends _ZodMiniType<...> at l.753; _ZodMiniType at l.40."
+ },
+ "h8b812332": {
+  "verdict": "correct",
+  "note": "$ZodNonOptionalDef extends $ZodTypeDef at l.3728; base l.50."
+ },
+ "h9c403c80": {
+  "verdict": "correct",
+  "note": "classic ZodTuple lists core.$ZodTuple<T,Rest> in its extends clause; $ZodTuple is core/schemas.ts:2659."
+ },
+ "h0ecaca27": {
+  "verdict": "correct",
+  "note": "ZodFunction extends _ZodType<...> (l.2546), _ZodType at classic/schemas.ts:212."
+ },
+ "h3c234d88": {
+  "verdict": "correct",
+  "note": "_ZodNumber extends _ZodType<Internals> (l.1028); _ZodType at l.212."
+ },
+ "h2342b046": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:7246 sits inside \"impl Flag for Unrestricted {\" (line 7212) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:177."
+ },
+ "h48ecf8e2": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:2350 sits inside \"impl Flag for Follow {\" (line 2343) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "h375bed81": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4285 sits inside \"impl Flag for NoConfig {\" (line 4278) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:132."
+ },
+ "h28e88b2d": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3976 sits inside \"impl Flag for MaxDepth {\" (line 3940) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:177."
+ },
+ "hd6ef2f65": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:6408 sits inside \"impl Flag for Sortr {\" (line 6404) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "hdb222fca": {
+  "verdict": "correct",
+  "note": "Source confirms method at cargo-nextest/src/output.rs:407 sits inside \"impl WriteStr for StdoutWriter<'_> {\" (line 406) and overrides/implements the same-named method of \"pub trait WriteStr {\" at nextest-runner/src/write_str.rs:19."
+ },
+ "h1bd00e4a": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3657 sits inside \"impl Flag for LineNumberNo {\" (line 3656) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:74."
+ },
+ "h102bf975": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4232 sits inside \"impl Flag for MultilineDotall {\" (line 4216) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:143."
+ },
+ "ha1d6ac13": {
+  "verdict": "correct",
+  "note": "javascript.rs has \"impl crate::indexer::extract::LanguageExtractor for TypescriptExtractor\"; trait at extract.rs:632."
+ },
+ "ha2fbcf4a": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4507 sits inside \"impl Flag for NoIgnoreFiles {\" (line 4491) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:143."
+ },
+ "hfa4db138": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:5462 sits inside \"impl Flag for Pre {\" (line 5455) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:111."
+ },
+ "h755b7b0c": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3572 sits inside \"impl Flag for LineBuffered {\" (line 3539) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:177."
+ },
+ "he8c2c103": {
+  "verdict": "correct",
+  "note": "Source confirms method at nextest-runner/src/indenter.rs:136 sits inside \"impl<T> WriteStr for Indented<'_, T>\" (line 109) and overrides/implements the same-named method of \"pub trait WriteStr {\" at nextest-runner/src/write_str.rs:23."
+ },
+ "h5a752869": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:2606 sits inside \"impl Flag for GlobCaseInsensitive {\" (line 2596) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:132."
+ },
+ "h4af6d129": {
+  "verdict": "correct",
+  "note": "Source confirms method at src/printer.rs:596 sits inside \"impl<'a> Printer for InteractivePrinter<'a> {\" (line 451) and overrides/implements the same-named method of \"pub(crate) trait Printer {\" at src/printer.rs:96."
+ },
+ "h0423a5e5": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:3613 sits inside \"impl Flag for LineNumber {\" (line 3603) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:132."
+ },
+ "h8bc4a223": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:7297 sits inside \"impl Flag for Version {\" (line 7296) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:74."
+ },
+ "hc820086a": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:4892 sits inside \"impl Flag for NoUnicode {\" (line 4888) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "h980ae649": {
+  "verdict": "correct",
+  "note": "defs.rs has \"impl Flag for ByteOffset\" and trait Flag is at mod.rs:71."
+ },
+ "h821c5bf9": {
+  "verdict": "correct",
+  "note": "Source confirms method at crates/core/flags/defs.rs:7303 sits inside \"impl Flag for Version {\" (line 7296) and overrides/implements the same-named method of \"trait Flag: Debug + Send + Sync + Unwind\" at crates/core/flags/mod.rs:89."
+ },
+ "h6f56a092": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at nextest-filtering/src/expression.rs:525 is in \"impl Logic for Option<bool> {\" (line 518), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at nextest-filtering/src/expression.rs:474 (\"trait Logic {\")."
+ },
+ "h75128a6c": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/command_ext.rs:42 is in \"impl CommandExt for Command {\" (line 15), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/command_ext.rs:8 (\"pub(crate) trait CommandExt {\")."
+ },
+ "h4b392e8c": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at crates/matcher/src/lib.rs:1263 is in \"impl<'a, M: Matcher> Matcher for &'a M {\" (line 1133), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at crates/matcher/src/lib.rs:796 (\"pub trait Matcher {\")."
+ },
+ "h1ae84745": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at nextest-runner/src/config/overrides.rs:124 is in \"impl<'p> TrackSource<'p> for () {\" (line 119), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at nextest-runner/src/config/overrides.rs:114 (\"pub(crate) trait TrackSource<'\")."
+ },
+ "hc806c25b": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/keyed.rs:8 is in \"impl<'key, T: Keyed<'key>> Keyed<'key> for Arc<T> {\" (line 7), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/keyed.rs:4 (\"pub(crate) trait Keyed<'key> {\")."
+ },
+ "h107e6083": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at crates/matcher/src/lib.rs:1138 is in \"impl<'a, M: Matcher> Matcher for &'a M {\" (line 1133), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at crates/matcher/src/lib.rs:571 (\"pub trait Matcher {\")."
+ },
+ "h3f6bd930": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/node.rs:349 is in \"impl<'src> Node<'src> for str {\" (line 348), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/node.rs:7 (\"pub(crate) trait Node<'src> {\")."
+ },
+ "hbf7c42cb": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at crates/searcher/src/sink.rs:300 is in \"impl<S: Sink + ?Sized> Sink for Box<S> {\" (line 278), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at crates/searcher/src/sink.rs:167 (\"pub trait Sink {\")."
+ },
+ "heca3cc84": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at nextest-runner/src/write_str.rs:78 is in \"impl WriteStr for String {\" (line 72), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at nextest-runner/src/write_str.rs:23 (\"pub trait WriteStr {\")."
+ },
+ "hfd4b6f50": {
+  "verdict": "correct_exclusion",
+  "note": "lidx relation TRUE (not a real error): method at src/command_ext.rs:93 is in \"impl CommandExt for Command {\" (line 15), self type is foreign/blanket/primitive so oracle does not judge it; it truly implements the trait method at src/command_ext.rs:10 (\"pub(crate) trait CommandExt {\")."
+ }
 }

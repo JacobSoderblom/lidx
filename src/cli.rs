@@ -13,6 +13,7 @@ use std::path::PathBuf;
   lidx request --method search --params '{"query":"Indexer","limit":10}'
   lidx request --method trace_flow --params '{"start_qualname":"crate::indexer::Indexer::reindex","direction":"downstream","kinds":["CALLS"],"max_hops":1}'
   lidx request --method search --params '{"query":"def\\s+greet","context_lines":8}'
+  lidx dispatch-pairs --repo .
   lidx serve --repo . --watch auto
   lidx mcp-serve --repo .
 "#

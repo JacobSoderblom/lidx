@@ -491,6 +491,426 @@
      "ptr": true,
      "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/chi@7f9b7448f51d"
     }
+   ],
+   "tp": [
+    {
+     "id": "h408b747d",
+     "cell": "go/urfavecli/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "app_test.go:2497",
+     "base": "flag.go:106",
+     "sub_decl": [
+      "2497: func (c *customBoolFlag) Apply(set *flag.FlagSet) error {",
+      "2498: \tset.String(c.Nombre, c.Nombre, \"\")",
+      "2499: \treturn nil"
+     ],
+     "base_decl": [
+      "106: \tApply(*flag.FlagSet) error",
+      "107: \tNames() []string",
+      "108: \tIsSet() bool"
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "hfc0eedda",
+     "cell": "go/syft/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "syft/internal/fileresolver/deferred.go:60",
+     "base": "syft/file/resolver.go:45",
+     "sub_decl": [
+      "60: func (d *Deferred) FilesByGlob(patterns ...string) ([]file.Location, error) {",
+      "61: \tr, err := d.getResolver()",
+      "62: \tif err != nil {"
+     ],
+     "base_decl": [
+      "45: \tFilesByGlob(patterns ...string) ([]Location, error)",
+      "46: ",
+      "47: \t// FilesByMIMEType fetches a set of file references which the contents have been classified as one of the given MIME Types."
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "h49adb017",
+     "cell": "go/syft/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "internal/file/getter.go:48",
+     "base": "internal/file/getter.go:24",
+     "sub_decl": [
+      "48: func (g HashiGoGetter) GetFile(dst, src string, monitors ...*progress.Manual) error {",
+      "49: \tif len(monitors) > 1 {",
+      "50: \t\treturn fmt.Errorf(\"multiple monitors provided, which is not allowed\")"
+     ],
+     "base_decl": [
+      "24: \tGetFile(dst, src string, monitor ...*progress.Manual) error",
+      "25: ",
+      "26: \t// GetToDir downloads the resource found at the `src` URL into the given `dst` directory."
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "hc36e369f",
+     "cell": "go/urfavecli/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "altsrc/flag_generated.go:32",
+     "base": "flag.go:158",
+     "sub_decl": [
+      "32: type DurationFlag struct {",
+      "33: \t*cli.DurationFlag",
+      "34: \tset *flag.FlagSet"
+     ],
+     "base_decl": [
+      "158: type CategorizableFlag interface {",
+      "159: \tVisibleFlag",
+      "160: "
+     ],
+     "evidence_file": "altsrc/flag_generated.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "haa5a694d",
+     "cell": "go/syft/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "syft/internal/fileresolver/excluding_file.go:15",
+     "base": "syft/file/resolver.go:67",
+     "sub_decl": [
+      "15: type excluding struct {",
+      "16: \tdelegate  file.Resolver",
+      "17: \texcludeFn excludeFn"
+     ],
+     "base_decl": [
+      "67: type LocationResolver interface {",
+      "68: \t// AllLocations returns a channel of all file references from the underlying source.",
+      "69: \t// The implementation for this may vary, however, generally the following considerations should be made:"
+     ],
+     "evidence_file": "syft/internal/fileresolver/excluding_file.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "hf095d732",
+     "cell": "go/urfavecli/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "flag_int64_slice.go:12",
+     "base": "flag.go:395",
+     "sub_decl": [
+      "12: type Int64Slice struct {",
+      "13: \tslice      []int64",
+      "14: \tseparator  separatorSpec"
+     ],
+     "base_decl": [
+      "395: type customizedSeparator interface {",
+      "396: \tWithSeparatorSpec(separatorSpec)",
+      "397: }"
+     ],
+     "evidence_file": "flag_int64_slice.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "hbba172d6",
+     "cell": "go/syft/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "syft/source/directorysource/directory_source.go:92",
+     "base": "syft/source/source.go:18",
+     "sub_decl": [
+      "92: func (s *directorySource) FileResolver(_ source.Scope) (file.Resolver, error) {",
+      "93: \ts.mutex.Lock()",
+      "94: \tdefer s.mutex.Unlock()"
+     ],
+     "base_decl": [
+      "18: \tFileResolver(Scope) (file.Resolver, error)",
+      "19: \tDescribe() Description",
+      "20: \tio.Closer"
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "h2583164f",
+     "cell": "go/urfavecli/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "flag_test.go:3004",
+     "base": "flag_generic.go:11",
+     "sub_decl": [
+      "3004: func (g *genericType) String() string {",
+      "3005: \treturn strings.Join(g.s, \"-\")",
+      "3006: }"
+     ],
+     "base_decl": [
+      "11: \tString() string",
+      "12: }",
+      "13: "
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "hc540c7a7",
+     "cell": "go/urfavecli/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "flag_ext.go:26",
+     "base": "flag.go:153",
+     "sub_decl": [
+      "26: func (e *extFlag) IsVisible() bool {",
+      "27: \treturn true",
+      "28: }"
+     ],
+     "base_decl": [
+      "153: \tIsVisible() bool",
+      "154: }",
+      "155: "
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "h7264c79b",
+     "cell": "go/syft/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "syft/pkg/cataloger/generic/cataloger.go:26",
+     "base": "syft/artifact/id.go:12",
+     "sub_decl": [
+      "26: type request struct {",
+      "27: \tfile.Location",
+      "28: \tParser"
+     ],
+     "base_decl": [
+      "12: type Identifiable interface {",
+      "13: \tID() ID",
+      "14: }"
+     ],
+     "evidence_file": "syft/pkg/cataloger/generic/cataloger.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "hcf2dad1b",
+     "cell": "go/syft/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "syft/internal/fileresolver/container_image_all_layers.go:87",
+     "base": "syft/file/resolver.go:38",
+     "sub_decl": [
+      "87: func (r *ContainerImageAllLayers) FilesByPath(paths ...string) ([]file.Location, error) {",
+      "88: \tuniqueFileIDs := stereoscopeFile.NewFileReferenceSet()",
+      "89: \tuniqueLocations := make([]file.Location, 0)"
+     ],
+     "base_decl": [
+      "38: \tFilesByPath(paths ...string) ([]Location, error)",
+      "39: ",
+      "40: \t// FilesByGlob fetches a set of file references for the given glob matches"
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "hf06c025b",
+     "cell": "go/syft/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "syft/file/location_read_closer.go:6",
+     "base": "syft/artifact/id.go:12",
+     "sub_decl": [
+      "6: type LocationReadCloser struct {",
+      "7: \tLocation",
+      "8: \tio.ReadCloser"
+     ],
+     "base_decl": [
+      "12: type Identifiable interface {",
+      "13: \tID() ID",
+      "14: }"
+     ],
+     "evidence_file": "syft/file/location_read_closer.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "h0e58ff81",
+     "cell": "go/syft/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "syft/source/snapsource/snap_test.go:623",
+     "base": "internal/file/getter.go:24",
+     "sub_decl": [
+      "623: func (m *mockFileGetter) GetFile(dst, src string, monitor ...*progress.Manual) error {",
+      "624: \targs := m.Called(dst, src, monitor)",
+      "625: \treturn args.Error(0)"
+     ],
+     "base_decl": [
+      "24: \tGetFile(dst, src string, monitor ...*progress.Manual) error",
+      "25: ",
+      "26: \t// GetToDir downloads the resource found at the `src` URL into the given `dst` directory."
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "hbeb69c8d",
+     "cell": "go/urfavecli/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "zz_generated.flags.go:149",
+     "base": "flag.go:153",
+     "sub_decl": [
+      "149: func (f *Int64SliceFlag) IsVisible() bool {",
+      "150: \treturn !f.Hidden",
+      "151: }"
+     ],
+     "base_decl": [
+      "153: \tIsVisible() bool",
+      "154: }",
+      "155: "
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "h0d2a9955",
+     "cell": "go/urfavecli/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "zz_generated.flags.go:154",
+     "base": "flag.go:395",
+     "sub_decl": [
+      "154: type IntSliceFlag struct {",
+      "155: \tName string",
+      "156: "
+     ],
+     "base_decl": [
+      "395: type customizedSeparator interface {",
+      "396: \tWithSeparatorSpec(separatorSpec)",
+      "397: }"
+     ],
+     "evidence_file": "zz_generated.flags.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "h66e0966e",
+     "cell": "go/urfavecli/tests",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "flag.go:95",
+     "base": "flag.go:103",
+     "sub_decl": [
+      "95: type ActionableFlag interface {",
+      "96: \tFlag",
+      "97: \tRunAction(*Context) error"
+     ],
+     "base_decl": [
+      "103: type Flag interface {",
+      "104: \tfmt.Stringer",
+      "105: \t// Apply Flag settings to the given flag set"
+     ],
+     "evidence_file": "flag.go",
+     "resolution": "bare_name",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "hff83d6b5",
+     "cell": "go/chi/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "mux.go:295",
+     "base": "chi.go:86",
+     "sub_decl": [
+      "295: func (mx *Mux) Mount(pattern string, handler http.Handler) {",
+      "296: \tif handler == nil {",
+      "297: \t\tpanic(fmt.Sprintf(\"chi: attempting to Mount() a nil handler on '%s'\", pattern))"
+     ],
+     "base_decl": [
+      "86: \tMount(pattern string, h http.Handler)",
+      "87: ",
+      "88: \t// Handle and HandleFunc adds routes for `pattern` that matches"
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/chi@7f9b7448f51d"
+    },
+    {
+     "id": "hb0623519",
+     "cell": "go/urfavecli/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": null,
+     "sub": "zz_generated.flags.go:294",
+     "base": "flag.go:116",
+     "sub_decl": [
+      "294: func (f *StringSliceFlag) IsRequired() bool {",
+      "295: \treturn f.Required",
+      "296: }"
+     ],
+     "base_decl": [
+      "116: \tIsRequired() bool",
+      "117: }",
+      "118: "
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892"
+    },
+    {
+     "id": "h506a10e9",
+     "cell": "go/syft/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "syft/internal/fileresolver/empty.go:12",
+     "base": "syft/file/resolver.go:76",
+     "sub_decl": [
+      "12: type Empty struct{}",
+      "13: ",
+      "14: func (e Empty) FileContentsByLocation(_ file.Location) (io.ReadCloser, error) {"
+     ],
+     "base_decl": [
+      "76: type WritableResolver interface {",
+      "77: \tResolver",
+      "78: "
+     ],
+     "evidence_file": "syft/internal/fileresolver/empty.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    },
+    {
+     "id": "h5b9dca5a",
+     "cell": "go/syft/tests",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "syft/pkg/cataloger/generic/cataloger_test.go:93",
+     "base": "syft/file/resolver.go:17",
+     "sub_decl": [
+      "93: type spyReturningFileResolver struct {",
+      "94: \tm *file.MockResolver",
+      "95: \ts *spyingIoReadCloser"
+     ],
+     "base_decl": [
+      "17: type ContentResolver interface {",
+      "18: \tFileContentsByLocation(Location) (io.ReadCloser, error)",
+      "19: }"
+     ],
+     "evidence_file": "syft/pkg/cataloger/generic/cataloger_test.go",
+     "resolution": "structural",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb"
+    }
    ]
   },
   "ts": {
@@ -1039,6 +1459,448 @@
      "via": "implements",
      "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/h3@66cfb8a357b6"
     }
+   ],
+   "tp": [
+    {
+     "id": "h69a9717b",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/schemas.ts:928",
+     "base": "packages/zod/src/v4/core/schemas.ts:385",
+     "sub_decl": [
+      "928: export interface $ZodBase64Internals extends $ZodStringFormatInternals<\"base64\"> {}",
+      "929: ",
+      "930: export interface $ZodBase64 extends $ZodType {"
+     ],
+     "base_decl": [
+      "385: export interface $ZodStringFormatInternals<Format extends string = string>",
+      "386:   extends $ZodStringInternals<string>,",
+      "387:     checks.$ZodCheckStringFormatInternals {"
+     ],
+     "evidence_file": "packages/zod/src/v4/core/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h6ad657d6",
+     "cell": "ts/hono",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "src/jsx/base.ts:140",
+     "base": "src/utils/html.ts:17",
+     "sub_decl": [
+      "140: export class JSXNode implements HtmlEscaped {",
+      "141:   tag: string | Function",
+      "142:   props: Props"
+     ],
+     "base_decl": [
+      "17: export type HtmlEscaped = {",
+      "18:   isEscaped: true",
+      "19:   callbacks?: HtmlEscapedCallback[]"
+     ],
+     "evidence_file": "src/jsx/base.ts",
+     "resolution": "import",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/hono@97c6fe1f1229"
+    },
+    {
+     "id": "h29440d77",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/schemas.ts:852",
+     "base": "packages/zod/src/v4/core/schemas.ts:385",
+     "sub_decl": [
+      "852: export interface $ZodCIDRv4Internals extends $ZodStringFormatInternals<\"cidrv4\"> {",
+      "853:   def: $ZodCIDRv4Def;",
+      "854: }"
+     ],
+     "base_decl": [
+      "385: export interface $ZodStringFormatInternals<Format extends string = string>",
+      "386:   extends $ZodStringInternals<string>,",
+      "387:     checks.$ZodCheckStringFormatInternals {"
+     ],
+     "evidence_file": "packages/zod/src/v4/core/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h8a7dcb94",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/standard-schema.ts:103",
+     "base": "packages/zod/src/v4/core/standard-schema.ts:9",
+     "sub_decl": [
+      "103:   export interface Props<Input = unknown, Output = Input> extends StandardTypedV1.Props<Input, Output> {",
+      "104:     /** Methods for generating the input/output JSON Schema. */",
+      "105:     readonly jsonSchema: Converter;"
+     ],
+     "base_decl": [
+      "9:   export interface Props<Input = unknown, Output = Input> {",
+      "10:     /** The version number of the standard. */",
+      "11:     readonly version: 1;"
+     ],
+     "evidence_file": "packages/zod/src/v4/core/standard-schema.ts",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "hb6b60be4",
+     "cell": "ts/hono",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "src/jsx/intrinsic-elements.ts:671",
+     "base": "src/jsx/intrinsic-elements.ts:152",
+     "sub_decl": [
+      "671:   interface ScriptHTMLAttributes extends HTMLAttributes {",
+      "672:     async?: boolean | undefined",
+      "673:     crossorigin?: CrossOrigin"
+     ],
+     "base_decl": [
+      "152:   export interface HTMLAttributes extends JSXAttributes, EventAttributes, AnyAttributes {",
+      "153:     accesskey?: string | undefined",
+      "154:     autocapitalize?: 'off' | 'none' | 'on' | 'sentences' | 'words' | 'characters' | undefined"
+     ],
+     "evidence_file": "src/jsx/intrinsic-elements.ts",
+     "resolution": "bare_name",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/hono@97c6fe1f1229"
+    },
+    {
+     "id": "he432aa3a",
+     "cell": "ts/ky",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "source/errors/NetworkError.ts:11",
+     "base": "source/errors/KyError.ts:8",
+     "sub_decl": [
+      "11: export class NetworkError extends KyError {",
+      "12: \toverride name = 'NetworkError';",
+      "13: \trequest: KyRequest;"
+     ],
+     "base_decl": [
+      "8: export class KyError extends Error {",
+      "9: \toverride name = 'KyError';",
+      "10: "
+     ],
+     "evidence_file": "source/errors/NetworkError.ts",
+     "resolution": "import",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ky@3541888878c4"
+    },
+    {
+     "id": "hb86008bc",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/schemas.ts:1356",
+     "base": "packages/zod/src/v4/core/schemas.ts:179",
+     "sub_decl": [
+      "1356: export interface $ZodUndefined extends $ZodType {",
+      "1357:   _zod: $ZodUndefinedInternals;",
+      "1358: }"
+     ],
+     "base_decl": [
+      "179: export interface $ZodType<",
+      "180:   O = unknown,",
+      "181:   I = unknown,"
+     ],
+     "evidence_file": "packages/zod/src/v4/core/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h0e60ab50",
+     "cell": "ts/hono",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "src/jsx/intrinsic-elements.ts:208",
+     "base": "src/jsx/intrinsic-elements.ts:152",
+     "sub_decl": [
+      "208:   interface AnchorHTMLAttributes extends HTMLAttributes {",
+      "209:     download?: string | boolean | undefined",
+      "210:     href?: string | undefined"
+     ],
+     "base_decl": [
+      "152:   export interface HTMLAttributes extends JSXAttributes, EventAttributes, AnyAttributes {",
+      "153:     accesskey?: string | undefined",
+      "154:     autocapitalize?: 'off' | 'none' | 'on' | 'sentences' | 'words' | 'characters' | undefined"
+     ],
+     "evidence_file": "src/jsx/intrinsic-elements.ts",
+     "resolution": "bare_name",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/hono@97c6fe1f1229"
+    },
+    {
+     "id": "hdf168247",
+     "cell": "ts/hono",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "src/router/smart-router/router.ts:4",
+     "base": "src/router.ts:29",
+     "sub_decl": [
+      "4: export class SmartRouter<T> implements Router<T> {",
+      "5:   name: string = 'SmartRouter'",
+      "6:   #routers: Router<T>[] = []"
+     ],
+     "base_decl": [
+      "29: export interface Router<T> {",
+      "30:   /**",
+      "31:    * The name of the router."
+     ],
+     "evidence_file": "src/router/smart-router/router.ts",
+     "resolution": "import",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/hono@97c6fe1f1229"
+    },
+    {
+     "id": "h8e3c8c36",
+     "cell": "ts/trpc",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/server/src/unstable-core-do-not-import/procedure.ts:57",
+     "base": "packages/server/src/unstable-core-do-not-import/procedure.ts:23",
+     "sub_decl": [
+      "57: export interface QueryProcedure<",
+      "58:   TDef extends BuiltProcedureDef,",
+      "59: > extends Procedure<'query', TDef> {}"
+     ],
+     "base_decl": [
+      "23: export interface Procedure<",
+      "24:   TType extends ProcedureType,",
+      "25:   TDef extends BuiltProcedureDef,"
+     ],
+     "evidence_file": "packages/server/src/unstable-core-do-not-import/procedure.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/trpc@10e2ef98f784"
+    },
+    {
+     "id": "h85e4a8e3",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/zsf.ts:14",
+     "base": "packages/zod/src/v4/core/zsf.ts:5",
+     "sub_decl": [
+      "14: export interface $ZSFString extends $ZSF {",
+      "15:   type: \"string\";",
+      "16:   min_length?: number;"
+     ],
+     "base_decl": [
+      "5: export interface $ZSF {",
+      "6:   $zsf: { version: number };",
+      "7:   type: string;"
+     ],
+     "evidence_file": "packages/zod/src/v4/core/zsf.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "hc8538845",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/schemas.ts:404",
+     "base": "packages/zod/src/v4/core/schemas.ts:381",
+     "sub_decl": [
+      "404: export interface $ZodGUIDDef extends $ZodStringFormatDef<\"guid\"> {}",
+      "405: export interface $ZodGUIDInternals extends $ZodStringFormatInternals<\"guid\"> {}",
+      "406: "
+     ],
+     "base_decl": [
+      "381: export interface $ZodStringFormatDef<Format extends string = string>",
+      "382:   extends $ZodStringDef,",
+      "383:     checks.$ZodCheckStringFormatDef<Format> {}"
+     ],
+     "evidence_file": "packages/zod/src/v4/core/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h10a13e3e",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/schemas.ts:831",
+     "base": "packages/zod/src/v4/core/schemas.ts:385",
+     "sub_decl": [
+      "831: export interface $ZodMACInternals extends $ZodStringFormatInternals<\"mac\"> {",
+      "832:   def: $ZodMACDef;",
+      "833: }"
+     ],
+     "base_decl": [
+      "385: export interface $ZodStringFormatInternals<Format extends string = string>",
+      "386:   extends $ZodStringInternals<string>,",
+      "387:     checks.$ZodCheckStringFormatInternals {"
+     ],
+     "evidence_file": "packages/zod/src/v4/core/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h5260c541",
+     "cell": "ts/hono",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "src/helper/streaming/sse.ts:13",
+     "base": "src/utils/stream.ts:6",
+     "sub_decl": [
+      "13: export class SSEStreamingApi extends StreamingApi {",
+      "14:   constructor(writable: WritableStream, readable: ReadableStream) {",
+      "15:     super(writable, readable)"
+     ],
+     "base_decl": [
+      "6: export class StreamingApi {",
+      "7:   private writer: WritableStreamDefaultWriter<Uint8Array>",
+      "8:   private encoder: TextEncoder"
+     ],
+     "evidence_file": "src/helper/streaming/sse.ts",
+     "resolution": "import",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/hono@97c6fe1f1229"
+    },
+    {
+     "id": "he39df74d",
+     "cell": "ts/trpc",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/server/src/unstable-core-do-not-import/transformer.ts:29",
+     "base": "packages/server/src/unstable-core-do-not-import/transformer.ts:13",
+     "sub_decl": [
+      "29: interface OutputDataTransformer extends DataTransformer {",
+      "30:   /**",
+      "31:    * This function runs **on the server** before sending the data to the client."
+     ],
+     "base_decl": [
+      "13: export interface DataTransformer {",
+      "14:   serialize(object: any): any;",
+      "15:   deserialize(object: any): any;"
+     ],
+     "evidence_file": "packages/server/src/unstable-core-do-not-import/transformer.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/trpc@10e2ef98f784"
+    },
+    {
+     "id": "hfe4e5c9e",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/mini/schemas.ts:753",
+     "base": "packages/zod/src/v4/mini/schemas.ts:40",
+     "sub_decl": [
+      "753: export interface ZodMiniNever extends _ZodMiniType<core.$ZodNeverInternals> {",
+      "754:   // _zod: core.$ZodNeverInternals;",
+      "755: }"
+     ],
+     "base_decl": [
+      "40: interface _ZodMiniType<out Internals extends core.$ZodTypeInternals = core.$ZodTypeInternals>",
+      "41:   extends ZodMiniType<any, any, Internals> {}",
+      "42: "
+     ],
+     "evidence_file": "packages/zod/src/v4/mini/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h8b812332",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/core/schemas.ts:3728",
+     "base": "packages/zod/src/v4/core/schemas.ts:50",
+     "sub_decl": [
+      "3728: export interface $ZodNonOptionalDef<T extends SomeType = $ZodType> extends $ZodTypeDef {",
+      "3729:   type: \"nonoptional\";",
+      "3730:   innerType: T;"
+     ],
+     "base_decl": [
+      "50: export interface $ZodTypeDef {",
+      "51:   type:",
+      "52:     | \"string\""
+     ],
+     "evidence_file": "packages/zod/src/v4/core/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h9c403c80",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/classic/schemas.ts:1728",
+     "base": "packages/zod/src/v4/core/schemas.ts:2659",
+     "sub_decl": [
+      "1728: export interface ZodTuple<",
+      "1729:   T extends util.TupleItems = readonly core.$ZodType[],",
+      "1730:   Rest extends core.SomeType | null = core.$ZodType | null,"
+     ],
+     "base_decl": [
+      "2659: export interface $ZodTuple<",
+      "2660:   T extends util.TupleItems = readonly $ZodType[],",
+      "2661:   Rest extends SomeType | null = $ZodType | null,"
+     ],
+     "evidence_file": "packages/zod/src/v4/classic/schemas.ts",
+     "resolution": "import",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h0ecaca27",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/classic/schemas.ts:2543",
+     "base": "packages/zod/src/v4/classic/schemas.ts:212",
+     "sub_decl": [
+      "2543: export interface ZodFunction<",
+      "2544:   Args extends core.$ZodFunctionIn = core.$ZodFunctionIn,",
+      "2545:   Returns extends core.$ZodFunctionOut = core.$ZodFunctionOut,"
+     ],
+     "base_decl": [
+      "212: export interface _ZodType<out Internals extends core.$ZodTypeInternals = core.$ZodTypeInternals>",
+      "213:   extends ZodType<any, any, Internals> {}",
+      "214: "
+     ],
+     "evidence_file": "packages/zod/src/v4/classic/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    },
+    {
+     "id": "h3c234d88",
+     "cell": "ts/zod",
+     "kind": "EXTENDS",
+     "relation": "extends",
+     "category": null,
+     "sub": "packages/zod/src/v4/classic/schemas.ts:1027",
+     "base": "packages/zod/src/v4/classic/schemas.ts:212",
+     "sub_decl": [
+      "1027: export interface _ZodNumber<Internals extends core.$ZodNumberInternals = core.$ZodNumberInternals>",
+      "1028:   extends _ZodType<Internals> {",
+      "1029:   gt(value: number, params?: string | core.$ZodCheckGreaterThanParams): this;"
+     ],
+     "base_decl": [
+      "212: export interface _ZodType<out Internals extends core.$ZodTypeInternals = core.$ZodTypeInternals>",
+      "213:   extends ZodType<any, any, Internals> {}",
+      "214: "
+     ],
+     "evidence_file": "packages/zod/src/v4/classic/schemas.ts",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/zod@bbc68f990c7e"
+    }
    ]
   },
   "rust": {
@@ -1484,6 +2346,448 @@
      "base_name": "Node",
      "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/just@7f4ef81bd6a9"
     }
+   ],
+   "tp": [
+    {
+     "id": "h2342b046",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:7246",
+     "base": "crates/core/flags/mod.rs:177",
+     "sub_decl": [
+      "7246:     fn update(&self, v: FlagValue, args: &mut LowArgs) -> anyhow::Result<()> {",
+      "7247:         assert!(v.unwrap_switch(), \"--unrestricted has no negation\");",
+      "7248:         args.unrestricted = args.unrestricted.saturating_add(1);"
+     ],
+     "base_decl": [
+      "177:     fn update(",
+      "178:         &self,",
+      "179:         value: FlagValue,"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h48ecf8e2",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:2350",
+     "base": "crates/core/flags/mod.rs:89",
+     "sub_decl": [
+      "2350:     fn name_long(&self) -> &'static str {",
+      "2351:         \"follow\"",
+      "2352:     }"
+     ],
+     "base_decl": [
+      "89:     fn name_long(&self) -> &'static str;",
+      "90: ",
+      "91:     /// Returns a list of aliases for this flag."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h375bed81",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:4285",
+     "base": "crates/core/flags/mod.rs:132",
+     "sub_decl": [
+      "4285:     fn doc_category(&self) -> Category {",
+      "4286:         Category::OtherBehaviors",
+      "4287:     }"
+     ],
+     "base_decl": [
+      "132:     fn doc_category(&self) -> Category;",
+      "133: ",
+      "134:     /// A (very) short documentation string describing what this flag does."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h28e88b2d",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:3976",
+     "base": "crates/core/flags/mod.rs:177",
+     "sub_decl": [
+      "3976:     fn update(&self, v: FlagValue, args: &mut LowArgs) -> anyhow::Result<()> {",
+      "3977:         args.max_depth = Some(convert::usize(&v.unwrap_value())?);",
+      "3978:         Ok(())"
+     ],
+     "base_decl": [
+      "177:     fn update(",
+      "178:         &self,",
+      "179:         value: FlagValue,"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "hd6ef2f65",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:6408",
+     "base": "crates/core/flags/mod.rs:89",
+     "sub_decl": [
+      "6408:     fn name_long(&self) -> &'static str {",
+      "6409:         \"sortr\"",
+      "6410:     }"
+     ],
+     "base_decl": [
+      "89:     fn name_long(&self) -> &'static str;",
+      "90: ",
+      "91:     /// Returns a list of aliases for this flag."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "hdb222fca",
+     "cell": "rust/nextest/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "cargo-nextest/src/output.rs:407",
+     "base": "nextest-runner/src/write_str.rs:19",
+     "sub_decl": [
+      "407:     fn write_str(&mut self, s: &str) -> io::Result<()> {",
+      "408:         match self {",
+      "409:             Self::Normal { buf, .. } => buf.write_all(s.as_bytes()),"
+     ],
+     "base_decl": [
+      "19:     fn write_str(&mut self, s: &str) -> io::Result<()>;",
+      "20: ",
+      "21:     /// Flushes the writer, ensuring that all intermediately buffered contents reach their"
+     ],
+     "evidence_file": "cargo-nextest/src/output.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/nextest@c8d5aac098b5"
+    },
+    {
+     "id": "h1bd00e4a",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:3657",
+     "base": "crates/core/flags/mod.rs:74",
+     "sub_decl": [
+      "3657:     fn is_switch(&self) -> bool {",
+      "3658:         true",
+      "3659:     }"
+     ],
+     "base_decl": [
+      "74:     fn is_switch(&self) -> bool;",
+      "75: ",
+      "76:     /// A short single byte name for this flag. This returns `None` by default,"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h102bf975",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:4232",
+     "base": "crates/core/flags/mod.rs:143",
+     "sub_decl": [
+      "4232:     fn doc_long(&self) -> &'static str {",
+      "4233:         r#\"",
+      "4234: This flag enables \"dot all\" mode in all regex patterns. This causes \\fB.\\fP to"
+     ],
+     "base_decl": [
+      "143:     fn doc_long(&self) -> &'static str;",
+      "144: ",
+      "145:     /// If this is a non-switch flag that accepts a small set of specific"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "ha1d6ac13",
+     "cell": "rust/lidx/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "src/indexer/javascript.rs:184",
+     "base": "src/indexer/extract.rs:632",
+     "sub_decl": [
+      "184: pub struct TypescriptExtractor {",
+      "185:     parser: Parser,",
+      "186: }"
+     ],
+     "base_decl": [
+      "632: pub trait LanguageExtractor {",
+      "633:     fn module_name_from_rel_path(&self, rel_path: &str) -> String;",
+      "634:     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile>;"
+     ],
+     "evidence_file": "src/indexer/javascript.rs",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/lidx@ccc405a58768"
+    },
+    {
+     "id": "ha2fbcf4a",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:4507",
+     "base": "crates/core/flags/mod.rs:143",
+     "sub_decl": [
+      "4507:     fn doc_long(&self) -> &'static str {",
+      "4508:         r\"",
+      "4509: When set, any \\flag{ignore-file} flags, even ones that come after this flag,"
+     ],
+     "base_decl": [
+      "143:     fn doc_long(&self) -> &'static str;",
+      "144: ",
+      "145:     /// If this is a non-switch flag that accepts a small set of specific"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "hfa4db138",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:5462",
+     "base": "crates/core/flags/mod.rs:111",
+     "sub_decl": [
+      "5462:     fn name_negated(&self) -> Option<&'static str> {",
+      "5463:         Some(\"no-pre\")",
+      "5464:     }"
+     ],
+     "base_decl": [
+      "111:     fn name_negated(&self) -> Option<&'static str> {",
+      "112:         None",
+      "113:     }"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h755b7b0c",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:3572",
+     "base": "crates/core/flags/mod.rs:177",
+     "sub_decl": [
+      "3572:     fn update(&self, v: FlagValue, args: &mut LowArgs) -> anyhow::Result<()> {",
+      "3573:         args.buffer = if v.unwrap_switch() {",
+      "3574:             BufferMode::Line"
+     ],
+     "base_decl": [
+      "177:     fn update(",
+      "178:         &self,",
+      "179:         value: FlagValue,"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "he8c2c103",
+     "cell": "rust/nextest/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "nextest-runner/src/indenter.rs:136",
+     "base": "nextest-runner/src/write_str.rs:23",
+     "sub_decl": [
+      "136:     fn write_str_flush(&mut self) -> io::Result<()> {",
+      "137:         // We don't need to do any flushing ourselves, because there's no intermediate state",
+      "138:         // possible here."
+     ],
+     "base_decl": [
+      "23:     fn write_str_flush(&mut self) -> io::Result<()>;",
+      "24: ",
+      "25:     /// Writes a single character to the writer."
+     ],
+     "evidence_file": "nextest-runner/src/indenter.rs",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/nextest@c8d5aac098b5"
+    },
+    {
+     "id": "h5a752869",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:2606",
+     "base": "crates/core/flags/mod.rs:132",
+     "sub_decl": [
+      "2606:     fn doc_category(&self) -> Category {",
+      "2607:         Category::Filter",
+      "2608:     }"
+     ],
+     "base_decl": [
+      "132:     fn doc_category(&self) -> Category;",
+      "133: ",
+      "134:     /// A (very) short documentation string describing what this flag does."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h4af6d129",
+     "cell": "rust/bat/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "src/printer.rs:596",
+     "base": "src/printer.rs:96",
+     "sub_decl": [
+      "596:     fn print_line(",
+      "597:         &mut self,",
+      "598:         out_of_range: bool,"
+     ],
+     "base_decl": [
+      "96:     fn print_line(",
+      "97:         &mut self,",
+      "98:         out_of_range: bool,"
+     ],
+     "evidence_file": "src/printer.rs",
+     "resolution": "exact",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/bat@dab96bf0bcff"
+    },
+    {
+     "id": "h0423a5e5",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:3613",
+     "base": "crates/core/flags/mod.rs:132",
+     "sub_decl": [
+      "3613:     fn doc_category(&self) -> Category {",
+      "3614:         Category::Output",
+      "3615:     }"
+     ],
+     "base_decl": [
+      "132:     fn doc_category(&self) -> Category;",
+      "133: ",
+      "134:     /// A (very) short documentation string describing what this flag does."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h8bc4a223",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:7297",
+     "base": "crates/core/flags/mod.rs:74",
+     "sub_decl": [
+      "7297:     fn is_switch(&self) -> bool {",
+      "7298:         true",
+      "7299:     }"
+     ],
+     "base_decl": [
+      "74:     fn is_switch(&self) -> bool;",
+      "75: ",
+      "76:     /// A short single byte name for this flag. This returns `None` by default,"
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "hc820086a",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:4892",
+     "base": "crates/core/flags/mod.rs:89",
+     "sub_decl": [
+      "4892:     fn name_long(&self) -> &'static str {",
+      "4893:         \"no-unicode\"",
+      "4894:     }"
+     ],
+     "base_decl": [
+      "89:     fn name_long(&self) -> &'static str;",
+      "90: ",
+      "91:     /// Returns a list of aliases for this flag."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h980ae649",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "implements",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:578",
+     "base": "crates/core/flags/mod.rs:71",
+     "sub_decl": [
+      "578: struct ByteOffset;",
+      "579: ",
+      "580: impl Flag for ByteOffset {"
+     ],
+     "base_decl": [
+      "71: trait Flag: Debug + Send + Sync + UnwindSafe + RefUnwindSafe + 'static {",
+      "72:     /// Returns true if this flag is a switch. When a flag is a switch, the",
+      "73:     /// CLI parser will not look for a value after the flag is seen."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    },
+    {
+     "id": "h821c5bf9",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": null,
+     "sub": "crates/core/flags/defs.rs:7303",
+     "base": "crates/core/flags/mod.rs:89",
+     "sub_decl": [
+      "7303:     fn name_long(&self) -> &'static str {",
+      "7304:         \"version\"",
+      "7305:     }"
+     ],
+     "base_decl": [
+      "89:     fn name_long(&self) -> &'static str;",
+      "90: ",
+      "91:     /// Returns a list of aliases for this flag."
+     ],
+     "evidence_file": "crates/core/flags/defs.rs",
+     "resolution": "two_segment",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a"
+    }
    ]
   }
  },
@@ -1889,6 +3193,72 @@
       "20: "
      ],
      "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 13
+    },
+    {
+     "id": "hfdf2e7b0",
+     "cell": "go/urfavecli/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "sliceflag.go:121",
+     "base": "flag.go:124",
+     "sub_decl": [
+      "121: func (x *SliceFlag[T, S, E]) TakesValue() bool       { return x.Target.TakesValue() }",
+      "122: func (x *SliceFlag[T, S, E]) GetUsage() string       { return x.Target.GetUsage() }",
+      "123: func (x *SliceFlag[T, S, E]) GetValue() string       { return x.Target.GetValue() }"
+     ],
+     "base_decl": [
+      "124: \tTakesValue() bool",
+      "125: ",
+      "126: \t// GetUsage returns the usage string for the flag"
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 13
+    },
+    {
+     "id": "h70b5ad0a",
+     "cell": "go/syft/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "internal/cache/resolver.go:45",
+     "base": "internal/cache/resolver.go:18",
+     "sub_decl": [
+      "45: func (r *cacheResolver[T]) Resolve(key string, resolver resolverFunc[T]) (T, error) {",
+      "46: \tkey += resolverKeySuffix",
+      "47: "
+     ],
+     "base_decl": [
+      "18: \tResolve(key string, resolver resolverFunc[T]) (T, error)",
+      "19: }",
+      "20: "
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/syft@b15c5dbfe2bb",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 13
+    },
+    {
+     "id": "h5875285e",
+     "cell": "go/urfavecli/tests",
+     "kind": "DISPATCH_PAIR",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "sliceflag.go:127",
+     "base": "flag.go:161",
+     "sub_decl": [
+      "127: func (x *SliceFlag[T, S, E]) GetCategory() string    { return x.Target.GetCategory() }",
+      "128: ",
+      "129: func (x *flagValueHook) Set(value string) error {"
+     ],
+     "base_decl": [
+      "161: \tGetCategory() string",
+      "162: }",
+      "163: "
+     ],
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/urfavecli@19b951ab7892",
      "bucket": "ungradable:end_not_judged",
      "bucket_size": 13
     }
@@ -3466,6 +4836,236 @@
      ],
      "evidence_file": "crates/matcher/src/lib.rs",
      "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "h6f56a092",
+     "cell": "rust/nextest/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "nextest-filtering/src/expression.rs:525",
+     "base": "nextest-filtering/src/expression.rs:474",
+     "sub_decl": [
+      "525:     fn bottom() -> Self {",
+      "526:         Some(false)",
+      "527:     }"
+     ],
+     "base_decl": [
+      "474:     fn bottom() -> Self;",
+      "475: ",
+      "476:     /// `AND`, which corresponds to the `all` operator."
+     ],
+     "evidence_file": "nextest-filtering/src/expression.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/nextest@c8d5aac098b5",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "h75128a6c",
+     "cell": "rust/just/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "src/command_ext.rs:42",
+     "base": "src/command_ext.rs:8",
+     "sub_decl": [
+      "42:   fn resolve(program: impl AsRef<OsStr>) -> Self {",
+      "43:     let program = Path::new(program.as_ref());",
+      "44: "
+     ],
+     "base_decl": [
+      "8:   fn resolve(program: impl AsRef<OsStr>) -> Command;",
+      "9: ",
+      "10:   fn shell_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Command;"
+     ],
+     "evidence_file": "src/command_ext.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/just@7f4ef81bd6a9",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "h4b392e8c",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "crates/matcher/src/lib.rs:1263",
+     "base": "crates/matcher/src/lib.rs:796",
+     "sub_decl": [
+      "1263:     fn try_captures_iter<F, E>(",
+      "1264:         &self,",
+      "1265:         haystack: &[u8],"
+     ],
+     "base_decl": [
+      "796:     fn try_captures_iter<F, E>(",
+      "797:         &self,",
+      "798:         haystack: &[u8],"
+     ],
+     "evidence_file": "crates/matcher/src/lib.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "h1ae84745",
+     "cell": "rust/nextest/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "nextest-runner/src/config/overrides.rs:124",
+     "base": "nextest-runner/src/config/overrides.rs:114",
+     "sub_decl": [
+      "124:     fn track_profile<T>(value: T) -> (T, Self) {",
+      "125:         (value, ())",
+      "126:     }"
+     ],
+     "base_decl": [
+      "114:     fn track_profile<T>(value: T) -> (T, Self);",
+      "115:     fn track_override<T>(value: T, source: &'p CompiledOverride<FinalConfig>) -> (T, Self);",
+      "116:     fn track_script<T>(value: T, source: &'p CompiledProfileScripts<FinalConfig>) -> (T, Self);"
+     ],
+     "evidence_file": "nextest-runner/src/config/overrides.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/nextest@c8d5aac098b5",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "hc806c25b",
+     "cell": "rust/just/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "src/keyed.rs:8",
+     "base": "src/keyed.rs:4",
+     "sub_decl": [
+      "8:   fn key(&self) -> &'key str {",
+      "9:     self.as_ref().key()",
+      "10:   }"
+     ],
+     "base_decl": [
+      "4:   fn key(&self) -> &'key str;",
+      "5: }",
+      "6: "
+     ],
+     "evidence_file": "src/keyed.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/just@7f4ef81bd6a9",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "h107e6083",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "crates/matcher/src/lib.rs:1138",
+     "base": "crates/matcher/src/lib.rs:571",
+     "sub_decl": [
+      "1138:     fn find_at(",
+      "1139:         &self,",
+      "1140:         haystack: &[u8],"
+     ],
+     "base_decl": [
+      "571:     fn find_at(",
+      "572:         &self,",
+      "573:         haystack: &[u8],"
+     ],
+     "evidence_file": "crates/matcher/src/lib.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "h3f6bd930",
+     "cell": "rust/just/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "src/node.rs:349",
+     "base": "src/node.rs:7",
+     "sub_decl": [
+      "349:   fn tree(&self) -> Tree<'src> {",
+      "350:     Tree::atom(\"comment\").push([\"\\\"\", self, \"\\\"\"].concat())",
+      "351:   }"
+     ],
+     "base_decl": [
+      "7:   fn tree(&self) -> Tree<'src>;",
+      "8: }",
+      "9: "
+     ],
+     "evidence_file": "src/node.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/just@7f4ef81bd6a9",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "hbf7c42cb",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "crates/searcher/src/sink.rs:300",
+     "base": "crates/searcher/src/sink.rs:167",
+     "sub_decl": [
+      "300:     fn context_break(",
+      "301:         &mut self,",
+      "302:         searcher: &Searcher,"
+     ],
+     "base_decl": [
+      "167:     fn context_break(",
+      "168:         &mut self,",
+      "169:         _searcher: &Searcher,"
+     ],
+     "evidence_file": "crates/searcher/src/sink.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/ripgrep@e89fff89ac9a",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "heca3cc84",
+     "cell": "rust/nextest/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "nextest-runner/src/write_str.rs:78",
+     "base": "nextest-runner/src/write_str.rs:23",
+     "sub_decl": [
+      "78:     fn write_str_flush(&mut self) -> io::Result<()> {",
+      "79:         Ok(())",
+      "80:     }"
+     ],
+     "base_decl": [
+      "23:     fn write_str_flush(&mut self) -> io::Result<()>;",
+      "24: ",
+      "25:     /// Writes a single character to the writer."
+     ],
+     "evidence_file": "nextest-runner/src/write_str.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/nextest@c8d5aac098b5",
+     "bucket": "ungradable:end_not_judged",
+     "bucket_size": 85
+    },
+    {
+     "id": "hfd4b6f50",
+     "cell": "rust/just/path_tests_excluded",
+     "kind": "IMPLEMENTS",
+     "relation": "overrides",
+     "category": "end_not_judged",
+     "sub": "src/command_ext.rs:93",
+     "base": "src/command_ext.rs:10",
+     "sub_decl": [
+      "93:   fn shell_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Command {",
+      "94:     #[cfg(windows)]",
+      "95:     if ShellKind::from(&*self) == ShellKind::Cmd {"
+     ],
+     "base_decl": [
+      "10:   fn shell_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Command;",
+      "11: ",
+      "12:   fn status_guard(self) -> (io::Result<ExitStatus>, Option<Signal>);"
+     ],
+     "evidence_file": "src/command_ext.rs",
+     "repo_dir": "/Users/jacob/.cache/lidx-oracle-449/just@7f4ef81bd6a9",
      "bucket": "ungradable:end_not_judged",
      "bucket_size": 85
     }

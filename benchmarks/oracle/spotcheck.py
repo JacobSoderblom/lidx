@@ -212,7 +212,7 @@ def sample_hierarchy(results, cache):
     for lang, cells in HIER_POOL.items():
         out["languages"][lang] = {}
         out["buckets"][lang] = {}
-        for kind in ("fp", "fn"):
+        for kind in ("fp", "fn", "tp"):
             rng = random.Random("%s|hier|%s|%s" % (SEED, lang, kind))
             pool = []
             for c in cells:
@@ -243,7 +243,8 @@ def sample_hierarchy(results, cache):
             rng = random.Random("%s|hier|%s|%s" % (SEED, lang, name))
             pool = sorted(pools[name], key=lambda x: hident(x[0], name, x[1]))
             rows = []
-            for c, it in rng.sample(pool, min(NB, len(pool))):
+            # `end_not_judged` is the one bucket that could hide a wrong pair: read up to 20 (all of a smaller bucket)
+            for c, it in rng.sample(pool, min(N if name == "ungradable:end_not_judged" else NB, len(pool))):
                 r = hier_row(meta, cache, c, name, it)
                 r["bucket"], r["bucket_size"] = name, len(pool)
                 rows.append(r)
@@ -269,7 +270,8 @@ def merge_hierarchy(results):
         return {"id": r["id"], "relation": r["relation"], "sub": r["sub"], "base": r["base"], "verdict": v["verdict"], "note": v["note"], "cell": r["cell"]}
 
     for lang, kinds in sam["languages"].items():
-        sc["languages"][lang] = {k: [x for x in (take(r, ("lidx_error", "oracle_artefact", "matching_artefact")) for r in rows) if x] for k, rows in kinds.items()}
+        sc["languages"][lang] = {k: [x for x in (take(r, ("lidx_error", "oracle_artefact", "matching_artefact") + (("correct",) if k == "tp" else ())) for r in rows) if x]
+                                 for k, rows in kinds.items()}
     for lang, bks in sam["buckets"].items():
         sc["buckets"][lang] = {}
         for name, rows in bks.items():

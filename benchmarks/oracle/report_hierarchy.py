@@ -137,7 +137,7 @@ def spotcheck_section(sc):
     w = L.append
     w("### Type hierarchy spot-check")
     w("")
-    w("20 random wrong pairs (FP) and 20 random missed pairs (FN) per language, read against the source (seed %s; cells %s). Verdicts: "
+    w("20 random wrong pairs (FP), 20 random missed pairs (FN) and 20 random **correct** pairs (TP, so that precision does not rest on the matcher alone) per language, read against the source (seed %s; cells %s). Verdicts: "
       "`lidx_error` (lidx is wrong or missed a real relation), `oracle_artefact` (the compiler pair is not the right judge), "
       "`matching_artefact` (our keying or bucketing mis-attributed the pair). Where a language has fewer than 20 wrong pairs, every one is read." % (
           sc.get("seed"), ", ".join(sc.get("cells", []))))
@@ -147,16 +147,20 @@ def spotcheck_section(sc):
     tot_a = tot_n = 0
     for lang, kinds in sc["languages"].items():
         lt = {"lidx_error": 0, "oracle_artefact": 0, "matching_artefact": 0}
-        for kind in ("fp", "fn"):
+        for kind in ("fp", "fn", "tp"):
+            if kind not in kinds:
+                continue
             items = kinds[kind]
             c = {k: sum(1 for i in items if i["verdict"] == k) for k in lt}
             for k in lt:
                 lt[k] += c[k]
             n = len(items)
             art = c["oracle_artefact"] + c["matching_artefact"]
-            w("| %s | %s (n=%d) | %d | %d | %d | %d/%d = %.1f%% %s |" % (lang, kind.upper(), n, c["lidx_error"], c["oracle_artefact"], c["matching_artefact"],
+            ncorrect = sum(1 for i in items if i["verdict"] == "correct")
+            label = kind.upper() + (", %d confirmed in source" % ncorrect if kind == "tp" else "")
+            w("| %s | %s (n=%d) | %d | %d | %d | %d/%d = %.1f%% %s |" % (lang, label, n, c["lidx_error"], c["oracle_artefact"], c["matching_artefact"],
                                                                       art, n, 100 * art / max(n, 1), report.ci_pct(art, n)))
-        n = sum(lt.values())
+        n = sum(len(v) for v in kinds.values())
         art = lt["oracle_artefact"] + lt["matching_artefact"]
         tot_a += art
         tot_n += n
@@ -190,7 +194,9 @@ def spotcheck_section(sc):
     for lang, kinds in sc["languages"].items():
         w("#### %s samples" % lang)
         w("")
-        for kind in ("fp", "fn"):
+        for kind in ("fp", "fn", "tp"):
+            if kind not in kinds:
+                continue
             w("**%s**" % kind.upper())
             w("")
             for i in kinds[kind]:

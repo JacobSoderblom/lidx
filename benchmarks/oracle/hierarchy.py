@@ -163,7 +163,7 @@ def grade_cell(lang, oracle, syms, edges, dispatch_ids, src=None):
     lp, lext = lidx_pairs(lang, syms, edges, dispatch_ids)
     cn = cell.cn
     summary = {"relations": {}, "excluded": h.get("excluded", {}), "judged_types": len(cell.types), "judged_interfaces": len(cell.ifaces)}
-    fn_list, fp_list, ungr_list = [], [], []
+    fn_list, fp_list, ungr_list, tp_list = [], [], [], []
     # type-level pairs lidx holds, canonical, per relation: used to classify override misses
     held = {r: {(cn(a), cn(b)) for (a, b) in lp[r]} for r in lp}
     held_any = defaultdict(set)
@@ -218,6 +218,8 @@ def grade_cell(lang, oracle, syms, edges, dispatch_ids, src=None):
             a_raw, b_raw, ev = evs[0]
             if (a, b) in okeyset:
                 tp += 1
+                tp_list.append({"relation": rel, "sub": a_raw, "base": b_raw, "kind": ev.get("kind"), "evidence_file": ev.get("epath"),
+                                "evidence_line": ev.get("line"), "resolution": ev.get("res")})
                 continue
             sf = a_raw.rsplit(":", 1)[0]
             bf = b_raw.rsplit(":", 1)[0]
@@ -320,4 +322,5 @@ def grade_cell(lang, oracle, syms, edges, dispatch_ids, src=None):
     if lang == "ts":
         summary["structural_implements"] = {"oracle_pairs": len(h.get("structural_implements", [])),
                                             "of_lidx_implements_fp": sum(1 for x in fp_list if x["category"] == "structural_only")}
+    summary["_tp"] = tp_list  # the correct pairs, for the hand spot-check; run.py moves them to a list file
     return summary, fn_list, fp_list, ungr_list

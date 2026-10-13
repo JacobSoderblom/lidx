@@ -303,6 +303,7 @@ def grade_hierarchy(res, cell, oracle, syms, hier_edges, dispatch_ids, results_d
     summ, fn, fp, ungr = hierarchy.grade_cell(cell["lang"], oracle, syms, hier_edges, dispatch_ids)
     if summ is None:
         return
+    dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_tp.json" % cell["id"].replace("/", "__")), summ.pop("_tp"))
     res["hierarchy"] = summ
     fid = cell["id"].replace("/", "__")
     dump_list(os.path.join(results_dir, "lists", "%s.hierarchy_fn.json" % fid), fn)

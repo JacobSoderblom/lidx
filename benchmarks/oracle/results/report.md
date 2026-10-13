@@ -269,7 +269,7 @@ Same grading with lidx's REFERENCES and USES edges added to CALLS (the compiler 
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.799 [0.780, 0.816]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.994 (1545 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1539 resolved in-repo CALLS pairs; 1536 graded (1536 correct, 0 wrong); lidx indexed in 2.2s
+- lidx: 1539 resolved in-repo CALLS pairs; 1536 graded (1536 correct, 0 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 2, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -290,7 +290,7 @@ Lists: `results/lists/go__cobra__tests.fn.json`, `go__cobra__tests.fp.json`, `go
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.993, 1.000], R 0.832 [0.802, 0.859]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.996 (557 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1539 resolved in-repo CALLS pairs; 555 graded (555 correct, 0 wrong); lidx indexed in 2.2s
+- lidx: 1539 resolved in-repo CALLS pairs; 555 graded (555 correct, 0 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 984
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -311,7 +311,7 @@ Lists: `results/lists/go__cobra__no_tests.fn.json`, `go__cobra__no_tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.982 [0.975, 0.988]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.999 (1557 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1690 resolved in-repo CALLS pairs; 1558 graded (1558 correct, 0 wrong); lidx indexed in 2.0s
+- lidx: 1690 resolved in-repo CALLS pairs; 1558 graded (1558 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 100, caller_not_judged 32
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -332,7 +332,7 @@ Lists: `results/lists/go__gitleaks__no_tests.fn.json`, `go__gitleaks__no_tests.f
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.957 [0.946, 0.965]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.996 (1678 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1690 resolved in-repo CALLS pairs; 1673 graded (1673 correct, 0 wrong); lidx indexed in 2.0s
+- lidx: 1690 resolved in-repo CALLS pairs; 1673 graded (1673 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 1, caller_not_judged 16
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -353,7 +353,7 @@ Lists: `results/lists/go__gitleaks__tests.fn.json`, `go__gitleaks__tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.999, 1.000], R 0.584 [0.573, 0.594]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.992 (4653 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9372 resolved in-repo CALLS pairs; 4858 graded (4858 correct, 0 wrong); lidx indexed in 15.9s
+- lidx: 9372 resolved in-repo CALLS pairs; 4858 graded (4858 correct, 0 wrong); lidx indexed in 12.7s
 - ungradable lidx pairs: caller_file_not_covered 4190, caller_not_judged 324
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -374,7 +374,7 @@ Lists: `results/lists/go__syft__no_tests.fn.json`, `go__syft__no_tests.fp.json`,
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [1.000, 1.000], R 0.337 [0.331, 0.343]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.988 (8778 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9372 resolved in-repo CALLS pairs; 9156 graded (9156 correct, 0 wrong); lidx indexed in 15.9s
+- lidx: 9372 resolved in-repo CALLS pairs; 9156 graded (9156 correct, 0 wrong); lidx indexed in 12.7s
 - ungradable lidx pairs: caller_file_not_covered 148, caller_not_judged 68
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -395,7 +395,7 @@ Lists: `results/lists/go__syft__tests.fn.json`, `go__syft__tests.fp.json`, `go__
 - repowise-comparable scope: 1626 oracle edges (112 module-level and 215 abstract-target edges removed), P 0.999 [0.996, 1.000], R 0.933 [0.920, 0.944]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.993 if they were counted wrong
 - recall when both ends are indexed symbols: 0.924 (1716 oracle edges); caller lifted to an enclosing declaration for 257 edges; capture gap reasons: {'callee_not_indexed': 216}
-- lidx: 1970 resolved in-repo CALLS pairs; 1600 graded (1589 correct, 11 wrong); lidx indexed in 6.2s
+- lidx: 1970 resolved in-repo CALLS pairs; 1600 graded (1589 correct, 11 wrong); lidx indexed in 6.0s
 - ungradable lidx pairs: caller_file_not_covered 370
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -419,7 +419,7 @@ Lists: `results/lists/ts__zod.fn.json`, `ts__zod.fp.json`, `ts__zod.capture_gap.
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 4 oracle edges, 4 matched by lidx
 - unresolved-site exclusion: 5 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.984 (812 oracle edges); caller lifted to an enclosing declaration for 94 edges; capture gap reasons: {'callee_not_indexed': 96}
-- lidx: 1758 resolved in-repo CALLS pairs; 812 graded (808 correct, 4 wrong); lidx indexed in 5.9s
+- lidx: 1758 resolved in-repo CALLS pairs; 812 graded (808 correct, 4 wrong); lidx indexed in 5.7s
 - ungradable lidx pairs: caller_file_not_covered 941, oracle_unresolved_site 5
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -441,7 +441,7 @@ Lists: `results/lists/ts__hono.fn.json`, `ts__hono.fp.json`, `ts__hono.capture_g
 - oracle: None, 4796 edges: 4567 static with an indexed caller, 167 dispatch (40 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.943 (4567 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4510 resolved in-repo CALLS pairs; 4403 graded (4346 correct, 57 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 4403 graded (4346 correct, 57 wrong); lidx indexed in 4.1s
 - ungradable lidx pairs: caller_file_not_covered 95, caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -463,7 +463,7 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded.fn.json`, `rust__ripgre
 - oracle: None, 2315 edges: 2176 static with an indexed caller, 139 dispatch (40 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.974 if they were counted wrong
 - recall when both ends are indexed symbols: 0.918 (2176 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 4510 resolved in-repo CALLS pairs; 2092 graded (2037 correct, 55 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 2092 graded (2037 correct, 55 wrong); lidx indexed in 4.1s
 - ungradable lidx pairs: caller_file_not_covered 141, caller_not_judged 2277
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -485,7 +485,7 @@ Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests
 - oracle: None, 6072 edges: 4662 static with an indexed caller, 181 dispatch (44 of them found), 1229 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.941 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1229}
-- lidx: 4510 resolved in-repo CALLS pairs; 4489 graded (4430 correct, 59 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 4489 graded (4430 correct, 59 wrong); lidx indexed in 4.1s
 - ungradable lidx pairs: caller_file_not_covered 9, caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -508,7 +508,7 @@ Lists: `results/lists/rust__ripgrep__tests.fn.json`, `rust__ripgrep__tests.fp.js
 - oracle: None, 256 edges: 256 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.996 if they were counted wrong
 - recall when both ends are indexed symbols: 0.984 (256 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 527 resolved in-repo CALLS pairs; 253 graded (252 correct, 1 wrong); lidx indexed in 0.6s
+- lidx: 527 resolved in-repo CALLS pairs; 253 graded (252 correct, 1 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 274
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -530,7 +530,7 @@ Lists: `results/lists/rust__fd__path_tests_excluded.fn.json`, `rust__fd__path_te
 - oracle: None, 190 edges: 190 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.984 (190 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 527 resolved in-repo CALLS pairs; 189 graded (187 correct, 2 wrong); lidx indexed in 0.6s
+- lidx: 527 resolved in-repo CALLS pairs; 189 graded (187 correct, 2 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 274, caller_not_judged 64
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -552,7 +552,7 @@ Lists: `results/lists/rust__fd__no_tests.fn.json`, `rust__fd__no_tests.fp.json`,
 - oracle: None, 515 edges: 515 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.992 if they were counted wrong
 - recall when both ends are indexed symbols: 0.992 (515 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 527 resolved in-repo CALLS pairs; 515 graded (511 correct, 4 wrong); lidx indexed in 0.6s
+- lidx: 527 resolved in-repo CALLS pairs; 515 graded (511 correct, 4 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -574,7 +574,7 @@ Lists: `results/lists/rust__fd__tests.fn.json`, `rust__fd__tests.fp.json`, `rust
 - oracle: None, 4819 edges: 4590 static with an indexed caller, 167 dispatch (40 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.992 if they were counted wrong
 - recall when both ends are indexed symbols: 0.943 (4590 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4510 resolved in-repo CALLS pairs; 4405 graded (4369 correct, 36 wrong); lidx indexed in 3.6s
+- lidx: 4510 resolved in-repo CALLS pairs; 4405 graded (4369 correct, 36 wrong); lidx indexed in 4.1s
 - ungradable lidx pairs: caller_file_not_covered 86, caller_not_judged 12, cfg_gated_evidence 7
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -596,7 +596,7 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded_all_features.fn.json`, 
 - oracle: None, 256 edges: 256 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.996 if they were counted wrong
 - recall when both ends are indexed symbols: 0.984 (256 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 527 resolved in-repo CALLS pairs; 253 graded (252 correct, 1 wrong); lidx indexed in 0.6s
+- lidx: 527 resolved in-repo CALLS pairs; 253 graded (252 correct, 1 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 274
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -619,7 +619,7 @@ Lists: `results/lists/rust__fd__path_tests_excluded_all_features.fn.json`, `rust
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.977, 1.000], R 0.396 [0.350, 0.444]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.981 (161 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 852 resolved in-repo CALLS pairs; 171 graded (171 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 852 resolved in-repo CALLS pairs; 171 graded (171 correct, 0 wrong); lidx indexed in 0.7s
 - ungradable lidx pairs: caller_file_not_covered 681
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -640,7 +640,7 @@ Lists: `results/lists/go__chi__no_tests.fn.json`, `go__chi__no_tests.fp.json`, `
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.995, 1.000], R 0.479 [0.455, 0.504]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.982 (716 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 852 resolved in-repo CALLS pairs; 740 graded (740 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 852 resolved in-repo CALLS pairs; 740 graded (740 correct, 0 wrong); lidx indexed in 0.7s
 - ungradable lidx pairs: caller_file_not_covered 101, caller_not_judged 11
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -661,7 +661,7 @@ Lists: `results/lists/go__chi__tests.fn.json`, `go__chi__tests.fp.json`, `go__ch
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.987, 1.000], R 0.536 [0.494, 0.578]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.989 (271 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2310 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 1.0s
+- lidx: 2310 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 0.9s
 - ungradable lidx pairs: caller_file_not_covered 1671, caller_not_judged 311
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -682,7 +682,7 @@ Lists: `results/lists/go__urfavecli__no_tests.fn.json`, `go__urfavecli__no_tests
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.336 [0.325, 0.347]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.959 (2168 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2310 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 1.0s
+- lidx: 2310 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 0.9s
 - ungradable lidx pairs: caller_file_not_covered 20, caller_not_judged 24
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -703,7 +703,7 @@ Lists: `results/lists/go__urfavecli__tests.fn.json`, `go__urfavecli__tests.fp.js
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.984, 1.000], R 0.781 [0.731, 0.824]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (222 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 731 resolved in-repo CALLS pairs; 236 graded (236 correct, 0 wrong); lidx indexed in 0.5s
+- lidx: 731 resolved in-repo CALLS pairs; 236 graded (236 correct, 0 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: callee_file_not_covered 3, caller_file_not_covered 492
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -723,7 +723,7 @@ Lists: `results/lists/go__viper__no_tests.fn.json`, `go__viper__no_tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.994, 1.000], R 0.888 [0.863, 0.909]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.998 (640 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 731 resolved in-repo CALLS pairs; 653 graded (653 correct, 0 wrong); lidx indexed in 0.5s
+- lidx: 731 resolved in-repo CALLS pairs; 653 graded (653 correct, 0 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: callee_file_not_covered 3, caller_file_not_covered 9, caller_not_judged 66
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -744,7 +744,7 @@ Lists: `results/lists/go__viper__tests.fn.json`, `go__viper__tests.fp.json`, `go
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.969, 1.000], R 0.371 [0.320, 0.425]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (118 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 632 resolved in-repo CALLS pairs; 178 graded (178 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 632 resolved in-repo CALLS pairs; 178 graded (178 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 454
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -764,7 +764,7 @@ Lists: `results/lists/go__bubbletea__no_tests.fn.json`, `go__bubbletea__no_tests
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.986, 1.000], R 0.339 [0.307, 0.372]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.982 (283 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 632 resolved in-repo CALLS pairs; 333 graded (333 correct, 0 wrong); lidx indexed in 0.6s
+- lidx: 632 resolved in-repo CALLS pairs; 333 graded (333 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 292, caller_not_judged 7
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -785,7 +785,7 @@ Lists: `results/lists/go__bubbletea__tests.fn.json`, `go__bubbletea__tests.fp.js
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 2 oracle edges, 2 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.980 if they were counted wrong
 - recall when both ends are indexed symbols: 0.979 (376 oracle edges); caller lifted to an enclosing declaration for 65 edges; capture gap reasons: {'callee_not_indexed': 135}
-- lidx: 2591 resolved in-repo CALLS pairs; 352 graded (345 correct, 7 wrong); lidx indexed in 10.6s
+- lidx: 2591 resolved in-repo CALLS pairs; 352 graded (345 correct, 7 wrong); lidx indexed in 10.5s
 - ungradable lidx pairs: callee_file_not_covered 5, caller_file_not_covered 2234
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -807,7 +807,7 @@ Lists: `results/lists/ts__trpc.fn.json`, `ts__trpc.fp.json`, `ts__trpc.capture_g
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 5 oracle edges, 5 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (255 oracle edges); caller lifted to an enclosing declaration for 10 edges; capture gap reasons: {'callee_not_indexed': 10}
-- lidx: 447 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 1.9s
+- lidx: 447 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 2.0s
 - ungradable lidx pairs: caller_file_not_covered 195
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -828,7 +828,7 @@ Lists: `results/lists/ts__ky.fn.json`, `ts__ky.fp.json`, `ts__ky.capture_gap.jso
 - repowise-comparable scope: 282 oracle edges (1 module-level and 14 abstract-target edges removed), P 0.956 [0.920, 0.976], R 0.766 [0.713, 0.812]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.956 if they were counted wrong
 - recall when both ends are indexed symbols: 0.813 (267 oracle edges); caller lifted to an enclosing declaration for 73 edges; capture gap reasons: {'callee_not_indexed': 30}
-- lidx: 485 resolved in-repo CALLS pairs; 226 graded (216 correct, 10 wrong); lidx indexed in 1.0s
+- lidx: 485 resolved in-repo CALLS pairs; 226 graded (216 correct, 10 wrong); lidx indexed in 1.5s
 - ungradable lidx pairs: caller_file_not_covered 259
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -849,7 +849,7 @@ Lists: `results/lists/ts__immer.fn.json`, `ts__immer.fp.json`, `ts__immer.captur
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 3 oracle edges, 3 matched by lidx
 - unresolved-site exclusion: 1 lidx pairs left out; precision would be 0.940 if they were counted wrong
 - recall when both ends are indexed symbols: 0.925 (533 oracle edges); caller lifted to an enclosing declaration for 51 edges; capture gap reasons: {'callee_not_indexed': 46}
-- lidx: 983 resolved in-repo CALLS pairs; 515 graded (485 correct, 30 wrong); lidx indexed in 3.3s
+- lidx: 983 resolved in-repo CALLS pairs; 515 graded (485 correct, 30 wrong); lidx indexed in 3.1s
 - ungradable lidx pairs: caller_file_not_covered 467, oracle_unresolved_site 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -870,7 +870,7 @@ Lists: `results/lists/ts__h3.fn.json`, `ts__h3.fp.json`, `ts__h3.capture_gap.jso
 - oracle: None, 622 edges: 614 static with an indexed caller, 8 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.987 if they were counted wrong
 - recall when both ends are indexed symbols: 0.972 (614 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 983 resolved in-repo CALLS pairs; 605 graded (597 correct, 8 wrong); lidx indexed in 5.7s
+- lidx: 983 resolved in-repo CALLS pairs; 605 graded (597 correct, 8 wrong); lidx indexed in 5.1s
 - ungradable lidx pairs: callee_file_not_covered 2, caller_file_not_covered 376
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -892,7 +892,7 @@ Lists: `results/lists/rust__bat__path_tests_excluded.fn.json`, `rust__bat__path_
 - oracle: None, 127 edges: 127 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.927 if they were counted wrong
 - recall when both ends are indexed symbols: 0.795 (127 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 117 resolved in-repo CALLS pairs; 109 graded (101 correct, 8 wrong); lidx indexed in 0.3s
+- lidx: 117 resolved in-repo CALLS pairs; 109 graded (101 correct, 8 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: caller_file_not_covered 8
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -935,7 +935,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded.fn.json`, `rust__xsv__path_
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (1 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.987 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.3s
+- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.4s
 - ungradable lidx pairs: caller_file_not_covered 6356
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -957,7 +957,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded.fn.json`, `rust__lidx__pat
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (21 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.837 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.9s
+- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 5.4s
 - ungradable lidx pairs: caller_file_not_covered 8687, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -980,7 +980,7 @@ Lists: `results/lists/rust__just__path_tests_excluded.fn.json`, `rust__just__pat
 - oracle: None, 2022 edges: 1930 static with an indexed caller, 22 dispatch (2 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.956 if they were counted wrong
 - recall when both ends are indexed symbols: 0.867 (1930 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2342 resolved in-repo CALLS pairs; 1751 graded (1674 correct, 77 wrong); lidx indexed in 4.1s
+- lidx: 2342 resolved in-repo CALLS pairs; 1751 graded (1674 correct, 77 wrong); lidx indexed in 3.6s
 - ungradable lidx pairs: caller_file_not_covered 535, caller_not_judged 56
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1002,7 +1002,7 @@ Lists: `results/lists/rust__nextest__path_tests_excluded.fn.json`, `rust__nextes
 - oracle: None, 639 edges: 631 static with an indexed caller, 8 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.973 (631 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 983 resolved in-repo CALLS pairs; 621 graded (614 correct, 7 wrong); lidx indexed in 5.7s
+- lidx: 983 resolved in-repo CALLS pairs; 621 graded (614 correct, 7 wrong); lidx indexed in 5.1s
 - ungradable lidx pairs: caller_file_not_covered 361, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1024,7 +1024,7 @@ Lists: `results/lists/rust__bat__path_tests_excluded_all_features.fn.json`, `rus
 - oracle: None, 127 edges: 127 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.927 if they were counted wrong
 - recall when both ends are indexed symbols: 0.795 (127 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 117 resolved in-repo CALLS pairs; 109 graded (101 correct, 8 wrong); lidx indexed in 0.3s
+- lidx: 117 resolved in-repo CALLS pairs; 109 graded (101 correct, 8 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: caller_file_not_covered 8
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1067,7 +1067,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded_all_features.fn.json`, `rus
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (1 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.987 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.3s
+- lidx: 12631 resolved in-repo CALLS pairs; 6275 graded (6204 correct, 71 wrong); lidx indexed in 10.4s
 - ungradable lidx pairs: caller_file_not_covered 6356
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1089,7 +1089,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (21 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.837 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 4.9s
+- lidx: 10292 resolved in-repo CALLS pairs; 1604 graded (1499 correct, 105 wrong); lidx indexed in 5.4s
 - ungradable lidx pairs: caller_file_not_covered 8687, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1112,7 +1112,7 @@ Lists: `results/lists/rust__just__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 2023 edges: 1931 static with an indexed caller, 22 dispatch (2 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.957 if they were counted wrong
 - recall when both ends are indexed symbols: 0.866 (1931 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2342 resolved in-repo CALLS pairs; 1750 graded (1674 correct, 76 wrong); lidx indexed in 4.1s
+- lidx: 2342 resolved in-repo CALLS pairs; 1750 graded (1674 correct, 76 wrong); lidx indexed in 3.6s
 - ungradable lidx pairs: caller_file_not_covered 535, caller_not_judged 56, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1756,26 +1756,29 @@ Lists: `results/lists/<cell>.hierarchy_fn.json` (oracle pairs lidx lacks, plus u
 
 ### Type hierarchy spot-check
 
-20 random wrong pairs (FP) and 20 random missed pairs (FN) per language, read against the source (seed 412; cells go/cobra/tests, go/gitleaks/tests, go/syft/tests, go/chi/tests, go/urfavecli/tests, go/viper/tests, go/bubbletea/tests, ts/zod, ts/hono, ts/trpc, ts/ky, ts/immer, ts/h3, rust/ripgrep/path_tests_excluded, rust/fd/path_tests_excluded, rust/bat/path_tests_excluded, rust/tokei/path_tests_excluded, rust/xsv/path_tests_excluded, rust/lidx/path_tests_excluded, rust/just/path_tests_excluded, rust/nextest/path_tests_excluded). Verdicts: `lidx_error` (lidx is wrong or missed a real relation), `oracle_artefact` (the compiler pair is not the right judge), `matching_artefact` (our keying or bucketing mis-attributed the pair). Where a language has fewer than 20 wrong pairs, every one is read.
+20 random wrong pairs (FP), 20 random missed pairs (FN) and 20 random **correct** pairs (TP, so that precision does not rest on the matcher alone) per language, read against the source (seed 412; cells go/cobra/tests, go/gitleaks/tests, go/syft/tests, go/chi/tests, go/urfavecli/tests, go/viper/tests, go/bubbletea/tests, ts/zod, ts/hono, ts/trpc, ts/ky, ts/immer, ts/h3, rust/ripgrep/path_tests_excluded, rust/fd/path_tests_excluded, rust/bat/path_tests_excluded, rust/tokei/path_tests_excluded, rust/xsv/path_tests_excluded, rust/lidx/path_tests_excluded, rust/just/path_tests_excluded, rust/nextest/path_tests_excluded). Verdicts: `lidx_error` (lidx is wrong or missed a real relation), `oracle_artefact` (the compiler pair is not the right judge), `matching_artefact` (our keying or bucketing mis-attributed the pair). Where a language has fewer than 20 wrong pairs, every one is read.
 
 | Language | Sample | lidx_error | oracle_artefact | matching_artefact | artefact rate [95% Wilson CI] |
 |---|---|---:|---:|---:|---|
 | go | FP (n=0) | 0 | 0 | 0 | 0/0 = 0.0%  |
 | go | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
-| go | both (n=20) | 20 | 0 | 0 | **0/20 = 0.0%** [0.0%, 16.1%] |
+| go | TP, 20 confirmed in source (n=20) | 0 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| go | both (n=40) | 20 | 0 | 0 | **0/40 = 0.0%** [0.0%, 8.8%] |
 | ts | FP (n=1) | 1 | 0 | 0 | 0/1 = 0.0% [0.0%, 79.3%] |
 | ts | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
-| ts | both (n=21) | 21 | 0 | 0 | **0/21 = 0.0%** [0.0%, 15.5%] |
+| ts | TP, 20 confirmed in source (n=20) | 0 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| ts | both (n=41) | 21 | 0 | 0 | **0/41 = 0.0%** [0.0%, 8.6%] |
 | rust | FP (n=0) | 0 | 0 | 0 | 0/0 = 0.0%  |
 | rust | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
-| rust | both (n=20) | 20 | 0 | 0 | **0/20 = 0.0%** [0.0%, 16.1%] |
+| rust | TP, 20 confirmed in source (n=20) | 0 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| rust | both (n=40) | 20 | 0 | 0 | **0/40 = 0.0%** [0.0%, 8.8%] |
 
 **Exclusion buckets** (up to 10 random items each: capture gaps, ungradable lidx pairs by reason, and the external-base misses). `misbucketed` means the item should have been graded.
 
 | Language | Bucket | Bucket size | Sampled | misbucketed | rate [95% Wilson CI] |
 |---|---|---:|---:|---:|---|
 | go | external_base:no_edge | 37 | 10 | 0 | 0.0% [0.0%, 27.8%] |
-| go | ungradable:end_not_judged | 13 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| go | ungradable:end_not_judged | 13 | 13 | 0 | 0.0% [0.0%, 22.8%] |
 | go | ungradable:file_not_analysed | 206 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | go | ungradable:generic_type | 7 | 7 | 0 | 0.0% [0.0%, 35.4%] |
 | ts | capture_gap | 42 | 10 | 0 | 0.0% [0.0%, 27.8%] |
@@ -1784,11 +1787,11 @@ Lists: `results/lists/<cell>.hierarchy_fn.json` (oracle pairs lidx lacks, plus u
 | ts | ungradable:file_not_analysed | 193 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | external_base:no_edge | 83 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | external_base:not_indexed | 1 | 1 | 0 | 0.0% [0.0%, 79.3%] |
-| rust | ungradable:end_not_judged | 85 | 10 | 1 | 10.0% [1.8%, 40.4%] |
+| rust | ungradable:end_not_judged | 85 | 20 | 1 | 5.0% [0.9%, 23.6%] |
 | rust | ungradable:file_not_analysed | 50 | 10 | 0 | 0.0% [0.0%, 27.8%] |
-| all | all buckets | | 101 | 1 | **1.0%** [0.2%, 5.4%] |
+| all | all buckets | | 114 | 1 | **0.9%** [0.2%, 4.8%] |
 
-Pooled over every sampled item: 1/162 = 0.6% [0.1%, 3.4%].
+Pooled over every sampled item: 1/235 = 0.4% [0.1%, 2.4%].
 
 Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where fewer wrong pairs exist every one is read (Go and Rust have none: lidx's precision is 1.00 on the pairs the oracle judges; TypeScript has one), plus up to 10 items from every exclusion bucket. Read against the source by Sonnet subagents with access to the checked-out corpus and lidx's index. The first TypeScript sample found 12 of 61 items to be matching artefacts (a type alias named in an `extends` clause was keyed at its target, and the bases of merged interface declarations were all attributed to the first declaration); the oracle now reads each `extends` clause where it is written and the sample was redrawn.
 
@@ -1820,6 +1823,29 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 - `h40bacd65` overrides flag_uint64_slice.go:110 -> flag.go:161: **lidx_error**, Method declared in flag_uint64_slice.go with receiver Uint64SliceFlag whose struct is declared in zz_generated.flags.go; lidx names the method '<file-module>.<Type>' (e.g. flag_string.StringFlag.GetValue) while the type is zz_generated.flags.StringFlag, so the method is not attached to its receiver type and the override pair is lost, though the compiler pair is correct.
 - `hf8144969` implements middleware/wrap_writer.go:74 -> middleware/wrap_writer.go:48: **lidx_error**, middleware/wrap_writer.go:74 embeds http.ResponseWriter (and/or basicWriter) and gets the interface's methods by promotion; the compiler fact is correct (basicWriter defines Status/Tee/Unwrap/Discard, Header is promoted) but lidx has no IMPLEMENTS edge since it cannot see promotion through embedding of an external/embedded type.
 
+**TP**
+
+- `h408b747d` overrides app_test.go:2497 -> flag.go:106: **correct**, customBoolFlag.Apply (app_test.go:2497) is the pointer-receiver implementer of Flag.Apply(*flag.FlagSet) error at flag.go:106.
+- `hfc0eedda` overrides syft/internal/fileresolver/deferred.go:60 -> syft/file/resolver.go:45: **correct**, (*Deferred).FilesByGlob(patterns ...string) matches PathResolver.FilesByGlob at resolver.go:45 with identical signature.
+- `h49adb017` overrides internal/file/getter.go:48 -> internal/file/getter.go:24: **correct**, HashiGoGetter.GetFile (value receiver, variadic monitors) implements Getter.GetFile at getter.go:24; parameter-name difference is irrelevant.
+- `hc36e369f` implements altsrc/flag_generated.go:32 -> flag.go:158: **correct**, altsrc.DurationFlag embeds *cli.DurationFlag (promoting IsVisible/GetCategory/Names/IsSet/String) and defines Apply on *DurationFlag, so *DurationFlag satisfies CategorizableFlag.
+- `haa5a694d` implements syft/internal/fileresolver/excluding_file.go:15 -> syft/file/resolver.go:67: **correct**, *excluding defines AllLocations(ctx) <-chan file.Location (excluding_file.go:73), the sole method of LocationResolver.
+- `hf095d732` implements flag_int64_slice.go:12 -> flag.go:395: **correct**, *Int64Slice has WithSeparatorSpec(spec separatorSpec) at flag_int64_slice.go:33, the sole method of customizedSeparator.
+- `hbba172d6` overrides syft/source/directorysource/directory_source.go:92 -> syft/source/source.go:18: **correct**, *directorySource.FileResolver(Scope)(file.Resolver,error) at directory_source.go:92 implements Source.FileResolver at source.go:18.
+- `h2583164f` overrides flag_test.go:3004 -> flag_generic.go:11: **correct**, *genericType.String() string (flag_test.go:3004) implements Generic.String at flag_generic.go:11 (Set also present).
+- `hc540c7a7` overrides flag_ext.go:26 -> flag.go:153: **correct**, *extFlag.IsVisible (flag_ext.go:26) implements VisibleFlag.IsVisible at flag.go:153.
+- `h7264c79b` implements syft/pkg/cataloger/generic/cataloger.go:26 -> syft/artifact/id.go:12: **correct**, request embeds file.Location (Location->LocationData->Coordinates, which has ID() artifact.ID at coordinates.go:26) and the method-less func type Parser, so ID() is promoted and Identifiable is satisfied.
+- `hcf2dad1b` overrides syft/internal/fileresolver/container_image_all_layers.go:87 -> syft/file/resolver.go:38: **correct**, *ContainerImageAllLayers.FilesByPath(paths ...string) matches PathResolver.FilesByPath at resolver.go:38.
+- `hf06c025b` implements syft/file/location_read_closer.go:6 -> syft/artifact/id.go:12: **correct**, LocationReadCloser embeds Location, promoting Coordinates.ID() artifact.ID; io.ReadCloser adds no conflicting ID, so Identifiable is satisfied.
+- `h0e58ff81` overrides syft/source/snapsource/snap_test.go:623 -> internal/file/getter.go:24: **correct**, *mockFileGetter.GetFile (snap_test.go:623) overrides the embedded file.Getter's GetFile and implements Getter.GetFile at getter.go:24 with identical signature.
+- `hbeb69c8d` overrides zz_generated.flags.go:149 -> flag.go:153: **correct**, *Int64SliceFlag.IsVisible (zz_generated.flags.go:149) implements VisibleFlag.IsVisible at flag.go:153.
+- `h0d2a9955` implements zz_generated.flags.go:154 -> flag.go:395: **correct**, *IntSliceFlag has WithSeparatorSpec at zz_generated... flag_int_slice.go:191 (pointer receiver), satisfying customizedSeparator.
+- `h66e0966e` extends flag.go:95 -> flag.go:103: **correct**, ActionableFlag (flag.go:95) embeds Flag (flag.go:103); the single embedded identifier Flag resolves to that interface despite bare_name resolution.
+- `hff83d6b5` overrides mux.go:295 -> chi.go:86: **correct**, (*Mux).Mount(pattern string, handler http.Handler) at mux.go:295 implements Router.Mount(pattern string, h http.Handler) at chi.go:86.
+- `hb0623519` overrides zz_generated.flags.go:294 -> flag.go:116: **correct**, *StringSliceFlag.IsRequired (zz_generated.flags.go:294) implements RequiredFlag.IsRequired at flag.go:116.
+- `h506a10e9` implements syft/internal/fileresolver/empty.go:12 -> syft/file/resolver.go:76: **correct**, Empty (value receivers) defines every method of Resolver (Content/Path/Location/Metadata) plus Write; empty.go even asserts var _ file.WritableResolver = (*Empty)(nil).
+- `h5b9dca5a` implements syft/pkg/cataloger/generic/cataloger_test.go:93 -> syft/file/resolver.go:17: **correct**, spyReturningFileResolver has value-receiver FileContentsByLocation(file.Location)(io.ReadCloser,error), the only ContentResolver method.
+
 #### ts samples
 
 **FP**
@@ -1849,6 +1875,29 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 - `h05800233` overrides src/router/reg-exp-router/router.ts:206 -> src/router.ts:51: **lidx_error**, Class member `match` at src/router/reg-exp-router/router.ts:206 implements interface/type-literal/declare-class member `match` at src/router.ts:51 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
 - `h06904be1` overrides src/h3.ts:73 -> src/types/h3.ts:139: **lidx_error**, Class member `"~request"` at src/h3.ts:73 implements interface/type-literal/declare-class member `"~request"` at src/types/h3.ts:139 via `implements`; the pair is real but interface members are not lidx symbols, so it is missed by design.
 
+**TP**
+
+- `h69a9717b` extends packages/zod/src/v4/core/schemas.ts:928 -> packages/zod/src/v4/core/schemas.ts:385: **correct**, schemas.ts:928 declares extends $ZodStringFormatInternals<"base64">, base at :385.
+- `h6ad657d6` implements src/jsx/base.ts:140 -> src/utils/html.ts:17: **correct**, hono jsx/base.ts:140 JSXNode implements HtmlEscaped, a type alias at utils/html.ts:17.
+- `h29440d77` extends packages/zod/src/v4/core/schemas.ts:852 -> packages/zod/src/v4/core/schemas.ts:385: **correct**, $ZodCIDRv4Internals extends $ZodStringFormatInternals<"cidrv4"> at l.852.
+- `h8a7dcb94` extends packages/zod/src/v4/core/standard-schema.ts:103 -> packages/zod/src/v4/core/standard-schema.ts:9: **correct**, StandardJSONSchemaV1.Props (l.103) extends StandardTypedV1.Props, whose Props is at l.9 in the other namespace.
+- `hb6b60be4` extends src/jsx/intrinsic-elements.ts:671 -> src/jsx/intrinsic-elements.ts:152: **correct**, ScriptHTMLAttributes extends HTMLAttributes at l.671; single HTMLAttributes decl at l.152 in JSX namespace.
+- `he432aa3a` extends source/errors/NetworkError.ts:11 -> source/errors/KyError.ts:8: **correct**, NetworkError extends KyError (source/errors/NetworkError.ts:11), KyError at KyError.ts:8.
+- `hb86008bc` extends packages/zod/src/v4/core/schemas.ts:1356 -> packages/zod/src/v4/core/schemas.ts:179: **correct**, $ZodUndefined extends $ZodType at l.1356; $ZodType declared l.179.
+- `h0e60ab50` extends src/jsx/intrinsic-elements.ts:208 -> src/jsx/intrinsic-elements.ts:152: **correct**, AnchorHTMLAttributes extends HTMLAttributes at l.208; base is the l.152 decl.
+- `hdf168247` implements src/router/smart-router/router.ts:4 -> src/router.ts:29: **correct**, SmartRouter implements Router<T> (router.ts:4), Router imported from ../../router, declared at router.ts:29.
+- `h8e3c8c36` extends packages/server/src/unstable-core-do-not-import/procedure.ts:57 -> packages/server/src/unstable-core-do-not-import/procedure.ts:23: **correct**, QueryProcedure extends Procedure<'query',TDef> at l.59; Procedure at l.23.
+- `h85e4a8e3` extends packages/zod/src/v4/core/zsf.ts:14 -> packages/zod/src/v4/core/zsf.ts:5: **correct**, $ZSFString extends $ZSF at zsf.ts:14; base at :5.
+- `hc8538845` extends packages/zod/src/v4/core/schemas.ts:404 -> packages/zod/src/v4/core/schemas.ts:381: **correct**, $ZodGUIDDef extends $ZodStringFormatDef<"guid"> at l.404; base at l.381.
+- `h10a13e3e` extends packages/zod/src/v4/core/schemas.ts:831 -> packages/zod/src/v4/core/schemas.ts:385: **correct**, $ZodMACInternals extends $ZodStringFormatInternals<"mac"> at l.831.
+- `h5260c541` extends src/helper/streaming/sse.ts:13 -> src/utils/stream.ts:6: **correct**, SSEStreamingApi extends StreamingApi (sse.ts:13), class at utils/stream.ts:6.
+- `he39df74d` extends packages/server/src/unstable-core-do-not-import/transformer.ts:29 -> packages/server/src/unstable-core-do-not-import/transformer.ts:13: **correct**, OutputDataTransformer extends DataTransformer (transformer.ts:29), base l.13.
+- `hfe4e5c9e` extends packages/zod/src/v4/mini/schemas.ts:753 -> packages/zod/src/v4/mini/schemas.ts:40: **correct**, ZodMiniNever extends _ZodMiniType<...> at l.753; _ZodMiniType at l.40.
+- `h8b812332` extends packages/zod/src/v4/core/schemas.ts:3728 -> packages/zod/src/v4/core/schemas.ts:50: **correct**, $ZodNonOptionalDef extends $ZodTypeDef at l.3728; base l.50.
+- `h9c403c80` extends packages/zod/src/v4/classic/schemas.ts:1728 -> packages/zod/src/v4/core/schemas.ts:2659: **correct**, classic ZodTuple lists core.$ZodTuple<T,Rest> in its extends clause; $ZodTuple is core/schemas.ts:2659.
+- `h0ecaca27` extends packages/zod/src/v4/classic/schemas.ts:2543 -> packages/zod/src/v4/classic/schemas.ts:212: **correct**, ZodFunction extends _ZodType<...> (l.2546), _ZodType at classic/schemas.ts:212.
+- `h3c234d88` extends packages/zod/src/v4/classic/schemas.ts:1027 -> packages/zod/src/v4/classic/schemas.ts:212: **correct**, _ZodNumber extends _ZodType<Internals> (l.1028); _ZodType at l.212.
+
 #### rust samples
 
 **FP**
@@ -1876,4 +1925,27 @@ Type hierarchy sample (ids starting with h): 20 FP and 20 FN per language, where
 - `h118e6325` implements crates/printer/src/standard.rs:639 -> crates/searcher/src/sink.rs:102: **lidx_error**, Source has `impl ... for StandardSink` in the same file and lidx emits the type-level IMPLEMENTS, but the target is the placeholder symbol `ext:grep_searcher::Sink` instead of the in-repo trait (searcher sink.rs:102), so the in-repo trait never gets the edge (cross-crate path not mapped to workspace crate).
 - `h3dde8606` implements src/alias.rs:5 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Alias<'src>` in src/node.rs:95 while the type is declared in its own file; lidx has only the method-level edge crate::node::Alias::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Alias), which is no symbol.
 - `h3a2ef39c` implements src/expression.rs:10 -> src/node.rs:4: **lidx_error**, Impl is `impl<'src> Node<'src> for Expression<'src>` in src/node.rs:119 while the type is declared in its own file; lidx has only the method-level edge crate::node::Expression::tree and no type-level IMPLEMENTS because the edge source is qualified with the impl's module (crate::node::Expression), which is no symbol.
+
+**TP**
+
+- `h2342b046` overrides crates/core/flags/defs.rs:7246 -> crates/core/flags/mod.rs:177: **correct**, Source confirms method at crates/core/flags/defs.rs:7246 sits inside "impl Flag for Unrestricted {" (line 7212) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:177.
+- `h48ecf8e2` overrides crates/core/flags/defs.rs:2350 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:2350 sits inside "impl Flag for Follow {" (line 2343) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
+- `h375bed81` overrides crates/core/flags/defs.rs:4285 -> crates/core/flags/mod.rs:132: **correct**, Source confirms method at crates/core/flags/defs.rs:4285 sits inside "impl Flag for NoConfig {" (line 4278) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:132.
+- `h28e88b2d` overrides crates/core/flags/defs.rs:3976 -> crates/core/flags/mod.rs:177: **correct**, Source confirms method at crates/core/flags/defs.rs:3976 sits inside "impl Flag for MaxDepth {" (line 3940) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:177.
+- `hd6ef2f65` overrides crates/core/flags/defs.rs:6408 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:6408 sits inside "impl Flag for Sortr {" (line 6404) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
+- `hdb222fca` overrides cargo-nextest/src/output.rs:407 -> nextest-runner/src/write_str.rs:19: **correct**, Source confirms method at cargo-nextest/src/output.rs:407 sits inside "impl WriteStr for StdoutWriter<'_> {" (line 406) and overrides/implements the same-named method of "pub trait WriteStr {" at nextest-runner/src/write_str.rs:19.
+- `h1bd00e4a` overrides crates/core/flags/defs.rs:3657 -> crates/core/flags/mod.rs:74: **correct**, Source confirms method at crates/core/flags/defs.rs:3657 sits inside "impl Flag for LineNumberNo {" (line 3656) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:74.
+- `h102bf975` overrides crates/core/flags/defs.rs:4232 -> crates/core/flags/mod.rs:143: **correct**, Source confirms method at crates/core/flags/defs.rs:4232 sits inside "impl Flag for MultilineDotall {" (line 4216) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:143.
+- `ha1d6ac13` implements src/indexer/javascript.rs:184 -> src/indexer/extract.rs:632: **correct**, javascript.rs has "impl crate::indexer::extract::LanguageExtractor for TypescriptExtractor"; trait at extract.rs:632.
+- `ha2fbcf4a` overrides crates/core/flags/defs.rs:4507 -> crates/core/flags/mod.rs:143: **correct**, Source confirms method at crates/core/flags/defs.rs:4507 sits inside "impl Flag for NoIgnoreFiles {" (line 4491) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:143.
+- `hfa4db138` overrides crates/core/flags/defs.rs:5462 -> crates/core/flags/mod.rs:111: **correct**, Source confirms method at crates/core/flags/defs.rs:5462 sits inside "impl Flag for Pre {" (line 5455) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:111.
+- `h755b7b0c` overrides crates/core/flags/defs.rs:3572 -> crates/core/flags/mod.rs:177: **correct**, Source confirms method at crates/core/flags/defs.rs:3572 sits inside "impl Flag for LineBuffered {" (line 3539) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:177.
+- `he8c2c103` overrides nextest-runner/src/indenter.rs:136 -> nextest-runner/src/write_str.rs:23: **correct**, Source confirms method at nextest-runner/src/indenter.rs:136 sits inside "impl<T> WriteStr for Indented<'_, T>" (line 109) and overrides/implements the same-named method of "pub trait WriteStr {" at nextest-runner/src/write_str.rs:23.
+- `h5a752869` overrides crates/core/flags/defs.rs:2606 -> crates/core/flags/mod.rs:132: **correct**, Source confirms method at crates/core/flags/defs.rs:2606 sits inside "impl Flag for GlobCaseInsensitive {" (line 2596) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:132.
+- `h4af6d129` overrides src/printer.rs:596 -> src/printer.rs:96: **correct**, Source confirms method at src/printer.rs:596 sits inside "impl<'a> Printer for InteractivePrinter<'a> {" (line 451) and overrides/implements the same-named method of "pub(crate) trait Printer {" at src/printer.rs:96.
+- `h0423a5e5` overrides crates/core/flags/defs.rs:3613 -> crates/core/flags/mod.rs:132: **correct**, Source confirms method at crates/core/flags/defs.rs:3613 sits inside "impl Flag for LineNumber {" (line 3603) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:132.
+- `h8bc4a223` overrides crates/core/flags/defs.rs:7297 -> crates/core/flags/mod.rs:74: **correct**, Source confirms method at crates/core/flags/defs.rs:7297 sits inside "impl Flag for Version {" (line 7296) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:74.
+- `hc820086a` overrides crates/core/flags/defs.rs:4892 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:4892 sits inside "impl Flag for NoUnicode {" (line 4888) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
+- `h980ae649` implements crates/core/flags/defs.rs:578 -> crates/core/flags/mod.rs:71: **correct**, defs.rs has "impl Flag for ByteOffset" and trait Flag is at mod.rs:71.
+- `h821c5bf9` overrides crates/core/flags/defs.rs:7303 -> crates/core/flags/mod.rs:89: **correct**, Source confirms method at crates/core/flags/defs.rs:7303 sits inside "impl Flag for Version {" (line 7296) and overrides/implements the same-named method of "trait Flag: Debug + Send + Sync + Unwind" at crates/core/flags/mod.rs:89.
 
