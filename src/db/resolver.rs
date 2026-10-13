@@ -283,6 +283,19 @@ pub(crate) fn drop_references_shadowed_by_calls(
     )?)
 }
 
+/// Whether the parent path of Rust item `qualname` is a module: the item is a
+/// free function (or a type), not a member of an impl or trait.
+fn rust_parent_is_module(conn: &Connection, graph_version: i64, qualname: &str) -> Result<bool> {
+    let Some((parent, _)) = qualname.rsplit_once("::") else {
+        return Ok(false);
+    };
+    Ok(conn
+        .prepare_cached(
+            "SELECT 1 FROM symbols WHERE qualname = ?1 AND kind = 'module' AND graph_version = ?2 LIMIT 1",
+        )?
+        .exists(params![parent, graph_version])?)
+}
+
 /// How a resolved target was found. `as_str` is the `edges.resolution_kind`
 /// column value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1118,6 +1131,9 @@ struct FallbackGuard {
     /// Refuse a `method`-kind candidate — set for a bare (receiver-less)
     /// `CALLS` edge; see `EdgeInput::bare_call`.
     exclude_method: bool,
+    /// Refuse a free function (one a module declares) — set for a Rust call
+    /// with a receiver (`x.m()`), which only a method can answer.
+    exclude_free_fn: bool,
     /// Refuse a cross-file candidate the language's `VisibilityRule`
     /// deems not visible.
     enforce_visibility: bool,
@@ -1128,6 +1144,7 @@ impl FallbackGuard {
     /// resolution) and `resolve_type_symbol`'s type-name lookups.
     const NONE: FallbackGuard = FallbackGuard {
         exclude_method: false,
+        exclude_free_fn: false,
         enforce_visibility: false,
     };
 }
@@ -2742,6 +2759,16 @@ impl<'c> Resolver<'c> {
             self.saw_ambiguous = true;
         }
 
+        // The one candidate of a receiver call is a free function: the call
+        // is not an answer to it (`"..".style(..)` is not `style(..)`).
+        if guard.exclude_free_fn
+            && let [only] = visible.as_slice()
+            && let Some(row) = found.iter().find(|r| r.id == *only)
+            && row.kind == "function"
+            && rust_parent_is_module(self.conn, gv, &row.qualname)?
+        {
+            return Ok(None);
+        }
         match visible.len() {
             1 => Ok(Some(visible[0])),
             0 if kind_eligible > 0 => {
@@ -2853,6 +2880,7 @@ impl<'c> Resolver<'c> {
                 // a candidate (two `Args` types, each with a private `run`).
                 let guard = FallbackGuard {
                     exclude_method: false,
+                    exclude_free_fn: false,
                     enforce_visibility: source_lang == "rust",
                 };
                 if let Some(id) = self.unique_by_pattern(
@@ -2915,8 +2943,15 @@ impl<'c> Resolver<'c> {
                 // kinds (RPC_CALL, HTTP_CALL, CHANNEL_*, XREF, ...) have
                 // their own detection and don't set `bare_call`, so this
                 // never restricts them (see `EdgeInput::bare_call`).
+                // A Rust call with a receiver (`x.m()`, target text without a
+                // path) is answered by a method, never by a free function
+                // that shares the name (`"..".style(..)` is not `style(..)`).
                 let guard = FallbackGuard {
                     exclude_method: edge_kind == "CALLS" && bare_call,
+                    exclude_free_fn: source_lang == "rust"
+                        && edge_kind == "CALLS"
+                        && !bare_call
+                        && !target_qualname.contains("::"),
                     enforce_visibility: true,
                 };
                 if profile_for(source_lang).two_segment
@@ -3255,6 +3290,7 @@ impl<'c> Resolver<'c> {
         let (name, dot, colons) = fuzzy_qualname_patterns(method);
         let guard = FallbackGuard {
             exclude_method: false,
+            exclude_free_fn: false,
             enforce_visibility: true,
         };
         let Some(id) =

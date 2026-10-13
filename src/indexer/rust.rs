@@ -1392,7 +1392,24 @@ const NON_EXPR_ARG_MACROS: &[&str] = &[
     "bitflags",
     "proptest",
     "macro_rules",
+    // Embedded DSLs: their identifiers are markup, field and column names, not
+    // calls, and a bare one could bind a free function of the same name.
+    "json",
+    "html",
+    "rsx",
+    "view",
+    "sql",
+    "query",
+    "parse_quote",
+    "arg",
 ];
+
+/// Whether `bytes` holds an identifier character directly before a `(`.
+fn has_call_like_token(bytes: &[u8]) -> bool {
+    bytes
+        .windows(2)
+        .any(|w| w[1] == b'(' && (w[0].is_ascii_alphanumeric() || w[0] == b'_'))
+}
 
 fn macro_args_are_expressions(name: &str) -> bool {
     !NON_EXPR_ARG_MACROS.contains(&name)
@@ -1689,6 +1706,10 @@ fn handle_macro_invocation(
     };
     if item_macro {
         walk_item_macro(tokens, ctx, source, output);
+        return;
+    }
+    // Arguments with no `name(` hold no call: nothing to re-parse.
+    if !has_call_like_token(&source.as_bytes()[tokens.start_byte()..tokens.end_byte()]) {
         return;
     }
     let range = tree_sitter::Range {
@@ -5728,12 +5749,19 @@ fn collect_uses(
     output: &mut ExtractedFile,
     seen: &mut HashSet<(String, String)>,
 ) {
-    let mut ctx = ctx.clone();
-    if node.kind() == "mod_item"
+    // The context changes only below a `mod`; cloning it per node is the
+    // walk's main cost.
+    let module_ctx;
+    let ctx = if node.kind() == "mod_item"
         && let Some(name) = extract_name(node, source)
     {
-        ctx.module = format!("{}::{name}", ctx.module);
-    }
+        let mut inner = ctx.clone();
+        inner.module = format!("{}::{name}", ctx.module);
+        module_ctx = inner;
+        &module_ctx
+    } else {
+        ctx
+    };
     if !matches!(node.kind(), "use_declaration" | "attribute_item") {
         let parent = node.parent();
         let is_ref = matches!(
