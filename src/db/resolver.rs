@@ -6071,16 +6071,23 @@ impl Db {
             for row in &rows {
                 let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
                 // A call that stays a `DISPATCH` keeps the interface its
-                // receiver is typed as when that is not the declaring one.
-                if row.stored_kind == edge_views::DISPATCH
-                    && matches!(resolution, Resolution::Resolved { target_id, .. }
-                        if target_id == row.target_symbol_id)
-                {
-                    let scope = resolver.go_dispatch_receiver.take();
-                    if scope != row.ctx.receiver_scope {
+                // receiver is typed as when that is not the declaring one; one
+                // that moved to another target or became a plain call keeps
+                // none.
+                let scope = resolver.go_dispatch_receiver.take();
+                if row.stored_kind == edge_views::DISPATCH {
+                    let kept = match resolution {
+                        Resolution::Resolved { target_id, .. }
+                            if target_id == row.target_symbol_id =>
+                        {
+                            scope
+                        }
+                        _ => None,
+                    };
+                    if kept != row.ctx.receiver_scope {
                         tx.execute(
                             "UPDATE edges SET receiver_scope = ?1 WHERE id = ?2",
-                            params![scope, row.edge_id],
+                            params![kept, row.edge_id],
                         )?;
                         total_resolved += 1;
                     }

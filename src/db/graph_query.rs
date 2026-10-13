@@ -853,13 +853,21 @@ impl Db {
     }
 
     /// The interfaces the Go type declaring method `imp` satisfies, and those
-    /// of the types that embed it a few levels out (their method sets hold
-    /// it), joined by [`crate::model::GO_SCOPE_SEP`]. `None` when the type is
-    /// unknown: then nothing is narrowed.
+    /// of the types that reach `imp` by embedding (directly or through other
+    /// embedders; their method sets hold it), joined by
+    /// [`crate::model::GO_SCOPE_SEP`]. An embedder that declares a method of
+    /// the same name itself shadows `imp`: it reaches it only from its own
+    /// body, so neither it nor the types embedding it count. `None` when the
+    /// type is unknown: then nothing is narrowed.
     fn go_impl_interfaces(&self, imp: i64) -> Result<Option<String>> {
         let conn = self.read_conn()?;
         let gv = self.current_graph_version()?;
-        let mut owners: Vec<i64> = {
+        let name: String = conn.query_row(
+            "SELECT name FROM symbols WHERE id = ?1",
+            rusqlite::params![imp],
+            |r| r.get(0),
+        )?;
+        let owners: Vec<i64> = {
             let mut stmt = conn.prepare(
                 "SELECT source_symbol_id FROM edges
                  WHERE target_symbol_id = ?1 AND kind = 'CONTAINS' AND graph_version = ?2
@@ -871,34 +879,39 @@ impl Db {
         if owners.is_empty() {
             return Ok(None);
         }
-        let mut all: HashSet<i64> = owners.iter().copied().collect();
-        for _ in 0..3 {
-            let mut next = Vec::new();
-            for owner in &owners {
-                let mut stmt = conn.prepare(
-                    "SELECT source_symbol_id FROM edges
-                     WHERE target_symbol_id = ?1 AND kind = 'EXTENDS' AND graph_version = ?2
-                       AND source_symbol_id IS NOT NULL",
-                )?;
-                let rows = stmt.query_map(rusqlite::params![owner, gv], |r| r.get::<_, i64>(0))?;
-                for row in rows {
-                    let id = row?;
-                    if all.insert(id) {
-                        next.push(id);
-                    }
+        let mut embedders = conn.prepare(
+            "SELECT source_symbol_id FROM edges
+             WHERE target_symbol_id = ?1 AND kind = 'EXTENDS' AND graph_version = ?2
+               AND source_symbol_id IS NOT NULL",
+        )?;
+        let mut declares = conn.prepare(
+            "SELECT 1 FROM edges e JOIN symbols m ON m.id = e.target_symbol_id
+             WHERE e.source_symbol_id = ?1 AND e.kind = 'CONTAINS' AND e.graph_version = ?2
+               AND m.kind = 'method' AND m.name = ?3 AND m.id != ?4 LIMIT 1",
+        )?;
+        let mut seen: HashSet<i64> = owners.iter().copied().collect();
+        let mut frontier = owners;
+        while let Some(owner) = frontier.pop() {
+            let ids = embedders
+                .query_map(rusqlite::params![owner, gv], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for id in ids {
+                if seen.contains(&id) {
+                    continue;
                 }
+                if declares.exists(rusqlite::params![id, gv, name, imp])? {
+                    continue;
+                }
+                seen.insert(id);
+                frontier.push(id);
             }
-            if next.is_empty() {
-                break;
-            }
-            owners = next;
         }
         let mut names: Vec<String> = Vec::new();
         let mut stmt = conn.prepare(
             "SELECT t.qualname FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
              WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPLEMENTS' AND e.graph_version = ?2",
         )?;
-        for owner in &all {
+        for owner in &seen {
             let rows = stmt.query_map(rusqlite::params![owner, gv], |r| r.get::<_, String>(0))?;
             for row in rows {
                 names.push(row?);

@@ -2529,7 +2529,7 @@ fn impact_response_cap(raw_params: &Value) -> usize {
 /// parts that explain a symbol before dropping the symbols themselves, so the
 /// generic response cut (which removes the farthest entries) fires later.
 ///
-/// In order: the alternative paths, the paths of entries three or more calls
+/// In order: the alternative paths (`also_via_omitted`), the paths of entries three or more calls
 /// away, every path, then the per-file symbol lists of the summary (the
 /// `affected` list names the same symbols). Each step that fires is recorded
 /// (`paths_omitted`, `summary.symbols_omitted`) and only runs while the answer
@@ -2551,7 +2551,14 @@ fn fit_impact_response(value: &mut Value, cap: usize) {
             }
         }
     };
+    let has_also_via = value
+        .get("affected")
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().any(|e| e.get("also_via").is_some()));
     strip(value, "also_via", 0);
+    if has_also_via && let Some(obj) = value.as_object_mut() {
+        obj.insert("also_via_omitted".to_string(), json!(true));
+    }
     if weight(value) <= cap {
         return;
     }
@@ -4179,6 +4186,7 @@ mod fit_impact_response_tests {
             }
         };
         assert_eq!(v["paths_omitted"], "distance_3_and_beyond");
+        assert_eq!(v["also_via_omitted"], true);
         let entries = v["affected"].as_array().unwrap();
         assert_eq!(entries.len(), 40, "no symbol is dropped to save a path");
         for e in entries {
