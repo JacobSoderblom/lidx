@@ -1434,6 +1434,20 @@ fn macro_args_are_expressions(name: &str) -> bool {
 /// Some names (`end`, `reset`, `drop`, `start`) are not only std methods; they
 /// are here because the measurement is net-positive across the dev and
 /// held-out cells, not because std owns them.
+///
+/// Second pass (issue #483), the same rule on the eight `path_tests_excluded`
+/// cells (ripgrep, fd, bat, tokei, xsv, lidx, just, nextest) at the `bare_name`
+/// tier on a receiver call: the last group of the list below, as
+/// true edges lost / false edges removed -- `path` 1/22, `pop` 0/11, `kind`
+/// 2/8, `current_dir` 0/8, `env` 0/6, `is_zero` 2/4, `success` 0/4, `or` 0/4,
+/// `arg` 0/4, `args` 0/4, `stdin` 0/3, `spawn` 0/3, `stderr` 0/1, `output`
+/// 0/1, `sort_by` 0/1, `load` 0/1. Std defines each (`DirEntry::path`,
+/// `Vec::pop`, `io::Error::kind`, `Command::{current_dir, env, arg, args,
+/// stdin, stderr, output, spawn}`, `ExitStatus::success`, `Duration::is_zero`,
+/// `Option::or`, the slice `sort_by`, `AtomicX::load`). Names std defines that
+/// the data does not support stay out: `seek` (6 true, 0 false), `open` and
+/// `components` (tied or net negative), and every name from a dependency
+/// (`name`, `run`, `prepare`, `is_match`, `print`: no std method of that name).
 const STD_METHOD_NAMES: &[&str] = &[
     "clone",
     "clone_from",
@@ -1641,6 +1655,22 @@ const STD_METHOD_NAMES: &[&str] = &[
     "end",
     "reset",
     "elapsed",
+    "path",
+    "pop",
+    "kind",
+    "current_dir",
+    "env",
+    "is_zero",
+    "success",
+    "or",
+    "arg",
+    "args",
+    "stdin",
+    "spawn",
+    "stderr",
+    "output",
+    "sort_by",
+    "load",
 ];
 
 /// Whether `name` is in [`STD_METHOD_NAMES`] (also read by the resolver when a
@@ -1854,6 +1884,18 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         receiver_type = ReceiverType::Unresolved;
     }
     let (mut start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    // `filter(ent)` with `filter` bound by a pattern, a parameter or a `let`
+    // of this function calls that value (a closure, a function pointer).
+    if receiver_type == ReceiverType::NotTracked
+        && function_node.kind() == "identifier"
+        && is_bound_local(
+            &ctx.local_types,
+            &node_text(function_node, source),
+            node.start_byte(),
+        )
+    {
+        receiver_type = ReceiverType::Unresolved;
+    }
     // A chained call's evidence starts at its method-name token, not at the
     // head of the chain several lines above.
     if let Some(field) = field {
@@ -2220,6 +2262,17 @@ fn lookup_local(locals: &Locals, name: &str, pos: usize) -> Ty {
         }
     }
     best.map_or(Ty::Unknown, |(_, ty)| ty)
+}
+
+/// Whether `name` is bound by a parameter, `let`, pattern or closure
+/// parameter of the function being read whose scope holds byte `pos`, typed
+/// or not: a call of it runs that value, never an item of the same name.
+fn is_bound_local(locals: &Locals, name: &str, pos: usize) -> bool {
+    locals
+        .get(name)
+        .into_iter()
+        .flatten()
+        .any(|b| b.scope.0 <= pos && pos < b.scope.1)
 }
 
 fn record_local(out: &mut Locals, name: String, ty: Ty, scope: Scope) {
@@ -5271,9 +5324,6 @@ fn is_anchored(first: &str) -> bool {
 /// the scope's `use`s (the expanded paths are added too, so an external
 /// stub is named by them); for a bare name, the candidates it already has.
 fn add_crate_markers(path: &str, candidates: &mut Vec<String>, ctx: &Context) {
-    let Some(crates) = &ctx.crates else {
-        return;
-    };
     let expanded: Vec<String> = match path.split_once("::") {
         None => candidates.clone(),
         Some((first, _)) if is_anchored(first) => return,
@@ -5284,7 +5334,22 @@ fn add_crate_markers(path: &str, candidates: &mut Vec<String>, ctx: &Context) {
             None => vec![path.to_string()],
         },
     };
-    let markers = crates.markers(&expanded);
+    let mut markers = ctx
+        .crates
+        .as_ref()
+        .map(|crates| crates.markers(&expanded))
+        .unwrap_or_default();
+    // `use std::io;` ... `io::Error::new(..)`: a path read through a `use`
+    // into std, core or alloc leaves the crate like a dependency's does, so
+    // no repo type that shares a segment's name (a crate's own `Error::new`)
+    // is its target (issue #454).
+    if !markers.iter().any(|m| m == RUST_EXTERNAL_CRATE)
+        && expanded
+            .iter()
+            .any(|full| is_rust_std_root(full.split("::").next().unwrap_or(full)))
+    {
+        markers.push(RUST_EXTERNAL_CRATE.to_string());
+    }
     if markers.is_empty() {
         return;
     }
