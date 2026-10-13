@@ -1,10 +1,4 @@
 [
 {"callee":{"file":"src/decorations.rs","line":13,"name":"generate"},"caller":{"file":"src/printer.rs","line":596,"name":"[Printer]print_line"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/printer.rs:679","src/printer.rs:783"]},
-{"callee":{"file":"src/decorations.rs","line":19,"name":"width"},"caller":{"file":"src/printer.rs","line":217,"name":"new"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/printer.rs:248","src/printer.rs:260"]},
-{"callee":{"file":"src/printer.rs","line":86,"name":"print_header"},"caller":{"file":"src/controller.rs","line":199,"name":"print_file"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/controller.rs:208"]},
-{"callee":{"file":"src/printer.rs","line":92,"name":"print_footer"},"caller":{"file":"src/controller.rs","line":199,"name":"print_file"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/controller.rs:232"]},
-{"callee":{"file":"src/printer.rs","line":94,"name":"print_snip"},"caller":{"file":"src/controller.rs","line":237,"name":"print_file_ranges"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/controller.rs:268"]},
-{"callee":{"file":"src/printer.rs","line":96,"name":"print_line"},"caller":{"file":"src/controller.rs","line":237,"name":"print_file_ranges"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/controller.rs:257","src/controller.rs:272"]},
-{"callee":{"file":"src/theme.rs","line":247,"name":"should_detect"},"caller":{"file":"src/theme.rs","line":234,"name":"color_scheme_impl"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/theme.rs:239"]},
-{"callee":{"file":"src/theme.rs","line":249,"name":"detect"},"caller":{"file":"src/theme.rs","line":234,"name":"color_scheme_impl"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/theme.rs:243"]}
+{"callee":{"file":"src/decorations.rs","line":19,"name":"width"},"caller":{"file":"src/printer.rs","line":217,"name":"new"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/printer.rs:248","src/printer.rs:260"]}
 ]

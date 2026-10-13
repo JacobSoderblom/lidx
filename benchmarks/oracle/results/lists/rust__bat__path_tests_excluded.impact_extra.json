@@ -18,11 +18,18 @@
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/line_range.rs:205","seed_name":"from"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/line_range.rs:217","seed_name":"check"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/pretty_printer.rs:283","seed_name":"print"},
+{"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/printer.rs:452","seed_name":"[Printer]print_header"},
+{"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/printer.rs:86","seed_name":"print_header"},
+{"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/printer.rs:92","seed_name":"print_footer"},
+{"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/printer.rs:96","seed_name":"print_line"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/style.rs:101","seed_name":"grid"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/style.rs:97","seed_name":"changes"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/syntax_mapping.rs:148","seed_name":"get_syntax_for"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/syntax_mapping/ignored_suffixes.rs:56","seed_name":"try_with_stripped_suffix"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/theme.rs:30","seed_name":"default_theme"},
 {"k":"inf","member":"src/bin/bat/main.rs:339 run","node":"src/bin/bat/main.rs|crate::bin::bat::run","seed":"src/pretty_printer.rs:283","seed_name":"print"},
-{"k":"inf","member":"src/bin/bat/main.rs:422 main","node":"src/bin/bat/main.rs|crate::bin::bat::main","seed":"src/pretty_printer.rs:283","seed_name":"print"}
+{"k":"inf","member":"src/bin/bat/main.rs:422 main","node":"src/bin/bat/main.rs|crate::bin::bat::main","seed":"src/pretty_printer.rs:283","seed_name":"print"},
+{"k":"inf","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:255","seed_name":"[ColorSchemeDetector]should_detect"},
+{"k":"inf","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:524","seed_name":"should_detect"},
+{"k":"inf","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:555","seed_name":"[ColorSchemeDetector]should_detect"}
 ]

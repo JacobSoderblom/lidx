@@ -1,7 +1,6 @@
 [
 {"confidence":"high","file":"errors.go","key":"errors.go:52","lidx_kind":"method","name":"getMissingFlags","qualname":"errors.requiredFlagsErr.getMissingFlags","reason":"not_a_judged_declaration"},
 {"confidence":"high","file":"parse.go","key":"parse.go:9","lidx_kind":"method","name":"newFlagSet","qualname":"parse.iterativeParser.newFlagSet","reason":"not_a_judged_declaration"},
-{"confidence":"medium","file":"app_test.go","key":"app_test.go:2477","lidx_kind":"method","name":"String","qualname":"app_test.customBoolFlag.String","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"app_test.go","key":"app_test.go:2485","lidx_kind":"method","name":"TakesValue","qualname":"app_test.customBoolFlag.TakesValue","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"app_test.go","key":"app_test.go:2489","lidx_kind":"method","name":"GetValue","qualname":"app_test.customBoolFlag.GetValue","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"app_test.go","key":"app_test.go:2493","lidx_kind":"method","name":"GetUsage","qualname":"app_test.customBoolFlag.GetUsage","reason":"test_file_outside_cell"},
@@ -10,7 +9,6 @@
 {"confidence":"medium","file":"cmd/urfave-cli-genflags/main.go","key":"cmd/urfave-cli-genflags/main.go:300","lidx_kind":"method","name":"TypeName","qualname":"cmd/urfave-cli-genflags/main.FlagType.TypeName","reason":"file_not_in_program"},
 {"confidence":"medium","file":"cmd/urfave-cli-genflags/main.go","key":"cmd/urfave-cli-genflags/main.go:312","lidx_kind":"method","name":"GenerateRequiredFlagInterface","qualname":"cmd/urfave-cli-genflags/main.FlagType.GenerateRequiredFlagInterface","reason":"file_not_in_program"},
 {"confidence":"medium","file":"cmd/urfave-cli-genflags/main.go","key":"cmd/urfave-cli-genflags/main.go:316","lidx_kind":"method","name":"GenerateVisibleFlagInterface","qualname":"cmd/urfave-cli-genflags/main.FlagType.GenerateVisibleFlagInterface","reason":"file_not_in_program"},
-{"confidence":"medium","file":"errors_test.go","key":"errors_test.go:118","lidx_kind":"method","name":"Format","qualname":"errors_test.ErrorWithFormat.Format","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"flag_test.go","key":"flag_test.go:2974","lidx_kind":"method","name":"Get","qualname":"flag_test.Parser.Get","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"sliceflag_test.go","key":"sliceflag_test.go:205","lidx_kind":"class","name":"Config","qualname":"sliceflag_test.Config","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"sliceflag_test.go","key":"sliceflag_test.go:405","lidx_kind":"class","name":"Config","qualname":"sliceflag_test.Config","reason":"test_file_outside_cell"},

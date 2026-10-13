@@ -1626,11 +1626,36 @@ fn live_symbols(
         }
     }
     drop(stmt);
+    // A method no claim covers is live with its type, not on its own: the
+    // rules that keep it from being a claim (an interface it implements, an
+    // override) all hang on the type being used.
+    let mut members: HashSet<i64> = HashSet::new();
+    let mut cstmt = conn.prepare(
+        "SELECT c.source_symbol_id, c.target_symbol_id FROM edges c
+         JOIN symbols m ON m.id = c.target_symbol_id
+         WHERE c.kind = 'CONTAINS' AND c.graph_version = ?1 AND m.kind = 'method'
+           AND c.source_symbol_id IS NOT NULL",
+    )?;
+    let rows = cstmt.query_map([graph_version], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (parent, method) = row?;
+        if !claimed.contains(&method) {
+            members.insert(method);
+            out_edges.entry(parent).or_default().push(method);
+        }
+    }
+    drop(cstmt);
     let mut ids = conn.prepare("SELECT id FROM symbols WHERE graph_version = ?1")?;
     let rows = ids.query_map([graph_version], |r| r.get::<_, i64>(0))?;
     for id in rows {
         let id = id?;
-        if !referenced.contains(&id) && !claimed.contains(&id) && live.insert(id) {
+        if !referenced.contains(&id)
+            && !claimed.contains(&id)
+            && !members.contains(&id)
+            && live.insert(id)
+        {
             stack.push(id);
         }
     }
@@ -1681,7 +1706,8 @@ fn live_symbols(
             let mut found = false;
             let mut any = false;
             for (idx, line) in lines.iter().enumerate() {
-                if !mentions_word(line, &m.name) {
+                // `var _ I = (*T)(nil)` only asserts what T implements.
+                if !mentions_word(line, &m.name) || line.trim_start().starts_with("var _ ") {
                     continue;
                 }
                 any = true;
