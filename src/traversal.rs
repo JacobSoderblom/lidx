@@ -196,8 +196,9 @@ fn retie(
 /// Edge kinds a default trace follows. A kind outside this set (CONTAINS,
 /// IMPORTS, REFERENCES, ...) is never a flow successor, so a trace that does
 /// not list it has not "declined" anything by leaving it out (issue #410).
-const FLOW_KINDS: [&str; 12] = [
+const FLOW_KINDS: [&str; 13] = [
     "CALLS",
+    "DISPATCH",
     "RPC_IMPL",
     "RPC_CALL",
     "RPC_ROUTE",

@@ -449,7 +449,7 @@ impl Db {
                     .entry((src_module, tgt_module))
                     .or_insert((0, 0, 0));
 
-                if kind == "CALLS" {
+                if edge_views::is_call_like(kind) {
                     entry.0 += 1;
                 } else if kind == "XREF" {
                     entry.2 += 1;

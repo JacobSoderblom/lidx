@@ -208,7 +208,7 @@ fn edge_rank(kind: &str) -> u8 {
         "IMPLEMENTS" => 3,
         "IMPORTS_FILE" => 4,
         "IMPORTS" => 5,
-        "CALLS" => 6,
+        "CALLS" | "DISPATCH" => 6,
         "XREF" => 7,
         _ => 10,
     }

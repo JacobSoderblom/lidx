@@ -79,7 +79,7 @@ impl EntryArgs {
 impl Edge {
     /// The closed generic arguments of this CALLS edge's receiver type.
     pub fn call_args(&self, db: &Db) -> Result<Option<String>> {
-        if self.kind != "CALLS" || self.id <= 0 {
+        if !edge_views::is_call_like(&self.kind) || self.id <= 0 {
             return Ok(None);
         }
         let types = db.call_receiver_types(&[self.id])?;
@@ -548,7 +548,7 @@ impl Db {
                     continue;
                 };
                 let call_args = recv.get(&e.id).and_then(|t| type_args(t));
-                if e.kind == "CALLS"
+                if edge_views::is_call_like(&e.kind)
                     && e.target_symbol_id == Some(iface)
                     && dispatch_compatible(call_args, Some(&args))
                     && seen.insert(src)

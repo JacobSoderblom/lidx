@@ -181,6 +181,10 @@ pub(crate) fn stored_edge_kind(
     target_id: i64,
 ) -> Result<String> {
     if !is_value_reference(edge_kind, call_shape) {
+        // A call that stays on a Go interface's method spec is a dispatch.
+        if edge_kind == edge_views::CALLS && is_go_interface_method(conn, target_id)? {
+            return Ok(edge_views::DISPATCH.to_string());
+        }
         return Ok(edge_kind.to_string());
     }
     Ok(
@@ -191,6 +195,30 @@ pub(crate) fn stored_edge_kind(
         }
         .to_string(),
     )
+}
+
+/// Whether symbol `id` is a method spec of a Go interface (the container of
+/// its qualname is an `interface`).
+fn is_go_interface_method(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT 1 FROM symbols m
+             JOIN files f ON f.id = m.file_id AND f.language = 'go'
+             JOIN symbols p ON p.graph_version = m.graph_version AND p.kind = 'interface'
+                           AND p.qualname = substr(m.qualname, 1, length(m.qualname) - length(m.name) - 1)
+             WHERE m.id = ?1 AND m.kind = 'method'",
+        )?
+        .exists([id])?)
+}
+
+/// The kind a stored edge is resolved as: a `DISPATCH` edge is re-judged as
+/// the `CALLS` it was written as.
+fn resolution_edge_kind(stored: String) -> String {
+    if stored == edge_views::DISPATCH {
+        edge_views::CALLS.to_string()
+    } else {
+        stored
+    }
 }
 
 /// The kind an unresolved value reference is stored under (always
@@ -1300,6 +1328,8 @@ pub(crate) struct Resolver<'c> {
     /// `external_file_id`. `None` until the first stub of this `Resolver`
     /// instance's lifetime is created or looked up.
     external_file_id: Option<i64>,
+    /// What this resolver has read of the Go declarations.
+    go: resolver_go::GoCaches,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
 }
@@ -1332,6 +1362,7 @@ impl<'c> Resolver<'c> {
             merged_half: MergedHalf::Value,
             call_scope: TypeScope::default(),
             external_file_id: None,
+            go: resolver_go::GoCaches::default(),
             repo_entity_memo: HashMap::new(),
         })
     }
@@ -1348,7 +1379,8 @@ impl<'c> Resolver<'c> {
         self.caller_file = r.source_file_path.to_string();
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
-            return self.refuse_uncallable_kind(r, resolution);
+            let resolution = self.refuse_uncallable_kind(r, resolution)?;
+            return self.refine_go_interface_call(r, resolution);
         }
         // A value reference (`map(handler)`) is looked up exactly like a bare
         // or qualified call to the same text -- same tiers, same scoping --
@@ -4214,7 +4246,7 @@ impl Db {
                     event_ts: row.get(16)?,
                     ctx: ReferenceContext {
                         edge_id: Some(row.get(0)?),
-                        edge_kind: row.get(3)?,
+                        edge_kind: resolution_edge_kind(row.get(3)?),
                         target_qualname: row.get(4)?,
                         receiver_type: row.get(5)?,
                         receiver_scope: row.get(21)?,
@@ -4685,7 +4717,7 @@ impl Db {
         self.rejudge_bound_edges(
             graph_version,
             "",
-            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
+            "AND e.target_symbol_id IS NOT NULL AND e.kind IN ('CALLS', 'DISPATCH')
              AND e.deferred_kind IS NOT NULL",
         )
     }
@@ -4733,6 +4765,8 @@ impl Db {
         struct StubEdgeRow {
             edge_id: i64,
             target_symbol_id: i64,
+            /// The `edges.kind` stored now (`DISPATCH` is resolved as `CALLS`).
+            stored_kind: String,
             ctx: ReferenceContext,
         }
 
@@ -4752,9 +4786,10 @@ impl Db {
                 Ok(StubEdgeRow {
                     edge_id: row.get(0)?,
                     target_symbol_id: row.get(1)?,
+                    stored_kind: row.get(2)?,
                     ctx: ReferenceContext {
                         edge_id: Some(row.get(0)?),
-                        edge_kind: row.get(2)?,
+                        edge_kind: resolution_edge_kind(row.get(2)?),
                         target_qualname: row.get(3)?,
                         receiver_type: row.get(4)?,
                         receiver_scope: row.get(11)?,
@@ -4784,7 +4819,7 @@ impl Db {
                     // stores differently (a constant became a function).
                     Resolution::Resolved { target_id, kind }
                         if target_id != row.target_symbol_id
-                            || row.ctx.kind_for_target(&tx, target_id)? != row.ctx.edge_kind =>
+                            || row.ctx.kind_for_target(&tx, target_id)? != row.stored_kind =>
                     {
                         update_edge.execute(params![
                             target_id,
@@ -4840,18 +4875,21 @@ impl Db {
     }
 
     /// Re-judge the Go calls bound to a method their receiver's type got
-    /// from an embedded type (the bound symbol is not the `Type.Method` the
-    /// call named): editing the struct, or giving the type a method of its
-    /// own, changes the answer without touching the call or its target.
+    /// from an embedded type, or to the one implementation of an interface
+    /// (the bound symbol is not the `Type.Method` the call named), and the
+    /// `DISPATCH` edges: editing the struct, giving the type a method of its
+    /// own, or adding or removing an implementation of the interface changes
+    /// the answer without touching the call or its target.
     pub fn retry_go_promoted_edges(&self, graph_version: i64) -> Result<usize> {
         self.rejudge_bound_edges(
             graph_version,
             "JOIN symbols promoted ON promoted.id = e.target_symbol_id",
-            "AND e.kind = 'CALLS' AND e.resolution_kind = 'receiver_type'
+            "AND e.kind IN ('CALLS', 'DISPATCH') AND e.resolution_kind = 'receiver_type'
              AND e.deferred_kind IS NULL AND e.import_candidates IS NOT NULL
              AND e.target_qualname LIKE '%.%'
-             AND substr(promoted.qualname, -length(e.target_qualname) - 1)
-                 != '.' || e.target_qualname
+             AND (e.kind = 'DISPATCH'
+                  OR substr(promoted.qualname, -length(e.target_qualname) - 1)
+                     != '.' || e.target_qualname)
              AND e.file_id IN (SELECT id FROM files WHERE language = 'go')",
         )
     }

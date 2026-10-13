@@ -109,9 +109,9 @@ def build(results_dir):
       "The `path_tests_excluded` cell does the same. The `#[cfg(test)]`-excluded cell is in the diagnostic table.")
     w("- **Go**: repowise counts `calls` edges keyed (caller declaration, callee declaration), keys a dynamic call at the concrete "
       "implementation RTA names and never expands an interface method into its implementations. The Go rows grade lidx the same "
-      "way: an edge to `Iface.Method` is contradicted where RTA names a concrete implementation, and no edge earns dispatch "
-      "credit for a callee it did not name. The \"dispatch-credited, lidx-native\" table below grades the interface edges the way "
-      "lidx's own graph can use them. Closure callees are keyed at the enclosing declaration here and at the literal in repowise, "
+      "way, on its `CALLS` edges only: a call lidx binds to the one (or the proven) implementation is graded against the concrete "
+      "callee RTA names, and a call it can only leave on the interface method is a `DISPATCH` edge, not a call, so it is not "
+      "graded. The \"dispatch-credited, lidx-native\" table below also credits the `DISPATCH` edges. Closure callees are keyed at the enclosing declaration here and at the literal in repowise, "
       "see the README.")
     w("")
     w("repowise columns are their published point estimates "
@@ -160,9 +160,10 @@ def build(results_dir):
     if gocells:
         w("### Go: dispatch-credited, lidx-native (diagnostic, no verdict)")
         w("")
-        w("lidx binds a call on an interface-typed receiver to the interface method and reaches the implementations through "
-          "dispatch (`analyze_impact`, `trace_flow`). Graded that way an edge to `Iface.Method` is true when the compiler saw the "
-          "caller invoke that method, and covers an RTA edge to an implementation when lidx's own IMPLEMENTS edges link it. "
+        w("lidx leaves a call on an interface-typed receiver whose implementation it cannot tell on the interface method, as a "
+          "`DISPATCH` edge, and reaches the implementations through dispatch (`analyze_impact`, `trace_flow`). Graded that way a "
+          "`DISPATCH` edge is true when the compiler saw the caller invoke that method, and covers an RTA edge to an implementation "
+          "when lidx's own IMPLEMENTS edges link it. "
           "repowise does neither, so this is **not** comparable to its figures and carries no verdict; the head-to-head table above "
           "uses the repowise rules. Both columns are over the same oracle edges.")
         w("")
@@ -288,7 +289,7 @@ def build(results_dir):
             s["capture_gap_edges"]))
         if c["lang"] == "go" and "comparable" in c:
             cs = c["comparable"]
-            w("- repowise rules (no interface edges, no dispatch credit): P %s %s, R %s %s; the figures in this section are the "
+            w("- repowise rules (CALLS only, no dispatch credit): P %s %s, R %s %s; the figures in this section are the "
               "dispatch-credited, lidx-native grading" % (
                   pct(cs["precision"]), ci(cs["precision_ci"]), pct(cs["recall_comparable"]), ci(cs["recall_comparable_ci"])))
         elif "comparable" in c:

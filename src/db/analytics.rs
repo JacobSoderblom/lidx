@@ -142,7 +142,7 @@ impl Db {
             "SELECT COUNT(*)
              FROM edges e
              JOIN files f ON e.file_id = f.id
-             WHERE e.kind = 'CALLS'
+             WHERE e.kind IN ('CALLS', 'DISPATCH')
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
@@ -251,7 +251,7 @@ impl Db {
              FROM edges e
              JOIN symbols s ON e.target_symbol_id = s.id
              JOIN files f ON s.file_id = f.id
-             WHERE e.kind = 'CALLS'
+             WHERE e.kind IN ('CALLS', 'DISPATCH')
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
@@ -308,7 +308,7 @@ impl Db {
              FROM edges e
              JOIN symbols s ON e.source_symbol_id = s.id
              JOIN files f ON s.file_id = f.id
-             WHERE e.kind = 'CALLS'
+             WHERE e.kind IN ('CALLS', 'DISPATCH')
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
@@ -367,7 +367,7 @@ impl Db {
                 COUNT(e.id) as fan_in
              FROM symbols s
              JOIN files f ON s.file_id = f.id
-             LEFT JOIN edges e ON e.target_symbol_id = s.id AND e.kind = 'CALLS' AND e.graph_version = ?
+             LEFT JOIN edges e ON e.target_symbol_id = s.id AND e.kind IN ('CALLS', 'DISPATCH') AND e.graph_version = ?
              WHERE s.graph_version = ?
                AND s.kind IN ('function','method','class','struct','interface','service')
                AND NOT {is_local}
@@ -697,7 +697,7 @@ impl Db {
                          AND cm.id = s.id
                          AND EXISTS (
                            SELECT 1 FROM edges ce
-                           WHERE ce.target_symbol_id = im.id AND ce.kind = 'CALLS'
+                           WHERE ce.target_symbol_id = im.id AND ce.kind IN ('CALLS', 'DISPATCH')
                              AND ce.graph_version = {gv}
                              AND {call_reaches}
                          )

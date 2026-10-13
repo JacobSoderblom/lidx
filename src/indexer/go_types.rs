@@ -52,6 +52,11 @@ struct Binding {
     scope_start: usize,
     scope_end: usize,
     ty: Option<GoValue>,
+    /// What the declaration assigned when its declared type is wider
+    /// (`var d Doer = &Impl{}` is an `Impl` in a `Doer`).
+    dynamic: Option<GoValue>,
+    /// The typed fields a struct literal initialised (`&Server{h: &Impl{}}`).
+    fields: Vec<(String, GoValue)>,
 }
 
 /// The typed (and untyped) bindings of one function declaration, closures
@@ -64,6 +69,10 @@ pub(super) struct LocalTypes {
     dir: String,
     /// Import alias -> import path.
     imports: Rc<HashMap<String, String>>,
+    /// Names assigned after their declaration, redeclared by a `:=`, or
+    /// address-taken (`x`), and the `x.f` fields assigned: a binding's
+    /// `dynamic` type and `fields` are proven only for the rest.
+    reassigned: HashSet<String>,
 }
 
 impl LocalTypes {
@@ -100,6 +109,7 @@ impl LocalTypes {
             type_params: HashSet::new(),
             dir: dir.to_string(),
             imports,
+            reassigned: HashSet::new(),
         };
         types.collect_type_params(func, source);
         types.bind_params(func, source, func.start_byte(), func.end_byte());
@@ -164,6 +174,8 @@ impl LocalTypes {
                         scope_start,
                         scope_end,
                         ty: ty.clone(),
+                        dynamic: None,
+                        fields: Vec::new(),
                     });
                 }
             }
@@ -171,16 +183,37 @@ impl LocalTypes {
     }
 
     fn bind(&mut self, name: &str, decl: Node<'_>, ty: Option<GoValue>) {
+        self.bind_with(name, decl, ty, None, Vec::new());
+    }
+
+    fn bind_with(
+        &mut self,
+        name: &str,
+        decl: Node<'_>,
+        ty: Option<GoValue>,
+        dynamic: Option<GoValue>,
+        fields: Vec<(String, GoValue)>,
+    ) {
         if name == "_" {
             return;
         }
         let (scope_start, scope_end) = enclosing_scope(decl);
+        // `a, err := ..` twice in one scope assigns the second `err`.
+        if self
+            .bindings
+            .iter()
+            .any(|b| b.name == name && b.scope_start == scope_start && b.scope_end == scope_end)
+        {
+            self.reassigned.insert(name.to_string());
+        }
         self.bindings.push(Binding {
             name: name.to_string(),
             visible_from: decl.end_byte(),
             scope_start,
             scope_end,
             ty,
+            dynamic,
+            fields,
         });
     }
 
@@ -211,7 +244,16 @@ impl LocalTypes {
                         (None, Some(right)) => self.pair_type(right, i, names.len(), source),
                         (None, None) => None,
                     };
-                    self.bind(&node_text(*name, source), node, ty);
+                    let dynamic = match (&declared, right) {
+                        (Some(Some(_)), Some(right)) => {
+                            self.pair_type(right, i, names.len(), source)
+                        }
+                        _ => None,
+                    };
+                    let fields = right
+                        .map(|right| self.literal_fields(right, i, names.len(), source))
+                        .unwrap_or_default();
+                    self.bind_with(&node_text(*name, source), node, ty, dynamic, fields);
                 }
             }
             "range_clause" => {
@@ -245,11 +287,153 @@ impl LocalTypes {
                 }
             }
             "type_switch_statement" => self.bind_type_switch(node, source),
+            "assignment_statement" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    self.mark_assigned(left, source);
+                }
+            }
+            "inc_statement" | "dec_statement" => self.mark_assigned(node, source),
+            "unary_expression"
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&") =>
+            {
+                if let Some(operand) = node.child_by_field_name("operand") {
+                    self.mark_assigned(operand, source);
+                }
+            }
             _ => {}
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.walk(child, source);
+        }
+    }
+
+    /// Record the names and fields `target` (an assignment's left side, an
+    /// operand of `++` or `&`) can change.
+    fn mark_assigned(&mut self, target: Node<'_>, source: &str) {
+        match target.kind() {
+            "identifier" => {
+                self.reassigned.insert(node_text(target, source));
+            }
+            "selector_expression" => {
+                // `s.h = ..` changes `s.h`; `s.h.v = ..` and `&s.h` may too.
+                let mut node = target;
+                loop {
+                    self.reassigned.insert(
+                        node_text(node, source)
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    );
+                    match node.child_by_field_name("operand") {
+                        Some(inner) if inner.kind() == "selector_expression" => node = inner,
+                        Some(inner) if inner.kind() == "identifier" => {
+                            // an `&s.h` or `s.h = ..` leaves `s` itself assigned
+                            // only when it is the whole target
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            "expression_list" | "inc_statement" | "dec_statement" | "parenthesized_expression" => {
+                let mut cursor = target.walk();
+                let children: Vec<Node<'_>> = target.named_children(&mut cursor).collect();
+                for child in children {
+                    self.mark_assigned(child, source);
+                }
+            }
+            "index_expression" | "slice_expression" => {
+                if let Some(operand) = target.child_by_field_name("operand") {
+                    self.mark_assigned(operand, source);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The typed fields of the struct literal `right` (`&Server{h: &Impl{}}`)
+    /// assigned to the `i`th of `n` names.
+    fn literal_fields(
+        &self,
+        right: Node<'_>,
+        i: usize,
+        n: usize,
+        source: &str,
+    ) -> Vec<(String, GoValue)> {
+        let mut cursor = right.walk();
+        let exprs: Vec<Node<'_>> = right.named_children(&mut cursor).collect();
+        if exprs.len() != n {
+            return Vec::new();
+        }
+        let mut literal = exprs[i];
+        if literal.kind() == "unary_expression" {
+            let Some(operand) = literal.child_by_field_name("operand") else {
+                return Vec::new();
+            };
+            literal = operand;
+        }
+        if literal.kind() != "composite_literal" {
+            return Vec::new();
+        }
+        let Some(body) = literal.child_by_field_name("body") else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut cursor = body.walk();
+        for element in body.named_children(&mut cursor) {
+            if element.kind() != "keyed_element" {
+                continue;
+            }
+            let (Some(key), Some(value)) = (element.named_child(0), element.named_child(1)) else {
+                continue;
+            };
+            let Some(key) = key.named_child(0).filter(|k| k.kind() == "identifier") else {
+                continue;
+            };
+            let Some(value) = value.named_child(0) else {
+                continue;
+            };
+            if let Some(ty) = self.value_type(value, 0, source) {
+                out.push((node_text(key, source), ty));
+            }
+        }
+        out
+    }
+
+    /// The type a call on `operand` provably has at runtime when it differs
+    /// from the declared one: the concrete type its only assignment gave
+    /// (`var d Doer = &Impl{}` / `s := &Server{h: &Impl{}}; s.h`), or `None`.
+    pub(super) fn dynamic_type(&self, operand: Node<'_>, source: &str) -> Option<GoValue> {
+        match operand.kind() {
+            "identifier" => {
+                let name = node_text(operand, source);
+                if self.reassigned.contains(&name) {
+                    return None;
+                }
+                self.lookup(&name, operand.start_byte())?.dynamic.clone()
+            }
+            "selector_expression" => {
+                let owner = operand.child_by_field_name("operand")?;
+                if owner.kind() != "identifier" {
+                    return None;
+                }
+                let name = node_text(owner, source);
+                let field = node_text(operand.child_by_field_name("field")?, source);
+                if self.reassigned.contains(&name)
+                    || self.reassigned.contains(&format!("{name}.{field}"))
+                {
+                    return None;
+                }
+                self.lookup(&name, owner.start_byte())?
+                    .fields
+                    .iter()
+                    .find(|(f, _)| *f == field)
+                    .map(|(_, v)| v.clone())
+            }
+            _ => None,
         }
     }
 
@@ -262,7 +446,8 @@ impl LocalTypes {
                 continue;
             }
             let ty = self.pair_type(right, i, names.len(), source);
-            self.bind(&node_text(*name, source), decl, ty);
+            let fields = self.literal_fields(right, i, names.len(), source);
+            self.bind_with(&node_text(*name, source), decl, ty, None, fields);
         }
     }
 
@@ -311,6 +496,8 @@ impl LocalTypes {
                 scope_start: case.start_byte(),
                 scope_end: case.end_byte(),
                 ty,
+                dynamic: None,
+                fields: Vec::new(),
             });
         }
     }

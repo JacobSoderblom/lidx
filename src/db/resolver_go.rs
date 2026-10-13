@@ -16,6 +16,7 @@ use super::*;
 use crate::indexer::extract::{GoDeferred, GoValue};
 use crate::indexer::go_build::{BUILD_HOST_MODIFIER, BUILD_TAG_MODIFIER};
 use crate::model::go_type_data;
+use std::rc::Rc;
 
 /// How deep embedded types are searched for a promoted member.
 const MAX_EMBEDDING_DEPTH: usize = 4;
@@ -772,20 +773,31 @@ struct MethodSet {
 }
 
 /// A Go type declaration, as the structural-implements pass sees it.
-struct GoTypeRow {
-    id: i64,
-    qualname: String,
-    name: String,
+#[derive(Clone)]
+pub(super) struct GoTypeRow {
+    pub(super) id: i64,
+    pub(super) qualname: String,
+    pub(super) name: String,
     kind: String,
     signature: Option<String>,
-    file_id: i64,
+    pub(super) file_id: i64,
     visibility: Option<String>,
 }
 
 impl GoTypeRow {
-    fn dir(&self) -> &str {
+    pub(super) fn dir(&self) -> &str {
         self.qualname.rsplit_once('/').map_or("", |(dir, _)| dir)
     }
+}
+
+/// What one `Resolver` has read of the Go declarations, memoized: the
+/// symbols do not change while one transaction resolves.
+#[derive(Default)]
+pub(super) struct GoCaches {
+    types: HashMap<(String, String), Rc<Vec<GoTypeRow>>>,
+    methods: HashMap<String, Rc<Vec<(String, MethodSig)>>>,
+    sets: HashMap<i64, MethodSet>,
+    implementers: HashMap<i64, Rc<Vec<GoTypeRow>>>,
 }
 
 /// A type text with the parts two declarations of one signature may spell
@@ -913,21 +925,38 @@ fn std_interface(path: &str, name: &str) -> Option<&'static [(&'static str, &'st
 }
 
 impl Resolver<'_> {
-    /// Every `(type, interface)` pair where the type's method set (own and
-    /// promoted from embedded types) holds each method of the interface's
-    /// (own and embedded interfaces') by name and signature -- Go's implicit
-    /// `implements`. An interface with an embedded interface whose methods
-    /// are not known is skipped, so no pair rests on a guess.
-    fn go_structural_implements(&mut self) -> Result<Vec<(i64, i64, i64)>> {
-        let rows: Vec<GoTypeRow> = {
-            let mut stmt = self.conn.prepare_cached(&format!(
-                "SELECT s.id, s.qualname, s.name, s.kind, s.signature, s.file_id, s.visibility
-                 FROM symbols s JOIN files f ON s.file_id = f.id
-                 WHERE f.language = 'go' AND s.kind IN ('class', 'interface', 'type', 'method')
-                   AND {}",
-                live_symbols(1)
-            ))?;
-            stmt.query_map(params![self.graph_version], |row| {
+    /// The type declarations (struct, interface, named type) called `name`
+    /// in package directory `dir`; build-constraint twins reduced.
+    fn go_types_named(&mut self, dir: &str, name: &str) -> Result<Rc<Vec<GoTypeRow>>> {
+        let key = (dir.to_string(), name.to_string());
+        if let Some(known) = self.go.types.get(&key) {
+            return Ok(known.clone());
+        }
+        let rows = self.go_type_query(
+            "s.name = ?1 AND s.kind IN ('class', 'interface', 'type')",
+            params![name, self.graph_version],
+        )?;
+        let rows: Vec<GoTypeRow> = rows.into_iter().filter(|t| t.dir() == dir).collect();
+        let rows = collapse_build_twins(
+            rows,
+            |t: &GoTypeRow| TwinKey::new(&t.kind, &t.name, t.visibility.as_deref()),
+            None,
+        );
+        let rows = Rc::new(rows);
+        self.go.types.insert(key, rows.clone());
+        Ok(rows)
+    }
+
+    fn go_type_query(&self, filter: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Vec<GoTypeRow>> {
+        let gv_param = args.len();
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT s.id, s.qualname, s.name, s.kind, s.signature, s.file_id, s.visibility
+             FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE f.language = 'go' AND {filter} AND {}",
+            live_symbols(gv_param)
+        ))?;
+        let rows = stmt
+            .query_map(args, |row| {
                 Ok(GoTypeRow {
                     id: row.get(0)?,
                     qualname: row.get(1)?,
@@ -938,85 +967,47 @@ impl Resolver<'_> {
                     visibility: row.get(6)?,
                 })
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        let mut own_methods: HashMap<String, Vec<(String, MethodSig)>> = HashMap::new();
-        let mut types: Vec<GoTypeRow> = Vec::new();
-        for row in rows {
-            if row.kind == "method" {
-                if let Some((container, _)) = row.qualname.rsplit_once('.') {
-                    own_methods
-                        .entry(container.to_string())
-                        .or_default()
-                        .push((row.name.clone(), method_signature(row.signature.as_deref())));
-                }
-            } else {
-                types.push(row);
-            }
-        }
-        let mut by_name: HashMap<(String, String), Vec<usize>> = HashMap::new();
-        for (i, t) in types.iter().enumerate() {
-            by_name
-                .entry((t.dir().to_string(), t.name.clone()))
-                .or_default()
-                .push(i);
-        }
-        let mut memo: HashMap<usize, MethodSet> = HashMap::new();
-        let mut sets: Vec<MethodSet> = Vec::with_capacity(types.len());
-        for i in 0..types.len() {
-            sets.push(self.go_method_set(i, &types, &own_methods, &by_name, &mut memo, 0)?);
-        }
-        // Implementers by method name, to start each interface from its
-        // rarest method.
-        let mut by_method: HashMap<&str, Vec<usize>> = HashMap::new();
-        for (i, t) in types.iter().enumerate() {
-            if t.kind != "interface" {
-                for name in sets[i].methods.keys() {
-                    by_method.entry(name).or_default().push(i);
-                }
-            }
-        }
-        let mut pairs = Vec::new();
-        for (ii, iface) in types.iter().enumerate() {
-            let want = &sets[ii];
-            if iface.kind != "interface" || !want.complete || want.methods.is_empty() {
-                continue;
-            }
-            let rarest = want
-                .methods
-                .keys()
-                .min_by_key(|m| by_method.get(m.as_str()).map_or(0, Vec::len));
-            let Some(candidates) = rarest.and_then(|m| by_method.get(m.as_str())) else {
-                continue;
-            };
-            for &ci in candidates {
-                let has = &sets[ci].methods;
-                if want.methods.iter().all(|(m, a)| has.get(m) == Some(a)) {
-                    pairs.push((types[ci].id, iface.id, types[ci].file_id));
-                }
-            }
-        }
-        Ok(pairs)
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
-    fn go_method_set(
-        &mut self,
-        idx: usize,
-        types: &[GoTypeRow],
-        own: &HashMap<String, Vec<(String, MethodSig)>>,
-        by_name: &HashMap<(String, String), Vec<usize>>,
-        memo: &mut HashMap<usize, MethodSet>,
-        depth: usize,
-    ) -> Result<MethodSet> {
-        if let Some(done) = memo.get(&idx) {
+    /// The methods declared on the type (or specs of the interface)
+    /// `container` (its qualname), with their normalized signatures.
+    fn go_own_methods(&mut self, container: &str) -> Result<Rc<Vec<(String, MethodSig)>>> {
+        if let Some(known) = self.go.methods.get(container) {
+            return Ok(known.clone());
+        }
+        let (from, to) = (format!("{container}."), format!("{container}/"));
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT s.name, s.signature FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.kind = 'method' AND s.qualname > ?1 AND s.qualname < ?2
+               AND f.language = 'go' AND {}",
+            live_symbols(3)
+        ))?;
+        let rows = stmt
+            .query_map(params![from, to, self.graph_version], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = Rc::new(
+            rows.into_iter()
+                .map(|(name, sig)| (name, method_signature(sig.as_deref())))
+                .collect::<Vec<_>>(),
+        );
+        self.go.methods.insert(container.to_string(), rows.clone());
+        Ok(rows)
+    }
+
+    /// The method set of `t`: its own methods and those of the types it embeds.
+    fn go_method_set(&mut self, t: &GoTypeRow, depth: usize) -> Result<MethodSet> {
+        if let Some(done) = self.go.sets.get(&t.id) {
             return Ok(done.clone());
         }
-        let t = &types[idx];
         let mut set = MethodSet {
             methods: HashMap::new(),
             complete: true,
         };
-        for (name, sig) in own.get(&t.qualname).into_iter().flatten() {
+        for (name, sig) in self.go_own_methods(&t.qualname)?.iter() {
             set.methods.insert(name.clone(), sig.clone());
         }
         let embedded: Vec<String> = struct_fields(t.signature.as_deref())
@@ -1039,29 +1030,16 @@ impl Resolver<'_> {
                     }
                     match canonical_type(&text, &dir, &imports) {
                         Some(GoType::Repo { dir, name }) => {
-                            let found: Vec<usize> =
-                                by_name.get(&(dir, name)).cloned().unwrap_or_default();
-                            let found = collapse_build_twins(
-                                found,
-                                |&i: &usize| {
-                                    TwinKey::new(
-                                        &types[i].kind,
-                                        &types[i].name,
-                                        types[i].visibility.as_deref(),
-                                    )
-                                },
-                                None,
-                            );
-                            let [only] = found[..] else {
+                            let found = self.go_types_named(&dir, &name)?;
+                            let [only] = &found[..] else {
                                 set.complete = false;
                                 continue;
                             };
-                            if only == idx {
+                            if only.id == t.id {
                                 set.complete = false;
                                 continue;
                             }
-                            let inner =
-                                self.go_method_set(only, types, own, by_name, memo, depth + 1)?;
+                            let inner = self.go_method_set(only, depth + 1)?;
                             set.complete &= inner.complete;
                             for (m, a) in inner.methods {
                                 set.methods.entry(m).or_insert(a);
@@ -1082,8 +1060,184 @@ impl Resolver<'_> {
                 }
             }
         }
-        memo.insert(idx, set.clone());
+        self.go.sets.insert(t.id, set.clone());
         Ok(set)
+    }
+
+    /// The types (structs and named types, never interfaces) whose method
+    /// sets hold each method of interface `iface` by name and signature --
+    /// Go's implicit `implements`. Empty for an interface with no methods or
+    /// with an embedded interface whose methods are not known, so no
+    /// implementer rests on a guess. Found through the types that declare
+    /// one of the interface's methods.
+    pub(super) fn go_implementers(&mut self, iface: &GoTypeRow) -> Result<Rc<Vec<GoTypeRow>>> {
+        if let Some(known) = self.go.implementers.get(&iface.id) {
+            return Ok(known.clone());
+        }
+        let want = self.go_method_set(iface, 0)?;
+        let mut found: Vec<GoTypeRow> = Vec::new();
+        if want.complete && !want.methods.is_empty() {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut candidates: Vec<String> = Vec::new();
+            let mut names: Vec<&String> = want.methods.keys().collect();
+            names.sort();
+            for name in names {
+                let owners: Vec<String> = {
+                    let mut stmt = self.conn.prepare_cached(&format!(
+                        "SELECT s.qualname FROM symbols s JOIN files f ON s.file_id = f.id
+                         WHERE s.name = ?1 AND s.kind = 'method' AND f.language = 'go' AND {}",
+                        live_symbols(2)
+                    ))?;
+                    stmt.query_map(params![name, self.graph_version], |row| row.get(0))?
+                        .collect::<rusqlite::Result<Vec<String>>>()?
+                };
+                for qualname in owners {
+                    let Some(container) = qualname
+                        .strip_suffix(name.as_str())
+                        .and_then(|c| c.strip_suffix('.'))
+                    else {
+                        continue;
+                    };
+                    if seen.insert(container.to_string()) {
+                        candidates.push(container.to_string());
+                    }
+                }
+            }
+            // A type embedding one of those (or the interface itself) holds
+            // their methods too: search embedders a few levels out.
+            let mut frontier: Vec<String> = candidates
+                .iter()
+                .filter_map(|q| q.rsplit('.').next().map(str::to_string))
+                .chain([iface.name.clone()])
+                .collect();
+            for _ in 0..MAX_EMBEDDING_DEPTH {
+                let mut next = Vec::new();
+                for ty in frontier.drain(..) {
+                    let pattern = format!("%~%{ty}%");
+                    let rows = self.go_type_query(
+                        "s.kind IN ('class', 'type') AND s.signature LIKE ?1",
+                        params![pattern, self.graph_version],
+                    )?;
+                    for row in rows {
+                        if seen.insert(row.qualname.clone()) {
+                            next.push(row.name.clone());
+                            candidates.push(row.qualname);
+                        }
+                    }
+                }
+                if next.is_empty() {
+                    break;
+                }
+                frontier = next;
+            }
+            for container in candidates {
+                let rows = self.go_type_query(
+                    "s.qualname = ?1 AND s.kind IN ('class', 'type')",
+                    params![container, self.graph_version],
+                )?;
+                for t in rows {
+                    let has = self.go_method_set(&t, 0)?;
+                    if want
+                        .methods
+                        .iter()
+                        .all(|(m, a)| has.methods.get(m) == Some(a))
+                    {
+                        found.push(t);
+                    }
+                }
+            }
+        }
+        found.sort_by_key(|t| t.id);
+        let found = Rc::new(found);
+        self.go.implementers.insert(iface.id, found.clone());
+        Ok(found)
+    }
+
+    /// A Go call that resolved to a method *spec* of an interface
+    /// (`Doer.Do`), narrowed to the method that runs when the call site or
+    /// the repository say so:
+    /// 1. the receiver's dynamic type is proven at the call site (a
+    ///    `GoDeferred::dynamic`: `var d Doer = &Impl{}`, `d` never assigned
+    ///    again) and has the method: bind `Impl.Do`;
+    /// 2. exactly one type of the repository implements the interface
+    ///    (`go_implementers`) and has the method: bind it;
+    /// 3. otherwise the call stays on the spec, and is stored as a
+    ///    `DISPATCH` edge (`stored_edge_kind`), not a `CALLS` one.
+    pub(super) fn refine_go_interface_call(
+        &mut self,
+        r: &Reference<'_>,
+        resolution: Resolution,
+    ) -> Result<Resolution> {
+        let Resolution::Resolved { target_id, .. } = resolution else {
+            return Ok(resolution);
+        };
+        if r.source_lang != "go"
+            || r.edge_kind != edge_views::CALLS
+            || r.call_shape.is_some_and(|shape| shape.is_ref)
+        {
+            return Ok(resolution);
+        }
+        let Some((spec, iface)) = self.go_interface_spec(target_id)? else {
+            return Ok(resolution);
+        };
+        if let Some(DeferredMarker::Go(GoDeferred {
+            dynamic: Some(dynamic),
+            method,
+            ..
+        })) = r.deferred
+            && let Some(GoType::Repo { dir, name }) = self.go_eval(dynamic, 0)?
+            && let Some(found) = self.go_member(&dir, &name, method, 0)?
+            && found.kind == "method"
+            && found.id != spec.id
+        {
+            return Ok(resolved(found.id, ResolutionKind::ReceiverType));
+        }
+        let implementers = self.go_implementers(&iface)?;
+        if let [only] = &implementers[..]
+            && let Some(found) = self.go_member(only.dir(), &only.name, &spec.name, 0)?
+            && found.kind == "method"
+            && found.id != spec.id
+        {
+            return Ok(resolved(found.id, ResolutionKind::ReceiverType));
+        }
+        Ok(resolution)
+    }
+
+    /// `(spec, interface)` when symbol `id` is a method spec of a Go
+    /// interface.
+    fn go_interface_spec(&mut self, id: i64) -> Result<Option<(GoTypeRow, GoTypeRow)>> {
+        let specs = self.go_type_query(
+            "s.id = ?1 AND s.kind = 'method'",
+            params![id, self.graph_version],
+        )?;
+        let Some(spec) = specs.into_iter().next() else {
+            return Ok(None);
+        };
+        let Some(container) = spec
+            .qualname
+            .strip_suffix(spec.name.as_str())
+            .and_then(|c| c.strip_suffix('.'))
+        else {
+            return Ok(None);
+        };
+        let ifaces = self.go_type_query(
+            "s.qualname = ?1 AND s.kind = 'interface'",
+            params![container, self.graph_version],
+        )?;
+        Ok(ifaces.into_iter().next().map(|iface| (spec, iface)))
+    }
+
+    /// Every `(type, interface)` pair, by type id, interface id and the
+    /// type's file.
+    fn go_structural_implements(&mut self) -> Result<Vec<(i64, i64, i64)>> {
+        let interfaces = self.go_type_query("s.kind = 'interface'", params![self.graph_version])?;
+        let mut pairs = Vec::new();
+        for iface in interfaces {
+            for t in self.go_implementers(&iface)?.iter() {
+                pairs.push((t.id, iface.id, t.file_id));
+            }
+        }
+        Ok(pairs)
     }
 }
 

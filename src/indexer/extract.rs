@@ -370,6 +370,11 @@ impl GoValue {
 pub struct GoDeferred {
     pub recv: GoValue,
     pub method: String,
+    /// The receiver's dynamic type where the call site proves it (`var d Doer
+    /// = &Impl{}` with `d` assigned nowhere else): a call on an interface
+    /// binds the concrete method instead of the interface's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic: Option<GoValue>,
 }
 
 /// A deferred resolution the extractor could not finish in one file: the

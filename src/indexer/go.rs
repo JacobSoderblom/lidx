@@ -986,7 +986,22 @@ fn emit_receiver_call(
     }
     let method = node_text(field, source);
     let site = site_edge("CALLS", node, ctx, source);
-    let edge = match ctx.types.value_type(operand, 0, source) {
+    let declared = ctx.types.value_type(operand, 0, source);
+    // A receiver whose concrete type the call site proves (`var d Doer =
+    // &Impl{}`) is finished by the resolver: it binds the concrete method
+    // when the declared type turns out to be an interface.
+    let dynamic = ctx.types.dynamic_type(operand, source);
+    let edge = match declared {
+        Some(recv) if dynamic.is_some() => EdgeInput {
+            target_qualname: Some(method.clone()),
+            detail: Some(collapse_call_target_whitespace(raw)),
+            receiver_type: ReceiverType::GoDeferred(GoDeferred {
+                recv,
+                method,
+                dynamic,
+            }),
+            ..site
+        },
         Some(GoValue::Type { place, name }) => {
             let target = if place.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE]) {
                 format!("{name}.{method}")
@@ -1002,7 +1017,11 @@ fn emit_receiver_call(
         Some(recv) => EdgeInput {
             target_qualname: Some(method.clone()),
             detail: Some(collapse_call_target_whitespace(raw)),
-            receiver_type: ReceiverType::GoDeferred(GoDeferred { recv, method }),
+            receiver_type: ReceiverType::GoDeferred(GoDeferred {
+                recv,
+                method,
+                dynamic: None,
+            }),
             ..site
         },
         None => EdgeInput {
@@ -1240,6 +1259,9 @@ fn bind_deferred_places(
     for edge in edges.iter_mut() {
         if let ReceiverType::GoDeferred(deferred) = &mut edge.receiver_type {
             bind(&mut deferred.recv, repo, repo_root, file_rel_path);
+            if let Some(dynamic) = &mut deferred.dynamic {
+                bind(dynamic, repo, repo_root, file_rel_path);
+            }
         }
     }
 }
@@ -1335,6 +1357,7 @@ fn bind_unknown_qualifiers(
                         name: qualifier.to_string(),
                     },
                     method,
+                    dynamic: None,
                 });
             }
         }
