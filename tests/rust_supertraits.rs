@@ -656,3 +656,28 @@ fn adding_and_removing_a_derive_matches_a_fresh_reindex() {
         set(&["ext std::clone::Clone", "crate::base::Base"])
     );
 }
+
+#[test]
+fn a_call_on_a_dyn_std_trait_never_binds_a_repo_trait_method_of_the_same_name() {
+    let (_tmp, indexer) = single(
+        "use std::any::Any;
+use std::error::Error;
+pub trait Chain { fn source(&self) -> u32; fn type_id(&self) -> u32; }
+pub struct Mine;
+impl Chain for Mine {
+    fn source(&self) -> u32 { 1 }
+    fn type_id(&self) -> u32 { 2 }
+}
+pub fn cause(e: &dyn Error) -> bool { e.source().is_some() }
+pub fn kind(a: &dyn Any) -> bool { a.type_id() == a.type_id() }
+",
+    );
+    for caller in ["crate::cause", "crate::kind"] {
+        let got = call_targets(&indexer, caller);
+        assert!(
+            !got.iter()
+                .any(|(t, _)| t.starts_with("crate::Chain") || t.starts_with("crate::Mine")),
+            "{caller}: {got:#?}"
+        );
+    }
+}

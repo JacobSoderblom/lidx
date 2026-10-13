@@ -2211,12 +2211,27 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
 
 /// Whether `node` (a `scoped_identifier`) is a path [`value_reference_edge`]
 /// records as a `REFERENCES` edge: a simple `a::b` path in value position.
-fn is_value_path_reference(node: Node<'_>, source: &str) -> bool {
+fn is_value_path_reference(node: Node<'_>, source: &str, ctx: &Context) -> bool {
     if !is_value_position(node) || is_call_callee(node) {
         return false;
     }
     let raw = collapse_call_target_whitespace(&node_text(node, source));
-    is_simple_call_target(&raw) && !raw.contains('.') && raw.contains("::")
+    if !is_simple_call_target(&raw) || raw.contains('.') || !raw.contains("::") {
+        return false;
+    }
+    // Like `value_reference_edge`: a path starting with a name the enclosing
+    // function binds is a variable's, and one it cannot qualify records nothing.
+    let first = raw.split("::").next().unwrap_or_default();
+    let mut bound = HashSet::new();
+    let mut ancestor = node.parent();
+    while let Some(parent) = ancestor {
+        if parent.kind() == "function_item" {
+            collect_bound_names(parent, source, &mut bound);
+            break;
+        }
+        ancestor = parent.parent();
+    }
+    !bound.contains(first) && qualified_value_path(&raw, ctx).is_some()
 }
 
 /// Target and import candidates of a qualified value path (`Foo::bar`,
@@ -6022,7 +6037,7 @@ fn collect_uses(
         // (`value_reference_edge`); a module-level `USES` row for the same
         // path would only repeat it without a caller or a line.
         let is_value_path =
-            node.kind() == "scoped_identifier" && is_value_path_reference(node, source);
+            node.kind() == "scoped_identifier" && is_value_path_reference(node, source, ctx);
         if is_ref
             && !is_inner_path
             && !is_definition_name
