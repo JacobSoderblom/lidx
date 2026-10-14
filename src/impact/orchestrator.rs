@@ -317,6 +317,10 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
+        let beyond_depth = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .map_or(0, |r| r.beyond_depth);
         let (affected, summary, truncated, truncation_reason) =
             self.fuse_results(layer_results, seed_ids, graph_version)?;
 
@@ -356,6 +360,8 @@ impl<'a> MultiLayerOrchestrator<'a> {
             config: self.build_config_summary(),
             layers: layer_metadata,
             lower_bound,
+            depth_limited: beyond_depth > 0,
+            beyond_depth,
             traversed_heuristic_kind,
         })
     }
@@ -504,6 +510,10 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
+        let beyond_depth = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .map_or(0, |r| r.beyond_depth);
         let (affected, summary, truncated, truncation_reason) =
             self.fuse_results(layer_results, seed_ids, graph_version)?;
 
@@ -543,6 +553,8 @@ impl<'a> MultiLayerOrchestrator<'a> {
             config: self.build_config_summary(),
             layers: layer_metadata,
             traversed_heuristic_kind,
+            depth_limited: beyond_depth > 0,
+            beyond_depth,
             lower_bound,
         })
     }

@@ -1323,7 +1323,47 @@ impl Resolver<'_> {
         {
             return Ok(resolved(found.id, ResolutionKind::ReceiverType));
         }
+        // The call stays on the spec. When the receiver is typed as an
+        // interface that merely embeds the one declaring the method, only
+        // that interface's implementers can run it (#482).
+        if let Some(recv) = self.go_call_receiver_interface(r)?
+            && recv.id != iface.id
+        {
+            self.go_dispatch_receiver = Some(recv.qualname);
+        }
         Ok(resolution)
+    }
+
+    /// The interface the receiver of the Go method call `r` is typed as, when
+    /// it is a single interface of the repository.
+    fn go_call_receiver_interface(&mut self, r: &Reference<'_>) -> Result<Option<GoTypeRow>> {
+        let (dir, ty) = if let Some(DeferredMarker::Go(call)) = r.deferred {
+            match self.go_eval(&call.recv, 0)? {
+                Some(GoType::Repo { dir, name }) => (dir, name),
+                _ => return Ok(None),
+            }
+        } else {
+            let Some((place, member)) = r.import_candidates.iter().find_map(|c| c.split_once('|'))
+            else {
+                return Ok(None);
+            };
+            let Some(dir) = repo_dir(place) else {
+                return Ok(None);
+            };
+            let Some((ty, _)) = member.rsplit_once('.') else {
+                return Ok(None);
+            };
+            (dir.to_string(), ty.to_string())
+        };
+        let found = self.go_type_query(
+            "s.kind = 'interface' AND s.name = ?1",
+            params![ty, self.graph_version],
+        )?;
+        let mut here = found.into_iter().filter(|t| t.dir() == dir);
+        Ok(match (here.next(), here.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        })
     }
 
     /// `(spec, interface)` when symbol `id` is a method spec of a Go

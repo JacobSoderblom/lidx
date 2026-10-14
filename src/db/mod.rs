@@ -1571,6 +1571,14 @@ impl Db {
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
             )?;
+            // A call site (or a function used as a value) lives in code, never in a
+            // type: where a TypeScript
+            // `interface Foo` (or `type Foo`) merges with a `const Foo`, the
+            // calls in the const's initialiser belong to the const.
+            let mut call_source_lookup_stmt = tx.prepare(
+                "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ?
+                 ORDER BY kind IN ('interface', 'type') ASC, id ASC LIMIT 1",
+            )?;
             let mut span_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols
                  WHERE file_id = ? AND qualname = ? AND start_byte = ? AND graph_version = ?
@@ -1609,7 +1617,11 @@ impl Db {
                     None => resolve_symbol_id(
                         &edge.source_qualname,
                         symbol_map,
-                        &mut exact_lookup_stmt,
+                        if matches!(edge.kind.as_str(), "CALLS" | "REFERENCES") {
+                            &mut call_source_lookup_stmt
+                        } else {
+                            &mut exact_lookup_stmt
+                        },
                         graph_version,
                     )?,
                 };
@@ -1732,13 +1744,38 @@ impl Db {
                     None
                 };
 
-                if let Some(reason) = resolution.unresolved_reason()
-                    && let Some((reference_name, name_tail)) =
-                        resolver::store_reference_name_and_tail(
-                            edge.target_qualname.as_deref(),
-                            &edge.import_candidates,
+                // A call of a function value (a parameter, local or element
+                // of function type) names no declaration, so it has no
+                // reference name to retry: it is stored as a value-call gap
+                // so a `trace_flow` leaf there is not a "genuine leaf".
+                let stored_reference = resolver::store_reference_name_and_tail(
+                    edge.target_qualname.as_deref(),
+                    &edge.import_candidates,
+                )
+                .map(|(name, tail)| {
+                    (
+                        resolution.unresolved_reason().map(|r| r.as_str()),
+                        name,
+                        tail,
+                    )
+                })
+                .or_else(|| {
+                    resolver::function_value_reference(
+                        &edge.kind,
+                        edge.target_qualname.as_deref(),
+                        &edge.import_candidates,
+                        edge.detail.as_deref(),
+                    )
+                    .filter(|_| resolution.target_id().is_none())
+                    .map(|name| {
+                        (
+                            Some(resolver::FUNCTION_VALUE_REASON),
+                            Some(name),
+                            String::new(),
                         )
-                {
+                    })
+                });
+                if let Some((Some(reason), reference_name, name_tail)) = stored_reference {
                     unresolved_insert_stmt.execute(params![
                         edge_id,
                         source_id,
@@ -1746,7 +1783,7 @@ impl Db {
                         &edge.kind,
                         reference_name,
                         name_tail,
-                        reason.as_str(),
+                        reason,
                         resolver::encode_import_candidates(&edge.import_candidates),
                         edge.detail.as_deref(),
                         edge.evidence_snippet.as_deref(),
@@ -2657,6 +2694,7 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
         event_ts: row.get(15)?,
         resolution_kind: row.get(16)?,
         dispatch_args: None,
+        go_scope: None,
     })
 }
 

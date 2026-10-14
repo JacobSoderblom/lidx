@@ -133,6 +133,7 @@
         }
       }
     ],
+    "beyond_depth": 2,
     "config": {
       "direction": "both",
       "include_tests": false,
@@ -140,6 +141,7 @@
       "max_depth": 3,
       "relationship_types": []
     },
+    "depth_limited": true,
     "layers": {
       "direct": {
         "enabled": true,
@@ -162,6 +164,15 @@
       "unresolved_count": 2
     },
     "next_hops": [
+      {
+        "description": "Depth 3 cut the walk: at least 2 more symbols lie one level deeper. Retry with max_depth 6",
+        "method": "analyze_impact",
+        "params": {
+          "direction": "both",
+          "max_depth": 6,
+          "qualname": "pkg.core.Greeter"
+        }
+      },
       {
         "description": "Retry excluding heuristic name-fallback edges (bare_name, two_segment) for a higher-confidence impact set",
         "method": "analyze_impact",
