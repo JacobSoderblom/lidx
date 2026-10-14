@@ -371,7 +371,16 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             .parent()
             .unwrap_or_else(|| Path::new(""));
         let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
-        module_name_from_rel_path(&strip_crate_root(rel_path, crate_root.as_deref()))
+        let rest = strip_crate_root(rel_path, crate_root.as_deref());
+        let package = crate_root
+            .as_deref()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let rest = match self.workspace() {
+            Some(ws) => ws.strip_target_dir(&package, &rest).to_string(),
+            None => rest,
+        };
+        module_name_from_rel_path(&rest)
     }
 
     fn begin_run(&mut self) {
@@ -747,6 +756,17 @@ fn handle_named_item(
                 let origins =
                     type_origins_marker(&[aliased], node, source, ctx).unwrap_or_default();
                 format!("{origins}type {name} = {}", node_text(aliased, source))
+            }),
+            // `const FLAGS: &[&dyn Flag]`: other files read the declared type
+            // of a constant they import (`for flag in FLAGS.iter()`).
+            "const" | "static" => node.child_by_field_name("type").map(|declared| {
+                let origins =
+                    type_origins_marker(&[declared], node, source, ctx).unwrap_or_default();
+                let ty = node_text(declared, source)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{origins}{kind} {name}: {ty}")
             }),
             _ => None,
         },
@@ -3076,6 +3096,16 @@ fn lookup_local(locals: &Locals, name: &str, pos: usize) -> Ty {
     best.map_or(Ty::Unknown, |(_, ty)| ty)
 }
 
+/// `SCREAMING_SNAKE_CASE` of at least two characters: the spelling of a
+/// `const` or `static` (rustc warns about any other).
+fn is_constant_name(name: &str) -> bool {
+    name.len() > 1
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// Whether `name` is bound by a parameter, `let`, pattern or closure
 /// parameter of the function being read whose scope holds byte `pos`, typed
 /// or not: a call of it runs that value, never an item of the same name.
@@ -3668,11 +3698,19 @@ impl TypeEnv<'_> {
                 self.expr_ty_opt(value.named_child(0)?, locals)
             }
             "self" => self.usable("Self".to_string()).map(Ty::Named),
-            "identifier" => Some(lookup_local(
-                locals,
-                &node_text(value, source),
-                value.start_byte(),
-            )),
+            "identifier" => {
+                let name = node_text(value, source);
+                let ty = lookup_local(locals, &name, value.start_byte());
+                // A name no local binds and written like a constant
+                // (`FLAGS`): the declared type of that `const` / `static`.
+                if matches!(ty, Ty::Unknown)
+                    && is_constant_name(&name)
+                    && !is_bound_local(locals, &name, value.start_byte())
+                {
+                    return self.path_call_ty(value, value, locals);
+                }
+                Some(ty)
+            }
             "try_expression" => {
                 let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
                 Some(match inner {
@@ -4323,6 +4361,39 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
                     _ => {
                         out.insert(key, Some(ty));
                     }
+                }
+            }
+            return;
+        }
+        if matches!(node.kind(), "const_item" | "static_item")
+            && let Some(owner) = owner_of(node, source)
+            && let (Some(name), Some(declared)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("type"),
+            )
+        {
+            let empty = Adts::new();
+            let env = TypeEnv {
+                source,
+                self_ty: owner.as_deref(),
+                generics: Rc::new(collect_generic_names(node, source)),
+                adts: &empty,
+                ctx: None,
+                paths: Some(paths),
+                declared: None,
+            };
+            let mut ty = env.ty(declared);
+            if in_inline_mod(node) {
+                ty = demote_local(ty);
+            }
+            let name = node_text(name, source);
+            let key = owner.map_or(name.clone(), |o| format!("{o}::{name}"));
+            match out.get(&key) {
+                Some(prev) if *prev != Some(ty.clone()) => {
+                    out.insert(key, None);
+                }
+                _ => {
+                    out.insert(key, Some(ty));
                 }
             }
             return;
@@ -5272,6 +5343,26 @@ fn user_field_ty(
 fn callable_return_ty(qualname: &str, signature: &str, package: &str) -> Option<Ty> {
     let declared = DeclaredOrigins::of_signature(signature, package);
     let (is_async, signature) = split_callable_signature(signature);
+    // A constant or static (`const NAME: Ty`) reads as a callable returning
+    // its declared type.
+    if signature.starts_with("const ") || signature.starts_with("static ") {
+        let src = format!("{signature} = 0;");
+        let tree = parse_declaration(&src)?;
+        let item = tree.root_node().named_child(0)?;
+        if !matches!(item.kind(), "const_item" | "static_item") {
+            return None;
+        }
+        let env = TypeEnv {
+            source: &src,
+            self_ty: None,
+            generics: Rc::new(HashSet::new()),
+            adts: &Adts::new(),
+            ctx: None,
+            paths: None,
+            declared: Some(&declared),
+        };
+        return Some(env.ty(item.child_by_field_name("type")?));
+    }
     let src = format!("fn __f{signature} {{}}");
     let tree = parse_declaration(&src)?;
     let func = tree.root_node().named_child(0)?;

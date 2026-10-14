@@ -312,3 +312,23 @@ fn struct_and_variable_typing_data_is_not_shown_in_signatures() {
     .unwrap();
     assert!(!sym.to_string().contains("go_type"), "{sym}");
 }
+
+#[test]
+fn a_package_variable_built_by_a_called_literal_has_the_literals_result_type() {
+    let caller = "package app\n\nfunc Run() {\n\tbuilt.Handle()\n}\n\nfunc RunPair() {\n\tpair.Handle()\n}\n";
+    let vars = "package app\n\nvar built = func() *Server {\n\ts := &Server{}\n\treturn s\n}()\n\nvar pair, _ = func() (*Server, int) { return nil, 0 }()\n";
+    let files = [
+        ("go.mod", GO_MOD),
+        ("caller.go", caller),
+        ("server.go", SERVER),
+        ("other/o.go", DECOY),
+        ("vars.go", vars),
+    ];
+    let (_tmp, _root, indexer) = indexed(&files);
+    assert_eq!(calls_from(&indexer, "caller.Run"), ["server.Server.Handle"]);
+    assert_eq!(
+        calls_from(&indexer, "caller.RunPair"),
+        ["server.Server.Handle"]
+    );
+    assert_incremental_equals_fresh(&indexer, &files);
+}

@@ -9303,6 +9303,12 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         return ReceiverType::Known(ty);
     }
     let object = peel_expression(object);
+    // `(x as Plugin).m()`: the assertion names the receiver's type.
+    if matches!(object.kind(), "as_expression" | "satisfies_expression")
+        && let Some(ty) = expression_type(object, ctx, source, 0)
+    {
+        return ReceiverType::Known(ty);
+    }
     // `JSON.parse(..)`, `document.x.y(..)`: a runtime global is never a repo symbol.
     {
         let (root, _) = member_chain_root(object);
@@ -9572,6 +9578,22 @@ fn classify_annotation(text: &str) -> LocalType {
     if text.is_empty() {
         return LocalType::Other;
     }
+    // `Partial<T>`, `Required<T>`, `Readonly<T>` and `NonNullable<T>` have
+    // the members of `T`: a method call on one is a call on `T`.
+    if let Some(open) = text.find('<')
+        && matches!(
+            &text[..open],
+            "Partial" | "Required" | "Readonly" | "NonNullable"
+        )
+        && text.ends_with('>')
+    {
+        let inner = &text[open + 1..text.len() - 1];
+        if strip_type_arguments(text) == Some(&text[..open])
+            && is_type_name_text(strip_type_arguments(inner).unwrap_or(inner), true)
+        {
+            return classify_annotation(inner);
+        }
+    }
     let text = strip_type_arguments(text).unwrap_or(text);
     if text.contains(['<', '[', '|', '&', '(', ')', '{']) {
         return LocalType::Other;
@@ -9610,7 +9632,16 @@ fn strip_type_arguments(text: &str) -> Option<&str> {
 fn classify_declared_type(type_annotation: Node<'_>, source: &str) -> LocalType {
     match container_element_type(type_annotation, source) {
         Some(ty) => LocalType::Elements(ty),
-        None => classify_annotation(&annotation_text(type_annotation, source)),
+        // `T | undefined` / `T | null` (an optional member, a lazily set
+        // variable) is a `T` for the call that follows a null check.
+        None => match type_annotation
+            .named_child(0)
+            .filter(|n| n.kind() == "union_type")
+            .and_then(|n| non_nullable_type(n, source))
+        {
+            Some(only) => classify_annotation(&node_text(only, source)),
+            None => classify_annotation(&annotation_text(type_annotation, source)),
+        },
     }
 }
 
