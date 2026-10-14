@@ -75,10 +75,7 @@ const RUST: &[(&str, &str)] = &[
         "fn used() {}\nfn only_unit_test() {}\nfn only_integration() {}\n\nfn main() { used(); }\n\n\
          #[test]\nfn unit() { only_unit_test(); }\n",
     ),
-    (
-        "tests/it.rs",
-        "#[test]\nfn it() {}\n\nfn helper() {}\n",
-    ),
+    ("tests/it.rs", "#[test]\nfn it() {}\n\nfn helper() {}\n"),
 ];
 
 #[test]

@@ -1112,65 +1112,12 @@ fn std_interface(path: &str, name: &str) -> Option<GoInterfaceMethods> {
         .map(|(_, methods)| *methods)
 }
 
-/// Interfaces of common dependencies, as `(label, methods)`. A repository
-/// never holds their source, so the method sets are written out here; a type
-/// whose methods match one by name and signature is called through it by the
-/// dependency (a `clio` config loader, a `bubbletea` program, a `pflag` flag).
-const DEPENDENCY_INTERFACES: &[(&str, GoInterfaceMethods)] = &[
-    ("clio.PostLoader", &[("PostLoad", "() -> error")]),
-    ("clio.FlagAdder", &[("AddFlags", "(flags clio.FlagSet)")]),
-    (
-        "fangs.FieldDescriber",
-        &[("DescribeFields", "(descriptions fangs.FieldDescriptionSet)")],
-    ),
-    (
-        "tea.Model",
-        &[
-            ("Init", "() -> tea.Cmd"),
-            ("Update", "(msg tea.Msg) -> (tea.Model, tea.Cmd)"),
-            ("View", "() -> string"),
-        ],
-    ),
-    ("list.Item", &[("FilterValue", "() -> string")]),
-    (
-        "list.DefaultItem",
-        &[
-            ("FilterValue", "() -> string"),
-            ("Title", "() -> string"),
-            ("Description", "() -> string"),
-        ],
-    ),
-    (
-        "pflag.Value",
-        &[
-            ("String", "() -> string"),
-            ("Set", "(string) -> error"),
-            ("Type", "() -> string"),
-        ],
-    ),
-    (
-        "yaml.Unmarshaler",
-        &[("UnmarshalYAML", "(value *yaml.Node) -> error")],
-    ),
-    (
-        "yaml.obsoleteUnmarshaler",
-        &[(
-            "UnmarshalYAML",
-            "(unmarshal func(interface{}) error) -> error",
-        )],
-    ),
-    (
-        "yaml.Marshaler",
-        &[("MarshalYAML", "() -> (interface{}, error)")],
-    ),
-];
-
-/// The external (standard-library or dependency) interface a Go method
+/// The standard-library interface a Go method
 /// implements, if any: `name` with `signature` is one method of an interface
-/// of `STD_INTERFACES` / `DEPENDENCY_INTERFACES`, and `own` (the methods its
+/// of `STD_INTERFACES`, and `own` (the methods its
 /// receiver type declares, `(name, signature)`) holds every method of that
 /// interface by name and signature. Returns the interface, `pkg.Name`.
-pub(crate) fn go_external_interface(
+pub(crate) fn go_std_interface(
     name: &str,
     signature: Option<&str>,
     own: &[(String, Option<String>)],
@@ -1188,18 +1135,12 @@ pub(crate) fn go_external_interface(
                 .iter()
                 .all(|(m, sig)| declared.get(m) == Some(&method_signature(Some(sig))))
     };
-    let std = STD_INTERFACES
+    STD_INTERFACES
         .iter()
         // `os/exec.Cmd` is a struct: promoted, never implemented.
         .filter(|((p, n), _)| !(*p == "os/exec" && *n == "Cmd"))
         .find(|(_, methods)| satisfied(methods))
-        .map(|((p, n), _)| format!("{}.{n}", p.rsplit('/').next().unwrap_or(p)));
-    std.or_else(|| {
-        DEPENDENCY_INTERFACES
-            .iter()
-            .find(|(_, methods)| satisfied(methods))
-            .map(|(label, _)| (*label).to_string())
-    })
+        .map(|((p, n), _)| format!("{}.{n}", p.rsplit('/').next().unwrap_or(p)))
 }
 
 impl Resolver<'_> {

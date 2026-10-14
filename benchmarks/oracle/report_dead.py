@@ -94,6 +94,11 @@ def section(meta, cells, results_dir):
       "the oracle's verdict; a claim on a public-API or root declaration is **wrong by construction** (counted under its bucket name, so the cost "
       "of having no exported-symbol policy is visible); a claim on anything the oracle cannot judge is ungradable (its own bucket).")
     w("")
+    w("Tests as roots (issue #472): the `no_tests` cells (Go without `-tests`, Rust `--no-tests`, TypeScript on production code) leave test code out of the "
+      "oracle's roots, so lidx is asked with `tests_are_roots: false` there: references from test files and test functions do not keep a declaration "
+      "alive, and what only tests reach is claimed (reason `reached_only_from_tests`). The cells that include tests, and the Rust `path_tests_excluded` "
+      "cells (inline `#[cfg(test)]` code stays a root there), use the default.")
+    w("")
     w("Two readings per cell. **All claims**: every `dead_symbols` row. **Without exported/`pub` symbols**: the same rows after dropping every "
       "one on an exported (Go identifier rule, TypeScript `export`, Rust `pub`) declaration, with recall over the unexported dead declarations: what "
       "an exported-symbol policy would buy. Every figure carries a 95% Wilson interval; recall is over oracle-dead declarations in the universe. "

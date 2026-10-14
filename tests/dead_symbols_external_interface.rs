@@ -90,7 +90,6 @@ fn go_methods_of_a_live_type_matching_an_external_interface_are_live() {
     for live in [
         "Live.String",
         "Live.Read",
-        "Live.PostLoad",
         "Failure.Error",
         "Sorted.Len",
         "Sorted.Less",
@@ -107,13 +106,7 @@ fn go_methods_of_a_live_type_matching_an_external_interface_are_live() {
             .starts_with("implements_external_interface"),
         "{row}"
     );
-    assert!(
-        listed(&r, "Live.PostLoad")["reason"]
-            .as_str()
-            .unwrap()
-            .contains("clio.PostLoader")
-    );
-    assert_eq!(r["counts"]["implements_external_interface"], 7, "{r}");
+    assert_eq!(r["counts"]["implements_external_interface"], 6, "{r}");
 }
 
 #[test]
@@ -124,6 +117,8 @@ fn go_other_methods_and_dead_types_stay_dead() {
     assert!(has(&dead, "Live.Helper"), "{dead:?}");
     assert!(has(&dead, "Live.Len"), "{dead:?}");
     assert!(has(&dead, "Live.Name"), "{dead:?}");
+    // a dependency interface is no evidence without an assertion or embedding
+    assert!(has(&dead, "Live.PostLoad"), "{dead:?}");
     // the same methods on an unused type
     for method in ["Unused.String", "Unused.Read", "Unused.PostLoad"] {
         assert!(has(&dead, method), "{method} not claimed: {dead:?}");
@@ -327,5 +322,95 @@ fn go_ghost_type_revived_by_a_live_caller_matches_fresh() {
         ("internal/app/app.go", app.as_str()),
     ];
     let (_t2, _r2, mut fresh) = common::live_indexer("lidx-dead-ext-ghost-fresh-", &merged);
+    assert_eq!(after, answer(&mut fresh), "incremental != fresh");
+}
+
+const GO_ASSERTED: &[(&str, &str)] = &[
+    ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+    (
+        "main.go",
+        "package main\n\nimport \"example.com/app/internal/app\"\n\n\
+         func main() {\n\t_ = app.NewSvc()\n\t_ = app.Wrapper{}\n\t_ = app.Plain{}\n\t_ = app.Local{}\n\t_ = app.NewLater()\n}\n",
+    ),
+    (
+        "internal/app/app.go",
+        "package app\n\nimport (\n\t\"github.com/acme/ui\"\n\t\"example.com/app/internal/iface\"\n)\n\n\
+         type Svc struct{}\n\n\
+         func NewSvc() *Svc { return &Svc{} }\n\n\
+         func (s *Svc) Setup(n int) error { return nil }\n\
+         func (s *Svc) Teardown() error { return nil }\n\
+         func (s *Svc) helper() {}\n\n\
+         var _ ui.UI = (*Svc)(nil)\n\n\
+         type Wrapper struct {\n\tui.Base\n}\n\n\
+         func (Wrapper) Render() string { return \"\" }\n\
+         func (Wrapper) tidy() {}\n\n\
+         type Plain struct{}\n\n\
+         func (Plain) Render() string { return \"\" }\n\n\
+         type Local struct{}\n\n\
+         func (Local) Run() {}\n\n\
+         var _ iface.Runner = Local{}\n\n\
+         type Ghost struct{}\n\n\
+         func (Ghost) Render() string { return \"\" }\n\n\
+         var _ ui.UI = Ghost{}\n",
+    ),
+    (
+        "internal/app/more.go",
+        "package app\n\nimport \"github.com/acme/ui\"\n\ntype Later struct{}\n\n\
+         func NewLater() *Later { return &Later{} }\n\n\
+         func (l *Later) Draw() {}\n\n\
+         var _ ui.Drawer = &Later{}\n",
+    ),
+    (
+        "internal/iface/iface.go",
+        "package iface\n\ntype Runner interface{ Run() }\n",
+    ),
+];
+
+#[test]
+fn go_assertion_or_embedding_of_an_external_interface_rescues_exported_methods() {
+    let (_tmp, _root, mut ix) = common::live_indexer("lidx-dead-ext-go-assert-", GO_ASSERTED);
+    let r = call(&mut ix);
+    let dead = claimed(&r);
+    // `var _ ui.UI = (*Svc)(nil)`
+    for live in ["Svc.Setup", "Svc.Teardown", "Wrapper.Render"] {
+        assert!(!has(&dead, live), "{live} claimed: {dead:?}");
+    }
+    // an assertion in another file of the package
+    assert!(!has(&dead, "Later.Draw"), "{dead:?}");
+    // only exported methods can satisfy another package's interface
+    assert!(has(&dead, "Svc.helper"), "{dead:?}");
+    assert!(has(&dead, "Wrapper.tidy"), "{dead:?}");
+    // no evidence: not asserted (the repository's own interface is
+    // handled by its implements edges, not by this rule)
+    assert!(has(&dead, "Plain.Render"), "{dead:?}");
+    assert!(!has(&dead, "Local.Run"), "{dead:?}");
+    // asserted but never used: the type is dead, so is the method
+    assert!(has(&dead, "Ghost.Render"), "{dead:?}");
+    assert!(
+        listed(&r, "Svc.Setup")["reason"]
+            .as_str()
+            .unwrap()
+            .contains("ui.UI"),
+        "{r}"
+    );
+}
+
+#[test]
+fn go_assertion_evidence_follows_incremental_sync() {
+    let (_tmp, root, mut ix) = common::live_indexer("lidx-dead-ext-go-assert-inc-", GO_ASSERTED);
+    let app = GO_ASSERTED[2].1.replace("var _ ui.UI = (*Svc)(nil)\n", "");
+    std::fs::write(root.join("internal/app/app.go"), &app).unwrap();
+    ix.sync_rel_paths(&["internal/app/app.go".to_string()])
+        .unwrap();
+    let after = answer(&mut ix);
+    assert!(has(&strings(&after["dead"]), "Svc.Setup"), "{after}");
+    let merged = [
+        GO_ASSERTED[0],
+        GO_ASSERTED[1],
+        ("internal/app/app.go", app.as_str()),
+        GO_ASSERTED[3],
+        GO_ASSERTED[4],
+    ];
+    let (_t2, _r2, mut fresh) = common::live_indexer("lidx-dead-ext-go-assert-fresh-", &merged);
     assert_eq!(after, answer(&mut fresh), "incremental != fresh");
 }

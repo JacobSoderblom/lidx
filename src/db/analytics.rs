@@ -986,6 +986,7 @@ impl Db {
             reachability: &reachability,
             repo_root,
             test_files: &test_files,
+            go_evidence: Default::default(),
             live: None,
             implemented: HashMap::new(),
             siblings: HashMap::new(),
@@ -1030,6 +1031,7 @@ struct ExternalInterfaceProbe<'a> {
     reachability: &'a str,
     repo_root: &'a Path,
     test_files: &'a HashSet<i64>,
+    go_evidence: super::external_ifaces::GoExternalEvidence,
     /// Computed on the first method that needs it.
     live: Option<HashSet<i64>>,
     implemented: HashMap<i64, Vec<String>>,
@@ -1079,11 +1081,32 @@ impl ExternalInterfaceProbe<'_> {
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     slot.insert(rows);
                 }
-                super::resolver::go_external_interface(
+                let std = super::resolver::go_std_interface(
                     &method.name,
                     Some(j.signature.as_str()),
                     &self.siblings[&parent],
-                )
+                );
+                // Only an exported method can satisfy an interface of
+                // another package.
+                if std.is_none() && method.name.chars().next().is_some_and(char::is_uppercase) {
+                    let type_name = method
+                        .qualname
+                        .strip_suffix(method.name.as_str())
+                        .and_then(|q| q.strip_suffix('.'))
+                        .and_then(|q| q.rsplit('.').next())
+                        .unwrap_or_default();
+                    let dir = method.file_path.rsplit_once('/').map_or("", |(d, _)| d);
+                    self.go_evidence.of(
+                        conn,
+                        graph_version,
+                        self.repo_root,
+                        parent,
+                        type_name,
+                        dir,
+                    )?
+                } else {
+                    std
+                }
             }
             "typescript" | "tsx" | "javascript" => {
                 let names: &[String] = match j.parent_id {
@@ -1589,8 +1612,6 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
         .any(|token| token == alias)
 }
 
-/// The `visibility` modifiers of the symbol(s) a method's qualname hangs
-/// under (`Type::method` or `pkg.Type.method`), joined by spaces.
 /// The symbols reachable from the roots along `reachability` edges. A root
 /// is a symbol nothing references that is not a claim (public API, tests,
 /// modules, members reached by dispatch or an interface); a symbol referenced
@@ -1838,6 +1859,8 @@ struct Judged {
     external_trait_impl: bool,
 }
 
+/// The `visibility` modifiers of the symbol(s) a method's qualname hangs
+/// under (`Type::method` or `pkg.Type.method`), joined by spaces.
 fn parent_visibility_of(
     conn: &rusqlite::Connection,
     method: &Symbol,
