@@ -4,8 +4,8 @@ use super::resolver::{ImplicitRootFacts, profile_for, qualname_trailing_name};
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::edge_views;
 use crate::model::{
-    DeadConfidence, DeadSymbol, DeadSymbols, DuplicateGroup, Edge, Symbol, SymbolComplexity,
-    SymbolCoupling, UnresolvedSample,
+    DeadConfidence, DeadSymbol, DeadSymbols, DeadSymbolsOptions, DuplicateGroup, Edge, Symbol,
+    SymbolComplexity, SymbolCoupling, UnresolvedSample,
 };
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -619,8 +619,12 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
         repo_root: &Path,
-        include_public_api: bool,
+        options: DeadSymbolsOptions,
     ) -> Result<DeadSymbols> {
+        let DeadSymbolsOptions {
+            include_public_api,
+            tests_are_roots,
+        } = options;
         // Issue #122: impl methods called only through their interface are live.
         let dispatch_from = super::graph_query::dispatch_pairs_from(
             graph_version,
@@ -640,6 +644,31 @@ impl Db {
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let reachability = edge_views::sql_list(edge_views::REACHABILITY);
         let entrypoint = edge_views::sql_list(edge_views::ENTRYPOINT);
+        // With `tests_are_roots` off, an edge written in a test file or by a
+        // test function does not keep its target alive.
+        let test_files = if tests_are_roots {
+            HashSet::new()
+        } else {
+            self.test_file_ids(graph_version)?
+        };
+        let test_guard = if tests_are_roots {
+            String::new()
+        } else {
+            let ids = test_files
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "AND e.file_id NOT IN ({ids})
+                         AND NOT EXISTS (
+                           SELECT 1 FROM symbols ts WHERE ts.id = e.source_symbol_id
+                             AND (COALESCE(ts.signature, '') LIKE '%#[test]%'
+                               OR COALESCE(ts.signature, '') LIKE '%::test]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[rstest]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[test_case]%'))"
+            )
+        };
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id,
@@ -650,7 +679,9 @@ impl Db {
                           s.kind = 'method' AND f.language = 'rust' AND EXISTS (
                             SELECT 1 FROM edges xe JOIN symbols xs ON xs.id = xe.target_symbol_id
                             WHERE xe.source_symbol_id = s.id AND xe.kind = 'IMPLEMENTS'
-                              AND xe.graph_version = {gv} AND xs.kind = 'external')
+                              AND xe.graph_version = {gv} AND xs.kind = 'external'),
+                          EXISTS (SELECT 1 FROM edges te WHERE te.target_symbol_id = s.id
+                                    AND te.kind IN ({reachability}) AND te.graph_version = {gv})
                    FROM symbols s
                    JOIN files f ON s.file_id = f.id
                    WHERE s.graph_version = ?
@@ -693,6 +724,7 @@ impl Db {
                        WHERE e.target_symbol_id = s.id
                          AND e.kind IN ({reachability})
                          AND e.graph_version = ?
+                         {test_guard}
                      )
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
@@ -800,6 +832,7 @@ impl Db {
                 row.get::<_, Option<String>>(17)?,
                 row.get::<_, Option<i64>>(18)?,
                 row.get::<_, bool>(19)?,
+                row.get::<_, bool>(20)?,
             ))
         })?;
         let mut candidates = Vec::new();
@@ -855,7 +888,8 @@ impl Db {
         // Judged in two passes: a method is live through an external
         // interface only when its type is not itself a claim (#472).
         let mut judged: Vec<Judged> = Vec::new();
-        for (symbol, signature, language, visibility, parent_id, external_trait_impl) in candidates
+        for (symbol, signature, language, visibility, parent_id, external_trait_impl, tests_only) in
+            candidates
         {
             let profile = profile_for(&language);
             if let Some(is_root) = profile.implicit_root
@@ -917,6 +951,11 @@ impl Db {
                     false,
                 ),
             };
+            let reason = if tests_only {
+                format!("{TESTS_ONLY_REASON}: {reason}")
+            } else {
+                reason
+            };
             judged.push(Judged {
                 claim: DeadSymbol {
                     symbol,
@@ -946,6 +985,7 @@ impl Db {
             claimed: &claimed,
             reachability: &reachability,
             repo_root,
+            test_files: &test_files,
             live: None,
             implemented: HashMap::new(),
             siblings: HashMap::new(),
@@ -989,6 +1029,7 @@ struct ExternalInterfaceProbe<'a> {
     claimed: &'a HashSet<i64>,
     reachability: &'a str,
     repo_root: &'a Path,
+    test_files: &'a HashSet<i64>,
     /// Computed on the first method that needs it.
     live: Option<HashSet<i64>>,
     implemented: HashMap<i64, Vec<String>>,
@@ -1009,6 +1050,7 @@ impl ExternalInterfaceProbe<'_> {
                     self.reachability,
                     self.claimed,
                     self.repo_root,
+                    self.test_files,
                 )?);
             }
             if !self.live.as_ref().is_some_and(|l| l.contains(&parent)) {
@@ -1566,6 +1608,7 @@ fn live_symbols(
     reachability: &str,
     claimed: &HashSet<i64>,
     repo_root: &Path,
+    test_files: &HashSet<i64>,
 ) -> Result<HashSet<i64>> {
     struct Mention {
         target: i64,
@@ -1575,7 +1618,7 @@ fn live_symbols(
     }
     let mut stmt = conn.prepare(&format!(
         "SELECT e.source_symbol_id, e.target_symbol_id, e.kind, ss.kind, f.language, f.path,
-                t.name, t.qualname
+                t.name, t.qualname, e.file_id
          FROM edges e
          LEFT JOIN symbols ss ON ss.id = e.source_symbol_id
          JOIN symbols t ON t.id = e.target_symbol_id
@@ -1598,10 +1641,14 @@ fn live_symbols(
             r.get::<_, String>(5)?,
             r.get::<_, String>(6)?,
             r.get::<_, String>(7)?,
+            r.get::<_, i64>(8)?,
         ))
     })?;
     for row in rows {
-        let (source, target, kind, source_kind, language, path, name, qualname) = row?;
+        let (source, target, kind, source_kind, language, path, name, qualname, file_id) = row?;
+        if test_files.contains(&file_id) {
+            continue;
+        }
         referenced.insert(target);
         match source {
             // not owned by a symbol: a file-level reference
@@ -1647,10 +1694,15 @@ fn live_symbols(
         }
     }
     drop(cstmt);
-    let mut ids = conn.prepare("SELECT id FROM symbols WHERE graph_version = ?1")?;
-    let rows = ids.query_map([graph_version], |r| r.get::<_, i64>(0))?;
-    for id in rows {
-        let id = id?;
+    let mut ids = conn.prepare("SELECT id, file_id FROM symbols WHERE graph_version = ?1")?;
+    let rows = ids.query_map([graph_version], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (id, file_id) = row?;
+        if test_files.contains(&file_id) {
+            continue;
+        }
         if !referenced.contains(&id)
             && !claimed.contains(&id)
             && !members.contains(&id)
@@ -1745,6 +1797,31 @@ fn mentions_word(line: &str, word: &str) -> bool {
         !line[..i].chars().next_back().is_some_and(ident)
             && !line[i + word.len()..].chars().next().is_some_and(ident)
     })
+}
+
+/// Reason prefix of a claim whose only references come from test code
+/// (`tests_are_roots: false`).
+const TESTS_ONLY_REASON: &str = "reached_only_from_tests";
+
+impl Db {
+    /// Ids of the files `is_test_file` calls tests.
+    fn test_file_ids(&self, graph_version: i64) -> Result<HashSet<i64>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, path FROM files WHERE deleted_version IS NULL OR deleted_version > ?1",
+        )?;
+        let rows = stmt.query_map([graph_version], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = HashSet::new();
+        for row in rows {
+            let (id, path) = row?;
+            if crate::indexer::test_detection::is_test_file(&path) {
+                out.insert(id);
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// One candidate once classified, before external-interface liveness.

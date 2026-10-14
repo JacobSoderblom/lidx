@@ -1607,13 +1607,17 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
     let include_orphan_tests = params.include_orphan_tests.unwrap_or(true);
 
     let include_public_api = params.include_public_api.unwrap_or(false);
+    let lidx_options = crate::model::DeadSymbolsOptions {
+        include_public_api,
+        tests_are_roots: params.tests_are_roots.unwrap_or(true),
+    };
     let dead = indexer.db().dead_symbols(
         limit,
         ctx.languages.as_deref(),
         ctx.paths.as_deref(),
         ctx.graph_version,
         indexer.repo_root(),
-        include_public_api,
+        lidx_options,
     )?;
 
     let unused_imports = if include_unused_imports {

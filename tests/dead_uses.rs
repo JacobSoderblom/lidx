@@ -63,7 +63,7 @@ fn dead(indexer: &Indexer, root: &std::path::Path) -> Vec<String> {
     let gv = indexer.db().current_graph_version().unwrap();
     let mut names: Vec<String> = indexer
         .db()
-        .dead_symbols(10_000, None, None, gv, root, false)
+        .dead_symbols(10_000, None, None, gv, root, Default::default())
         .unwrap()
         .dead
         .into_iter()

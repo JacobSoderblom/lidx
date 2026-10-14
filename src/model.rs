@@ -1614,6 +1614,26 @@ pub struct DeadSymbol {
     pub reason: String,
 }
 
+/// What `Db::dead_symbols` is asked for besides its filters.
+#[derive(Debug, Clone, Copy)]
+pub struct DeadSymbolsOptions {
+    /// Also return the public-API group.
+    pub include_public_api: bool,
+    /// Whether a reference from test code keeps a declaration alive (the
+    /// default). When false, references from test files and test functions
+    /// are ignored, so what only tests reach is claimed.
+    pub tests_are_roots: bool,
+}
+
+impl Default for DeadSymbolsOptions {
+    fn default() -> Self {
+        DeadSymbolsOptions {
+            include_public_api: false,
+            tests_are_roots: true,
+        }
+    }
+}
+
 /// The result of `Db::dead_symbols`.
 #[derive(Debug, Clone, Default)]
 pub struct DeadSymbols {

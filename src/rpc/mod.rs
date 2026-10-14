@@ -112,6 +112,15 @@ struct DeadSymbolsParams {
     /// at most `medium`. The same method on a dead type stays a claim.
     /// Default false: only counted in `counts.implements_external_interface`.
     include_external_interface: Option<bool>,
+    /// Whether code in test files and test functions keeps what it references
+    /// alive (default true: a declaration only tests use is live). With false,
+    /// references from tests are ignored, so what only tests reach is claimed
+    /// with a reason starting `reached_only_from_tests`. Roots (`Test*`,
+    /// `#[test]`, `main`, public API) are unchanged. A test file is one
+    /// `is_test_file` names (`_test.go`, `tests/`, `*.test.ts`, ...); a test
+    /// function is one marked `#[test]`; code in an inline `#[cfg(test)]`
+    /// module of a non-test file still counts as a root.
+    tests_are_roots: Option<bool>,
     /// Include unused imports (default: true)
     include_unused_imports: Option<bool>,
     /// Include orphan tests (default: true)
