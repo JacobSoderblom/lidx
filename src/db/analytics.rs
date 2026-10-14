@@ -1779,8 +1779,10 @@ fn live_symbols(
             let mut found = false;
             let mut any = false;
             for (idx, line) in lines.iter().enumerate() {
-                // `var _ I = (*T)(nil)` only asserts what T implements.
-                if !mentions_word(line, &m.name) || line.trim_start().starts_with("var _ ") {
+                // A comment is no use; `var _ I = (*T)(nil)` only asserts
+                // what T implements.
+                let code = line.split("//").next().unwrap_or_default();
+                if !mentions_word(code, &m.name) || code.trim_start().starts_with("var _ ") {
                     continue;
                 }
                 any = true;
