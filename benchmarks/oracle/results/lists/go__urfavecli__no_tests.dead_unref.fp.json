@@ -1,5 +1,4 @@
 [
-{"category":"exported_used_by_rule","confidence":"medium","exported":true,"file":"internal/build/build.go","key":"internal/build/build.go:238","kind":"function","lidx_kind":"function","line":238,"name":"VetActionFunc","policy":true,"qualname":"internal/build/build.VetActionFunc","subkind":""},
 {"category":"referenced_method","confidence":"high","exported":false,"file":"app.go","key":"app.go:296","kind":"method","lidx_kind":"method","line":296,"name":"newFlagSet","policy":false,"qualname":"app.App.newFlagSet","subkind":""},
 {"category":"referenced_method","confidence":"high","exported":false,"file":"errors.go","key":"errors.go:68","kind":"method","lidx_kind":"method","line":68,"name":"getMissingFlags","policy":false,"qualname":"errors.errRequiredFlags.getMissingFlags","subkind":""}
 ]

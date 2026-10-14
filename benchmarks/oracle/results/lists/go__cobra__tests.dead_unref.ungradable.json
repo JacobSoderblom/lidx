@@ -1,5 +1,8 @@
 [
 {"confidence":"high","file":"command_test.go","key":"command_test.go:2629","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
 {"confidence":"high","file":"command_test.go","key":"command_test.go:2655","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
-{"confidence":"high","file":"command_test.go","key":"command_test.go:2676","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"}
+{"confidence":"high","file":"command_test.go","key":"command_test.go:2676","lidx_kind":"class","name":"key","qualname":"command_test.key","reason":"not_a_judged_declaration"},
+{"confidence":"medium","exported":true,"file":"completions_test.go","key":"completions_test.go:693","kind":"method","lidx_kind":"method","line":693,"name":"GetSlice","qualname":"completions_test.customMultiString.GetSlice","reason":"exported_used_by_rule","subkind":""},
+{"confidence":"medium","exported":true,"file":"doc/man_examples_test.go","key":"doc/man_examples_test.go:25","kind":"function","lidx_kind":"function","line":25,"name":"ExampleGenManTree","qualname":"doc/man_examples_test.ExampleGenManTree","reason":"exported_used_by_rule","subkind":""},
+{"confidence":"medium","exported":true,"file":"doc/man_examples_test.go","key":"doc/man_examples_test.go:37","kind":"function","lidx_kind":"function","line":37,"name":"ExampleGenMan","qualname":"doc/man_examples_test.ExampleGenMan","reason":"exported_used_by_rule","subkind":""}
 ]

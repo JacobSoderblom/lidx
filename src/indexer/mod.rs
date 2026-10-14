@@ -59,6 +59,7 @@ pub mod differ;
 pub mod extract;
 pub mod go;
 pub mod go_build;
+pub mod go_deps;
 mod go_repo;
 mod go_types;
 pub mod http;
@@ -103,6 +104,9 @@ pub struct Indexer {
     cs_projects: HashMap<PathBuf, String>,
     /// Last freshness check, reused for [`crate::freshness::CACHE_TTL`].
     freshness_cache: Option<(Instant, crate::freshness::Freshness)>,
+    /// Where Go dependency sources are read from instead of the module cache
+    /// the environment names (`go_deps::module_cache_dir`); tests use it.
+    go_module_cache: Option<PathBuf>,
 }
 
 /// `Indexer::index_scanned_file_symbols`'s result: one file's extracted
@@ -196,7 +200,15 @@ impl Indexer {
             cs_globals: None,
             cs_projects: HashMap::new(),
             freshness_cache: None,
+            go_module_cache: None,
         })
+    }
+
+    /// Read Go dependency sources from `dir` instead of the module cache the
+    /// environment names (issue #495; `None` restores the environment's).
+    pub fn with_go_module_cache(mut self, dir: Option<PathBuf>) -> Self {
+        self.go_module_cache = dir;
+        self
     }
 
     pub fn db(&self) -> &Db {
@@ -549,6 +561,10 @@ impl Indexer {
             self.db.set_meta_i64("last_indexed", now)?;
             self.record_indexed_state(head_at_start)?;
         }
+        // Issue #495: a `go.mod` edit is not an indexable file and sets no
+        // `touched`, so the dependency interfaces are reconciled on every
+        // sync; nothing to do when neither `go.mod` nor the imports changed.
+        self.sync_go_dependencies(self.graph_version)?;
         Ok(stats)
     }
 
@@ -1000,6 +1016,9 @@ impl Indexer {
             .set_meta_i64(crate::freshness::INDEXED_SCAN_AT_KEY, scan_started_at)?;
         self.db
             .set_meta_i64(EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION)?;
+        // Issue #495: the interfaces of the Go dependencies this version
+        // imports, read from sources already on disk.
+        self.sync_go_dependencies(self.graph_version)?;
 
         // The version is fully populated: only now does it become current.
         self.db.promote_graph_version(self.graph_version)?;

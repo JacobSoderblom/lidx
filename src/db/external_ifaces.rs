@@ -77,8 +77,11 @@ pub(crate) fn ts_external_interface(name: &str, implemented: &[String]) -> Optio
     })
 }
 
+use super::resolver::{MethodSig, method_signature, std_interface};
+use crate::indexer::go_deps::DepInterface;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// Evidence that a Go type implements an interface of a package outside the
 /// repository, read from the index: the `#[go_assert(..)]` signature of a
@@ -93,9 +96,202 @@ pub(crate) struct GoExternalEvidence {
     asserted: Option<HashMap<(String, String), String>>,
     /// file id -> names its imports bind to packages outside the repository.
     external_names: HashMap<i64, HashSet<String>>,
+    /// Package directory -> the import paths of the packages outside the
+    /// repository that its files import (issue #495), computed once.
+    dir_imports: Option<HashMap<String, Vec<String>>>,
+    /// Dependency package path -> its stored interfaces (`go_dep_interfaces`).
+    dep_interfaces: HashMap<String, Rc<Vec<DepInterface>>>,
+    /// (package path, interface) -> its full method set, `None` when an
+    /// embedded interface could not be read.
+    dep_method_sets: HashMap<(String, String), Option<DepMethodSet>>,
 }
 
+/// The methods of a dependency interface, embedded ones included, as
+/// `(name, normalized signature)`.
+type DepMethodSet = Rc<Vec<(String, MethodSig)>>;
+
+/// How deep embedded interfaces of a dependency are followed.
+const MAX_DEP_EMBED_DEPTH: usize = 4;
+
 impl GoExternalEvidence {
+    /// The interface of a dependency package that the type declared in
+    /// package directory `dir` with methods `own` (`(name, signature)`)
+    /// satisfies and that declares `method` (issue #495): every method of
+    /// the interface, embedded ones included, is in `own` by name and
+    /// signature (`resolver_go::method_signature`). Only the interfaces of
+    /// packages the directory's files import are tried, read from
+    /// `go_dep_interfaces` (sources on disk at index time); an interface
+    /// with an embedded interface the index could not read proves nothing.
+    pub(crate) fn dependency_interface(
+        &mut self,
+        conn: &rusqlite::Connection,
+        graph_version: i64,
+        dir: &str,
+        own: &[(String, Option<String>)],
+        method: &str,
+    ) -> Result<Option<String>> {
+        if self.dir_imports.is_none() {
+            self.dir_imports = Some(self.collect_dir_imports(conn, graph_version)?);
+        }
+        let Some(imports) = self.dir_imports.as_ref().and_then(|m| m.get(dir)).cloned() else {
+            return Ok(None);
+        };
+        let declared: HashMap<&str, MethodSig> = own
+            .iter()
+            .map(|(n, sig)| (n.as_str(), method_signature(sig.as_deref())))
+            .collect();
+        for pkg in imports {
+            let interfaces = self.interfaces_of(conn, &pkg)?;
+            for iface in interfaces.iter() {
+                let Some(set) = self.method_set(conn, &pkg, &iface.name, 0)? else {
+                    continue;
+                };
+                if set.is_empty() || !set.iter().any(|(m, _)| m == method) {
+                    continue;
+                }
+                if set
+                    .iter()
+                    .all(|(m, sig)| declared.get(m.as_str()) == Some(sig))
+                {
+                    return Ok(Some(format!(
+                        "implements {pkg}.{} (dependency)",
+                        iface.name
+                    )));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn interfaces_of(
+        &mut self,
+        conn: &rusqlite::Connection,
+        pkg: &str,
+    ) -> Result<Rc<Vec<DepInterface>>> {
+        if let Some(known) = self.dep_interfaces.get(pkg) {
+            return Ok(known.clone());
+        }
+        let rows = Rc::new(super::go_deps::go_dep_interfaces(conn, pkg)?);
+        self.dep_interfaces.insert(pkg.to_string(), rows.clone());
+        Ok(rows)
+    }
+
+    /// The method set of dependency interface `pkg.name`: its own methods
+    /// and those of what it embeds (the same package's interfaces, another
+    /// stored package's, or a standard-library interface of the table).
+    fn method_set(
+        &mut self,
+        conn: &rusqlite::Connection,
+        pkg: &str,
+        name: &str,
+        depth: usize,
+    ) -> Result<Option<DepMethodSet>> {
+        let key = (pkg.to_string(), name.to_string());
+        if let Some(done) = self.dep_method_sets.get(&key) {
+            return Ok(done.clone());
+        }
+        // a cycle or a chain too deep proves nothing
+        self.dep_method_sets.insert(key.clone(), None);
+        let found = self
+            .interfaces_of(conn, pkg)?
+            .iter()
+            .find(|i| i.name == name)
+            .cloned();
+        let result = match found {
+            Some(iface) if depth < MAX_DEP_EMBED_DEPTH => {
+                let mut set: Vec<(String, MethodSig)> = iface
+                    .methods
+                    .iter()
+                    .map(|(m, sig)| (m.clone(), method_signature(Some(sig))))
+                    .collect();
+                let mut complete = true;
+                for embed in &iface.embeds {
+                    let inner: Option<Vec<(String, MethodSig)>> =
+                        match crate::indexer::go_deps::split_embed(embed) {
+                            None => self
+                                .method_set(conn, pkg, embed, depth + 1)?
+                                .map(|s| s.as_ref().clone()),
+                            Some((path, n)) => match std_interface(path, n) {
+                                Some(methods) => Some(
+                                    methods
+                                        .iter()
+                                        .map(|(m, sig)| {
+                                            ((*m).to_string(), method_signature(Some(sig)))
+                                        })
+                                        .collect(),
+                                ),
+                                None => self
+                                    .method_set(conn, path, n, depth + 1)?
+                                    .map(|s| s.as_ref().clone()),
+                            },
+                        };
+                    match inner {
+                        Some(inner) => {
+                            for (m, sig) in inner {
+                                if !set.iter().any(|(have, _)| *have == m) {
+                                    set.push((m, sig));
+                                }
+                            }
+                        }
+                        None => complete = false,
+                    }
+                }
+                complete.then(|| Rc::new(set))
+            }
+            _ => None,
+        };
+        self.dep_method_sets.insert(key, result.clone());
+        Ok(result)
+    }
+
+    /// Package directory -> import paths of the packages outside the
+    /// repository that its Go files import, from the `IMPORTS` rows.
+    fn collect_dir_imports(
+        &self,
+        conn: &rusqlite::Connection,
+        graph_version: i64,
+    ) -> Result<HashMap<String, Vec<String>>> {
+        let mut stmt = conn.prepare(
+            "SELECT f.path, e.detail FROM edges e JOIN files f ON f.id = e.file_id
+             WHERE e.kind = 'IMPORTS' AND e.graph_version = ?1 AND f.language = 'go'
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?1)
+             UNION ALL
+             SELECT f.path, ur.detail FROM unresolved_references ur JOIN files f ON f.id = ur.file_id
+             WHERE ur.edge_kind = 'IMPORTS' AND ur.graph_version = ?1 AND f.language = 'go'
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?1)",
+        )?;
+        let rows = stmt
+            .query_map([graph_version], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+        for (path, detail) in rows {
+            let Some(detail) = detail else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&detail) else {
+                continue;
+            };
+            let Some(import_path) = v["import_path"].as_str() else {
+                continue;
+            };
+            if !crate::indexer::go_deps::is_dependency_place(
+                v["place"].as_str().unwrap_or(import_path),
+            ) {
+                continue;
+            }
+            let dir = path.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+            let list = out.entry(dir).or_default();
+            if !list.iter().any(|p| p == import_path) {
+                list.push(import_path.to_string());
+            }
+        }
+        for list in out.values_mut() {
+            list.sort();
+        }
+        Ok(out)
+    }
     /// The interface of another package that type `type_id`
     /// (`type_name`, declared in package directory `dir`) is asserted to or
     /// embeds, if any.

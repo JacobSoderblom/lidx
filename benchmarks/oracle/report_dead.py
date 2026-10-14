@@ -88,8 +88,10 @@ def section(meta, cells, results_dir):
     w("Universe: functions, methods and types of the cell's scope (TypeScript also module-level consts, shown as their own kind); lidx claims are "
       "all `dead_symbols` rows (per-category limit raised past the repository size). Excluded from the universe, each a **named bucket** with "
       "counts per cell in the tables below: `public_api` (exported from a library; Go: exported in an importable package, TypeScript: reachable "
-      "by re-export from the package entry, Rust: `pub` in a library crate), `exported_used_by_rule` (Go, unreferenced column: U1000 treats exported "
-      "identifiers as used), roots (`test_root`, `main_init`, `library_root`: live by construction), and what the oracle cannot judge (`generated`, "
+      "by re-export from the package entry, Rust: `pub` in a library crate), roots (`test_root`, `main_init`, `library_root`: live by construction), "
+      "and what the oracle cannot judge (`exported_used_by_rule`: Go, unreferenced column, an exported identifier of an unimportable `internal/` or "
+      "`main` package, which U1000's rules 1.1-1.4 and 2.1 mark used whatever the code does, so its verdict is by rule and the unreachable column "
+      "judges the declaration instead (issue #503); `generated`, "
       "`macro_generated`, `cfg_twin`, `oracle_unresolved_site`, `impl_for_foreign_type` (Rust: methods of impls for foreign or primitive self types), `trait_declaration` (Rust), `not_a_function`). A claim on a declaration in the universe is right or wrong by "
       "the oracle's verdict; a claim on a public-API or root declaration is **wrong by construction** (counted under its bucket name, so the cost "
       "of having no exported-symbol policy is visible); a claim on anything the oracle cannot judge is ungradable (its own bucket).")

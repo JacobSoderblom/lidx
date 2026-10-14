@@ -23,6 +23,5 @@
 {"confidence":"medium","file":"examples/list-simple/main.go","key":"examples/list-simple/main.go:27","lidx_kind":"method","name":"FilterValue","qualname":"examples/list-simple/main.item.FilterValue","reason":"file_not_in_program"},
 {"confidence":"medium","file":"examples/list-simple/main.go","key":"examples/list-simple/main.go:31","lidx_kind":"method","name":"Height","qualname":"examples/list-simple/main.itemDelegate.Height","reason":"file_not_in_program"},
 {"confidence":"medium","file":"examples/list-simple/main.go","key":"examples/list-simple/main.go:32","lidx_kind":"method","name":"Spacing","qualname":"examples/list-simple/main.itemDelegate.Spacing","reason":"file_not_in_program"},
-{"confidence":"medium","file":"examples/list-simple/main.go","key":"examples/list-simple/main.go:33","lidx_kind":"method","name":"Update","qualname":"examples/list-simple/main.itemDelegate.Update","reason":"file_not_in_program"},
-{"confidence":"medium","file":"examples/list-simple/main.go","key":"examples/list-simple/main.go:34","lidx_kind":"method","name":"Render","qualname":"examples/list-simple/main.itemDelegate.Render","reason":"file_not_in_program"}
+{"confidence":"medium","file":"examples/list-simple/main.go","key":"examples/list-simple/main.go:33","lidx_kind":"method","name":"Update","qualname":"examples/list-simple/main.itemDelegate.Update","reason":"file_not_in_program"}
 ]

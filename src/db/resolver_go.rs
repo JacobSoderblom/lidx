@@ -763,7 +763,7 @@ fn struct_fields(signature: Option<&str>) -> Vec<(Option<String>, String)> {
 }
 
 /// A method's parameter and result types, each normalized (`method_type_key`).
-type MethodSig = (Vec<String>, Vec<String>);
+pub(crate) type MethodSig = (Vec<String>, Vec<String>);
 
 /// The methods of a Go type, promoted ones included.
 #[derive(Default, Clone)]
@@ -882,7 +882,7 @@ fn signature_params(signature: &str) -> Vec<String> {
 }
 
 /// The normalized parameter and result types of a stored method signature.
-fn method_signature(signature: Option<&str>) -> MethodSig {
+pub(crate) fn method_signature(signature: Option<&str>) -> MethodSig {
     let Some(sig) = signature else {
         return (Vec::new(), Vec::new());
     };
@@ -898,7 +898,7 @@ fn method_signature(signature: Option<&str>) -> MethodSig {
     )
 }
 
-type GoInterfaceMethods = &'static [(&'static str, &'static str)];
+pub(crate) type GoInterfaceMethods = &'static [(&'static str, &'static str)];
 
 /// The methods of the standard-library interfaces repositories embed most
 /// (name and Go signature), as `((import path, name), methods)`; any other
@@ -1106,7 +1106,7 @@ const STD_INTERFACES: &[((&str, &str), GoInterfaceMethods)] = {
     ]
 };
 
-fn std_interface(path: &str, name: &str) -> Option<GoInterfaceMethods> {
+pub(crate) fn std_interface(path: &str, name: &str) -> Option<GoInterfaceMethods> {
     STD_INTERFACES
         .iter()
         .find(|((p, n), _)| *p == path && *n == name)
@@ -1145,6 +1145,37 @@ pub(crate) fn go_std_interface(
 }
 
 impl Resolver<'_> {
+    /// Whether an untyped Go member call `x.name()` can only reach a method
+    /// of the calling file's own package: every Go method called `name` is
+    /// declared in that package directory, and at least one is (issue #503:
+    /// `ni, err := make(r); ni.fetchPkgs()` with `make` a function value the
+    /// index cannot type). Such a call is ambiguous among them, not a call
+    /// into a dependency.
+    pub(super) fn go_untyped_call_is_package_local(&mut self, r: &Reference<'_>) -> Result<bool> {
+        let Some(name) = r.target_qualname else {
+            return Ok(false);
+        };
+        let name = name.rsplit('.').next().unwrap_or(name);
+        if name.is_empty() || name.contains(':') {
+            return Ok(false);
+        }
+        let dir = r.source_file_path.rsplit_once('/').map_or("", |(d, _)| d);
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT f.path FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.kind = 'method' AND s.name = ?1 AND f.language = 'go' AND {}",
+            live_symbols(2)
+        ))?;
+        let paths = stmt
+            .query_map(params![name, self.graph_version], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(!paths.is_empty()
+            && paths
+                .iter()
+                .all(|p| p.rsplit_once('/').map_or("", |(d, _)| d) == dir))
+    }
+
     /// The type declarations (struct, interface, named type) called `name`
     /// in package directory `dir`; build-constraint twins reduced.
     fn go_types_named(&mut self, dir: &str, name: &str) -> Result<Rc<Vec<GoTypeRow>>> {

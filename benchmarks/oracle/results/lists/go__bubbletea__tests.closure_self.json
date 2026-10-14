@@ -2,7 +2,7 @@
 {"callee":{"file":"signals_unix.go","line":15,"name":"listenForResize"},"caller":{"file":"signals_unix.go","line":15,"name":"listenForResize"},"closure":true,"closure_self":true,"sites":["signals_unix.go:19"]},
 {"callee":{"file":"tea.go","line":122,"name":"shutdown"},"caller":{"file":"tea.go","line":122,"name":"shutdown"},"closure":true,"closure_self":true,"sites":["tea.go:126"]},
 {"callee":{"file":"tea.go","line":273,"name":"handleSignals"},"caller":{"file":"tea.go","line":273,"name":"handleSignals"},"closure":true,"closure_self":true,"sites":["tea.go:287","tea.go:284"]},
-{"callee":{"file":"tea.go","line":333,"name":"handleCommands"},"caller":{"file":"tea.go","line":333,"name":"handleCommands"},"closure":true,"closure_self":true,"sites":["tea.go:357","tea.go:354","tea.go:336"]},
+{"callee":{"file":"tea.go","line":333,"name":"handleCommands"},"caller":{"file":"tea.go","line":333,"name":"handleCommands"},"closure":true,"closure_self":true,"sites":["tea.go:354","tea.go:336","tea.go:357"]},
 {"callee":{"file":"tea.go","line":578,"name":"Run"},"caller":{"file":"tea.go","line":578,"name":"Run"},"closure":true,"closure_self":true,"sites":["tea.go:584","tea.go:588","tea.go:588","tea.go:635","tea.go:588","tea.go:689"]},
 {"callee":{"file":"tea_test.go","line":102,"name":"TestTeaWaitQuit"},"caller":{"file":"tea_test.go","line":102,"name":"TestTeaWaitQuit"},"closure":true,"closure_self":true,"sites":["tea_test.go:113","tea_test.go:118","tea_test.go:138"]},
 {"callee":{"file":"tea_test.go","line":152,"name":"TestTeaWaitKill"},"caller":{"file":"tea_test.go","line":152,"name":"TestTeaWaitKill"},"closure":true,"closure_self":true,"sites":["tea_test.go:163","tea_test.go:168","tea_test.go:188"]},

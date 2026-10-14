@@ -3,13 +3,13 @@
   "rust-analyzer": "rust-analyzer 1.94.0 (4a4ef493 2026-03-02)",
   "node": "v25.2.1",
   "go": "go version go1.24.4 darwin/arm64",
-  "typescript": "5.9.3",
+  "typescript": "not installed yet",
   "python": "3.14.7"
  },
  "generated": "2026-10-14",
  "lidx_version": "lidx 0.7.0",
- "main_commit": "7067e42d0162deaa7411fa35730bce9e9d0e2063",
- "head_commit": "7067e42d0162deaa7411fa35730bce9e9d0e2063",
+ "main_commit": "3206964fae92cf06ec5bb6004bb778c19fc4d96f",
+ "head_commit": "3206964fae92cf06ec5bb6004bb778c19fc4d96f",
  "corpus": {
   "cobra": {
    "lang": "go",
@@ -160,11 +160,11 @@
    "repo": "cobra",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.7,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 2.3
+    "seconds": 3.1
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 28,
@@ -431,29 +431,29 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.4,
-     "peak_rss_mb": 427,
+     "seconds": 1.7,
+     "peak_rss_mb": 432,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; test functions are the roots of the unreachable column",
     "tests_are_roots": true,
-    "lidx_claims": 7,
+    "lidx_claims": 6,
     "public_api_group": 21,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 354,
      "decls": 613,
-     "load_seconds": 0.7,
+     "load_seconds": 1,
      "rta_reachable_functions": 9675,
-     "rta_seconds": 0.3,
+     "rta_seconds": 0.6,
      "strict_roots_unreachable_functions": 5,
      "u1000_objects": {
       "quiet": 0,
       "unused": 0,
       "used": 5426
      },
-     "u1000_seconds": 0.1
+     "u1000_seconds": 0
     },
     "decls": 613,
     "columns": {
@@ -473,18 +473,19 @@
        "exported_used_by_rule": 6,
        "main_init": 1
       },
-      "claims": 7,
+      "claims": 6,
       "claims_ungradable": {
-       "not_a_judged_declaration": 3
+       "not_a_judged_declaration": 3,
+       "exported_used_by_rule": 3
       },
       "all": {
-       "graded": 4,
+       "graded": 0,
        "tp": 0,
-       "fp": 4,
-       "precision": 0.0,
+       "fp": 0,
+       "precision": null,
        "precision_ci": [
-        0.0,
-        0.4899
+        null,
+        null
        ],
        "dead": 0,
        "found": 0,
@@ -516,13 +517,13 @@
       "by_kind": {
        "function": {
         "all": {
-         "graded": 2,
+         "graded": 0,
          "tp": 0,
-         "fp": 2,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -553,13 +554,13 @@
        },
        "method": {
         "all": {
-         "graded": 2,
+         "graded": 0,
          "tp": 0,
-         "fp": 2,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -626,21 +627,8 @@
         "universe": 8
        }
       },
-      "by_tier": {
-       "medium": {
-        "graded": 4,
-        "tp": 0,
-        "fp": 4,
-        "precision": 0.0,
-        "precision_ci": [
-         0.0,
-         0.4899
-        ]
-       }
-      },
-      "fp_categories": {
-       "exported_used_by_rule": 4
-      },
+      "by_tier": {},
+      "fp_categories": {},
       "fp_categories_no_exported": {},
       "fn_categories": {},
       "public_api_oracle_dead": []
@@ -662,18 +650,18 @@
        "not_a_function": 19,
        "main_init": 1
       },
-      "claims": 7,
+      "claims": 6,
       "claims_ungradable": {
        "not_a_judged_declaration": 3
       },
       "all": {
-       "graded": 4,
+       "graded": 3,
        "tp": 2,
-       "fp": 2,
-       "precision": 0.5,
+       "fp": 1,
+       "precision": 0.6667,
        "precision_ci": [
-        0.15,
-        0.85
+        0.2077,
+        0.9385
        ],
        "dead": 2,
        "found": 2,
@@ -742,13 +730,13 @@
        },
        "method": {
         "all": {
-         "graded": 2,
+         "graded": 1,
          "tp": 0,
-         "fp": 2,
+         "fp": 1,
          "precision": 0.0,
          "precision_ci": [
           0.0,
-          0.6576
+          0.7935
          ],
          "dead": 0,
          "found": 0,
@@ -780,18 +768,18 @@
       },
       "by_tier": {
        "medium": {
-        "graded": 4,
+        "graded": 3,
         "tp": 2,
-        "fp": 2,
-        "precision": 0.5,
+        "fp": 1,
+        "precision": 0.6667,
         "precision_ci": [
-         0.15,
-         0.85
+         0.2077,
+         0.9385
         ]
        }
       },
       "fp_categories": {
-       "reachable_method": 2
+       "reachable_method": 1
       },
       "fp_categories_no_exported": {},
       "fn_categories": {},
@@ -994,7 +982,7 @@
       "lidx_has_no_reference_to_it": 0
      },
      "reach": {
-      "fp_items": 2,
+      "fp_items": 1,
       "with_value_reference": 0,
       "lidx_has_no_reference_to_it": 0
      }
@@ -1008,11 +996,11 @@
    "repo": "cobra",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.7,
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.7
+    "seconds": 1.0
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 10,
@@ -1272,21 +1260,21 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 0.6,
-     "peak_rss_mb": 211,
+     "seconds": 0.9,
+     "peak_rss_mb": 321,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; with no tests the exported surface is also the set of roots, so the unreachable column judges unexported declarations only",
     "tests_are_roots": false,
-    "lidx_claims": 45,
-    "public_api_group": 70,
+    "lidx_claims": 43,
+    "public_api_group": 66,
     "load_errors": 0,
     "oracle_stats": {
      "decls": 286,
-     "load_seconds": 0.5,
+     "load_seconds": 0.6,
      "rta_reachable_functions": 6706,
-     "rta_seconds": 0.1,
+     "rta_seconds": 0.2,
      "u1000_objects": {
       "quiet": 0,
       "unused": 0,
@@ -1310,9 +1298,9 @@
        "library_root": 176,
        "public_api": 18
       },
-      "claims": 45,
+      "claims": 43,
       "claims_ungradable": {
-       "test_file_outside_cell": 45
+       "test_file_outside_cell": 43
       },
       "all": {
        "graded": 0,
@@ -1483,9 +1471,9 @@
        "not_a_function": 17,
        "public_api": 7
       },
-      "claims": 45,
+      "claims": 43,
       "claims_ungradable": {
-       "test_file_outside_cell": 45
+       "test_file_outside_cell": 43
       },
       "all": {
        "graded": 0,
@@ -1810,11 +1798,11 @@
    "repo": "gitleaks",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 1.0,
+   "index_seconds": 1.1,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.24.11",
-    "seconds": 4.2
+    "seconds": 4.7
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 49,
@@ -2105,8 +2093,8 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.24.11",
-     "seconds": 2.5,
-     "peak_rss_mb": 1309,
+     "seconds": 3.6,
+     "peak_rss_mb": 1374,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
@@ -2118,9 +2106,9 @@
     "oracle_stats": {
      "api_roots": 417,
      "decls": 553,
-     "load_seconds": 1.2,
+     "load_seconds": 1.9,
      "rta_reachable_functions": 23018,
-     "rta_seconds": 0.9,
+     "rta_seconds": 1.6,
      "strict_roots_unreachable_functions": 7,
      "u1000_objects": {
       "quiet": 2,
@@ -2658,11 +2646,11 @@
    "repo": "gitleaks",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 1.0,
+   "index_seconds": 1.1,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "go1.24.11",
-    "seconds": 2.3
+    "seconds": 2.8
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 2,
@@ -2953,7 +2941,7 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.24.11",
-     "seconds": 1.9,
+     "seconds": 2.7,
      "peak_rss_mb": 1252,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
@@ -2966,9 +2954,9 @@
     "oracle_stats": {
      "api_roots": 341,
      "decls": 494,
-     "load_seconds": 1,
+     "load_seconds": 1.5,
      "rta_reachable_functions": 21305,
-     "rta_seconds": 0.8,
+     "rta_seconds": 1.1,
      "strict_roots_unreachable_functions": 16,
      "u1000_objects": {
       "quiet": 1,
@@ -3507,11 +3495,11 @@
    "repo": "syft",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 11.9,
+   "index_seconds": 14.3,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.26.3",
-    "seconds": 78.4
+    "seconds": 102.6
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 3416,
@@ -3524,38 +3512,38 @@
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 8687,
+    "matched_oracle_edges": 8688,
     "dispatch_edges": 17064,
     "dispatch_matched": 4380,
-    "recall_comparable": 0.5056,
+    "recall_comparable": 0.5057,
     "recall_comparable_ci": [
      0.4996,
-     0.5117
+     0.5118
     ],
     "closure_edges": 7709,
     "unresolved_pairs_excluded": 0,
     "precision_if_unresolved_counted_wrong": 1.0,
-    "recall_strict": 0.5056,
+    "recall_strict": 0.5057,
     "recall_strict_ci": [
      0.4996,
-     0.5117
+     0.5118
     ],
-    "lidx_pairs_total": 12206,
-    "graded": 11937,
-    "tp": 11937,
+    "lidx_pairs_total": 12207,
+    "graded": 11938,
+    "tp": 11938,
     "fp": 0,
     "precision": 1.0,
     "precision_ci": [
      0.9997,
      1.0
     ],
-    "recall": 0.9896,
+    "recall": 0.9897,
     "recall_ci": [
-     0.9873,
-     0.9915
+     0.9874,
+     0.9917
     ],
     "oracle_edges_both_ends_indexed": 8778,
-    "recall_both_ends_indexed": 0.9896,
+    "recall_both_ends_indexed": 0.9897,
     "recall_incl_capture_gap": 0.3362,
     "ungradable": {
      "caller_file_not_covered": 148,
@@ -3563,8 +3551,8 @@
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 3803,
-      "tp": 3803,
+      "graded": 3804,
+      "tp": 3804,
       "precision": 1.0,
       "ci": [
        0.999,
@@ -3601,7 +3589,7 @@
     },
     "fp_categories": {},
     "fn_categories": {
-     "no_edge_at_site": 57,
+     "no_edge_at_site": 56,
      "marked_external": 22,
      "other_call_on_line_missed": 9,
      "recorded_as_uses": 3
@@ -3613,38 +3601,38 @@
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 8687,
+    "matched_oracle_edges": 8688,
     "dispatch_edges": 17064,
     "dispatch_matched": 2818,
     "recall_comparable": 0.4442,
     "recall_comparable_ci": [
-     0.4381,
-     0.4502
+     0.4382,
+     0.4503
     ],
     "closure_edges": 7769,
     "unresolved_pairs_excluded": 0,
     "precision_if_unresolved_counted_wrong": 1.0,
     "recall_strict": 0.4442,
     "recall_strict_ci": [
-     0.4381,
-     0.4502
+     0.4382,
+     0.4503
     ],
-    "lidx_pairs_total": 11766,
-    "graded": 11505,
-    "tp": 11505,
+    "lidx_pairs_total": 11767,
+    "graded": 11506,
+    "tp": 11506,
     "fp": 0,
     "precision": 1.0,
     "precision_ci": [
      0.9997,
      1.0
     ],
-    "recall": 0.9829,
+    "recall": 0.983,
     "recall_ci": [
-     0.98,
-     0.9854
+     0.9801,
+     0.9855
     ],
     "oracle_edges_both_ends_indexed": 8838,
-    "recall_both_ends_indexed": 0.9829,
+    "recall_both_ends_indexed": 0.983,
     "recall_incl_capture_gap": 0.3354,
     "ungradable": {
      "caller_file_not_covered": 148,
@@ -3652,8 +3640,8 @@
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 3803,
-      "tp": 3803,
+      "graded": 3804,
+      "tp": 3804,
       "precision": 1.0,
       "ci": [
        0.999,
@@ -3690,7 +3678,7 @@
     },
     "fp_categories": {},
     "fn_categories": {
-     "no_edge_at_site": 115,
+     "no_edge_at_site": 114,
      "marked_external": 23,
      "other_call_on_line_missed": 10,
      "recorded_as_uses": 3
@@ -3703,7 +3691,7 @@
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 8687,
+    "matched_oracle_edges": 8688,
     "dispatch_edges": 17064,
     "dispatch_matched": 2818,
     "recall_comparable": 0.4452,
@@ -3719,22 +3707,22 @@
      0.4392,
      0.4513
     ],
-    "lidx_pairs_total": 11766,
-    "graded": 11505,
-    "tp": 11505,
+    "lidx_pairs_total": 11767,
+    "graded": 11506,
+    "tp": 11506,
     "fp": 0,
     "precision": 1.0,
     "precision_ci": [
      0.9997,
      1.0
     ],
-    "recall": 0.9896,
+    "recall": 0.9897,
     "recall_ci": [
-     0.9873,
-     0.9915
+     0.9874,
+     0.9917
     ],
     "oracle_edges_both_ends_indexed": 8778,
-    "recall_both_ends_indexed": 0.9896,
+    "recall_both_ends_indexed": 0.9897,
     "recall_incl_capture_gap": 0.3362,
     "ungradable": {
      "caller_file_not_covered": 148,
@@ -3742,8 +3730,8 @@
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 3803,
-      "tp": 3803,
+      "graded": 3804,
+      "tp": 3804,
       "precision": 1.0,
       "ci": [
        0.999,
@@ -3780,59 +3768,59 @@
     },
     "fp_categories": {},
     "fn_categories": {
-     "no_edge_at_site": 57,
+     "no_edge_at_site": 56,
      "marked_external": 22,
      "other_call_on_line_missed": 9,
      "recorded_as_uses": 3
     }
    },
    "calls_plus_references": {
-    "graded": 14384,
-    "tp": 11990,
+    "graded": 14385,
+    "tp": 11991,
     "fp": 2394,
     "precision": 0.8336,
     "precision_ci": [
      0.8274,
      0.8396
     ],
-    "recall": 0.9896,
+    "recall": 0.9897,
     "recall_ci": [
-     0.9873,
-     0.9915
+     0.9874,
+     0.9917
     ],
-    "matched_oracle_edges": 8687
+    "matched_oracle_edges": 8688
    },
    "lidx_edge_counts": {
-    "CALLS": 29223,
+    "CALLS": 29224,
     "REFERENCES": 545,
     "USES": 9558
    },
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.26.3",
-     "seconds": 26.2,
-     "peak_rss_mb": 6317,
+     "seconds": 32.9,
+     "peak_rss_mb": 7124,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
     "universe_note": "binary (has a main package): exported identifiers of importable packages are public API and leave both universes; exported ones in `internal/` and `main` packages are judged by the unreachable column (U1000 still treats them as used)",
     "tests_are_roots": true,
-    "lidx_claims": 158,
-    "public_api_group": 70,
+    "lidx_claims": 122,
+    "public_api_group": 62,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 1254,
      "decls": 5751,
      "load_seconds": 5.4,
      "rta_reachable_functions": 116215,
-     "rta_seconds": 20,
+     "rta_seconds": 27,
      "strict_roots_unreachable_functions": 60,
      "u1000_objects": {
       "quiet": 46,
       "unused": 13,
       "used": 64320
      },
-     "u1000_seconds": 0.2
+     "u1000_seconds": 0.3
     },
     "decls": 5751,
     "columns": {
@@ -3855,19 +3843,20 @@
        "public_api": 894,
        "main_init": 18
       },
-      "claims": 158,
+      "claims": 122,
       "claims_ungradable": {
        "file_not_in_program": 64,
-       "not_a_judged_declaration": 17
+       "exported_used_by_rule": 34,
+       "not_a_judged_declaration": 16
       },
       "all": {
-       "graded": 77,
+       "graded": 8,
        "tp": 8,
-       "fp": 69,
-       "precision": 0.1039,
+       "fp": 0,
+       "precision": 1.0,
        "precision_ci": [
-        0.0536,
-        0.1918
+        0.6756,
+        1.0
        ],
        "dead": 11,
        "found": 8,
@@ -3880,13 +3869,13 @@
        "dead_claimable_kinds": 11
       },
       "no_exported": {
-       "graded": 12,
+       "graded": 8,
        "tp": 8,
-       "fp": 4,
-       "precision": 0.6667,
+       "fp": 0,
+       "precision": 1.0,
        "precision_ci": [
-        0.3906,
-        0.8619
+        0.6756,
+        1.0
        ],
        "dead": 11,
        "found": 8,
@@ -3899,13 +3888,13 @@
       "by_kind": {
        "function": {
         "all": {
-         "graded": 15,
+         "graded": 6,
          "tp": 6,
-         "fp": 9,
-         "precision": 0.4,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.1982,
-          0.6425
+          0.6097,
+          1.0
          ],
          "dead": 9,
          "found": 6,
@@ -3916,13 +3905,13 @@
          ]
         },
         "no_exported": {
-         "graded": 7,
+         "graded": 6,
          "tp": 6,
-         "fp": 1,
-         "precision": 0.8571,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.4869,
-          0.9743
+          0.6097,
+          1.0
          ],
          "dead": 9,
          "found": 6,
@@ -3936,13 +3925,13 @@
        },
        "method": {
         "all": {
-         "graded": 60,
+         "graded": 2,
          "tp": 2,
-         "fp": 58,
-         "precision": 0.0333,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.0092,
-          0.1136
+          0.3424,
+          1.0
          ],
          "dead": 2,
          "found": 2,
@@ -3953,13 +3942,13 @@
          ]
         },
         "no_exported": {
-         "graded": 5,
+         "graded": 2,
          "tp": 2,
-         "fp": 3,
-         "precision": 0.4,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.1176,
-          0.7693
+          0.3424,
+          1.0
          ],
          "dead": 2,
          "found": 2,
@@ -3973,13 +3962,13 @@
        },
        "type": {
         "all": {
-         "graded": 2,
+         "graded": 0,
          "tp": 0,
-         "fp": 2,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -4011,35 +4000,18 @@
       },
       "by_tier": {
        "high": {
-        "graded": 9,
+        "graded": 8,
         "tp": 8,
-        "fp": 1,
-        "precision": 0.8889,
+        "fp": 0,
+        "precision": 1.0,
         "precision_ci": [
-         0.565,
-         0.9801
-        ]
-       },
-       "medium": {
-        "graded": 68,
-        "tp": 0,
-        "fp": 68,
-        "precision": 0.0,
-        "precision_ci": [
-         0.0,
-         0.0535
+         0.6756,
+         1.0
         ]
        }
       },
-      "fp_categories": {
-       "exported_used_by_rule": 65,
-       "referenced_method": 3,
-       "referenced_function": 1
-      },
-      "fp_categories_no_exported": {
-       "referenced_method": 3,
-       "referenced_function": 1
-      },
+      "fp_categories": {},
+      "fp_categories_no_exported": {},
       "fn_categories": {
        "incoming_from_tests_only": 3
       },
@@ -4063,20 +4035,20 @@
        "public_api": 647,
        "main_init": 18
       },
-      "claims": 158,
+      "claims": 122,
       "claims_ungradable": {
        "file_not_in_program": 64,
-       "not_a_judged_declaration": 17,
+       "not_a_judged_declaration": 16,
        "not_a_function": 2
       },
       "all": {
-       "graded": 75,
+       "graded": 40,
        "tp": 21,
-       "fp": 54,
-       "precision": 0.28,
+       "fp": 19,
+       "precision": 0.525,
        "precision_ci": [
-        0.191,
-        0.3904
+        0.375,
+        0.6706
        ],
        "dead": 34,
        "found": 21,
@@ -4089,13 +4061,13 @@
        "dead_claimable_kinds": 34
       },
       "no_exported": {
-       "graded": 12,
+       "graded": 8,
        "tp": 8,
-       "fp": 4,
-       "precision": 0.6667,
+       "fp": 0,
+       "precision": 1.0,
        "precision_ci": [
-        0.3906,
-        0.8619
+        0.6756,
+        1.0
        ],
        "dead": 11,
        "found": 8,
@@ -4108,13 +4080,13 @@
       "by_kind": {
        "function": {
         "all": {
-         "graded": 15,
+         "graded": 14,
          "tp": 14,
-         "fp": 1,
-         "precision": 0.9333,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.7018,
-          0.9881
+          0.7847,
+          1.0
          ],
          "dead": 17,
          "found": 14,
@@ -4125,13 +4097,13 @@
          ]
         },
         "no_exported": {
-         "graded": 7,
+         "graded": 6,
          "tp": 6,
-         "fp": 1,
-         "precision": 0.8571,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.4869,
-          0.9743
+          0.6097,
+          1.0
          ],
          "dead": 9,
          "found": 6,
@@ -4145,13 +4117,13 @@
        },
        "method": {
         "all": {
-         "graded": 60,
+         "graded": 26,
          "tp": 7,
-         "fp": 53,
-         "precision": 0.1167,
+         "fp": 19,
+         "precision": 0.2692,
          "precision_ci": [
-          0.0577,
-          0.2218
+          0.137,
+          0.4608
          ],
          "dead": 17,
          "found": 7,
@@ -4162,13 +4134,13 @@
          ]
         },
         "no_exported": {
-         "graded": 5,
+         "graded": 2,
          "tp": 2,
-         "fp": 3,
-         "precision": 0.4,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.1176,
-          0.7693
+          0.3424,
+          1.0
          ],
          "dead": 2,
          "found": 2,
@@ -4183,34 +4155,30 @@
       },
       "by_tier": {
        "high": {
-        "graded": 9,
+        "graded": 8,
         "tp": 8,
-        "fp": 1,
-        "precision": 0.8889,
+        "fp": 0,
+        "precision": 1.0,
         "precision_ci": [
-         0.565,
-         0.9801
+         0.6756,
+         1.0
         ]
        },
        "medium": {
-        "graded": 66,
+        "graded": 32,
         "tp": 13,
-        "fp": 53,
-        "precision": 0.197,
+        "fp": 19,
+        "precision": 0.4062,
         "precision_ci": [
-         0.1189,
-         0.3084
+         0.2552,
+         0.5774
         ]
        }
       },
       "fp_categories": {
-       "reachable_method": 53,
-       "reachable_function": 1
+       "reachable_method": 19
       },
-      "fp_categories_no_exported": {
-       "reachable_method": 3,
-       "reachable_function": 1
-      },
+      "fp_categories_no_exported": {},
       "fn_categories": {
        "no_incoming_edge_but_filtered": 9,
        "incoming_from_tests_only": 3,
@@ -4433,12 +4401,12 @@
     },
     "dead_code_xref": {
      "unref": {
-      "fp_items": 4,
+      "fp_items": 0,
       "with_value_reference": 0,
       "lidx_has_no_reference_to_it": 0
      },
      "reach": {
-      "fp_items": 54,
+      "fp_items": 19,
       "with_value_reference": 0,
       "lidx_has_no_reference_to_it": 0
      }
@@ -4452,11 +4420,11 @@
    "repo": "syft",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 11.9,
+   "index_seconds": 14.3,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "go1.26.3",
-    "seconds": 65.4
+    "seconds": 89.7
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 832,
@@ -4469,47 +4437,47 @@
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 4619,
+    "matched_oracle_edges": 4620,
     "dispatch_edges": 3291,
     "dispatch_matched": 1273,
-    "recall_comparable": 0.7417,
+    "recall_comparable": 0.7418,
     "recall_comparable_ci": [
-     0.732,
-     0.7512
+     0.7321,
+     0.7513
     ],
     "closure_edges": 1068,
     "unresolved_pairs_excluded": 0,
     "precision_if_unresolved_counted_wrong": 1.0,
-    "recall_strict": 0.7417,
+    "recall_strict": 0.7418,
     "recall_strict_ci": [
-     0.732,
-     0.7512
+     0.7321,
+     0.7513
     ],
-    "lidx_pairs_total": 12206,
-    "graded": 6075,
-    "tp": 6075,
+    "lidx_pairs_total": 12207,
+    "graded": 6076,
+    "tp": 6076,
     "fp": 0,
     "precision": 1.0,
     "precision_ci": [
      0.9994,
      1.0
     ],
-    "recall": 0.9927,
+    "recall": 0.9929,
     "recall_ci": [
-     0.9898,
-     0.9948
+     0.9901,
+     0.9949
     ],
     "oracle_edges_both_ends_indexed": 4653,
-    "recall_both_ends_indexed": 0.9927,
-    "recall_incl_capture_gap": 0.5814,
+    "recall_both_ends_indexed": 0.9929,
+    "recall_incl_capture_gap": 0.5816,
     "ungradable": {
      "caller_file_not_covered": 5592,
      "caller_not_judged": 539
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 2040,
-      "tp": 2040,
+      "graded": 2041,
+      "tp": 2041,
       "precision": 1.0,
       "ci": [
        0.9981,
@@ -4546,7 +4514,7 @@
     },
     "fp_categories": {},
     "fn_categories": {
-     "no_edge_at_site": 18,
+     "no_edge_at_site": 17,
      "other_call_on_line_missed": 7,
      "marked_external": 6,
      "recorded_as_uses": 3
@@ -4558,47 +4526,47 @@
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 4619,
+    "matched_oracle_edges": 4620,
     "dispatch_edges": 3291,
     "dispatch_matched": 1253,
-    "recall_comparable": 0.7361,
+    "recall_comparable": 0.7362,
     "recall_comparable_ci": [
-     0.7263,
-     0.7457
+     0.7265,
+     0.7458
     ],
     "closure_edges": 1101,
     "unresolved_pairs_excluded": 0,
     "precision_if_unresolved_counted_wrong": 1.0,
-    "recall_strict": 0.7361,
+    "recall_strict": 0.7362,
     "recall_strict_ci": [
-     0.7263,
-     0.7457
+     0.7265,
+     0.7458
     ],
-    "lidx_pairs_total": 11766,
-    "graded": 5872,
-    "tp": 5872,
+    "lidx_pairs_total": 11767,
+    "graded": 5873,
+    "tp": 5873,
     "fp": 0,
     "precision": 1.0,
     "precision_ci": [
      0.9993,
      1.0
     ],
-    "recall": 0.9857,
+    "recall": 0.9859,
     "recall_ci": [
-     0.9819,
-     0.9887
+     0.9821,
+     0.9889
     ],
     "oracle_edges_both_ends_indexed": 4686,
-    "recall_both_ends_indexed": 0.9857,
-    "recall_incl_capture_gap": 0.579,
+    "recall_both_ends_indexed": 0.9859,
+    "recall_incl_capture_gap": 0.5792,
     "ungradable": {
      "caller_file_not_covered": 5387,
      "caller_not_judged": 507
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 2040,
-      "tp": 2040,
+      "graded": 2041,
+      "tp": 2041,
       "precision": 1.0,
       "ci": [
        0.9981,
@@ -4635,7 +4603,7 @@
     },
     "fp_categories": {},
     "fn_categories": {
-     "no_edge_at_site": 51,
+     "no_edge_at_site": 50,
      "other_call_on_line_missed": 7,
      "marked_external": 6,
      "recorded_as_uses": 3
@@ -4648,47 +4616,47 @@
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 4619,
+    "matched_oracle_edges": 4620,
     "dispatch_edges": 3291,
     "dispatch_matched": 1253,
-    "recall_comparable": 0.7392,
+    "recall_comparable": 0.7393,
     "recall_comparable_ci": [
-     0.7294,
-     0.7487
+     0.7295,
+     0.7488
     ],
     "closure_edges": 1068,
     "unresolved_pairs_excluded": 0,
     "precision_if_unresolved_counted_wrong": 1.0,
-    "recall_strict": 0.7392,
+    "recall_strict": 0.7393,
     "recall_strict_ci": [
-     0.7294,
-     0.7487
+     0.7295,
+     0.7488
     ],
-    "lidx_pairs_total": 11766,
-    "graded": 5872,
-    "tp": 5872,
+    "lidx_pairs_total": 11767,
+    "graded": 5873,
+    "tp": 5873,
     "fp": 0,
     "precision": 1.0,
     "precision_ci": [
      0.9993,
      1.0
     ],
-    "recall": 0.9927,
+    "recall": 0.9929,
     "recall_ci": [
-     0.9898,
-     0.9948
+     0.9901,
+     0.9949
     ],
     "oracle_edges_both_ends_indexed": 4653,
-    "recall_both_ends_indexed": 0.9927,
-    "recall_incl_capture_gap": 0.5814,
+    "recall_both_ends_indexed": 0.9929,
+    "recall_incl_capture_gap": 0.5816,
     "ungradable": {
      "caller_file_not_covered": 5387,
      "caller_not_judged": 507
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 2040,
-      "tp": 2040,
+      "graded": 2041,
+      "tp": 2041,
       "precision": 1.0,
       "ci": [
        0.9981,
@@ -4725,52 +4693,52 @@
     },
     "fp_categories": {},
     "fn_categories": {
-     "no_edge_at_site": 18,
+     "no_edge_at_site": 17,
      "other_call_on_line_missed": 7,
      "marked_external": 6,
      "recorded_as_uses": 3
     }
    },
    "calls_plus_references": {
-    "graded": 7344,
-    "tp": 6083,
+    "graded": 7345,
+    "tp": 6084,
     "fp": 1261,
     "precision": 0.8283,
     "precision_ci": [
      0.8195,
-     0.8367
+     0.8368
     ],
-    "recall": 0.9927,
+    "recall": 0.9929,
     "recall_ci": [
-     0.9898,
-     0.9948
+     0.9901,
+     0.9949
     ],
-    "matched_oracle_edges": 4619
+    "matched_oracle_edges": 4620
    },
    "lidx_edge_counts": {
-    "CALLS": 29223,
+    "CALLS": 29224,
     "REFERENCES": 545,
     "USES": 9558
    },
    "dead": {
     "oracle_meta": {
      "toolchain": "go1.26.3",
-     "seconds": 20.2,
-     "peak_rss_mb": 6425,
+     "seconds": 21.9,
+     "peak_rss_mb": 6672,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
     "universe_note": "binary (has a main package): exported identifiers of importable packages are public API and leave both universes; exported ones in `internal/` and `main` packages are judged by the unreachable column (U1000 still treats them as used)",
     "tests_are_roots": false,
-    "lidx_claims": 660,
-    "public_api_group": 91,
+    "lidx_claims": 631,
+    "public_api_group": 85,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 718,
      "decls": 4135,
-     "load_seconds": 3.1,
+     "load_seconds": 3.4,
      "rta_reachable_functions": 106256,
-     "rta_seconds": 16.9,
+     "rta_seconds": 18.2,
      "strict_roots_unreachable_functions": 310,
      "u1000_objects": {
       "quiet": 0,
@@ -4796,20 +4764,21 @@
        "public_api": 894,
        "main_init": 18
       },
-      "claims": 660,
+      "claims": 631,
       "claims_ungradable": {
-       "test_file_outside_cell": 389,
+       "test_file_outside_cell": 385,
+       "exported_used_by_rule": 122,
        "file_not_in_program": 92,
-       "not_a_judged_declaration": 16
+       "not_a_judged_declaration": 15
       },
       "all": {
-       "graded": 163,
+       "graded": 17,
        "tp": 0,
-       "fp": 163,
+       "fp": 17,
        "precision": 0.0,
        "precision_ci": [
         0.0,
-        0.023
+        0.1843
        ],
        "dead": 0,
        "found": 0,
@@ -4822,13 +4791,13 @@
        "dead_claimable_kinds": 0
       },
       "no_exported": {
-       "graded": 21,
+       "graded": 17,
        "tp": 0,
-       "fp": 21,
+       "fp": 17,
        "precision": 0.0,
        "precision_ci": [
         0.0,
-        0.1546
+        0.1843
        ],
        "dead": 0,
        "found": 0,
@@ -4841,13 +4810,13 @@
       "by_kind": {
        "function": {
         "all": {
-         "graded": 59,
+         "graded": 13,
          "tp": 0,
-         "fp": 59,
+         "fp": 13,
          "precision": 0.0,
          "precision_ci": [
           0.0,
-          0.0611
+          0.2281
          ],
          "dead": 0,
          "found": 0,
@@ -4858,13 +4827,13 @@
          ]
         },
         "no_exported": {
-         "graded": 14,
+         "graded": 13,
          "tp": 0,
-         "fp": 14,
+         "fp": 13,
          "precision": 0.0,
          "precision_ci": [
           0.0,
-          0.2153
+          0.2281
          ],
          "dead": 0,
          "found": 0,
@@ -4878,13 +4847,13 @@
        },
        "method": {
         "all": {
-         "graded": 102,
+         "graded": 4,
          "tp": 0,
-         "fp": 102,
+         "fp": 4,
          "precision": 0.0,
          "precision_ci": [
           0.0,
-          0.0363
+          0.4899
          ],
          "dead": 0,
          "found": 0,
@@ -4895,13 +4864,13 @@
          ]
         },
         "no_exported": {
-         "graded": 7,
+         "graded": 4,
          "tp": 0,
-         "fp": 7,
+         "fp": 4,
          "precision": 0.0,
          "precision_ci": [
           0.0,
-          0.3543
+          0.4899
          ],
          "dead": 0,
          "found": 0,
@@ -4915,13 +4884,13 @@
        },
        "type": {
         "all": {
-         "graded": 2,
+         "graded": 0,
          "tp": 0,
-         "fp": 2,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.6576
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -4953,34 +4922,23 @@
       },
       "by_tier": {
        "high": {
-        "graded": 18,
+        "graded": 17,
         "tp": 0,
-        "fp": 18,
+        "fp": 17,
         "precision": 0.0,
         "precision_ci": [
          0.0,
-         0.1759
-        ]
-       },
-       "medium": {
-        "graded": 145,
-        "tp": 0,
-        "fp": 145,
-        "precision": 0.0,
-        "precision_ci": [
-         0.0,
-         0.0258
+         0.1843
         ]
        }
       },
       "fp_categories": {
-       "exported_used_by_rule": 142,
-       "referenced_function": 14,
-       "referenced_method": 7
+       "referenced_function": 13,
+       "referenced_method": 4
       },
       "fp_categories_no_exported": {
-       "referenced_function": 14,
-       "referenced_method": 7
+       "referenced_function": 13,
+       "referenced_method": 4
       },
       "fn_categories": {},
       "public_api_oracle_dead": []
@@ -4993,8 +4951,8 @@
       },
       "dead": 243,
       "dead_by_kind": {
-       "method": 145,
-       "function": 98
+       "function": 98,
+       "method": 145
       },
       "live": 2384,
       "oracle_buckets": {
@@ -5002,21 +4960,21 @@
        "public_api": 647,
        "main_init": 18
       },
-      "claims": 660,
+      "claims": 631,
       "claims_ungradable": {
-       "test_file_outside_cell": 389,
+       "test_file_outside_cell": 385,
        "file_not_in_program": 92,
-       "not_a_judged_declaration": 16,
+       "not_a_judged_declaration": 15,
        "not_a_function": 2
       },
       "all": {
-       "graded": 161,
+       "graded": 137,
        "tp": 135,
-       "fp": 26,
-       "precision": 0.8385,
+       "fp": 2,
+       "precision": 0.9854,
        "precision_ci": [
-        0.7739,
-        0.8873
+        0.9483,
+        0.996
        ],
        "dead": 243,
        "found": 135,
@@ -5029,13 +4987,13 @@
        "dead_claimable_kinds": 243
       },
       "no_exported": {
-       "graded": 21,
+       "graded": 17,
        "tp": 17,
-       "fp": 4,
-       "precision": 0.8095,
+       "fp": 0,
+       "precision": 1.0,
        "precision_ci": [
-        0.6,
-        0.9233
+        0.8157,
+        1.0
        ],
        "dead": 61,
        "found": 17,
@@ -5048,13 +5006,13 @@
       "by_kind": {
        "function": {
         "all": {
-         "graded": 59,
+         "graded": 58,
          "tp": 58,
-         "fp": 1,
-         "precision": 0.9831,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.91,
-          0.997
+          0.9379,
+          1.0
          ],
          "dead": 98,
          "found": 58,
@@ -5065,13 +5023,13 @@
          ]
         },
         "no_exported": {
-         "graded": 14,
+         "graded": 13,
          "tp": 13,
-         "fp": 1,
-         "precision": 0.9286,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.6853,
-          0.9873
+          0.7719,
+          1.0
          ],
          "dead": 38,
          "found": 13,
@@ -5085,13 +5043,13 @@
        },
        "method": {
         "all": {
-         "graded": 102,
+         "graded": 79,
          "tp": 77,
-         "fp": 25,
-         "precision": 0.7549,
+         "fp": 2,
+         "precision": 0.9747,
          "precision_ci": [
-          0.6632,
-          0.8281
+          0.9123,
+          0.993
          ],
          "dead": 145,
          "found": 77,
@@ -5102,13 +5060,13 @@
          ]
         },
         "no_exported": {
-         "graded": 7,
+         "graded": 4,
          "tp": 4,
-         "fp": 3,
-         "precision": 0.5714,
+         "fp": 0,
+         "precision": 1.0,
          "precision_ci": [
-          0.2505,
-          0.8418
+          0.5101,
+          1.0
          ],
          "dead": 23,
          "found": 4,
@@ -5123,34 +5081,30 @@
       },
       "by_tier": {
        "high": {
-        "graded": 18,
+        "graded": 17,
         "tp": 17,
-        "fp": 1,
-        "precision": 0.9444,
+        "fp": 0,
+        "precision": 1.0,
         "precision_ci": [
-         0.7424,
-         0.9901
+         0.8157,
+         1.0
         ]
        },
        "medium": {
-        "graded": 143,
+        "graded": 120,
         "tp": 118,
-        "fp": 25,
-        "precision": 0.8252,
+        "fp": 2,
+        "precision": 0.9833,
         "precision_ci": [
-         0.7546,
-         0.8787
+         0.9413,
+         0.9954
         ]
        }
       },
       "fp_categories": {
-       "reachable_method": 25,
-       "reachable_function": 1
+       "reachable_method": 2
       },
-      "fp_categories_no_exported": {
-       "reachable_method": 3,
-       "reachable_function": 1
-      },
+      "fp_categories_no_exported": {},
       "fn_categories": {
        "incoming_from_dead_code_only": 61,
        "no_incoming_edge_but_filtered": 31,
@@ -5407,12 +5361,12 @@
     },
     "dead_code_xref": {
      "unref": {
-      "fp_items": 21,
+      "fp_items": 17,
       "with_value_reference": 1,
       "lidx_has_no_reference_to_it": 0
      },
      "reach": {
-      "fp_items": 26,
+      "fp_items": 2,
       "with_value_reference": 0,
       "lidx_has_no_reference_to_it": 0
      }
@@ -5430,7 +5384,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.3
+    "seconds": 1.6
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 48,
@@ -5698,21 +5652,21 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.4,
-     "peak_rss_mb": 709,
+     "peak_rss_mb": 669,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; test functions are the roots of the unreachable column",
     "tests_are_roots": true,
     "lidx_claims": 5,
-    "public_api_group": 22,
+    "public_api_group": 20,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 220,
      "decls": 395,
      "load_seconds": 0.8,
      "rta_reachable_functions": 14226,
-     "rta_seconds": 0.5,
+     "rta_seconds": 0.4,
      "strict_roots_unreachable_functions": 12,
      "u1000_objects": {
       "quiet": 8,
@@ -6287,7 +6241,7 @@
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.1
+    "seconds": 1.5
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 22,
@@ -6547,19 +6501,19 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.1,
-     "peak_rss_mb": 584,
+     "seconds": 1.0,
+     "peak_rss_mb": 571,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; with no tests the exported surface is also the set of roots, so the unreachable column judges unexported declarations only",
     "tests_are_roots": false,
     "lidx_claims": 31,
-    "public_api_group": 51,
+    "public_api_group": 48,
     "load_errors": 0,
     "oracle_stats": {
      "decls": 230,
-     "load_seconds": 0.7,
+     "load_seconds": 0.6,
      "rta_reachable_functions": 11819,
      "rta_seconds": 0.3,
      "u1000_objects": {
@@ -7128,11 +7082,11 @@
    "repo": "urfavecli",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 1.0,
+   "index_seconds": 1.2,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.6
+    "seconds": 2.2
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 300,
@@ -7430,28 +7384,28 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 1.7,
-     "peak_rss_mb": 808,
+     "peak_rss_mb": 755,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
     "universe_note": "binary (has a main package): exported identifiers of importable packages are public API and leave both universes; exported ones in `internal/` and `main` packages are judged by the unreachable column (U1000 still treats them as used)",
     "tests_are_roots": true,
     "lidx_claims": 18,
-    "public_api_group": 62,
+    "public_api_group": 58,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 1740,
      "decls": 1365,
      "load_seconds": 0.8,
      "rta_reachable_functions": 17507,
-     "rta_seconds": 0.6,
+     "rta_seconds": 0.5,
      "strict_roots_unreachable_functions": 16,
      "u1000_objects": {
       "quiet": 9,
       "unused": 25,
       "used": 10809
      },
-     "u1000_seconds": 0.1
+     "u1000_seconds": 0.2
     },
     "decls": 1365,
     "columns": {
@@ -7474,16 +7428,17 @@
       "claims": 18,
       "claims_ungradable": {
        "not_a_judged_declaration": 6,
+       "exported_used_by_rule": 5,
        "file_not_in_program": 5
       },
       "all": {
-       "graded": 7,
+       "graded": 2,
        "tp": 0,
-       "fp": 7,
+       "fp": 2,
        "precision": 0.0,
        "precision_ci": [
         0.0,
-        0.3543
+        0.6576
        ],
        "dead": 0,
        "found": 0,
@@ -7515,13 +7470,13 @@
       "by_kind": {
        "function": {
         "all": {
-         "graded": 1,
+         "graded": 0,
          "tp": 0,
-         "fp": 1,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -7552,13 +7507,13 @@
        },
        "method": {
         "all": {
-         "graded": 6,
+         "graded": 2,
          "tp": 0,
-         "fp": 6,
+         "fp": 2,
          "precision": 0.0,
          "precision_ci": [
           0.0,
-          0.3903
+          0.6576
          ],
          "dead": 0,
          "found": 0,
@@ -7635,20 +7590,9 @@
          0.0,
          0.6576
         ]
-       },
-       "medium": {
-        "graded": 5,
-        "tp": 0,
-        "fp": 5,
-        "precision": 0.0,
-        "precision_ci": [
-         0.0,
-         0.4345
-        ]
        }
       },
       "fp_categories": {
-       "exported_used_by_rule": 5,
        "referenced_method": 2
       },
       "fp_categories_no_exported": {
@@ -8034,11 +7978,11 @@
    "repo": "urfavecli",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 1.0,
+   "index_seconds": 1.2,
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.1
+    "seconds": 1.5
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 8,
@@ -8331,15 +8275,15 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.1,
-     "peak_rss_mb": 629,
+     "seconds": 1.3,
+     "peak_rss_mb": 656,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": false,
     "universe_note": "binary (has a main package): exported identifiers of importable packages are public API and leave both universes; exported ones in `internal/` and `main` packages are judged by the unreachable column (U1000 still treats them as used)",
     "tests_are_roots": false,
     "lidx_claims": 53,
-    "public_api_group": 115,
+    "public_api_group": 110,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 871,
@@ -8378,16 +8322,17 @@
       "claims_ungradable": {
        "test_file_outside_cell": 37,
        "file_not_in_program": 10,
-       "not_a_judged_declaration": 2
+       "not_a_judged_declaration": 2,
+       "exported_used_by_rule": 1
       },
       "all": {
-       "graded": 4,
+       "graded": 3,
        "tp": 1,
-       "fp": 3,
-       "precision": 0.25,
+       "fp": 2,
+       "precision": 0.3333,
        "precision_ci": [
-        0.0456,
-        0.6994
+        0.0615,
+        0.7923
        ],
        "dead": 1,
        "found": 1,
@@ -8419,13 +8364,13 @@
       "by_kind": {
        "function": {
         "all": {
-         "graded": 1,
+         "graded": 0,
          "tp": 0,
-         "fp": 1,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -8539,21 +8484,10 @@
          0.0615,
          0.7923
         ]
-       },
-       "medium": {
-        "graded": 1,
-        "tp": 0,
-        "fp": 1,
-        "precision": 0.0,
-        "precision_ci": [
-         0.0,
-         0.7935
-        ]
        }
       },
       "fp_categories": {
-       "referenced_method": 2,
-       "exported_used_by_rule": 1
+       "referenced_method": 2
       },
       "fp_categories_no_exported": {
        "referenced_method": 2
@@ -8939,11 +8873,11 @@
    "repo": "viper",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 0.5,
+   "index_seconds": 0.6,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.4
+    "seconds": 3.6
    },
    "oracle_dropped": {
     "caller_package_initializer": 2307,
@@ -9235,22 +9169,22 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.9,
-     "peak_rss_mb": 797,
+     "seconds": 1.4,
+     "peak_rss_mb": 899,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; test functions are the roots of the unreachable column",
     "tests_are_roots": true,
-    "lidx_claims": 8,
-    "public_api_group": 90,
+    "lidx_claims": 7,
+    "public_api_group": 87,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 349,
      "decls": 407,
-     "load_seconds": 1,
+     "load_seconds": 0.8,
      "rta_reachable_functions": 15990,
-     "rta_seconds": 0.7,
+     "rta_seconds": 0.5,
      "strict_roots_unreachable_functions": 71,
      "u1000_objects": {
       "quiet": 0,
@@ -9277,18 +9211,18 @@
        "exported_used_by_rule": 19,
        "main_init": 1
       },
-      "claims": 8,
+      "claims": 7,
       "claims_ungradable": {
        "not_a_judged_declaration": 7
       },
       "all": {
-       "graded": 1,
+       "graded": 0,
        "tp": 0,
-       "fp": 1,
-       "precision": 0.0,
+       "fp": 0,
+       "precision": null,
        "precision_ci": [
-        0.0,
-        0.7935
+        null,
+        null
        ],
        "dead": 0,
        "found": 0,
@@ -9357,13 +9291,13 @@
        },
        "method": {
         "all": {
-         "graded": 1,
+         "graded": 0,
          "tp": 0,
-         "fp": 1,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -9430,21 +9364,8 @@
         "universe": 12
        }
       },
-      "by_tier": {
-       "medium": {
-        "graded": 1,
-        "tp": 0,
-        "fp": 1,
-        "precision": 0.0,
-        "precision_ci": [
-         0.0,
-         0.7935
-        ]
-       }
-      },
-      "fp_categories": {
-       "exported_used_by_rule": 1
-      },
+      "by_tier": {},
+      "fp_categories": {},
       "fp_categories_no_exported": {},
       "fn_categories": {},
       "public_api_oracle_dead": []
@@ -9464,18 +9385,18 @@
        "not_a_function": 39,
        "main_init": 1
       },
-      "claims": 8,
+      "claims": 7,
       "claims_ungradable": {
        "not_a_judged_declaration": 7
       },
       "all": {
-       "graded": 1,
+       "graded": 0,
        "tp": 0,
-       "fp": 1,
-       "precision": 0.0,
+       "fp": 0,
+       "precision": null,
        "precision_ci": [
-        0.0,
-        0.7935
+        null,
+        null
        ],
        "dead": 0,
        "found": 0,
@@ -9544,13 +9465,13 @@
        },
        "method": {
         "all": {
-         "graded": 1,
+         "graded": 0,
          "tp": 0,
-         "fp": 1,
-         "precision": 0.0,
+         "fp": 0,
+         "precision": null,
          "precision_ci": [
-          0.0,
-          0.7935
+          null,
+          null
          ],
          "dead": 0,
          "found": 0,
@@ -9580,21 +9501,8 @@
         "universe": 49
        }
       },
-      "by_tier": {
-       "medium": {
-        "graded": 1,
-        "tp": 0,
-        "fp": 1,
-        "precision": 0.0,
-        "precision_ci": [
-         0.0,
-         0.7935
-        ]
-       }
-      },
-      "fp_categories": {
-       "reachable_method": 1
-      },
+      "by_tier": {},
+      "fp_categories": {},
       "fp_categories_no_exported": {},
       "fn_categories": {},
       "public_api_oracle_dead": []
@@ -9778,7 +9686,7 @@
       "lidx_has_no_reference_to_it": 0
      },
      "reach": {
-      "fp_items": 1,
+      "fp_items": 0,
       "with_value_reference": 0,
       "lidx_has_no_reference_to_it": 0
      }
@@ -9792,11 +9700,11 @@
    "repo": "viper",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 0.5,
+   "index_seconds": 0.6,
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 1.2
+    "seconds": 2.3
    },
    "oracle_dropped": {
     "caller_package_initializer": 1985,
@@ -10054,15 +9962,15 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 1.2,
-     "peak_rss_mb": 688,
+     "seconds": 1.3,
+     "peak_rss_mb": 722,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; with no tests the exported surface is also the set of roots, so the unreachable column judges unexported declarations only",
     "tests_are_roots": false,
-    "lidx_claims": 35,
-    "public_api_group": 105,
+    "lidx_claims": 32,
+    "public_api_group": 102,
     "load_errors": 0,
     "oracle_stats": {
      "decls": 283,
@@ -10094,9 +10002,9 @@
        "exported_used_by_rule": 4,
        "main_init": 1
       },
-      "claims": 35,
+      "claims": 32,
       "claims_ungradable": {
-       "test_file_outside_cell": 33,
+       "test_file_outside_cell": 30,
        "not_a_judged_declaration": 1
       },
       "all": {
@@ -10282,9 +10190,9 @@
        "public_api": 14,
        "main_init": 1
       },
-      "claims": 35,
+      "claims": 32,
       "claims_ungradable": {
-       "test_file_outside_cell": 33,
+       "test_file_outside_cell": 30,
        "not_a_judged_declaration": 1
       },
       "all": {
@@ -10612,11 +10520,11 @@
    "repo": "bubbletea",
    "lang": "go",
    "variant": "with_tests",
-   "index_seconds": 0.7,
+   "index_seconds": 0.8,
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.9
+    "seconds": 1.1
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 40,
@@ -10882,20 +10790,20 @@
    "dead": {
     "oracle_meta": {
      "toolchain": "local",
-     "seconds": 0.9,
-     "peak_rss_mb": 444,
+     "seconds": 1.3,
+     "peak_rss_mb": 445,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; test functions are the roots of the unreachable column",
     "tests_are_roots": true,
-    "lidx_claims": 26,
+    "lidx_claims": 25,
     "public_api_group": 23,
     "load_errors": 0,
     "oracle_stats": {
      "api_roots": 161,
      "decls": 297,
-     "load_seconds": 0.6,
+     "load_seconds": 0.8,
      "rta_reachable_functions": 7555,
      "rta_seconds": 0.3,
      "strict_roots_unreachable_functions": 24,
@@ -10924,9 +10832,9 @@
        "exported_used_by_rule": 6,
        "main_init": 1
       },
-      "claims": 26,
+      "claims": 25,
       "claims_ungradable": {
-       "file_not_in_program": 25,
+       "file_not_in_program": 24,
        "not_a_judged_declaration": 1
       },
       "all": {
@@ -11099,9 +11007,9 @@
        "test_root": 39,
        "main_init": 1
       },
-      "claims": 26,
+      "claims": 25,
       "claims_ungradable": {
-       "file_not_in_program": 25,
+       "file_not_in_program": 24,
        "not_a_judged_declaration": 1
       },
       "all": {
@@ -11447,11 +11355,11 @@
    "repo": "bubbletea",
    "lang": "go",
    "variant": "no_tests",
-   "index_seconds": 0.7,
+   "index_seconds": 0.8,
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.7
+    "seconds": 1.4
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 4,
@@ -11711,20 +11619,20 @@
     "oracle_meta": {
      "toolchain": "local",
      "seconds": 0.8,
-     "peak_rss_mb": 379,
+     "peak_rss_mb": 344,
      "tool": "staticcheck U1000 (honnef.co/go/tools v0.6.1) + RTA"
     },
     "library": true,
     "universe_note": "library (no main package): exported identifiers of importable packages are public API and leave both universes; U1000 additionally treats every exported identifier as used; with no tests the exported surface is also the set of roots, so the unreachable column judges unexported declarations only",
     "tests_are_roots": false,
-    "lidx_claims": 48,
+    "lidx_claims": 47,
     "public_api_group": 46,
     "load_errors": 0,
     "oracle_stats": {
      "decls": 234,
      "load_seconds": 0.5,
      "rta_reachable_functions": 5066,
-     "rta_seconds": 0.1,
+     "rta_seconds": 0.2,
      "u1000_objects": {
       "quiet": 0,
       "unused": 0,
@@ -11749,9 +11657,9 @@
        "public_api": 30,
        "main_init": 1
       },
-      "claims": 48,
+      "claims": 47,
       "claims_ungradable": {
-       "file_not_in_program": 25,
+       "file_not_in_program": 24,
        "test_file_outside_cell": 21,
        "not_a_judged_declaration": 1
       },
@@ -11942,9 +11850,9 @@
        "public_api": 6,
        "main_init": 1
       },
-      "claims": 48,
+      "claims": 47,
       "claims_ungradable": {
-       "file_not_in_program": 25,
+       "file_not_in_program": 24,
        "test_file_outside_cell": 21,
        "not_a_judged_declaration": 1
       },
@@ -12284,15 +12192,15 @@
   },
   "ts/zod": {
    "oracle_ts_version": "5.9.3",
-   "oracle_node_version": "v25.2.1",
+   "oracle_node_version": "v22.18.0",
    "cell": "ts/zod",
    "repo": "zod",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 5.9,
+   "index_seconds": 6.7,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 4.0
+    "seconds": 7.7
    },
    "oracle_dropped": {
     "callee_external": 1393,
@@ -12534,8 +12442,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.2,
-     "peak_rss_mb": 622,
+     "seconds": 3.5,
+     "peak_rss_mb": 512,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -12545,7 +12453,7 @@
     "public_api_group": 556,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 2.9,
+     "seconds": 3.1,
      "find_references_calls": 68,
      "diagnostics_6133_6196": 0,
      "api_declarations": 1932,
@@ -12562,8 +12470,8 @@
       },
       "dead": 18,
       "dead_by_kind": {
-       "type": 17,
-       "function": 1
+       "function": 1,
+       "type": 17
       },
       "live": 314,
       "oracle_buckets": {
@@ -12882,7 +12790,7 @@
       "packages/zod/src/v4/core/zsf.ts"
      ]
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -13067,15 +12975,15 @@
   },
   "ts/hono": {
    "oracle_ts_version": "5.9.3",
-   "oracle_node_version": "v25.2.1",
+   "oracle_node_version": "v22.18.0",
    "cell": "ts/hono",
    "repo": "hono",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 5.8,
+   "index_seconds": 5.9,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 2.1
+    "seconds": 3.0
    },
    "oracle_dropped": {
     "callee_external": 1833,
@@ -13315,8 +13223,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
-     "peak_rss_mb": 527,
+     "seconds": 2.5,
+     "peak_rss_mb": 394,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -13326,7 +13234,7 @@
     "public_api_group": 175,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 2,
+     "seconds": 2.1,
      "find_references_calls": 247,
      "diagnostics_6133_6196": 0,
      "api_declarations": 492,
@@ -13726,7 +13634,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -13913,15 +13821,15 @@
   },
   "ts/trpc": {
    "oracle_ts_version": "5.9.3",
-   "oracle_node_version": "v25.2.1",
+   "oracle_node_version": "v22.18.0",
    "cell": "ts/trpc",
    "repo": "trpc",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 9.7,
+   "index_seconds": 12.4,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 1.4
+    "seconds": 6.4
    },
    "oracle_dropped": {
     "callee_parameter": 33,
@@ -14126,8 +14034,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.4,
-     "peak_rss_mb": 333,
+     "seconds": 2.3,
+     "peak_rss_mb": 269,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -14137,7 +14045,7 @@
     "public_api_group": 108,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 1,
+     "seconds": 1.9,
      "find_references_calls": 19,
      "diagnostics_6133_6196": 0,
      "api_declarations": 338,
@@ -14441,7 +14349,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -14628,7 +14536,7 @@
   },
   "ts/ky": {
    "oracle_ts_version": "5.9.3",
-   "oracle_node_version": "v25.2.1",
+   "oracle_node_version": "v22.18.0",
    "cell": "ts/ky",
    "repo": "ky",
    "lang": "ts",
@@ -14636,7 +14544,7 @@
    "index_seconds": 2.0,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 0.9
+    "seconds": 1.3
    },
    "oracle_dropped": {
     "callee_anonymous": 6,
@@ -14826,8 +14734,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.1,
-     "peak_rss_mb": 326,
+     "seconds": 2.2,
+     "peak_rss_mb": 242,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -14837,7 +14745,7 @@
     "public_api_group": 3,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 0.6,
+     "seconds": 1.8,
      "find_references_calls": 73,
      "diagnostics_6133_6196": 0,
      "api_declarations": 40,
@@ -15201,7 +15109,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -15380,15 +15288,15 @@
   },
   "ts/immer": {
    "oracle_ts_version": "5.9.3",
-   "oracle_node_version": "v25.2.1",
+   "oracle_node_version": "v22.18.0",
    "cell": "ts/immer",
    "repo": "immer",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 1.1,
+   "index_seconds": 1.5,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 0.8
+    "seconds": 2.9
    },
    "oracle_dropped": {
     "callee_external": 201,
@@ -15573,8 +15481,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.9,
-     "peak_rss_mb": 303,
+     "seconds": 1.3,
+     "peak_rss_mb": 236,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -15584,7 +15492,7 @@
     "public_api_group": 15,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 0.5,
+     "seconds": 0.9,
      "find_references_calls": 77,
      "diagnostics_6133_6196": 8,
      "api_declarations": 32,
@@ -15908,7 +15816,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -16087,7 +15995,7 @@
   },
   "ts/h3": {
    "oracle_ts_version": "5.9.3",
-   "oracle_node_version": "v25.2.1",
+   "oracle_node_version": "v22.18.0",
    "cell": "ts/h3",
    "repo": "h3",
    "lang": "ts",
@@ -16095,7 +16003,7 @@
    "index_seconds": 3.2,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 1.3
+    "seconds": 1.7
    },
    "oracle_dropped": {
     "callee_external": 1101,
@@ -16314,7 +16222,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 1.5,
-     "peak_rss_mb": 358,
+     "peak_rss_mb": 274,
      "tool": "tsc 5.9.3 noUnusedLocals + LanguageService.findReferences"
     },
     "library": true,
@@ -16324,7 +16232,7 @@
     "public_api_group": 116,
     "load_errors": 0,
     "oracle_stats": {
-     "seconds": 1.1,
+     "seconds": 1.2,
      "find_references_calls": 159,
      "diagnostics_6133_6196": 0,
      "api_declarations": 287,
@@ -16723,7 +16631,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -16959,13 +16867,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 3.8,
+   "index_seconds": 5.3,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.2
+    "seconds": 52.0
    },
    "oracle_dropped": {
     "caller_not_in_function": 1539,
@@ -17108,8 +17016,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
-     "peak_rss_mb": 100,
+     "seconds": 5.5,
+     "peak_rss_mb": 99,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -17524,7 +17432,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -17721,13 +17629,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "no_tests",
-   "index_seconds": 3.8,
+   "index_seconds": 5.3,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 19.1
+    "seconds": 14.6
    },
    "oracle_dropped": {
     "caller_not_in_function": 1391,
@@ -17857,8 +17765,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
-     "peak_rss_mb": 96,
+     "seconds": 2.8,
+     "peak_rss_mb": 95,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -18269,7 +18177,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -18466,13 +18374,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "with_tests",
-   "index_seconds": 3.8,
+   "index_seconds": 5.3,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.1
+    "seconds": 12.7
    },
    "oracle_dropped": {
     "caller_not_in_function": 1606,
@@ -18615,8 +18523,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
-     "peak_rss_mb": 108,
+     "seconds": 3.7,
+     "peak_rss_mb": 107,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -19038,7 +18946,7 @@
       "tests/misc.rs"
      ]
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -19232,13 +19140,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 3.8,
+   "index_seconds": 5.3,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 14.6
+    "seconds": 14.9
    },
    "oracle_dropped": {
     "caller_not_in_function": 1552,
@@ -19382,8 +19290,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.6,
-     "peak_rss_mb": 100,
+     "seconds": 7.0,
+     "peak_rss_mb": 101,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -19798,7 +19706,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -20001,7 +19909,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 5.5
+    "seconds": 11.7
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -20128,7 +20036,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.3,
-     "peak_rss_mb": 6,
+     "peak_rss_mb": 0,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -20526,7 +20434,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -20707,7 +20615,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 4.3
+    "seconds": 7.2
    },
    "oracle_dropped": {
     "caller_not_in_function": 134,
@@ -20834,8 +20742,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.3,
-     "peak_rss_mb": 1,
+     "seconds": 0.2,
+     "peak_rss_mb": 0,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -21233,7 +21141,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -21412,7 +21320,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 4.4
+    "seconds": 8.3
    },
    "oracle_dropped": {
     "callee_external": 1629,
@@ -21538,7 +21446,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.3,
+     "seconds": 0.5,
      "peak_rss_mb": 34,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -21938,7 +21846,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -22119,7 +22027,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 4.6
+    "seconds": 7.9
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -22246,8 +22154,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.3,
-     "peak_rss_mb": 1,
+     "seconds": 0.2,
+     "peak_rss_mb": 0,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -22645,7 +22553,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -22820,13 +22728,13 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 5.2,
+   "index_seconds": 5.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 9.2
+    "seconds": 10.2
    },
    "oracle_dropped": {
     "callee_external": 2966,
@@ -22954,8 +22862,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.6,
-     "peak_rss_mb": 39,
+     "seconds": 0.5,
+     "peak_rss_mb": 36,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -22981,8 +22889,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 241,
       "oracle_buckets": {
@@ -23187,8 +23095,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 209,
       "oracle_buckets": {
@@ -23370,7 +23278,7 @@
       "src/syntax_mapping/builtin.rs"
      ]
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -23564,13 +23472,13 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 5.2,
+   "index_seconds": 5.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 29.0
+    "seconds": 38.8
    },
    "oracle_dropped": {
     "callee_external": 3074,
@@ -23698,7 +23606,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.3,
+     "seconds": 0.5,
      "peak_rss_mb": 36,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
@@ -23725,8 +23633,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 252,
       "oracle_buckets": {
@@ -23931,8 +23839,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 217,
       "oracle_buckets": {
@@ -24114,7 +24022,7 @@
       "src/syntax_mapping/builtin.rs"
      ]
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -24314,7 +24222,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 6.4
+    "seconds": 9.6
    },
    "oracle_dropped": {
     "callee_external": 1349,
@@ -24445,7 +24353,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 1,
+     "peak_rss_mb": 6,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -24471,8 +24379,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 55,
       "oracle_buckets": {
@@ -24674,8 +24582,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 48,
       "oracle_buckets": {
@@ -24846,7 +24754,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -25043,7 +24951,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 6.4
+    "seconds": 7.0
    },
    "oracle_dropped": {
     "callee_external": 1360,
@@ -25174,8 +25082,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.2,
-     "peak_rss_mb": 6,
+     "seconds": 0.3,
+     "peak_rss_mb": 0,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -25201,8 +25109,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 55,
       "oracle_buckets": {
@@ -25404,8 +25312,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 48,
       "oracle_buckets": {
@@ -25576,7 +25484,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -25767,13 +25675,13 @@
    "repo": "xsv",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 0.5,
+   "index_seconds": 0.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 3.7
+    "seconds": 5.9
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -25890,8 +25798,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.3,
-     "peak_rss_mb": 5,
+     "seconds": 0.2,
+     "peak_rss_mb": 0,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -26283,7 +26191,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -26466,13 +26374,13 @@
    "repo": "xsv",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 0.5,
+   "index_seconds": 0.9,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 3.7
+    "seconds": 6.8
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -26591,7 +26499,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 6,
+     "peak_rss_mb": 0,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -26983,7 +26891,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -27166,13 +27074,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 10.2,
+   "index_seconds": 13.3,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 22.9
+    "seconds": 37.5
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -27302,8 +27210,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 4.3,
-     "peak_rss_mb": 197,
+     "seconds": 11.4,
+     "peak_rss_mb": 198,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -27708,7 +27616,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -27916,13 +27824,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 10.2,
+   "index_seconds": 13.3,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 23.3
+    "seconds": 147.4
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -28053,8 +27961,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 4.1,
-     "peak_rss_mb": 199,
+     "seconds": 9.7,
+     "peak_rss_mb": 198,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -28459,7 +28367,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -28667,13 +28575,13 @@
    "repo": "just",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 5.9,
+   "index_seconds": 5.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 14.6
+    "seconds": 22.9
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -28816,7 +28724,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.9,
+     "seconds": 2.3,
      "peak_rss_mb": 72,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -29219,7 +29127,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -29425,13 +29333,13 @@
    "repo": "just",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 5.9,
+   "index_seconds": 5.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 10.5
+    "seconds": 18.0
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -29575,8 +29483,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.9,
-     "peak_rss_mb": 71,
+     "seconds": 1.7,
+     "peak_rss_mb": 72,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -29978,7 +29886,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -30184,13 +30092,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 5.3,
+   "index_seconds": 4.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 16.4
+    "seconds": 38.1
    },
    "oracle_dropped": {
     "callee_external": 8747,
@@ -30326,8 +30234,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.2,
-     "peak_rss_mb": 98,
+     "seconds": 2.8,
+     "peak_rss_mb": 99,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -30353,8 +30261,8 @@
       },
       "dead": 26,
       "dead_by_kind": {
-       "method": 7,
        "function": 17,
+       "method": 7,
        "type": 2
       },
       "live": 1132,
@@ -30567,8 +30475,8 @@
       },
       "dead": 28,
       "dead_by_kind": {
-       "method": 10,
-       "function": 18
+       "function": 18,
+       "method": 10
       },
       "live": 907,
       "oracle_buckets": {
@@ -30753,7 +30661,7 @@
      ],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -30960,13 +30868,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 5.3,
+   "index_seconds": 4.5,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 14.8
+    "seconds": 41.6
    },
    "oracle_dropped": {
     "callee_external": 8752,
@@ -31104,7 +31012,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 1.4,
+     "seconds": 2.7,
      "peak_rss_mb": 98,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
@@ -31131,8 +31039,8 @@
       },
       "dead": 26,
       "dead_by_kind": {
-       "method": 7,
        "function": 17,
+       "method": 7,
        "type": 2
       },
       "live": 1132,
@@ -31345,8 +31253,8 @@
       },
       "dead": 28,
       "dead_by_kind": {
-       "method": 10,
-       "function": 18
+       "function": 18,
+       "method": 10
       },
       "live": 907,
       "oracle_buckets": {
@@ -31531,7 +31439,7 @@
      ],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -31734,7 +31642,6 @@
  },
  "dead_toolchains": {
   "staticcheck (honnef.co/go/tools)": "v0.6.1",
-  "golang.org/x/tools (RTA, go/analysis)": "v0.38.0",
-  "typescript (noUnusedLocals, LanguageService)": "5.9.3"
+  "golang.org/x/tools (RTA, go/analysis)": "v0.38.0"
  }
 }
