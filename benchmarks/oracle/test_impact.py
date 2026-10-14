@@ -169,6 +169,20 @@ class TestReachTests(unittest.TestCase):
         self.assertFalse(root({"file": "s.rs", "line": 10, "name": "d"}))
         self.assertFalse(impact.test_root_predicate("ts", "no_tests", src)({"file": "s.rs", "line": 2, "name": "a"}))  # TypeScript: void
 
+    def test_go_example_is_a_root_only_with_an_output_comment(self):
+        src = FakeSources({"e_test.go": [
+            "func ExampleA() {", "\tf()", "\t// Output:", "\t// 1", "}",
+            "func ExampleB() {", "\tf()", "}",
+            "func ExampleC() {", "\t// Unordered output:", "\t// x", "}",
+            "func ExampleD() {", "\t// Output:", "\tf()", "\t// trailing note", "}",
+            "func (t T) ExampleE() {", "}",
+            "func TestX(t *testing.T) {", "}",
+        ]})
+        root = impact.test_root_predicate("go", "tests", src)
+        for line, name, want in [(1, "ExampleA", True), (6, "ExampleB", False), (9, "ExampleC", True), (13, "ExampleD", False),
+                                 (18, "ExampleE", False), (20, "TestX", True)]:
+            self.assertEqual(root({"file": "e_test.go", "line": line, "name": name}), want, name)
+
 
 class LeafHonestyTests(unittest.TestCase):
     def setUp(self):

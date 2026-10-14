@@ -4,7 +4,7 @@ Oracle side: the call graph each oracle already emits (Go RTA with dynamic calls
 transitively. For a seed `s`:
 
 * `Up_k(s)`   callers of `s` within `k` hops (k = 3, lidx's default depth, and unbounded),
-* `Tests(s)`  the test roots in `Up_k(s)` (Go `Test*`/`Benchmark*`/`Fuzz*` in `_test.go`; Rust `#[test]` functions, the attribute read
+* `Tests(s)`  the test roots in `Up_k(s)` (Go `Test*`/`Benchmark*`/`Fuzz*` and the `Example*` functions with an `// Output:` comment in `_test.go`; Rust `#[test]` functions, the attribute read
               from the lines above the declaration; TypeScript: void, test files are out of scope on both sides),
 * `Down_k(s)` callees of `s` within `k` hops.
 
@@ -33,6 +33,7 @@ EXAMPLES = 5
 LIST_CAP = 10  # committed extra/missing pairs per seed, k and kind
 BOOT = 1000
 GO_TEST_ROOT = re.compile(r"^(Test|Benchmark|Fuzz)([^a-z]|$)")
+GO_EXAMPLE = re.compile(r"^Example([^a-z]|$)")
 RUST_TEST_ATTR = re.compile(r"^#\[\s*(?:[A-Za-z_][\w]*::)*test\b")
 CALL_KINDS = ["CALLS", "DISPATCH"]
 ABSTRACT_RE = re.compile(r"^\s*(?:(?:public|protected|private|override|static)\s+)*abstract\b")
@@ -238,6 +239,30 @@ def seed_node(graph, seed):
 
 
 # ------------------------------------------------------------------ test roots
+def go_example_has_output(lines, start):
+    """`go test` runs an `Example*` function only when its body ends in an `// Output:` (or `// Unordered output:`) comment group:
+    the last comment group of the body starts with that word. `start` is the 0-based line of `func Example...`; the body ends at the
+    first line that is exactly `}` (gofmt'd top-level function) or on the declaration line itself when it closes there."""
+    first = lines[start]
+    if first.rstrip().endswith("}"):
+        return False  # a one-line body holds no comment group of its own
+    end = start + 1
+    while end < len(lines) and lines[end].rstrip() != "}":
+        end += 1
+    group, last = [], []
+    for ln in lines[start + 1:end]:
+        t = ln.strip()
+        if t.startswith("//") or t.startswith("/*"):
+            group.append(t.lstrip("/*").strip())
+        else:
+            if group:
+                last = group
+            group = []
+    if group:
+        last = group
+    return bool(last) and last[0].lower().startswith(("output:", "unordered output:"))
+
+
 def test_root_predicate(lang, cell_variant, src):
     """node info -> bool: is the oracle declaration a test root. TypeScript has none (test files are out of scope)."""
     if lang == "go":
@@ -247,7 +272,11 @@ def test_root_predicate(lang, cell_variant, src):
             lines = src.lines(inf["file"])
             text = lines[inf["line"] - 1] if 0 < inf["line"] <= len(lines) else ""
             # a top-level function, not a method: `func Name(` with no receiver
-            return bool(GO_TEST_ROOT.match(inf["name"])) and re.match(r"^\s*func\s+" + re.escape(inf["name"]) + r"\b", text) is not None
+            if re.match(r"^\s*func\s+" + re.escape(inf["name"]) + r"\b", text) is None:
+                return False
+            if GO_EXAMPLE.match(inf["name"]):
+                return go_example_has_output(lines, inf["line"] - 1)
+            return bool(GO_TEST_ROOT.match(inf["name"]))
         return go_root
     if lang == "rust":
         def rust_root(inf):
