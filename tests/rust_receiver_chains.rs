@@ -273,7 +273,7 @@ pub fn f(v: Vec<u8>) {\n    (0..256).map(|x| x);\n    \"abc\".map();\n    v.len(
 #[test]
 fn chained_same_file_receivers_are_typed() {
     let src = format!("{BUILDER_RS}pub fn go() {{\n    B::new().a(1).b().build();\n}}\n");
-    assert_eq!(receivers(&src, "a"), ["B"]);
+    assert_eq!(receivers(&src, "a"), ["=crate|B"]);
     assert_eq!(receivers(&src, "b"), ["B"]);
     assert_eq!(receivers(&src, "build"), ["B"]);
 }
