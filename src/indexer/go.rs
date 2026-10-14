@@ -603,7 +603,7 @@ fn field_only_names(root: Node<'_>, source: &str) -> HashSet<String> {
 /// parameters in scope are no mention.
 fn collect_type_uses(root: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
-    let mut seen = HashSet::new();
+    let mut seen: HashMap<String, (usize, Vec<String>)> = HashMap::new();
     // Depth-first on one cursor with the path of ancestors at hand:
     // `Node::parent` walks down from the root, which is too slow to call per
     // mention, and a child list per node is too many allocations.
@@ -624,8 +624,9 @@ fn collect_type_uses(root: Node<'_>, ctx: &Context, source: &str, output: &mut E
                 ancestors.push(node);
             }
             if is_type_mention(mention, &ancestors, &name, source) {
+                let enclosing = enclosing_declaration(ctx, &ancestors, source);
                 push_type_use(
-                    ctx, dir, source, mention, &name, qualifier, &mut seen, output,
+                    ctx, dir, source, mention, &name, qualifier, enclosing, &mut seen, output,
                 );
             }
         }
@@ -643,6 +644,48 @@ fn collect_type_uses(root: Node<'_>, ctx: &Context, source: &str, output: &mut E
             path.pop();
         }
     }
+    // Where each type is mentioned: the declarations (`""`: outside any)
+    // whose bodies hold a mention, so `dead_symbols` can tell a type used by
+    // live code from one only dead code mentions.
+    for (index, declarations) in seen.into_values() {
+        output.edges[index].detail = Some(json!({ "in": declarations }).to_string());
+    }
+}
+
+/// The qualname of the symbol whose declaration holds a type mention
+/// (`<module>.F`, `<module>.T.m`, `<module>.V`), `""` when it sits outside
+/// any, and `None` for a blank `var _ I = ...` assertion, which uses nothing.
+fn enclosing_declaration(ctx: &Context, ancestors: &[Node<'_>], source: &str) -> Option<String> {
+    for node in ancestors.iter().rev() {
+        match node.kind() {
+            "function_declaration" => {
+                let name = node.child_by_field_name("name")?;
+                return Some(format!("{}.{}", ctx.module, node_text(name, source)));
+            }
+            "method_declaration" => {
+                let name = node_text(node.child_by_field_name("name")?, source);
+                let receiver = node_text(node.child_by_field_name("receiver")?, source);
+                let ty = receiver
+                    .trim_matches(|c| c == '(' || c == ')')
+                    .rsplit(' ')
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start_matches('*');
+                let ty = ty.split('[').next().unwrap_or(ty);
+                return Some(format!("{}.{ty}.{name}", ctx.module));
+            }
+            "type_spec" | "type_alias" => {
+                let name = node.child_by_field_name("name")?;
+                return Some(format!("{}.{}", ctx.module, node_text(name, source)));
+            }
+            "var_spec" | "const_spec" => {
+                let name = node_text(node.child_by_field_name("name")?, source);
+                return (name != "_").then(|| format!("{}.{name}", ctx.module));
+            }
+            _ => {}
+        }
+    }
+    Some(String::new())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -653,7 +696,8 @@ fn push_type_use(
     mention: Node<'_>,
     name: &str,
     qualifier: Option<String>,
-    seen: &mut HashSet<String>,
+    enclosing: Option<String>,
+    seen: &mut HashMap<String, (usize, Vec<String>)>,
     output: &mut ExtractedFile,
 ) {
     let (target, candidate) = match &qualifier {
@@ -673,9 +717,18 @@ fn push_type_use(
             (format!("{path}.{name}"), format!("{path}|{name}"))
         }
     };
-    if !seen.insert(candidate.clone()) {
+    if let Some((_, declarations)) = seen.get_mut(&candidate) {
+        if let Some(e) = enclosing
+            && !declarations.contains(&e)
+        {
+            declarations.push(e);
+        }
         return;
     }
+    seen.insert(
+        candidate.clone(),
+        (output.edges.len(), enclosing.into_iter().collect()),
+    );
     let (start_line, _, end_line, _, start_byte, end_byte) = span(mention);
     output.edges.push(EdgeInput {
         kind: edge_views::REFERENCES.to_string(),
@@ -1185,9 +1238,20 @@ fn var_signature(spec: Node<'_>, name: &str, ctx: &Context, source: &str) -> Opt
     let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
     let scope = LocalTypes::package_scope(dir, ctx.imports.clone());
     if let Some(ty) = spec.child_by_field_name("type") {
-        return scope
-            .type_text(ty, source)
-            .map(|t| crate::model::go_type_marker(&t));
+        let text = scope.type_text(ty, source)?;
+        // `var _ pkg.Iface = (*T)(nil)`: T is declared to implement Iface.
+        if name == "_"
+            && text.trim_start_matches('*').contains('.')
+            && let Some(value) = spec.child_by_field_name("value")
+            && let Some(asserted) = asserted_type(value, source)
+        {
+            return Some(format!(
+                "{}\n{}",
+                crate::model::go_assert_marker(text.trim_start_matches('*'), &asserted),
+                crate::model::go_type_marker(&text)
+            ));
+        }
+        return Some(crate::model::go_type_marker(&text));
     }
     let mut cursor = spec.walk();
     let names: Vec<Node<'_>> = spec.children_by_field_name("name", &mut cursor).collect();
@@ -1206,6 +1270,51 @@ fn var_signature(spec: Node<'_>, name: &str, ctx: &Context, source: &str) -> Opt
         "= {}",
         serde_json::to_string(&value).ok()?
     )))
+}
+
+/// The package-local type a blank-variable assertion's value builds:
+/// `(*T)(nil)`, `T(nil)`, `T{}`, `&T{}`, `new(T)`. `None` for a type of
+/// another package or any other value.
+fn asserted_type(values: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = values.walk();
+    let first = values.named_children(&mut cursor).next()?;
+    asserted_expr(first, source)
+}
+
+fn asserted_expr(expr: Node<'_>, source: &str) -> Option<String> {
+    let ident = |n: Node<'_>| {
+        matches!(n.kind(), "identifier" | "type_identifier").then(|| node_text(n, source))
+    };
+    match expr.kind() {
+        "unary_expression" => asserted_expr(expr.child_by_field_name("operand")?, source),
+        "composite_literal" => {
+            let ty = expr.child_by_field_name("type")?;
+            let ty = if ty.kind() == "generic_type" {
+                ty.child_by_field_name("type")?
+            } else {
+                ty
+            };
+            ident(ty)
+        }
+        "call_expression" => {
+            let function = expr.child_by_field_name("function")?;
+            if function.kind() == "identifier" && node_text(function, source) == "new" {
+                let args = expr.child_by_field_name("arguments")?;
+                let mut c = args.walk();
+                return ident(args.named_children(&mut c).next()?);
+            }
+            let mut inner = function;
+            while inner.kind() == "parenthesized_expression" {
+                let mut c = inner.walk();
+                inner = inner.named_children(&mut c).next()?;
+            }
+            if inner.kind() == "unary_expression" {
+                inner = inner.child_by_field_name("operand")?;
+            }
+            ident(inner)
+        }
+        _ => None,
+    }
 }
 
 fn walk_children(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -1883,7 +1992,7 @@ fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, Strin
 
 /// The name an import binds without an alias: its last path element, or the
 /// one before a trailing major-version element (`example.com/m/v2` -> `m`).
-fn default_package_name(path: &str) -> Option<String> {
+pub(crate) fn default_package_name(path: &str) -> Option<String> {
     let mut parts = path.rsplit('/');
     let last = parts.next()?;
     let is_major =

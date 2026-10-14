@@ -72,8 +72,9 @@ const RUST: &[(&str, &str)] = &[
     ),
     (
         "src/main.rs",
-        "fn used() {}\nfn only_unit_test() {}\nfn only_integration() {}\n\nfn main() { used(); }\n\n\
-         #[test]\nfn unit() { only_unit_test(); }\n",
+        "fn used() {}\nfn only_unit_test() {}\nfn only_integration() {}\nfn only_cfg_test_helper() {}\n\nfn main() { used(); }\n\n\
+         #[test]\nfn unit() { only_unit_test(); }\n\n\
+         #[cfg(test)]\nmod tests {\n    fn helper() { super::only_cfg_test_helper(); }\n}\n",
     ),
     ("tests/it.rs", "#[test]\nfn it() {}\n\nfn helper() {}\n"),
 ];
@@ -92,6 +93,9 @@ fn rust_test_attribute_functions_are_not_roots_with_the_option() {
             .starts_with("reached_only_from_tests"),
         "{r}"
     );
+    // a helper inside a `#[cfg(test)]` module is test code too
+    assert!(row(&default, "only_cfg_test_helper").is_none(), "{default}");
+    assert!(row(&strict, "only_cfg_test_helper").is_some(), "{strict}");
     assert!(row(&strict, "::used").is_none(), "{strict}");
     assert!(row(&strict, "::unit").is_none(), "{strict}");
 }

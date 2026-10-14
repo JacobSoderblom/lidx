@@ -49,6 +49,30 @@ pub const GO_TEST_MARKER: &str = "#[go_test]";
 pub const GO_TYPE_MARKER_PREFIX: &str = "#[go_type(";
 pub const GO_TYPE_MARKER_SUFFIX: &str = ")]";
 
+/// First line of the signature of a Go blank variable that asserts a type
+/// implements an interface (`var _ pkg.Iface = (*T)(nil)`): `#[go_assert(pkg.Iface|T)]`
+/// with the interface text as written and the unqualified name of `T`.
+/// `db::external_ifaces` reads it back through [`go_assert_data`]: when
+/// `pkg` is an import outside the repository, T implements an interface whose
+/// methods are not indexed. Resolver-only, hidden on read.
+pub const GO_ASSERT_MARKER_PREFIX: &str = "#[go_assert(";
+
+/// The stored signature of a blank-variable assertion of `ty` to `iface`.
+pub fn go_assert_marker(iface: &str, ty: &str) -> String {
+    format!("{GO_ASSERT_MARKER_PREFIX}{iface}|{ty}{GO_TYPE_MARKER_SUFFIX}")
+}
+
+/// `(interface text, asserted type)` of a stored assertion signature.
+pub fn go_assert_data(signature: &str) -> Option<(&str, &str)> {
+    signature
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(GO_ASSERT_MARKER_PREFIX)?
+                .strip_suffix(GO_TYPE_MARKER_SUFFIX)
+        })?
+        .split_once('|')
+}
+
 /// The stored signature carrying Go typing `data`.
 pub fn go_type_marker(data: &str) -> String {
     format!("{GO_TYPE_MARKER_PREFIX}{data}{GO_TYPE_MARKER_SUFFIX}")
@@ -56,9 +80,10 @@ pub fn go_type_marker(data: &str) -> String {
 
 /// The Go typing data of a stored signature, if it carries any.
 pub fn go_type_data(signature: &str) -> Option<&str> {
-    signature
-        .strip_prefix(GO_TYPE_MARKER_PREFIX)?
-        .strip_suffix(GO_TYPE_MARKER_SUFFIX)
+    signature.lines().find_map(|line| {
+        line.strip_prefix(GO_TYPE_MARKER_PREFIX)?
+            .strip_suffix(GO_TYPE_MARKER_SUFFIX)
+    })
 }
 
 /// Line a Rust fn or struct/enum signature carries when a type written in its
@@ -116,6 +141,7 @@ pub fn strip_internal_markers(signature: &str) -> std::borrow::Cow<'_, str> {
         line.starts_with(NESTED_MARKER_PREFIX)
             || line == TRAIT_IMPL_MARKER
             || line.starts_with(GO_TYPE_MARKER_PREFIX)
+            || line.starts_with(GO_ASSERT_MARKER_PREFIX)
             || line.starts_with(RUST_TYPES_MARKER_PREFIX)
             || line.starts_with(RUST_USES_MARKER_PREFIX)
     };

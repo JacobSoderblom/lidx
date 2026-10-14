@@ -669,6 +669,7 @@ impl Db {
                          AND NOT EXISTS (
                            SELECT 1 FROM symbols ts WHERE ts.id = e.source_symbol_id
                              AND (COALESCE(ts.signature, '') LIKE '#[go_test]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[cfg(test)]%'
                                OR COALESCE(ts.signature, '') LIKE '%#[test]%'
                                OR COALESCE(ts.signature, '') LIKE '%::test]%'
                                OR COALESCE(ts.signature, '') LIKE '%#[rstest]%'
@@ -1016,7 +1017,6 @@ impl Db {
             graph_version,
             claimed: &claimed,
             reachability: &reachability,
-            repo_root,
             test_files: &test_files,
             go_evidence: Default::default(),
             live: None,
@@ -1061,7 +1061,6 @@ struct ExternalInterfaceProbe<'a> {
     graph_version: i64,
     claimed: &'a HashSet<i64>,
     reachability: &'a str,
-    repo_root: &'a Path,
     test_files: &'a HashSet<i64>,
     go_evidence: super::external_ifaces::GoExternalEvidence,
     /// Computed on the first method that needs it.
@@ -1083,7 +1082,6 @@ impl ExternalInterfaceProbe<'_> {
                     graph_version,
                     self.reachability,
                     self.claimed,
-                    self.repo_root,
                     self.test_files,
                 )?);
             }
@@ -1128,14 +1126,8 @@ impl ExternalInterfaceProbe<'_> {
                         .and_then(|q| q.rsplit('.').next())
                         .unwrap_or_default();
                     let dir = method.file_path.rsplit_once('/').map_or("", |(d, _)| d);
-                    self.go_evidence.of(
-                        conn,
-                        graph_version,
-                        self.repo_root,
-                        parent,
-                        type_name,
-                        dir,
-                    )?
+                    self.go_evidence
+                        .of(conn, graph_version, parent, type_name, dir)?
                 } else {
                     std
                 }
@@ -1651,27 +1643,27 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
 /// though `dead_symbols` finds an incoming edge for it (#472).
 ///
 /// A Go type mention is stored as one `USES` edge per file from the file's
-/// module, so the edge alone cannot say whether the mentioning code is live.
-/// Those edges are settled last, by reading the file: the type is live when
-/// some mention lies in a live declaration (or outside any declaration), and
-/// mentions inside the type's own declaration and methods do not count.
+/// module, its `detail` listing the declarations that hold a mention
+/// (`{"in": [..]}`, `""` for one outside any declaration). Those edges are
+/// settled last: the type is live when a listed declaration is live, the
+/// type's own declaration and methods not counting. An edge without the list
+/// (an index from before it) keeps the benefit of the doubt.
 fn live_symbols(
     conn: &rusqlite::Connection,
     graph_version: i64,
     reachability: &str,
     claimed: &HashSet<i64>,
-    repo_root: &Path,
     test_files: &HashSet<i64>,
 ) -> Result<HashSet<i64>> {
     struct Mention {
         target: i64,
         qualname: String,
-        name: String,
-        path: String,
+        file_id: i64,
+        declarations: Option<Vec<String>>,
     }
     let mut stmt = conn.prepare(&format!(
-        "SELECT e.source_symbol_id, e.target_symbol_id, e.kind, ss.kind, f.language, f.path,
-                t.name, t.qualname, e.file_id
+        "SELECT e.source_symbol_id, e.target_symbol_id, e.kind, ss.kind, f.language,
+                t.qualname, e.file_id, e.detail
          FROM edges e
          LEFT JOIN symbols ss ON ss.id = e.source_symbol_id
          JOIN symbols t ON t.id = e.target_symbol_id
@@ -1692,13 +1684,12 @@ fn live_symbols(
             r.get::<_, Option<String>>(3)?,
             r.get::<_, String>(4)?,
             r.get::<_, String>(5)?,
-            r.get::<_, String>(6)?,
-            r.get::<_, String>(7)?,
-            r.get::<_, i64>(8)?,
+            r.get::<_, i64>(6)?,
+            r.get::<_, Option<String>>(7)?,
         ))
     })?;
     for row in rows {
-        let (source, target, kind, source_kind, language, path, name, qualname, file_id) = row?;
+        let (source, target, kind, source_kind, language, qualname, file_id, detail) = row?;
         if test_files.contains(&file_id) {
             continue;
         }
@@ -1715,11 +1706,20 @@ fn live_symbols(
                     && language == "go"
                     && source_kind.as_deref() == Some("module") =>
             {
+                let declarations = detail
+                    .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+                    .and_then(|v| {
+                        v["in"].as_array().map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                    });
                 mentions.push(Mention {
                     target,
                     qualname,
-                    name,
-                    path,
+                    file_id,
+                    declarations,
                 });
             }
             Some(source) => out_edges.entry(source).or_default().push(target),
@@ -1747,12 +1747,23 @@ fn live_symbols(
         }
     }
     drop(cstmt);
-    let mut ids = conn.prepare("SELECT id, file_id FROM symbols WHERE graph_version = ?1")?;
+    let mut ids =
+        conn.prepare("SELECT id, file_id, qualname FROM symbols WHERE graph_version = ?1")?;
     let rows = ids.query_map([graph_version], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })?;
+    // (file, qualname) -> symbol, to find the declarations a mention is in
+    let mut by_name: HashMap<(i64, String), i64> = HashMap::new();
+    let want_files: HashSet<i64> = mentions.iter().map(|m| m.file_id).collect();
     for row in rows {
-        let (id, file_id) = row?;
+        let (id, file_id, qualname) = row?;
+        if want_files.contains(&file_id) {
+            by_name.insert((file_id, qualname), id);
+        }
         if test_files.contains(&file_id) {
             continue;
         }
@@ -1766,9 +1777,6 @@ fn live_symbols(
     }
     drop(ids);
 
-    // file path -> (declarations: id, qualname, first line, last line; text lines)
-    type Decls = Vec<(i64, String, i64, i64)>;
-    let mut files: HashMap<String, Option<(Decls, Vec<String>)>> = HashMap::new();
     loop {
         while let Some(id) = stack.pop() {
             for &target in out_edges.get(&id).into_iter().flatten() {
@@ -1782,57 +1790,22 @@ fn live_symbols(
             if live.contains(&m.target) {
                 continue;
             }
-            if !files.contains_key(&m.path) {
-                let decls: Decls = {
-                    let mut stmt = conn.prepare_cached(
-                        "SELECT s.id, s.qualname, s.start_line, s.end_line FROM symbols s
-                         JOIN files f ON f.id = s.file_id
-                         WHERE f.path = ?1 AND s.graph_version = ?2 AND s.kind != 'module'",
-                    )?;
-                    stmt.query_map(rusqlite::params![m.path, graph_version], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                    })?
-                    .collect::<rusqlite::Result<_>>()?
-                };
-                let text = std::fs::read_to_string(repo_root.join(&m.path)).ok();
-                files.insert(
-                    m.path.clone(),
-                    text.map(|t| (decls, t.lines().map(str::to_string).collect())),
-                );
-            }
-            // No readable source: keep the benefit of the doubt.
-            let Some((decls, lines)) = &files[&m.path] else {
-                live.insert(m.target);
-                stack.push(m.target);
-                grew = true;
-                continue;
-            };
             let own = format!("{}.", m.qualname);
-            let mut found = false;
-            let mut any = false;
-            for (idx, line) in lines.iter().enumerate() {
-                // A comment is no use; `var _ I = (*T)(nil)` only asserts
-                // what T implements.
-                let code = line.split("//").next().unwrap_or_default();
-                if !mentions_word(code, &m.name) || code.trim_start().starts_with("var _ ") {
-                    continue;
-                }
-                any = true;
-                let n = idx as i64 + 1;
-                let enclosing = decls
-                    .iter()
-                    .filter(|(_, _, lo, hi)| *lo <= n && n <= *hi)
-                    .min_by_key(|(_, _, lo, hi)| hi - lo);
-                match enclosing {
-                    Some((_, q, _, _)) if *q == m.qualname || q.starts_with(&own) => {}
-                    Some((id, _, _, _)) => found |= live.contains(id),
-                    None => found = true,
-                }
-                if found {
-                    break;
-                }
-            }
-            if found || !any {
+            let used = match &m.declarations {
+                None => true,
+                Some(declarations) => declarations.iter().any(|d| {
+                    if d.is_empty() {
+                        return true;
+                    }
+                    if *d == m.qualname || d.starts_with(&own) {
+                        return false;
+                    }
+                    by_name
+                        .get(&(m.file_id, d.clone()))
+                        .is_none_or(|id| live.contains(id))
+                }),
+            };
+            if used {
                 live.insert(m.target);
                 stack.push(m.target);
                 grew = true;
@@ -1843,15 +1816,6 @@ fn live_symbols(
         }
     }
     Ok(live)
-}
-
-/// Whether `line` contains `word` as a whole identifier.
-fn mentions_word(line: &str, word: &str) -> bool {
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
-    line.match_indices(word).any(|(i, _)| {
-        !line[..i].chars().next_back().is_some_and(ident)
-            && !line[i + word.len()..].chars().next().is_some_and(ident)
-    })
 }
 
 /// Reason prefix of a claim whose only references come from test code

@@ -508,3 +508,34 @@ fn editing_package_json_changes_the_public_set_after_sync() {
     assert!(has(&names(&r, "public_api"), "lib.deepOnly"), "{r}");
     assert!(!has(&names(&r, "public_api"), "star.fromStar"), "{r}");
 }
+
+/// A declaration the grammar cannot parse (a long overload list of generic
+/// call signatures, from Hono's `helper/factory`, MIT) swallows the export
+/// statements after it; the package entry must still show them.
+#[test]
+fn ts_exports_after_a_parse_error_are_still_public_api() {
+    let source = include_str!("fixtures/ts_error_recovery/factory.ts.txt");
+    let (_tmp, _root, mut ix) = common::live_indexer(
+        "lidx-dead-ts-parse-error-",
+        &[
+            (
+                "package.json",
+                "{\"name\":\"p\",\"main\":\"src/factory.ts\"}\n",
+            ),
+            ("src/factory.ts", source),
+        ],
+    );
+    let r = call(&mut ix, true);
+    assert!(
+        has(&names(&r, "public_api"), "factory.createFactory"),
+        "{r}"
+    );
+    assert!(
+        has(&names(&r, "public_api"), "factory.createMiddleware"),
+        "{r}"
+    );
+    assert!(
+        !has(&names(&r, "dead_symbols"), "factory.createFactory"),
+        "{r}"
+    );
+}

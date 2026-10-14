@@ -79,12 +79,14 @@ pub(crate) fn ts_external_interface(name: &str, implemented: &[String]) -> Optio
 
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 /// Evidence that a Go type implements an interface of a package outside the
-/// repository, read from the index and, for the right-hand side of a blank
-/// `var _ I = ...` assertion (which the index does not keep), from the
-/// source line.
+/// repository, read from the index: the `#[go_assert(..)]` signature of a
+/// blank `var _ pkg.Iface = ...` assertion (the extractor parses its value),
+/// or an embedded `pkg.Iface` field of the struct signature. `pkg` is
+/// outside the repository when the file's import of it carries a place that
+/// is not an in-repo directory (`IMPORTS` rows, resolved or not, keep the
+/// extractor's `{"place": ..}` detail).
 #[derive(Default)]
 pub(crate) struct GoExternalEvidence {
     /// (package directory, type name) -> the interface asserted.
@@ -101,13 +103,12 @@ impl GoExternalEvidence {
         &mut self,
         conn: &rusqlite::Connection,
         graph_version: i64,
-        repo_root: &Path,
         type_id: i64,
         type_name: &str,
         dir: &str,
     ) -> Result<Option<String>> {
         if self.asserted.is_none() {
-            self.asserted = Some(self.collect_assertions(conn, graph_version, repo_root)?);
+            self.asserted = Some(self.collect_assertions(conn, graph_version)?);
         }
         if let Some(label) = self
             .asserted
@@ -136,7 +137,9 @@ impl GoExternalEvidence {
             .map(|(q, n)| format!("{q}.{n}")))
     }
 
-    fn external_names(
+    /// The names the imports of `file_id` bind to packages outside the
+    /// repository (the standard library included).
+    pub(crate) fn external_names(
         &mut self,
         conn: &rusqlite::Connection,
         graph_version: i64,
@@ -145,10 +148,11 @@ impl GoExternalEvidence {
         if let std::collections::hash_map::Entry::Vacant(slot) = self.external_names.entry(file_id)
         {
             let mut stmt = conn.prepare_cached(
-                "SELECT e.detail FROM edges e
-                 JOIN symbols t ON t.id = e.target_symbol_id
-                 WHERE e.file_id = ?1 AND e.kind = 'IMPORTS' AND e.graph_version = ?2
-                   AND t.kind = 'external'",
+                "SELECT detail FROM edges
+                 WHERE file_id = ?1 AND kind = 'IMPORTS' AND graph_version = ?2
+                 UNION ALL
+                 SELECT detail FROM unresolved_references
+                 WHERE file_id = ?1 AND edge_kind = 'IMPORTS' AND graph_version = ?2",
             )?;
             let details = stmt
                 .query_map(rusqlite::params![file_id, graph_version], |r| {
@@ -161,12 +165,20 @@ impl GoExternalEvidence {
                     continue;
                 };
                 let path = v["import_path"].as_str().unwrap_or_default();
+                let place = v["place"].as_str().unwrap_or(path);
+                if place.starts_with('>') {
+                    continue;
+                }
                 let bound = v["bound_name"]
                     .as_str()
-                    .or_else(|| path.rsplit('/').next())
-                    .unwrap_or_default();
-                if !bound.is_empty() && bound != "_" && bound != "." {
-                    names.insert(bound.to_string());
+                    .map(str::to_string)
+                    .or_else(|| crate::indexer::go::default_package_name(path));
+                if let Some(bound) = bound
+                    && !bound.is_empty()
+                    && bound != "_"
+                    && bound != "."
+                {
+                    names.insert(bound);
                 }
             }
             slot.insert(names);
@@ -178,35 +190,30 @@ impl GoExternalEvidence {
         &mut self,
         conn: &rusqlite::Connection,
         graph_version: i64,
-        repo_root: &Path,
     ) -> Result<HashMap<(String, String), String>> {
         let mut stmt = conn.prepare(
-            "SELECT s.signature, s.start_line, s.end_line, f.path, f.id
+            "SELECT s.signature, f.path, f.id
              FROM symbols s JOIN files f ON f.id = s.file_id
              WHERE s.kind = 'variable' AND s.name = '_' AND f.language = 'go'
-               AND s.graph_version = ?1 AND s.signature LIKE '#[go_type(%'
+               AND s.graph_version = ?1 AND s.signature LIKE '#[go_assert(%'
                AND (f.deleted_version IS NULL OR f.deleted_version > ?1)",
         )?;
         let rows = stmt
             .query_map([graph_version], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
         let mut out = HashMap::new();
-        let mut texts: HashMap<String, Option<Vec<String>>> = HashMap::new();
-        for (signature, start, end, path, file_id) in rows {
-            let Some(declared) = crate::model::go_type_data(&signature) else {
+        for (signature, path, file_id) in rows {
+            let Some((iface, ty)) = crate::model::go_assert_data(&signature) else {
                 continue;
             };
-            let declared = declared.trim_start_matches('*');
-            let Some((qualifier, name)) = declared.split_once('.') else {
+            let Some((qualifier, _)) = iface.split_once('.') else {
                 continue;
             };
             if !self
@@ -215,27 +222,9 @@ impl GoExternalEvidence {
             {
                 continue;
             }
-            let lines = texts.entry(path.clone()).or_insert_with(|| {
-                std::fs::read_to_string(repo_root.join(&path))
-                    .ok()
-                    .map(|t| t.lines().map(str::to_string).collect())
-            });
-            let Some(lines) = lines else { continue };
-            let lo = usize::try_from(start - 1).unwrap_or(0);
-            let hi = usize::try_from(end).unwrap_or(0).min(lines.len());
-            if lo >= hi {
-                continue;
-            }
-            let text = lines[lo..hi].join(" ");
-            let Some((_, rhs)) = text.split_once('=') else {
-                continue;
-            };
-            let Some(target) = asserted_type(rhs) else {
-                continue;
-            };
             let dir = path.rsplit_once('/').map_or("", |(d, _)| d).to_string();
-            out.entry((dir, target))
-                .or_insert_with(|| format!("{qualifier}.{name}"));
+            out.entry((dir, ty.to_string()))
+                .or_insert_with(|| iface.to_string());
         }
         Ok(out)
     }
@@ -261,35 +250,12 @@ fn embedded_qualified(struct_text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// The type a blank-variable assertion's right-hand side builds:
-/// `(*T)(nil)`, `T{}`, `&T{}`, `new(T)`, `T(nil)`. `None` for a type of
-/// another package (`pkg.T`) or anything else.
-fn asserted_type(rhs: &str) -> Option<String> {
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
-    let mut t = rhs.trim().trim_start_matches('&').trim_start();
-    if let Some(inner) = t.strip_prefix("new(") {
-        t = inner;
-    } else if let Some(inner) = t.strip_prefix('(') {
-        t = inner.trim_start().trim_start_matches('*').trim_start();
-    }
-    let name: String = t.chars().take_while(|c| ident(*c)).collect();
-    if name.is_empty() || t[name.len()..].starts_with('.') {
-        return None;
-    }
-    Some(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn go_assertion_targets() {
-        assert_eq!(asserted_type(" (*NoUI)(nil)").as_deref(), Some("NoUI"));
-        assert_eq!(asserted_type(" NoUI{}").as_deref(), Some("NoUI"));
-        assert_eq!(asserted_type(" &NoUI{n: 1}").as_deref(), Some("NoUI"));
-        assert_eq!(asserted_type(" new(NoUI)").as_deref(), Some("NoUI"));
-        assert_eq!(asserted_type(" (*other.T)(nil)"), None);
+    fn go_embedded_fields() {
         assert_eq!(
             embedded_qualified("{n int; ~clio.UI; ~*io.Reader; ~Local}"),
             vec![

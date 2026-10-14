@@ -227,6 +227,7 @@ pub fn is_test_file(path: &str) -> bool {
     JS_TS_TEST_EXTENSIONS.iter().any(|ext| {
         name_lower.ends_with(&format!(".test.{ext}"))
             || name_lower.ends_with(&format!(".spec.{ext}"))
+            || name_lower.ends_with(&format!(".bench.{ext}"))
             || name_lower.ends_with(&format!("_test.{ext}"))
     })
 }
@@ -235,14 +236,32 @@ pub fn is_test_file(path: &str) -> bool {
 /// service identity in `indexer::config`).
 pub const TEST_DIR_NAMES: &[&str] = &["test", "tests", "_test", "__tests__", "spec", "specs"];
 
+/// More directories that hold test code or its support (end-to-end suites,
+/// shared test utilities); not a service boundary, so kept out of
+/// [`TEST_DIR_NAMES`]. A directory named `<x>-tests` / `<x>_tests` counts too.
+const TEST_SUPPORT_DIR_NAMES: &[&str] = &[
+    "e2e",
+    "test-utils",
+    "test_utils",
+    "testutils",
+    "test-helpers",
+    "test_helpers",
+    "testing-utils",
+];
+
 fn is_test_directory(path_lower: &str) -> bool {
     let Some((dir, _file_name)) = path_lower.rsplit_once('/') else {
         // No directory component at all (a bare file name) -- nothing to
         // check here, only `is_test_file`'s filename rules apply.
         return false;
     };
-    dir.split('/')
-        .any(|segment| TEST_DIR_NAMES.contains(&segment) || segment.starts_with("test_"))
+    dir.split('/').any(|segment| {
+        TEST_DIR_NAMES.contains(&segment)
+            || TEST_SUPPORT_DIR_NAMES.contains(&segment)
+            || segment.starts_with("test_")
+            || segment.ends_with("-tests")
+            || segment.ends_with("_tests")
+    })
 }
 
 /// Classify test type based on file path and symbol properties
@@ -276,6 +295,26 @@ pub fn classify_test_type(symbol: &Symbol) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_support_directories_and_bench_files_are_test_code() {
+        for path in [
+            "packages/x/test-utils/helper.ts",
+            "e2e/login.ts",
+            "src/runtime-tests/deno/run.ts",
+            "pkg/integration_tests/db.go",
+            "src/foo.bench.ts",
+        ] {
+            assert!(is_test_file(path), "{path}");
+        }
+        for path in [
+            "src/contest/rules.ts",
+            "src/latest/index.ts",
+            "src/utils.ts",
+        ] {
+            assert!(!is_test_file(path), "{path}");
+        }
+    }
 
     fn make_symbol(file_path: &str, kind: &str, name: &str, signature: Option<&str>) -> Symbol {
         Symbol {

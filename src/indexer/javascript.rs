@@ -1085,6 +1085,26 @@ fn surface_hash(root: Node<'_>, source: &str, wrappers: &WrapperTable) -> i64 {
     crate::indexer::scan::hash_i64(text.as_bytes())
 }
 
+/// The statements of a program, looking inside an `ERROR` node: where the
+/// grammar cannot parse a declaration (a long overload list of generic
+/// signatures, say) it wraps the text up to the next recovery point, which
+/// can hold export statements that follow it.
+fn top_level_statements(root: Node<'_>) -> Vec<Node<'_>> {
+    fn flatten<'t>(node: Node<'t>, out: &mut Vec<Node<'t>>) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "ERROR" {
+                flatten(child, out);
+            } else {
+                out.push(child);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    flatten(root, &mut out);
+    out
+}
+
 fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
     let source = source.to_string();
     let mut ex = Exports::default();
@@ -1092,8 +1112,7 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
         imports: collect_import_bindings(root, &source),
         ..Default::default()
     };
-    let mut cursor = root.walk();
-    for stmt in root.named_children(&mut cursor) {
+    for stmt in top_level_statements(root) {
         collect_exported_names(stmt, &source, &mut ex);
         collect_object_consts(stmt, &source, &mut out.object_consts);
         collect_non_value_names(stmt, &source, &mut out.non_value);
@@ -1163,7 +1182,59 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
         }
     }
     out.names = ex.names;
+    if root.has_error() {
+        out.names.extend(lexical_export_names(&source));
+    }
     out
+}
+
+/// Names of the declarations written `export <keyword> Name` at the start of
+/// a line. Where the grammar fails on a declaration (a long overload list of
+/// generic signatures, say) the tree swallows the statements after it; this
+/// reads them back from the text so a file with a parse error still shows its
+/// exports. Only used for a tree with an error.
+fn lexical_export_names(source: &str) -> HashSet<String> {
+    const KEYWORDS: &[&str] = &[
+        "const",
+        "let",
+        "var",
+        "function",
+        "function*",
+        "async function",
+        "class",
+        "abstract class",
+        "interface",
+        "type",
+        "enum",
+        "const enum",
+        "namespace",
+    ];
+    let mut names = HashSet::new();
+    for line in source.lines() {
+        let Some(rest) = line.strip_prefix("export ") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix("declare ").unwrap_or(rest);
+        for keyword in KEYWORDS {
+            let Some(after) = rest.strip_prefix(keyword) else {
+                continue;
+            };
+            let Some(after) = after.strip_prefix(' ') else {
+                continue;
+            };
+            let name: String = after
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if !name.is_empty() {
+                names.insert(name);
+            }
+            break;
+        }
+    }
+    names
 }
 
 /// `Class.member` of the accessors of the class a top-level statement (or

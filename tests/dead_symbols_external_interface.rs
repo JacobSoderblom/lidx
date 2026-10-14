@@ -380,10 +380,10 @@ fn go_assertion_or_embedding_of_an_external_interface_rescues_exported_methods()
     // only exported methods can satisfy another package's interface
     assert!(has(&dead, "Svc.helper"), "{dead:?}");
     assert!(has(&dead, "Wrapper.tidy"), "{dead:?}");
-    // no evidence: not asserted (the repository's own interface is
-    // handled by its implements edges, not by this rule)
+    // no evidence: not asserted, or asserted against the repository's own
+    // interface (nothing outside calls it)
     assert!(has(&dead, "Plain.Render"), "{dead:?}");
-    assert!(!has(&dead, "Local.Run"), "{dead:?}");
+    assert!(has(&dead, "Local.Run"), "{dead:?}");
     // asserted but never used: the type is dead, so is the method
     assert!(has(&dead, "Ghost.Render"), "{dead:?}");
     assert!(
@@ -413,4 +413,61 @@ fn go_assertion_evidence_follows_incremental_sync() {
     ];
     let (_t2, _r2, mut fresh) = common::live_indexer("lidx-dead-ext-go-assert-fresh-", &merged);
     assert_eq!(after, answer(&mut fresh), "incremental != fresh");
+}
+
+/// Imports no stub exists for are kept only in `unresolved_references`
+/// (the standard library, packages nothing calls): the evidence must be read
+/// from there too. Real indexer, a layout like a CLI's `cmd/<x>/ui` package.
+const GO_UNRESOLVED: &[(&str, &str)] = &[
+    ("go.mod", "module github.com/acme/tool\n\ngo 1.22\n"),
+    (
+        "main.go",
+        "package main\n\nimport \"github.com/acme/tool/cmd/ui\"\n\nfunc main() { _ = ui.None(nil); _ = ui.Boxed{} }\n",
+    ),
+    (
+        "cmd/ui/no_ui.go",
+        "package ui\n\nimport \"io\"\n\ntype NoUI struct{ out io.Writer }\n\n\\
+         func None(out io.Writer) *NoUI { return &NoUI{out: out} }\n\n\\
+         func (n *NoUI) Flush() error { return nil }\n\\
+         func (n *NoUI) hidden() {}\n\n\\
+         type Boxed struct {\n\\tio.Reader\n}\n\n\\
+         func (Boxed) Close() error { return nil }\n",
+    ),
+    (
+        "cmd/ui/assert.go",
+        "package ui\n\nimport \"io\"\n\nvar _ io.WriterTo = (*NoUI)(nil)\n",
+    ),
+];
+
+#[test]
+fn go_external_import_evidence_comes_from_unresolved_references() {
+    let (_tmp, _root, mut ix) = common::live_indexer("lidx-dead-ext-go-unres-", GO_UNRESOLVED);
+    let gv = ix.db().current_graph_version().unwrap();
+    let conn = ix.db().read_conn().unwrap();
+    let unresolved: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references
+             WHERE edge_kind = 'IMPORTS' AND graph_version = ?1 AND detail LIKE '%\"io\"%'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let as_edges: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'IMPORTS' AND e.graph_version = ?1 AND t.kind = 'external'
+               AND e.detail LIKE '%\"io\"%'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    assert!(unresolved > 0 && as_edges == 0, "{unresolved} {as_edges}");
+
+    let r = call(&mut ix);
+    let dead = claimed(&r);
+    // asserted in another file, and embedded: exported methods are live
+    assert!(!has(&dead, "NoUI.Flush"), "{dead:?}");
+    assert!(!has(&dead, "Boxed.Close"), "{dead:?}");
+    assert!(has(&dead, "NoUI.hidden"), "{dead:?}");
 }
