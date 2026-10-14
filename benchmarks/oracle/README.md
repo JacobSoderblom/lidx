@@ -111,7 +111,12 @@ which also carry the trait's in-repo implementations as acceptable targets. They
 type is proven at the call site, or the repository has exactly one implementation): a `CALLS` edge, graded like any other against
 the concrete callee RTA names. When it cannot, the edge goes to the interface method as a `DISPATCH` edge, a kind of its own that
 `analyze_impact`, `trace_flow` and `explain_symbol` follow and fan out through `IMPLEMENTS`; it is **not a call** and the
-repowise-rules grading never sees it.
+repowise-rules grading never sees it. Alongside it lidx derives a `CALLS` edge (`resolution_kind = dispatch_impl`) from the caller
+to the method of each implementer the program puts behind an interface, found by a rapid-type-analysis fixpoint over its own call
+graph (`Db::rederive_go_dispatch_calls`, #501): a type counts when a function that runs builds it (`T{}`, `var x T`) and returns an
+interface it implements, or when a function that runs in production code builds it at all. Production callers use the production
+universe only (no `_test.go` function runs, no test-declared type is a target); test callers also see what tests build. These are
+graded like any other `CALLS` edge, against the concrete callee RTA names, so a wrong guess is a wrong edge.
 - The head-to-head with repowise (`comparable` in `cells.json`, the verdict and held-out tables) uses repowise's rules: `calls`
   edges keyed (caller declaration, callee declaration), a dynamic call keyed at the concrete implementation RTA names, dispatch
   edges never expanded (`match.repowise_go_scope`); lidx's `CALLS` edges only. A `DISPATCH` edge is neither a true nor a wrong edge
@@ -321,7 +326,7 @@ problems in the first version, is in the report. The Rust sample is drawn from t
 
 ## Results next to repowise
 
-Ours: lidx 0.7.0 on main (aa6a299, `EXTRACTOR_VERSION` 43, release build) (`results/report.md` has the diagnostic columns, resolution-kind tables, categories and the
+Ours: lidx 0.7.0 on main 7067e42 plus #501 (`EXTRACTOR_VERSION` 44, release build) (`results/report.md` has the diagnostic columns, resolution-kind tables, categories and the
 spot-check). repowise: the numbers they publish in `docs/BENCHMARKS.md` on repowise main (2026-10-03) ("Call graph against a
 compiler, five tools" for Go and TypeScript, "Accuracy by language" for Rust). The repowise intervals are Wilson intervals we
 computed from their published point estimate and the edge counts of the same cells in repowise-bench (an earlier run of the
@@ -334,16 +339,16 @@ gradings of the same repositories (TypeScript with every edge, Rust without `#[c
 | Cell | lidx P [95% CI] | repowise P [95% CI] | P | lidx R [95% CI] | repowise R [95% CI] | R | oracle edges (lidx / repowise) |
 |---|---|---|---|---|---|---|---|
 | go/cobra/tests | 1.000 [0.998, 1.000] | 0.995 [0.990, 0.998] | **tied** | 0.799 [0.780, 0.816] | 0.705 [0.685, 0.724] | **ahead** | 1923 / 2059 |
-| go/gitleaks/no_tests | 1.000 [0.998, 1.000] | 0.991 [0.985, 0.995] | **ahead** | 0.982 [0.975, 0.988] | 0.971 [0.961, 0.978] | **tied** | 1584 / 1584 |
-| go/gitleaks/tests | 1.000 [0.998, 1.000] | 0.989 [0.983, 0.993] | **ahead** | 0.957 [0.946, 0.965] | 0.939 [0.927, 0.949] | **tied** | 1747 / 1747 |
-| go/syft/no_tests | 1.000 [0.999, 1.000] | 0.979 [0.974, 0.983] | **ahead** | 0.584 [0.573, 0.595] | 0.539 [0.528, 0.550] | **ahead** | 7977 / 7898 |
-| go/syft/tests | 1.000 [1.000, 1.000] | 0.982 [0.979, 0.985] | **ahead** | 0.337 [0.332, 0.343] | 0.341 [0.335, 0.347] | **tied** | 25902 / 22590 |
+| go/gitleaks/no_tests | 1.000 [0.998, 1.000] | 0.991 [0.985, 0.995] | **ahead** | 0.987 [0.981, 0.992] | 0.971 [0.961, 0.978] | **ahead** | 1584 / 1584 |
+| go/gitleaks/tests | 1.000 [0.998, 1.000] | 0.989 [0.983, 0.993] | **ahead** | 0.965 [0.955, 0.972] | 0.939 [0.927, 0.949] | **ahead** | 1747 / 1747 |
+| go/syft/no_tests | 1.000 [0.999, 1.000] | 0.979 [0.974, 0.983] | **ahead** | 0.736 [0.726, 0.746] | 0.539 [0.528, 0.550] | **ahead** | 7977 / 7898 |
+| go/syft/tests | 1.000 [1.000, 1.000] | 0.982 [0.979, 0.985] | **ahead** | 0.444 [0.438, 0.450] | 0.341 [0.335, 0.347] | **ahead** | 25902 / 22590 |
 | ts/zod | 1.000 [0.997, 1.000] | 0.995 [0.989, 0.998] | **tied** | 0.933 [0.920, 0.944] | 0.796 [0.773, 0.817] | **ahead** | 1626 / 1269 |
 | ts/hono | 1.000 [0.995, 1.000] | 0.976 [0.958, 0.986] | **ahead** | 0.935 [0.916, 0.950] | 0.806 [0.775, 0.833] | **ahead** | 833 / 706 |
 | rust/ripgrep/path_tests_excluded | 0.993 [0.990, 0.995] | 0.852 [0.838, 0.865] | **ahead** | 0.927 [0.919, 0.934] | 0.532 [0.517, 0.546] | **ahead** | 4796 / 4555 |
 | rust/fd/path_tests_excluded | 0.996 [0.978, 0.999] | 0.899 [0.838, 0.939] | **ahead** | 0.981 [0.955, 0.992] | 0.619 [0.555, 0.679] | **ahead** | 256 / 231 |
 
-**Scoreboard: of the 18 published measures (9 cells x precision and recall), lidx is ahead on 13, tied on 5 and behind on none.** Precision: 7 ahead, 2 tied (cobra, zod). Recall: 6 ahead, 3 tied (gitleaks with and without tests, syft with tests). "Tied" means the intervals overlap, not that the two are equal.
+**Scoreboard: of the 18 published measures (9 cells x precision and recall), lidx is ahead on 16, tied on 2 and behind on none.** Precision: 7 ahead, 2 tied (cobra, zod). Recall: 9 ahead. "Tied" means the intervals overlap, not that the two are equal.
 
 Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests, and the held-out cells (`results/report.md`).
 

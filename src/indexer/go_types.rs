@@ -723,6 +723,29 @@ impl LocalTypes {
             }
             // `(*T)(x)` converts.
             "parenthesized_expression" if index == 0 => self.type_from(function, source),
+            // `func() *T { .. }()`: the literal's declared result.
+            "func_literal" => {
+                let result = function.child_by_field_name("result")?;
+                if result.kind() != "parameter_list" {
+                    return if index == 0 {
+                        self.type_from(result, source)
+                    } else {
+                        None
+                    };
+                }
+                let mut types = Vec::new();
+                let mut cursor = result.walk();
+                for declaration in result.named_children(&mut cursor) {
+                    let ty = declaration.child_by_field_name("type")?;
+                    let mut names = declaration.walk();
+                    let count = declaration
+                        .children_by_field_name("name", &mut names)
+                        .count()
+                        .max(1);
+                    types.extend(std::iter::repeat_n(ty, count));
+                }
+                self.type_from(*types.get(usize::from(index))?, source)
+            }
             _ => None,
         }
     }

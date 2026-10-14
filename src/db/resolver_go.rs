@@ -1783,10 +1783,487 @@ impl Db {
                 receivers,
             ),
         ] {
-            changed += sync_derived_edges(&tx, graph_version, kind, derived, detail, wanted)?;
+            changed += sync_derived_edges(
+                &tx,
+                graph_version,
+                kind,
+                derived,
+                detail,
+                "structural",
+                wanted,
+            )?;
         }
         tx.commit()?;
         Ok(changed)
+    }
+}
+
+impl Db {
+    /// Rebuild the `CALLS` edges from the callers of a Go interface method to
+    /// the methods that can run there. A call the resolver could not narrow
+    /// to one method stays a `DISPATCH` edge on the interface method; the
+    /// compiler's call graph (RTA) names the implementations instead, so each
+    /// such call also gets a `CALLS` edge (`resolution_kind =
+    /// "dispatch_impl"`) to the method of every implementer the repository
+    /// builds a value of (`T{}`, `&T{}`, `var x T`). A type declared in a test
+    /// file is no target of production code, and a type only test files build
+    /// is none either. The `DISPATCH` edge itself is kept. Runs once the
+    /// repair pass has settled every call.
+    pub fn rederive_go_dispatch_calls(&self, graph_version: i64) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let wanted = {
+            let mut resolver = Resolver::new(&tx, graph_version)?;
+            resolver.go_dispatch_calls()?
+        };
+        let changed = sync_derived_edges(
+            &tx,
+            graph_version,
+            "CALLS",
+            crate::model::DERIVED_GO_DISPATCH,
+            "dispatch",
+            "dispatch_impl",
+            wanted,
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+}
+
+/// One Go symbol the dispatch pass reasons about.
+struct RtaSymbol {
+    kind: String,
+    name: String,
+    signature: Option<String>,
+    in_test: bool,
+    main_package: bool,
+}
+
+/// What one universe of code (production only, or tests too) puts behind
+/// interfaces, see [`Resolver::go_rta`].
+struct RtaUniverse {
+    /// Types put behind an interface somewhere that runs.
+    converted: HashSet<i64>,
+    /// The functions that run.
+    reach: HashSet<i64>,
+}
+
+/// The stored call graph the dispatch pass runs over.
+struct RtaInput {
+    symbols: HashMap<i64, RtaSymbol>,
+    /// `(caller, callee, written in a test file)`; a caller of `None` is a
+    /// file-level reference.
+    calls: Vec<(Option<i64>, i64, bool)>,
+    /// `(caller, interface method, interface the receiver is typed as)`.
+    dispatch: Vec<(i64, i64, Option<i64>)>,
+    /// Interface id -> types implementing it.
+    implementers: HashMap<i64, Vec<i64>>,
+    /// `(type, function, returns an interface the type implements)`: the
+    /// function builds the type.
+    builders: Vec<(i64, i64, bool)>,
+}
+
+/// Memo tables shared by the two universes.
+#[derive(Default)]
+struct RtaMemo {
+    types: HashMap<i64, Option<GoTypeRow>>,
+    targets: HashMap<(i64, i64), Option<i64>>,
+}
+
+impl Resolver<'_> {
+    fn go_type_row(&mut self, id: i64, memo: &mut RtaMemo) -> Result<Option<GoTypeRow>> {
+        if let Some(known) = memo.types.get(&id) {
+            return Ok(known.clone());
+        }
+        let gv = self.graph_version;
+        let row = self
+            .go_type_query("s.id = ?1", params![id, gv])?
+            .into_iter()
+            .next();
+        memo.types.insert(id, row.clone());
+        Ok(row)
+    }
+
+    /// The method of type `row` that interface method `spec` runs, when it is
+    /// a concrete method of the repository.
+    fn go_dispatch_target(
+        &mut self,
+        row: &GoTypeRow,
+        spec: &GoTypeRow,
+        memo: &mut RtaMemo,
+    ) -> Result<Option<i64>> {
+        if let Some(known) = memo.targets.get(&(row.id, spec.id)) {
+            return Ok(*known);
+        }
+        let found = match self.go_member(row.dir(), &row.name, &spec.name, 0)? {
+            Some(found)
+                if found.kind == "method"
+                    && found.id != spec.id
+                    && self.go_interface_spec(found.id)?.is_none() =>
+            {
+                Some(found.id)
+            }
+            _ => None,
+        };
+        memo.targets.insert((row.id, spec.id), found);
+        Ok(found)
+    }
+
+    /// The id and signature of the symbol `qualname` declared in `file_id`.
+    fn go_symbol_signature(
+        &self,
+        file_id: i64,
+        qualname: &str,
+    ) -> Result<Option<(i64, Option<String>)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, signature FROM symbols
+             WHERE file_id = ?1 AND qualname = ?2 AND graph_version = ?3 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![file_id, qualname, self.graph_version])?;
+        Ok(match rows.next()? {
+            Some(r) => Some((r.get(0)?, r.get(1)?)),
+            None => None,
+        })
+    }
+
+    /// The functions that hand out a value of a type they build: `(type,
+    /// function)` where the function mentions `T{}` / `var x T` and a result
+    /// of its signature is an interface `T` implements.
+    fn go_converting_builders(
+        &mut self,
+        implementers: &HashMap<i64, Vec<i64>>,
+    ) -> Result<Vec<(i64, i64, bool)>> {
+        let gv = self.graph_version;
+        let mut builds: Vec<(i64, i64, Vec<String>)> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT e.target_symbol_id, e.file_id, e.detail
+                 FROM edges e JOIN files f ON f.id = e.file_id
+                 WHERE e.graph_version = ?1 AND e.kind = 'USES' AND e.target_symbol_id IS NOT NULL
+                   AND f.deleted_version IS NULL AND f.language = 'go'
+                   AND e.detail LIKE '%built_in%'",
+            )?;
+            for row in stmt.query_map(params![gv], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })? {
+                let (ty, file_id, detail) = row?;
+                let decls: Vec<String> = serde_json::from_str::<serde_json::Value>(&detail)
+                    .ok()
+                    .and_then(|v| {
+                        v["built_in"].as_array().map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                    })
+                    .unwrap_or_default();
+                builds.push((ty, file_id, decls));
+            }
+        }
+        let mut out = Vec::new();
+        for (ty, file_id, decls) in builds {
+            let imports = self.go_file_imports(file_id)?;
+            for qualname in decls {
+                let Some((decl_id, signature)) = self.go_symbol_signature(file_id, &qualname)?
+                else {
+                    continue;
+                };
+                let dir = qualname.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+                let mut strong = false;
+                for text in signature_results(signature.as_deref()) {
+                    let Some(GoType::Repo { dir, name }) = canonical_type(&text, &dir, &imports)
+                    else {
+                        continue;
+                    };
+                    let rows = self.go_types_named(&dir, &name)?;
+                    if rows.iter().any(|j| {
+                        j.kind == "interface"
+                            && implementers.get(&j.id).is_some_and(|ts| ts.contains(&ty))
+                    }) {
+                        strong = true;
+                        break;
+                    }
+                }
+                out.push((ty, decl_id, strong));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Rapid type analysis over the stored call graph, for production code
+    /// (`with_tests` false: files and functions of `_test.go` files do not
+    /// exist) or for everything.
+    ///
+    /// Roots are `main` of a main package, every `init`, whatever a
+    /// package-level initializer calls and, with tests, the test functions;
+    /// a repository with no main package runs through its exported
+    /// functions. A call to an interface method runs the method of each type
+    /// converted to an interface so far; a type is converted when a function
+    /// that runs builds it and returns an interface it implements, or when a
+    /// function that runs in production code builds it (`production`: the
+    /// reach of the production universe, which the test universe trusts for
+    /// that weaker evidence only). The two feed each other until nothing new
+    /// runs.
+    fn go_rta(
+        &mut self,
+        with_tests: bool,
+        production: Option<&HashSet<i64>>,
+        input: &RtaInput,
+        memo: &mut RtaMemo,
+    ) -> Result<RtaUniverse> {
+        let symbols = &input.symbols;
+        let live = |id: i64| symbols.get(&id).is_some_and(|s| with_tests || !s.in_test);
+        let has_main = symbols.values().any(|s| s.main_package);
+        let mut roots: Vec<i64> = Vec::new();
+        for (&id, s) in symbols {
+            if !live(id) || !matches!(s.kind.as_str(), "function" | "method") {
+                continue;
+            }
+            let exported = s.name.chars().next().is_some_and(char::is_uppercase);
+            let is_test = s
+                .signature
+                .as_deref()
+                .is_some_and(|sig| sig.starts_with(crate::model::GO_TEST_MARKER));
+            if (s.name == "main" && s.main_package)
+                || s.name == "init"
+                || (with_tests && is_test)
+                || (!has_main && exported)
+            {
+                roots.push(id);
+            }
+        }
+        let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+        for &(source, target, in_test) in &input.calls {
+            if (in_test && !with_tests) || !live(target) {
+                continue;
+            }
+            match source {
+                Some(source) if symbols.get(&source).is_some_and(|s| s.kind != "module") => {
+                    if live(source) {
+                        adjacency.entry(source).or_default().push(target);
+                    }
+                }
+                // a package-level initializer runs at start-up
+                _ => roots.push(target),
+            }
+        }
+        let mut by_type: HashMap<i64, Vec<(i64, bool)>> = HashMap::new();
+        for &(ty, decl, strong) in &input.builders {
+            if live(decl) {
+                by_type.entry(ty).or_default().push((decl, strong));
+            }
+        }
+        let mut reach: HashSet<i64> = HashSet::new();
+        let mut stack = roots;
+        let mut converted: HashSet<i64> = HashSet::new();
+        loop {
+            while let Some(id) = stack.pop() {
+                if reach.insert(id) {
+                    stack.extend(adjacency.get(&id).into_iter().flatten().copied());
+                }
+            }
+            for (&ty, decls) in &by_type {
+                if !converted.contains(&ty)
+                    && decls.iter().any(|&(d, strong)| {
+                        reach.contains(&d) && (strong || production.unwrap_or(&reach).contains(&d))
+                    })
+                {
+                    converted.insert(ty);
+                }
+            }
+            for &(caller, spec_id, scope) in &input.dispatch {
+                if !reach.contains(&caller) {
+                    continue;
+                }
+                let Some((spec, iface)) = self.go_interface_spec(spec_id)? else {
+                    continue;
+                };
+                let types = input.implementers.get(&scope.unwrap_or(iface.id));
+                for &ty in types.into_iter().flatten() {
+                    if !converted.contains(&ty) {
+                        continue;
+                    }
+                    let Some(row) = self.go_type_row(ty, memo)? else {
+                        continue;
+                    };
+                    if !with_tests && row.path.ends_with("_test.go") {
+                        continue;
+                    }
+                    if let Some(method) = self.go_dispatch_target(&row, &spec, memo)?
+                        && live(method)
+                        && !reach.contains(&method)
+                    {
+                        stack.push(method);
+                    }
+                }
+            }
+            if stack.is_empty() {
+                break;
+            }
+        }
+        Ok(RtaUniverse { converted, reach })
+    }
+
+    /// The stored call graph, see [`RtaInput`], with the `DISPATCH` edges
+    /// `(file, caller, interface method, scope)`.
+    fn go_rta_input(
+        &mut self,
+        edges: &[(i64, i64, i64, Option<String>, bool)],
+    ) -> Result<RtaInput> {
+        let gv = self.graph_version;
+        let mut implementers: HashMap<i64, Vec<i64>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT target_symbol_id, source_symbol_id FROM edges
+                 WHERE graph_version = ?1 AND kind = 'IMPLEMENTS' AND derived = ?2
+                   AND source_symbol_id IS NOT NULL AND target_symbol_id IS NOT NULL",
+            )?;
+            for row in stmt.query_map(params![gv, crate::model::DERIVED_GO_STRUCTURAL], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })? {
+                let (iface, ty) = row?;
+                implementers.entry(iface).or_default().push(ty);
+            }
+        }
+        for types in implementers.values_mut() {
+            types.sort_unstable();
+            types.dedup();
+        }
+        let mut symbols: HashMap<i64, RtaSymbol> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT s.id, s.kind, s.name, s.signature, substr(f.path, -8) = '_test.go',
+                        (' ' || COALESCE(s.visibility, '') || ' ') LIKE ?2
+                 FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.graph_version = ?1 AND f.language = 'go' AND f.deleted_version IS NULL
+                   AND s.kind IN ('function', 'method', 'module')",
+            )?;
+            let main = format!("% {} %", crate::indexer::go::GO_PACKAGE_MAIN);
+            for row in stmt.query_map(params![gv, main], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    RtaSymbol {
+                        kind: r.get(1)?,
+                        name: r.get(2)?,
+                        signature: r.get(3)?,
+                        in_test: r.get(4)?,
+                        main_package: r.get(5)?,
+                    },
+                ))
+            })? {
+                let (id, symbol) = row?;
+                symbols.insert(id, symbol);
+            }
+        }
+        let mut calls: Vec<(Option<i64>, i64, bool)> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT e.source_symbol_id, e.target_symbol_id, substr(f.path, -8) = '_test.go'
+                 FROM edges e JOIN files f ON f.id = e.file_id
+                 WHERE e.graph_version = ?1 AND e.kind IN ('CALLS', 'REFERENCES')
+                   AND e.derived = 0 AND e.target_symbol_id IS NOT NULL
+                   AND f.deleted_version IS NULL AND f.language = 'go'",
+            )?;
+            for row in stmt.query_map(params![gv], |r| {
+                Ok((
+                    r.get::<_, Option<i64>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })? {
+                calls.push(row?);
+            }
+        }
+        let builders = self.go_converting_builders(&implementers)?;
+        let mut dispatch: Vec<(i64, i64, Option<i64>)> = Vec::new();
+        let mut scopes: HashMap<String, Option<i64>> = HashMap::new();
+        for (_, source, target, scope, _) in edges {
+            let scope_id = match scope {
+                Some(qualname) => {
+                    if !scopes.contains_key(qualname) {
+                        let found = self
+                            .go_type_query(
+                                "s.qualname = ?1 AND s.kind = 'interface'",
+                                params![qualname, gv],
+                            )?
+                            .into_iter()
+                            .next()
+                            .map(|t| t.id);
+                        scopes.insert(qualname.clone(), found);
+                    }
+                    scopes[qualname]
+                }
+                None => None,
+            };
+            dispatch.push((*source, *target, scope_id));
+        }
+        Ok(RtaInput {
+            symbols,
+            calls,
+            dispatch,
+            implementers,
+            builders,
+        })
+    }
+
+    /// `(caller, implementing method, file)` for every `DISPATCH` edge, see
+    /// [`Db::rederive_go_dispatch_calls`].
+    fn go_dispatch_calls(&mut self) -> Result<Vec<(i64, i64, i64)>> {
+        let gv = self.graph_version;
+        let edges: Vec<(i64, i64, i64, Option<String>, bool)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT e.file_id, e.source_symbol_id, e.target_symbol_id, e.receiver_scope,
+                        substr(f.path, -8) = '_test.go'
+                 FROM edges e JOIN files f ON f.id = e.file_id
+                 WHERE e.graph_version = ?1 AND e.kind = 'DISPATCH' AND e.derived = 0
+                   AND e.source_symbol_id IS NOT NULL AND e.target_symbol_id IS NOT NULL
+                   AND f.deleted_version IS NULL",
+            )?;
+            stmt.query_map(params![gv], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if edges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let input = self.go_rta_input(&edges)?;
+        let mut memo = RtaMemo::default();
+        let prod = self.go_rta(false, None, &input, &mut memo)?;
+        let all = self.go_rta(true, Some(&prod.reach), &input, &mut memo)?;
+        let mut out = Vec::new();
+        for ((file_id, source, target, _, from_test), &(_, _, scope)) in
+            edges.into_iter().zip(&input.dispatch)
+        {
+            let Some((spec, iface)) = self.go_interface_spec(target)? else {
+                continue;
+            };
+            let universe = if from_test { &all } else { &prod };
+            let types = input.implementers.get(&scope.unwrap_or(iface.id));
+            for &ty in types.into_iter().flatten() {
+                if !universe.converted.contains(&ty) {
+                    continue;
+                }
+                let Some(row) = self.go_type_row(ty, &mut memo)? else {
+                    continue;
+                };
+                if row.kind == "interface" || (!from_test && row.path.ends_with("_test.go")) {
+                    continue;
+                }
+                let Some(method) = self.go_dispatch_target(&row, &spec, &mut memo)? else {
+                    continue;
+                };
+                if !from_test && input.symbols.get(&method).is_none_or(|s| s.in_test) {
+                    continue;
+                }
+                out.push((source, method, file_id));
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -1799,6 +2276,7 @@ fn sync_derived_edges(
     kind: &str,
     derived: i64,
     detail: &str,
+    resolution_kind: &str,
     wanted: Vec<(i64, i64, i64)>,
 ) -> Result<usize> {
     let existing: Vec<(i64, i64, i64)> = {
@@ -1830,7 +2308,7 @@ fn sync_derived_edges(
          (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
           confidence, graph_version, resolution_kind, derived)
          VALUES (?1, ?2, ?3, ?4, (SELECT qualname FROM symbols WHERE id = ?3),
-                 ?5, 1.0, ?6, 'structural', ?7)",
+                 ?5, 1.0, ?6, ?8, ?7)",
     )?;
     let mut written: HashSet<(i64, i64)> = HashSet::new();
     for (source, target, file_id) in wanted {
@@ -1844,7 +2322,8 @@ fn sync_derived_edges(
             kind,
             detail,
             graph_version,
-            derived
+            derived,
+            resolution_kind
         ])?;
         changed += 1;
     }

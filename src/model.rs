@@ -455,6 +455,9 @@ pub const DERIVED_GO_EMBED: i64 = 3;
 /// `CONTAINS` edges from a Go receiver type to a method declared in another
 /// file of its package (`Db::rederive_go_implements`).
 pub const DERIVED_GO_RECEIVER: i64 = 4;
+/// `CALLS` edges from the caller of a Go interface method to each implementing
+/// method of a type the repository builds (`Db::rederive_go_dispatch_calls`).
+pub const DERIVED_GO_DISPATCH: i64 = 5;
 
 /// `resolution_kind` of the synthetic CALLS edges built by
 /// `Db::edges_for_symbols_with_dispatch` (interface method -> implementor).
