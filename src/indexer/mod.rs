@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 44;
+pub const EXTRACTOR_VERSION: i64 = 45;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 /// `meta` key of the Cargo manifest view (`rust_workspace`) the Rust files
 /// were last extracted against.
@@ -122,6 +122,25 @@ struct ScannedFileSymbols {
 }
 
 impl Indexer {
+    /// Record which Go modules see which (`go_repo::GoRepo::module_visibility`)
+    /// for the resolver's repair pass, which has no repository root. Read
+    /// afresh on every pass, so a `go.mod` edit is seen as a fresh index
+    /// would see it; skipped, and the record dropped, without Go files.
+    fn refresh_go_modules(&self) -> Result<()> {
+        let visibility = if self.db.has_go_files()? {
+            go_repo::GoRepo::scan(&self.repo_root).module_visibility(&self.repo_root)
+        } else {
+            None
+        };
+        match visibility {
+            Some(map) => self.db.set_meta_str(
+                crate::db::GO_MODULES_META_KEY,
+                &serde_json::to_string(&map)?,
+            ),
+            None => self.db.delete_meta(crate::db::GO_MODULES_META_KEY),
+        }
+    }
+
     pub fn new(repo_root: PathBuf, db_path: PathBuf) -> Result<Self> {
         Self::new_with_options(repo_root, db_path, scan::ScanOptions::default())
     }
@@ -353,6 +372,14 @@ impl Indexer {
             .iter()
             .filter_map(|p| crate::util::normalize_rel_path(&self.repo_root, p).ok())
             .collect();
+        // A Go module file edited alone moves which module sees which, which
+        // the repair pass (`refresh_go_modules`) must settle again.
+        if batch_rels
+            .iter()
+            .any(|p| p == "go.work" || p.rsplit('/').next() == Some("go.mod"))
+        {
+            touched = true;
+        }
         let js_stale = self.js_stale();
         let mut stale_files = js_stale.stale_js_files(&batch_rels, self.graph_version)?;
         // ... and C# files whose project's `global using`s changed or that
@@ -507,6 +534,7 @@ impl Indexer {
             // stored rows a newly inserted symbol (or, per `any_symbols_deleted`
             // below, a deletion that turned a stored `Ambiguous` row unique
             // again) might satisfy. See `Db::repair_unresolved`.
+            self.refresh_go_modules()?;
             self.db.repair_unresolved(
                 self.graph_version,
                 any_symbols_deleted,
@@ -945,6 +973,7 @@ impl Indexer {
             // files) is now final, so fold it in alongside
             // `any_symbols_deleted` (definitions a re-parsed file's diff
             // dropped in place) -- see `Db::repair_unresolved`.
+            self.refresh_go_modules()?;
             self.db.repair_unresolved(
                 self.graph_version,
                 any_symbols_deleted || stats.deleted > 0,

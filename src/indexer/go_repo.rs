@@ -15,6 +15,8 @@ struct GoModule {
     path: String,
     /// The directory of the `go.mod`, relative to the repo root (`""` = root).
     dir: String,
+    /// The module paths its `require` directives name.
+    requires: Vec<String>,
 }
 
 /// Where an import path points.
@@ -69,7 +71,12 @@ impl GoRepo {
                     replaces.push((prefix, rel));
                 }
             }
-            modules.push(GoModule { path, dir });
+            let requires = require_directives(&text);
+            modules.push(GoModule {
+                path,
+                dir,
+                requires,
+            });
         }
         // Deterministic whatever order the walk produced.
         modules.sort_by(|a, b| a.dir.cmp(&b.dir));
@@ -99,6 +106,54 @@ impl GoRepo {
             })
             .max_by_key(|m| m.dir.len())
             .map(|m| m.dir.as_str())
+    }
+
+    /// For every in-repo module (by directory), the directories of the
+    /// modules whose code it can see: itself and, transitively, the in-repo
+    /// modules its `require` directives name (a `replace` to an in-repo
+    /// directory included). `None` when the repo has no `go.mod`, or a
+    /// `go.work` at its root makes every module see every other.
+    pub(crate) fn module_visibility(
+        &self,
+        repo_root: &Path,
+    ) -> Option<std::collections::BTreeMap<String, Vec<String>>> {
+        if self.modules.is_empty() || repo_root.join("go.work").is_file() {
+            return None;
+        }
+        let dir_of_path = |required: &str| -> Vec<&str> {
+            let mut dirs: Vec<&str> = self
+                .modules
+                .iter()
+                .filter(|m| m.path == required)
+                .map(|m| m.dir.as_str())
+                .collect();
+            dirs.extend(
+                self.replaces
+                    .iter()
+                    .filter(|(prefix, _)| prefix == required)
+                    .map(|(_, dir)| dir.as_str()),
+            );
+            dirs
+        };
+        let mut out = std::collections::BTreeMap::new();
+        for module in &self.modules {
+            let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            seen.insert(module.dir.clone());
+            let mut stack = vec![module];
+            while let Some(current) = stack.pop() {
+                for required in &current.requires {
+                    for dir in dir_of_path(required) {
+                        if seen.insert(dir.to_string())
+                            && let Some(next) = self.modules.iter().find(|m| m.dir == dir)
+                        {
+                            stack.push(next);
+                        }
+                    }
+                }
+            }
+            out.insert(module.dir.clone(), seen.into_iter().collect());
+        }
+        Some(out)
     }
 
     /// Where `import_path`, imported from `file_rel_path`, points. The
@@ -170,6 +225,37 @@ fn module_path(go_mod: &str) -> Option<String> {
         let path = rest.trim().trim_matches('"');
         (!path.is_empty() && rest.starts_with(char::is_whitespace)).then(|| path.to_string())
     })
+}
+
+/// The module paths of every `require` directive, block form included.
+fn require_directives(go_mod: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in go_mod.lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        let spec = if in_block {
+            if line == ")" {
+                in_block = false;
+                continue;
+            }
+            line
+        } else if let Some(rest) = line.strip_prefix("require") {
+            if !rest.starts_with(char::is_whitespace) && !rest.starts_with('(') {
+                continue;
+            }
+            if rest.trim() == "(" {
+                in_block = true;
+                continue;
+            }
+            rest.trim()
+        } else {
+            continue;
+        };
+        if let Some(path) = spec.split_whitespace().next() {
+            out.push(path.trim_matches('"').to_string());
+        }
+    }
+    out
 }
 
 /// `(import prefix, replacement)` of every `replace` directive, block form

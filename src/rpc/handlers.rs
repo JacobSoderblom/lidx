@@ -1883,9 +1883,23 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         .kinds
         .clone()
         .unwrap_or_else(|| crate::traversal::TraceConfig::default().allowed_kinds);
-    let exclude_resolution_kinds: Vec<String> =
+    let mut exclude_resolution_kinds: Vec<String> =
         params.exclude_resolution_kinds.clone().unwrap_or_default();
     validate_resolution_kinds(&exclude_resolution_kinds)?;
+    // A Go call on an interface method is a DISPATCH edge; the CALLS edges
+    // derived from it (one per implementer, `dispatch_impl`) are inferred
+    // fan-out, not call sites. A trace that follows CALLS but not DISPATCH
+    // would otherwise take every one of them as a path (syft: 11 -> 33
+    // paths, past the 30KB cap), so it leaves them out and reports them as
+    // declined; ask for DISPATCH too (the default) to cross the interface.
+    if allowed_kinds.iter().any(|k| k == "CALLS")
+        && !allowed_kinds.iter().any(|k| k == "DISPATCH")
+        && !exclude_resolution_kinds
+            .iter()
+            .any(|k| k == "dispatch_impl")
+    {
+        exclude_resolution_kinds.push("dispatch_impl".to_string());
+    }
 
     // Config URI resolution: find all symbols connected to the URI
     let config_uri_seeds: Vec<i64> = if let Some(ref qn) = params.start_qualname {
