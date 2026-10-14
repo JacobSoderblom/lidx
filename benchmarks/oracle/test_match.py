@@ -949,6 +949,75 @@ class RustValueReferenceOracle(unittest.TestCase):
         self.assertEqual(d["refs_dropped"]["use_item"], 2)
 
 
+class RustConstInitialiserReferences(unittest.TestCase):
+    """A function named in a `const` / `static` initialiser is a reference of that item (issue #514), with the module as the acceptable coarser
+    caller; a call there stays out of the call benchmark, and a field or local is never an item."""
+
+    SRC = ("pub fn helper(x: u8) -> u8 { x }\n"            # 0
+           "pub struct P { pub f: fn(u8) -> u8 }\n"        # 1
+           "pub const PROFILE: P = P {\n"                   # 2
+           "    f: helper,\n"                               # 3: a reference inside the const
+           "};\n"                                           # 4
+           "pub fn main() { let _ = [1u8].iter().map(helper); }\n")  # 5
+
+    def run_oracle(self):
+        P = "rust-analyzer cargo demo 0.1.0 "
+
+        def occ(sym, line, c0, c1, role, encl=None):
+            rng = b"".join(_varint(x) for x in (line, c0, c1))
+            o = _field(1, 2, rng) + _field(2, 2, sym.encode()) + (_field(3, 0, _varint(role)) if role else b"")
+            if encl:
+                o += _field(7, 2, b"".join(_varint(x) for x in encl))
+            return _field(2, 2, o)
+        doc = _field(1, 2, b"src/lib.rs")
+        doc += occ(P + "helper().", 0, 7, 13, 1, (0, 0, 0, 33))
+        doc += occ(P + "P#", 1, 11, 12, 1, (1, 0, 1, 36))
+        doc += occ(P + "P#f.", 1, 19, 20, 1, (1, 16, 1, 34))   # a field: not an item a reference can belong to
+        doc += occ(P + "PROFILE.", 2, 10, 17, 1, (2, 0, 4, 2))
+        doc += occ(P + "helper().", 3, 7, 13, 0)
+        doc += occ(P + "main().", 5, 7, 11, 1, (5, 0, 5, 51))
+        doc += occ(P + "helper().", 5, 41, 47, 0)
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, "src"))
+            with open(os.path.join(td, "src", "lib.rs"), "w") as f:
+                f.write(self.SRC)
+            scip = os.path.join(td, "x.scip")
+            with open(scip, "wb") as f:
+                f.write(_field(2, 2, doc))
+            here = os.path.dirname(os.path.abspath(__file__))
+            out = subprocess.run([sys.executable, "-I", os.path.join(here, "rust_oracle", "scip_calls.py"), "--repo", td, "--scip", scip],
+                                 capture_output=True, text=True, check=True).stdout
+        return json.loads(out)
+
+    def test_reference_in_an_initialiser_belongs_to_the_item(self):
+        d = self.run_oracle()
+        by = {r["caller"]["name"]: r for r in d["refs"]}
+        self.assertEqual(sorted(by), ["PROFILE", "main"])
+        self.assertEqual((by["PROFILE"]["caller"]["line"], by["PROFILE"]["caller_alts"]), (3, ["src/lib.rs:0"]))
+        self.assertNotIn("caller_alts", by["main"])  # inside a function the caller is the function
+        self.assertEqual([(c["name"], c["line"]) for c in d["ref_callers"]], [("PROFILE", 3)])  # the field `f` is no item
+        self.assertEqual([c["name"] for c in d["callers"]], ["helper", "main"])  # a call from an initialiser is not judged by the call benchmark
+
+    def test_grading_accepts_the_item_and_the_module_and_judges_the_item(self):
+        d = self.run_oracle()
+        syms = {1: rsym("src/lib.rs", 1, "lib", "module"), 2: rsym("src/lib.rs", 1, "helper"), 3: rsym("src/lib.rs", 3, "PROFILE", "const"),
+                4: rsym("src/lib.rs", 6, "main")}
+        syms[1]["key"] = "src/lib.rs:0"
+        syms[2]["key"] = "src/lib.rs:1"
+        syms[4]["key"] = "src/lib.rs:6"
+        edges = lambda src: [redge(src, 2, 4, path="src/lib.rs"), redge(4, 2, 6, path="src/lib.rs")]  # noqa: E731
+        for src in (3, 1):  # attributed to the item, or coarsely to the module
+            summ, fn, fp, gap, ungr, _ = refs.grade_refs(d, syms, edges(src), "rust", match.Sources("/nonexistent"))
+            self.assertEqual((summ["tp"], summ["fp"], summ["recall"], summ["ungradable"]), (2, 0, 1.0, {}), src)
+        # a wrong pair from the item is judged because the item is a `ref_caller`; without that it would be ungradable
+        syms[5] = rsym("src/lib.rs", 9, "elsewhere")
+        wrong = edges(3) + [redge(3, 5, 4, path="src/lib.rs")]
+        summ, *_ = refs.grade_refs(d, syms, wrong, "rust", match.Sources("/nonexistent"))
+        self.assertEqual((summ["fp"], summ["ungradable"]), (1, {}))
+        summ, *_ = refs.grade_refs(dict(d, ref_callers=[]), syms, wrong, "rust", match.Sources("/nonexistent"))
+        self.assertEqual((summ["fp"], summ["ungradable"]), (0, {"caller_not_judged": 1}))
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -51,17 +51,24 @@ def judged_callers(oracle, lang):
         return {okey(c) for c in oracle.get("ref_callers", [])}
     if lang == "ts":
         return None if oracle.get("exhaustive_callers") else {okey(c) for c in oracle["callers"]}
-    # Rust: function definitions, and the module of every analysed file (a reference outside any function body is keyed at line 0)
-    return {okey(c) for c in oracle["callers"]} | {"%s:0" % f for f in oracle["files"]}
+    # Rust: function definitions, the const / static items of the analysed files (a reference in an initialiser is keyed at the item), and the
+    # module of every analysed file (a reference outside any function body or item is keyed at line 0)
+    return {okey(c) for c in oracle["callers"]} | {okey(c) for c in oracle.get("ref_callers", [])} | {"%s:0" % f for f in oracle["files"]}
 
 
-def grade_refs(oracle, syms, edges, lang, src, cfg_gate=None):
+def grade_refs(oracle, syms, edges, lang, src, cfg_gate=None, site_gate=None):
     """Returns (summary, fn_list, fp_list, capture_gap_list, ungradable_list, state). `state` feeds dead_xref().
 
     cfg_gate (Rust): callable (file, [lines]) -> True when every one of those lines lies inside an item behind a `#[cfg(...)]` that is definitely
     false in the configuration rust-analyzer analysed (rust_cfg.py). rust-analyzer resolves names in such code only partly (a local `features`
     declared there is not seen, so `features.push(..)` resolves to a function of that name): an oracle reference whose every site is gated is
-    left out (`oracle_refs_cfg_gated`), and an unmatched lidx pair whose evidence is gated is ungradable (`cfg_gated_evidence`)."""
+    left out (`oracle_refs_cfg_gated`), and an unmatched lidx pair whose evidence is gated is ungradable (`cfg_gated_evidence`).
+
+    site_gate (Rust): callable (file, [lines], name, qualname, binds_ok) -> True when every evidence line is inside an attribute or a `macro_rules!`
+    definition and spells the callee's name (rust_token_trees.py): rust-analyzer, run without proc macros, emits no occurrence there, so an unmatched
+    lidx pair is ungradable (`token_tree_site`) instead of wrong. `binds_ok` is true when the name can mean only that callee: the only function or
+    method of that name in the repository, or one declared in the caller's file; otherwise the site must write a path that agrees with the callee's
+    qualified name. A site that names another function stays wrong; a pair the compiler confirmed is untouched."""
     sym_keys = {s["key"] for s in syms.values() if "key" in s}
     canon = {}
     for s in syms.values():
@@ -71,6 +78,10 @@ def grade_refs(oracle, syms, edges, lang, src, cfg_gate=None):
                 canon[s["key"]] = c
     cn = lambda k: canon.get(k, k)  # noqa: E731
     name_by_key = {s["key"]: s["name"].split(".")[-1] for s in syms.values() if "key" in s}
+    fn_keys_by_name = defaultdict(set)
+    for s in syms.values():
+        if "key" in s and s["kind"] in FN_KINDS:
+            fn_keys_by_name[s["name"].split(".")[-1]].add(s["key"])
     ofiles = set(oracle["files"])
     jc = judged_callers(oracle, lang)
     jc_c = {cn(k) for k in jc} if jc is not None else None
@@ -208,6 +219,10 @@ def grade_refs(oracle, syms, edges, lang, src, cfg_gate=None):
             reason = "callee_file_not_covered"
         elif cfg_gate and len(p["epaths"]) == 1 and p["lines"] - {None, 0} and cfg_gate(sorted(p["epaths"])[0], sorted(x for x in p["lines"] if x)):
             reason = "cfg_gated_evidence"
+        elif site_gate and len(p["epaths"]) == 1 and p["lines"] - {None, 0} and site_gate(
+                sorted(p["epaths"])[0], sorted(x for x in p["lines"] if x), tsym["name"].split(".")[-1], tsym["qualname"],
+                len(fn_keys_by_name[tsym["name"].split(".")[-1]]) == 1 or tsym["file"] == csym["file"]):
+            reason = "token_tree_site"
         if reason:
             if reason == "oracle_call_wins":
                 for h in by_pair[pk]:

@@ -1,5 +1,3 @@
 [
-{"callee":{"file":"src/cli.rs","line":959,"name":"parse_millis","qualname":"crate::cli::parse_millis"},"callee_kind":"function","caller":{"file":"src/cli.rs","line":0,"name":"cli","qualname":"crate::cli"},"caller_kind":"module","category":"no_reference_at_site","detail":null,"edge_kinds":["REFERENCES"],"evidence_file":"src/cli.rs","evidence_lines":[563],"resolution_kind":"exact"},
-{"callee":{"file":"src/filter/owner.rs","line":27,"name":"from_string","qualname":"crate::filter::owner::OwnerFilter::from_string"},"callee_kind":"method","caller":{"file":"src/cli.rs","line":0,"name":"cli","qualname":"crate::cli"},"caller_kind":"module","category":"no_reference_at_site","detail":null,"edge_kinds":["REFERENCES"],"evidence_file":"src/cli.rs","evidence_lines":[469],"resolution_kind":"import"},
-{"callee":{"file":"src/filter/size.rs","line":28,"name":"from_string","qualname":"crate::filter::size::SizeFilter::from_string"},"callee_kind":"method","caller":{"file":"src/cli.rs","line":0,"name":"cli","qualname":"crate::cli"},"caller_kind":"module","category":"no_reference_at_site","detail":null,"edge_kinds":["REFERENCES"],"evidence_file":"src/cli.rs","evidence_lines":[412],"resolution_kind":"import"}
+
 ]

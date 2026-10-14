@@ -123,6 +123,15 @@ def is_fn(sym):
     return sym.endswith("().")
 
 
+def is_value_item(sym):
+    """A `const` or `static` item (`crate/NAME.`), or an associated one (`impl#[Type]NAME.`): a definition whose initialiser is code that
+    runs in no function. A struct field (`Type#field.`), an enum variant (`Enum#Variant.`) and a local (`local N`) are not."""
+    if not sym.endswith(".") or sym.startswith("local"):
+        return False
+    last = last_segment(sym)
+    return "#" not in last or "impl#[" in last
+
+
 def is_ctor(sym):
     """Tuple-struct (`Name#`) or enum-variant (`Enum#Variant.`) symbol: callable when followed by `(`."""
     return sym.endswith("#") or is_variant(sym)
@@ -402,6 +411,16 @@ def short_name(sym):
     return name.strip("`")
 
 
+def short_name_value(sym):
+    """Name of a const / static symbol (`indexer/csharp/PROFILE.`, `impl#[Type]NAME.`)."""
+    name = desc(sym).rstrip(".")
+    for sep in ("#", "/"):
+        name = name.rsplit(sep, 1)[-1]
+    if name.startswith("["):
+        name = name.split("]", 1)[-1]
+    return name.strip("`")
+
+
 def pick_definition(defs_here, fdefs, at, default):
     """rust-analyzer gives two `fn foo` nested in different functions one SCIP symbol. A definition nested in a function is what an
     occurrence inside that function (and no nearer one) means, the nearest above it first; any other occurrence means the definition
@@ -497,6 +516,7 @@ def main():
     ext = set()
     seen, seen_ref = {}, {}
     callers = set()
+    ref_callers = set()  # const / static items: declarations a value reference can belong to, which a call cannot
     for d in docs:
         path = d["path"]
         if not path.endswith(".rs"):
@@ -507,6 +527,7 @@ def main():
         except OSError:
             continue
         use_lines = use_item_lines("\n".join(lines))
+        vdefs = []  # (start, end, definition) of every const / static item of this file, which a reference in its initialiser belongs to
         fsyms = {}  # symbol -> its definitions in this file: (start, end, (file, line, name))
         fdefs = []  # (start, end, this occurrence's own (file, line, name)); a symbol such as `main().` can be defined in several files of one package
         for o in d["occ"]:
@@ -521,6 +542,13 @@ def main():
                 fdefs.append(((e[0], e[1]), (e[2], e[3]), dl))
                 fsyms.setdefault(o["symbol"], []).append(((e[0], e[1]), (e[2], e[3]), dl))
                 callers.add((dl[0], dl[1], dl[2]))
+            elif o["roles"] & 1 and is_value_item(o["symbol"]) and o["range"] and o["encl"] and not (a.no_tests and in_test(path, rng(o)[0])):
+                e = o["encl"]
+                if len(e) == 3:
+                    e = [e[0], e[1], e[0], e[2]]
+                dl = (path, rng(o)[0] + 1, short_name_value(o["symbol"]))
+                vdefs.append(((e[0], e[1]), (e[2], e[3]), dl))
+                ref_callers.add(dl)
         for o in d["occ"]:
             sym = o["symbol"]
             ctor = is_ctor(sym) and sym in ctors
@@ -555,8 +583,14 @@ def main():
                 out["dropped"]["caller_not_in_function"] += 1
                 if is_call or ctor:
                     continue
-                # a const / static / closure-in-a-static initialiser: the reference belongs to the module, keyed at line 0 like Go and TypeScript
-                cdef = (path, 0, "<module>")
+                # a const / static / closure-in-a-static initialiser: the reference belongs to the innermost such item (lidx indexes it as a symbol and
+                # attributes the reference there), with the module, keyed at line 0 like Go and TypeScript, as the acceptable coarser caller; one
+                # outside any item (an attribute, a macro expansion) belongs to the module
+                inner = None
+                for s_, e_, vd in vdefs:
+                    if s_ <= (l, c) <= e_ and (inner is None or s_ >= inner[0]):
+                        inner = (s_, e_, vd)
+                cdef = inner[2] if inner else (path, 0, "<module>")
                 out["refs_dropped"]["ref_at_module_level"] += 1
             else:
                 cdef = best[2]
@@ -593,6 +627,8 @@ def main():
             e = {"caller": {"file": cdef[0], "line": cdef[1], "name": cdef[2]},
                  "callee": {"file": tgt[0], "line": tgt[1], "name": tgt[2]},
                  "sites": [site]}
+            if not is_call and best is None and cdef[1] != 0:
+                e["caller_alts"] = ["%s:0" % path]
             if not is_call:
                 form, ctx = ref_shape(lrow, cc)
                 e["forms"], e["ctxs"] = [form], [ctx]
@@ -613,6 +649,7 @@ def main():
                     e["callee_alts"] = alts
             kind_edges.append(e)
     out["callers"] = [{"file": f, "line": l, "name": n} for f, l, n in sorted(callers)]
+    out["ref_callers"] = [{"file": f, "line": l, "name": n} for f, l, n in sorted(ref_callers)]
     out["ext_sites"] = sorted(ext)
     out["dropped"] = dict(out["dropped"])
     out["refs_dropped"] = dict(out["refs_dropped"])

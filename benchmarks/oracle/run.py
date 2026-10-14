@@ -31,6 +31,7 @@ import match  # noqa: E402
 import refs  # noqa: E402
 import report  # noqa: E402
 import rust_cfg  # noqa: E402
+import rust_token_trees  # noqa: E402
 import safety  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -321,7 +322,8 @@ def grade_value_refs(res, cell, oracle, syms, edges, src, results_dir, repo_dir)
     if not refs.has_refs(oracle):
         return
     gate = make_cfg_gate(repo_dir, oracle.get("_meta", {}).get("features", "default")) if cell["lang"] == "rust" else None
-    summ, fn, fp, gap, ungr, state = refs.grade_refs(oracle, syms, edges, cell["lang"], src, cfg_gate=gate)
+    sgate = rust_token_trees.SiteGate(lambda p: open(os.path.join(repo_dir, p), encoding="utf-8", errors="replace").read()) if cell["lang"] == "rust" else None
+    summ, fn, fp, gap, ungr, state = refs.grade_refs(oracle, syms, edges, cell["lang"], src, cfg_gate=gate, site_gate=sgate)
     fid = cell["id"].replace("/", "__")
     if res.get("dead"):
         x = {}

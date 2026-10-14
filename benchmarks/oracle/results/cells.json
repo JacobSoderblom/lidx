@@ -8,8 +8,8 @@
  },
  "generated": "2026-10-14",
  "lidx_version": "lidx 0.7.0",
- "main_commit": "d4ef44cf1760c3be3d9978c760a7b6617801e086",
- "head_commit": "d4ef44cf1760c3be3d9978c760a7b6617801e086",
+ "main_commit": "03991a85c390a54bf8b4e47d9ad530f86d90c02e",
+ "head_commit": "03991a85c390a54bf8b4e47d9ad530f86d90c02e",
  "corpus": {
   "cobra": {
    "lang": "go",
@@ -16815,13 +16815,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 3.9,
+   "index_seconds": 4.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 13.8
+    "seconds": 7.6
    },
    "oracle_dropped": {
     "caller_not_in_function": 1539,
@@ -16962,8 +16962,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.3,
-     "peak_rss_mb": 100,
+     "seconds": 2.4,
+     "peak_rss_mb": 99,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -17553,13 +17553,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "no_tests",
-   "index_seconds": 3.9,
+   "index_seconds": 4.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 10.6
+    "seconds": 7.8
    },
    "oracle_dropped": {
     "caller_not_in_function": 1391,
@@ -17689,8 +17689,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.3,
-     "peak_rss_mb": 97,
+     "seconds": 2.2,
+     "peak_rss_mb": 95,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -18280,13 +18280,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "with_tests",
-   "index_seconds": 3.9,
+   "index_seconds": 4.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 12.0
+    "seconds": 7.8
    },
    "oracle_dropped": {
     "caller_not_in_function": 1606,
@@ -18427,7 +18427,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
+     "seconds": 2.5,
      "peak_rss_mb": 107,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -19015,13 +19015,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 3.9,
+   "index_seconds": 4.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 11.3
+    "seconds": 7.6
    },
    "oracle_dropped": {
     "caller_not_in_function": 1552,
@@ -19163,8 +19163,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.3,
-     "peak_rss_mb": 100,
+     "seconds": 2.2,
+     "peak_rss_mb": 98,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -19754,7 +19754,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 7.0
+    "seconds": 4.3
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -20325,13 +20325,13 @@
      "REFERENCES": 10
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 10,
+    "graded": 7,
     "tp": 7,
-    "fp": 3,
-    "precision": 0.7,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.3968,
-     0.8922
+     0.6457,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -20343,30 +20343,30 @@
      0.3968,
      0.8922
     ],
-    "ungradable": {},
+    "ungradable": {
+     "token_tree_site": 3
+    },
     "by_resolution_kind": {
-     "import": {
-      "graded": 5,
-      "tp": 3,
-      "precision": 0.6,
+     "exact": {
+      "graded": 4,
+      "tp": 4,
+      "precision": 1.0,
       "ci": [
-       0.2307,
-       0.8824
+       0.5101,
+       1.0
       ]
      },
-     "exact": {
-      "graded": 5,
-      "tp": 4,
-      "precision": 0.8,
+     "import": {
+      "graded": 3,
+      "tp": 3,
+      "precision": 1.0,
       "ci": [
-       0.3755,
-       0.9638
+       0.4385,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 3
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -20404,7 +20404,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.1
+    "seconds": 4.2
    },
    "oracle_dropped": {
     "caller_not_in_function": 134,
@@ -20977,13 +20977,13 @@
      "REFERENCES": 10
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 10,
+    "graded": 7,
     "tp": 7,
-    "fp": 3,
-    "precision": 0.7,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.3968,
-     0.8922
+     0.6457,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -20995,30 +20995,30 @@
      0.6457,
      1.0
     ],
-    "ungradable": {},
+    "ungradable": {
+     "token_tree_site": 3
+    },
     "by_resolution_kind": {
-     "import": {
-      "graded": 5,
-      "tp": 3,
-      "precision": 0.6,
+     "exact": {
+      "graded": 4,
+      "tp": 4,
+      "precision": 1.0,
       "ci": [
-       0.2307,
-       0.8824
+       0.5101,
+       1.0
       ]
      },
-     "exact": {
-      "graded": 5,
-      "tp": 4,
-      "precision": 0.8,
+     "import": {
+      "graded": 3,
+      "tp": 3,
+      "precision": 1.0,
       "ci": [
-       0.3755,
-       0.9638
+       0.4385,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 3
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -21056,7 +21056,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 11.0
+    "seconds": 4.2
    },
    "oracle_dropped": {
     "callee_external": 1629,
@@ -21183,7 +21183,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.3,
-     "peak_rss_mb": 34,
+     "peak_rss_mb": 33,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -21627,13 +21627,13 @@
      "REFERENCES": 10
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 10,
+    "graded": 7,
     "tp": 7,
-    "fp": 3,
-    "precision": 0.7,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.3968,
-     0.8922
+     0.6457,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -21645,30 +21645,30 @@
      0.3968,
      0.8922
     ],
-    "ungradable": {},
+    "ungradable": {
+     "token_tree_site": 3
+    },
     "by_resolution_kind": {
-     "import": {
-      "graded": 5,
-      "tp": 3,
-      "precision": 0.6,
+     "exact": {
+      "graded": 4,
+      "tp": 4,
+      "precision": 1.0,
       "ci": [
-       0.2307,
-       0.8824
+       0.5101,
+       1.0
       ]
      },
-     "exact": {
-      "graded": 5,
-      "tp": 4,
-      "precision": 0.8,
+     "import": {
+      "graded": 3,
+      "tp": 3,
+      "precision": 1.0,
       "ci": [
-       0.3755,
-       0.9638
+       0.4385,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 3
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -21706,7 +21706,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 8.1
+    "seconds": 4.2
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -22278,13 +22278,13 @@
      "REFERENCES": 10
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 10,
+    "graded": 7,
     "tp": 7,
-    "fp": 3,
-    "precision": 0.7,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.3968,
-     0.8922
+     0.6457,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -22296,30 +22296,30 @@
      0.3968,
      0.8922
     ],
-    "ungradable": {},
+    "ungradable": {
+     "token_tree_site": 3
+    },
     "by_resolution_kind": {
-     "import": {
-      "graded": 5,
-      "tp": 3,
-      "precision": 0.6,
+     "exact": {
+      "graded": 4,
+      "tp": 4,
+      "precision": 1.0,
       "ci": [
-       0.2307,
-       0.8824
+       0.5101,
+       1.0
       ]
      },
-     "exact": {
-      "graded": 5,
-      "tp": 4,
-      "precision": 0.8,
+     "import": {
+      "graded": 3,
+      "tp": 3,
+      "precision": 1.0,
       "ci": [
-       0.3755,
-       0.9638
+       0.4385,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 3
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -22357,7 +22357,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 10.9
+    "seconds": 5.9
    },
    "oracle_dropped": {
     "callee_external": 2966,
@@ -22514,8 +22514,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 241,
       "oracle_buckets": {
@@ -22714,8 +22714,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 209,
       "oracle_buckets": {
@@ -23076,7 +23076,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 8.7
+    "seconds": 5.8
    },
    "oracle_dropped": {
     "callee_external": 3074,
@@ -23233,8 +23233,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 252,
       "oracle_buckets": {
@@ -23433,8 +23433,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "method": 3,
-       "function": 2
+       "function": 2,
+       "method": 3
       },
       "live": 217,
       "oracle_buckets": {
@@ -23795,7 +23795,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 8.6
+    "seconds": 4.2
    },
    "oracle_dropped": {
     "callee_external": 1349,
@@ -23926,7 +23926,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 6,
+     "peak_rss_mb": 5,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -23952,8 +23952,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 55,
       "oracle_buckets": {
@@ -24152,8 +24152,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 48,
       "oracle_buckets": {
@@ -24424,13 +24424,13 @@
      "REFERENCES": 9
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 4,
+    "graded": 3,
     "tp": 3,
-    "fp": 1,
-    "precision": 0.75,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.3006,
-     0.9544
+     0.4385,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -24442,17 +24442,10 @@
      0.4385,
      1.0
     ],
-    "ungradable": {},
+    "ungradable": {
+     "token_tree_site": 1
+    },
     "by_resolution_kind": {
-     "exact": {
-      "graded": 2,
-      "tp": 1,
-      "precision": 0.5,
-      "ci": [
-       0.0945,
-       0.9055
-      ]
-     },
      "import": {
       "graded": 2,
       "tp": 2,
@@ -24461,11 +24454,18 @@
        0.3424,
        1.0
       ]
+     },
+     "exact": {
+      "graded": 1,
+      "tp": 1,
+      "precision": 1.0,
+      "ci": [
+       0.2065,
+       1.0
+      ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 1
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -24503,7 +24503,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 7.9
+    "seconds": 4.0
    },
    "oracle_dropped": {
     "callee_external": 1360,
@@ -24661,8 +24661,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 55,
       "oracle_buckets": {
@@ -24861,8 +24861,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 48,
       "oracle_buckets": {
@@ -25133,13 +25133,13 @@
      "REFERENCES": 9
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 4,
+    "graded": 3,
     "tp": 3,
-    "fp": 1,
-    "precision": 0.75,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.3006,
-     0.9544
+     0.4385,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -25151,17 +25151,10 @@
      0.4385,
      1.0
     ],
-    "ungradable": {},
+    "ungradable": {
+     "token_tree_site": 1
+    },
     "by_resolution_kind": {
-     "exact": {
-      "graded": 2,
-      "tp": 1,
-      "precision": 0.5,
-      "ci": [
-       0.0945,
-       0.9055
-      ]
-     },
      "import": {
       "graded": 2,
       "tp": 2,
@@ -25170,11 +25163,18 @@
        0.3424,
        1.0
       ]
+     },
+     "exact": {
+      "graded": 1,
+      "tp": 1,
+      "precision": 1.0,
+      "ci": [
+       0.2065,
+       1.0
+      ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 1
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -25212,7 +25212,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 6.2
+    "seconds": 3.5
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -25330,7 +25330,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 6,
+     "peak_rss_mb": 5,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -25849,7 +25849,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 4.8
+    "seconds": 3.4
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -25968,7 +25968,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 6,
+     "peak_rss_mb": 1,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -26481,13 +26481,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 10.8,
+   "index_seconds": 11.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 25.9
+    "seconds": 19.2
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -26617,7 +26617,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 3.7,
-     "peak_rss_mb": 195,
+     "peak_rss_mb": 196,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -27067,44 +27067,44 @@
      "macro_generated": 11
     },
     "lifted_caller_refs": 0,
-    "matched_oracle_refs": 41,
+    "matched_oracle_refs": 62,
     "lidx_pairs_total": 92,
     "lidx_pairs_with_call_dropped": 0,
     "lidx_rows": {
      "REFERENCES": 97
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 43,
-    "tp": 41,
-    "fp": 2,
-    "precision": 0.9535,
+    "graded": 62,
+    "tp": 62,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.8454,
-     0.9872
+     0.9417,
+     1.0
     ],
-    "recall": 0.6613,
+    "recall": 1.0,
     "recall_ci": [
-     0.5372,
-     0.7666
+     0.9417,
+     1.0
     ],
-    "recall_incl_capture_gap": 0.5541,
+    "recall_incl_capture_gap": 0.8378,
     "recall_incl_capture_gap_ci": [
-     0.4409,
-     0.6618
+     0.7376,
+     0.9047
     ],
     "ungradable": {
      "caller_file_not_covered": 27,
      "oracle_call_wins": 1,
-     "caller_not_judged": 21
+     "token_tree_site": 2
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 26,
-      "tp": 24,
-      "precision": 0.9231,
+      "graded": 45,
+      "tp": 45,
+      "precision": 1.0,
       "ci": [
-       0.7586,
-       0.9786
+       0.9213,
+       1.0
       ]
      },
      "import": {
@@ -27117,40 +27117,13 @@
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 2
-    },
-    "fn_categories": {
-     "no_edge": 21
-    },
+    "fp_categories": {},
+    "fn_categories": {},
     "same_name_elsewhere": 0,
-    "fn_no_edge_shapes": [
-     [
-      [
-       "module_level",
-       "path",
-       "field_value"
-      ],
-      16
-     ],
-     [
-      [
-       "module_level",
-       "ident",
-       "argument_or_element"
-      ],
-      5
-     ]
-    ],
-    "fn_by_form": {
-     "path": 16,
-     "ident": 5
-    },
-    "fn_by_ctx": {
-     "field_value": 16,
-     "argument_or_element": 5
-    },
-    "fn_module_level": 21,
+    "fn_no_edge_shapes": [],
+    "fn_by_form": {},
+    "fn_by_ctx": {},
+    "fn_module_level": 0,
     "oracle_forms": {
      "ident": 51,
      "path": 23
@@ -27176,13 +27149,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 10.8,
+   "index_seconds": 11.0,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 24.4
+    "seconds": 18.8
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -27763,44 +27736,44 @@
      "macro_generated": 11
     },
     "lifted_caller_refs": 0,
-    "matched_oracle_refs": 41,
+    "matched_oracle_refs": 62,
     "lidx_pairs_total": 92,
     "lidx_pairs_with_call_dropped": 0,
     "lidx_rows": {
      "REFERENCES": 97
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 43,
-    "tp": 41,
-    "fp": 2,
-    "precision": 0.9535,
+    "graded": 62,
+    "tp": 62,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.8454,
-     0.9872
+     0.9417,
+     1.0
     ],
-    "recall": 0.6613,
+    "recall": 1.0,
     "recall_ci": [
-     0.5372,
-     0.7666
+     0.9417,
+     1.0
     ],
-    "recall_incl_capture_gap": 0.5541,
+    "recall_incl_capture_gap": 0.8378,
     "recall_incl_capture_gap_ci": [
-     0.4409,
-     0.6618
+     0.7376,
+     0.9047
     ],
     "ungradable": {
      "caller_file_not_covered": 27,
      "oracle_call_wins": 1,
-     "caller_not_judged": 21
+     "token_tree_site": 2
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 26,
-      "tp": 24,
-      "precision": 0.9231,
+      "graded": 45,
+      "tp": 45,
+      "precision": 1.0,
       "ci": [
-       0.7586,
-       0.9786
+       0.9213,
+       1.0
       ]
      },
      "import": {
@@ -27813,40 +27786,13 @@
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 2
-    },
-    "fn_categories": {
-     "no_edge": 21
-    },
+    "fp_categories": {},
+    "fn_categories": {},
     "same_name_elsewhere": 0,
-    "fn_no_edge_shapes": [
-     [
-      [
-       "module_level",
-       "path",
-       "field_value"
-      ],
-      16
-     ],
-     [
-      [
-       "module_level",
-       "ident",
-       "argument_or_element"
-      ],
-      5
-     ]
-    ],
-    "fn_by_form": {
-     "path": 16,
-     "ident": 5
-    },
-    "fn_by_ctx": {
-     "field_value": 16,
-     "argument_or_element": 5
-    },
-    "fn_module_level": 21,
+    "fn_no_edge_shapes": [],
+    "fn_by_form": {},
+    "fn_by_ctx": {},
+    "fn_module_level": 0,
     "oracle_forms": {
      "ident": 51,
      "path": 23
@@ -27878,7 +27824,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 10.9
+    "seconds": 7.9
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -28476,13 +28422,13 @@
      "REFERENCES": 110
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 100,
+    "graded": 93,
     "tp": 93,
-    "fp": 7,
-    "precision": 0.93,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.8625,
-     0.9657
+     0.9603,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -28495,31 +28441,30 @@
      1.0
     ],
     "ungradable": {
+     "token_tree_site": 7,
      "oracle_call_wins": 1
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 82,
+      "graded": 81,
       "tp": 81,
-      "precision": 0.9878,
+      "precision": 1.0,
       "ci": [
-       0.9341,
-       0.9978
+       0.9547,
+       1.0
       ]
      },
      "import": {
-      "graded": 18,
+      "graded": 12,
       "tp": 12,
-      "precision": 0.6667,
+      "precision": 1.0,
       "ci": [
-       0.4375,
-       0.8372
+       0.7575,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 7
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -28557,7 +28502,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 11.0
+    "seconds": 8.0
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -29156,13 +29101,13 @@
      "REFERENCES": 110
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 100,
+    "graded": 93,
     "tp": 93,
-    "fp": 7,
-    "precision": 0.93,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.8625,
-     0.9657
+     0.9603,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -29175,31 +29120,30 @@
      1.0
     ],
     "ungradable": {
+     "token_tree_site": 7,
      "oracle_call_wins": 1
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 82,
+      "graded": 81,
       "tp": 81,
-      "precision": 0.9878,
+      "precision": 1.0,
       "ci": [
-       0.9341,
-       0.9978
+       0.9547,
+       1.0
       ]
      },
      "import": {
-      "graded": 18,
+      "graded": 12,
       "tp": 12,
-      "precision": 0.6667,
+      "precision": 1.0,
       "ci": [
-       0.4375,
-       0.8372
+       0.7575,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 7
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -29231,13 +29175,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.8,
+   "index_seconds": 5.1,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 21.1
+    "seconds": 12.8
    },
    "oracle_dropped": {
     "callee_external": 8747,
@@ -29375,7 +29319,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 1.1,
-     "peak_rss_mb": 97,
+     "peak_rss_mb": 98,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -29402,8 +29346,8 @@
       "dead": 26,
       "dead_by_kind": {
        "function": 17,
-       "method": 7,
-       "type": 2
+       "type": 2,
+       "method": 7
       },
       "live": 1132,
       "oracle_buckets": {
@@ -29887,13 +29831,13 @@
      "REFERENCES": 93
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 68,
+    "graded": 50,
     "tp": 50,
-    "fp": 18,
-    "precision": 0.7353,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.6199,
-     0.8255
+     0.9286,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -29906,31 +29850,30 @@
      1.0
     ],
     "ungradable": {
+     "token_tree_site": 18,
      "caller_file_not_covered": 3
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 46,
+      "graded": 38,
       "tp": 38,
-      "precision": 0.8261,
+      "precision": 1.0,
       "ci": [
-       0.6928,
-       0.9091
+       0.9082,
+       1.0
       ]
      },
      "import": {
-      "graded": 22,
+      "graded": 12,
       "tp": 12,
-      "precision": 0.5455,
+      "precision": 1.0,
       "ci": [
-       0.3466,
-       0.7308
+       0.7575,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 18
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
@@ -29962,13 +29905,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.8,
+   "index_seconds": 5.1,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 17.1
+    "seconds": 13.3
    },
    "oracle_dropped": {
     "callee_external": 8752,
@@ -30107,7 +30050,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 1.1,
-     "peak_rss_mb": 98,
+     "peak_rss_mb": 97,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -30134,8 +30077,8 @@
       "dead": 26,
       "dead_by_kind": {
        "function": 17,
-       "method": 7,
-       "type": 2
+       "type": 2,
+       "method": 7
       },
       "live": 1132,
       "oracle_buckets": {
@@ -30619,13 +30562,13 @@
      "REFERENCES": 93
     },
     "lidx_unresolved_reference_rows": 0,
-    "graded": 68,
+    "graded": 50,
     "tp": 50,
-    "fp": 18,
-    "precision": 0.7353,
+    "fp": 0,
+    "precision": 1.0,
     "precision_ci": [
-     0.6199,
-     0.8255
+     0.9286,
+     1.0
     ],
     "recall": 1.0,
     "recall_ci": [
@@ -30638,31 +30581,30 @@
      1.0
     ],
     "ungradable": {
+     "token_tree_site": 18,
      "caller_file_not_covered": 3
     },
     "by_resolution_kind": {
      "exact": {
-      "graded": 46,
+      "graded": 38,
       "tp": 38,
-      "precision": 0.8261,
+      "precision": 1.0,
       "ci": [
-       0.6928,
-       0.9091
+       0.9082,
+       1.0
       ]
      },
      "import": {
-      "graded": 22,
+      "graded": 12,
       "tp": 12,
-      "precision": 0.5455,
+      "precision": 1.0,
       "ci": [
-       0.3466,
-       0.7308
+       0.7575,
+       1.0
       ]
      }
     },
-    "fp_categories": {
-     "no_reference_at_site": 18
-    },
+    "fp_categories": {},
     "fn_categories": {},
     "same_name_elsewhere": 0,
     "fn_no_edge_shapes": [],
