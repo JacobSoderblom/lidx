@@ -95,3 +95,34 @@ fn rust_test_attribute_functions_are_not_roots_with_the_option() {
     assert!(row(&strict, "::used").is_none(), "{strict}");
     assert!(row(&strict, "::unit").is_none(), "{strict}");
 }
+
+const TS: &[(&str, &str)] = &[
+    (
+        "package.json",
+        "{\"name\":\"app\",\"main\":\"src/index.ts\"}\n",
+    ),
+    (
+        "src/index.ts",
+        "import { Box } from './box';\nexport const b = new Box();\nexport const v = b.size;\n",
+    ),
+    (
+        "src/box.ts",
+        "export class Box {\n  private n = 0;\n  get size(): number { return this.n; }\n  set size(v: number) { this.n = v; }\n  get only(): number { return 1; }\n  set only(v: number) {}\n}\n",
+    ),
+    (
+        "src/box.test.ts",
+        "import { Box } from './box';\nconst b = new Box();\nb.only = 3;\nconsole.log(b.only);\n",
+    ),
+];
+
+#[test]
+fn ts_accessor_read_only_in_a_test_is_claimed_with_the_option() {
+    let (_tmp, _root, mut ix) = common::live_indexer("lidx-dead-troots-ts-", TS);
+    let default = call(&mut ix, None);
+    assert!(row(&default, "Box.only").is_none(), "{default}");
+    assert!(row(&default, "Box.size").is_none(), "{default}");
+    let strict = call(&mut ix, Some(false));
+    assert!(row(&strict, "Box.only").is_some(), "{strict}");
+    // read by production code: still live, with or without the option
+    assert!(row(&strict, "Box.size").is_none(), "{strict}");
+}

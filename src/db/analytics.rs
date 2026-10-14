@@ -720,6 +720,7 @@ impl Db {
                        WHERE sib.file_id = s.file_id AND sib.qualname = s.qualname
                          AND sib.graph_version = s.graph_version AND sib.id != s.id
                          AND e.kind IN ({reachability}) AND e.graph_version = {gv}
+                         {test_guard}
                      ))
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
                      -- Operators and finalizers are invoked implicitly (#247).
