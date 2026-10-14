@@ -18156,13 +18156,13 @@
    "repo": "ripgrep",
    "lang": "rust",
    "variant": "with_tests",
-   "index_seconds": 8.1,
+   "index_seconds": 8.2,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 23.4
+    "seconds": 30.0
    },
    "oracle_dropped": {
     "caller_not_in_function": 1606,
@@ -18170,20 +18170,20 @@
     "callee_variant": 282
    },
    "calls": {
-    "oracle_edges": 6072,
+    "oracle_edges": 6078,
     "oracle_edges_caller_indexed": 4662,
-    "capture_gap_edges": 1229,
+    "capture_gap_edges": 1235,
     "capture_gap_reasons": {
-     "macro_generated": 1229
+     "macro_generated": 1235
     },
     "lifted_caller_edges": 0,
     "matched_oracle_edges": 4401,
     "dispatch_edges": 181,
     "dispatch_matched": 61,
-    "recall_comparable": 0.7348,
+    "recall_comparable": 0.7341,
     "recall_comparable_ci": [
-     0.7236,
-     0.7458
+     0.7229,
+     0.7451
     ],
     "closure_edges": 0,
     "unresolved_pairs_excluded": 0,
@@ -18209,7 +18209,7 @@
     ],
     "oracle_edges_both_ends_indexed": 4662,
     "recall_both_ends_indexed": 0.944,
-    "recall_incl_capture_gap": 0.7248,
+    "recall_incl_capture_gap": 0.7241,
     "ungradable": {
      "caller_not_judged": 73,
      "caller_file_not_covered": 11
@@ -18305,7 +18305,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 4.5,
+     "seconds": 7.7,
      "peak_rss_mb": 108,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -22496,18 +22496,18 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 12.1,
+   "index_seconds": 35.2,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 19.2
+    "seconds": 43.0
    },
    "oracle_dropped": {
     "callee_external": 2966,
     "caller_not_in_function": 361,
-    "callee_variant": 92
+    "callee_variant": 91
    },
    "calls": {
     "oracle_edges": 622,
@@ -22630,8 +22630,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.7,
-     "peak_rss_mb": 36,
+     "seconds": 1.5,
+     "peak_rss_mb": 39,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -23239,18 +23239,18 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 12.1,
+   "index_seconds": 35.2,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 19.3
+    "seconds": 222.8
    },
    "oracle_dropped": {
     "callee_external": 3074,
     "caller_not_in_function": 375,
-    "callee_variant": 95
+    "callee_variant": 94
    },
    "features": "all",
    "calls": {
@@ -23373,7 +23373,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 0.6,
+     "seconds": 0.7,
      "peak_rss_mb": 36,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"

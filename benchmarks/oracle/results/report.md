@@ -167,7 +167,7 @@ Rust denominators: rust/ripgrep/path_tests_excluded 4796 compiler edges here aga
 | ts/hono | tsc | 921 | 815 | 50 | 56 | 821 | 1.000 | 0.980 | 0.954 | 0.896 |
 | rust/ripgrep/path_tests_excluded | rust-analyzer SCIP | 4796 | 4567 | 167 | 62 | 4397 | 0.992 | 0.946 | 0.921 | 0.909 |
 | rust/ripgrep/no_tests | rust-analyzer SCIP | 2315 | 2176 | 139 | 0 | 2086 | 0.984 | 0.925 | 0.886 | 0.886 |
-| rust/ripgrep/tests | rust-analyzer SCIP | 6072 | 4662 | 181 | 1229 | 4482 | 0.992 | 0.944 | 0.918 | 0.732 |
+| rust/ripgrep/tests | rust-analyzer SCIP | 6078 | 4662 | 181 | 1235 | 4499 | 0.992 | 0.944 | 0.921 | 0.734 |
 | rust/fd/path_tests_excluded | rust-analyzer SCIP | 256 | 256 | 0 | 0 | 252 | 0.996 | 0.981 | 0.981 | 0.981 |
 | rust/fd/no_tests | rust-analyzer SCIP | 190 | 190 | 0 | 0 | 188 | 0.989 | 0.979 | 0.979 | 0.979 |
 | rust/fd/tests | rust-analyzer SCIP | 515 | 515 | 0 | 0 | 511 | 0.998 | 0.990 | 0.990 | 0.990 |
@@ -478,15 +478,15 @@ Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests
 
 ### rust/ripgrep/tests
 
-- oracle: None, 6072 edges: 4662 static with an indexed caller, 181 dispatch (44 of them found), 1229 capture gap
+- oracle: None, 6078 edges: 4662 static with an indexed caller, 181 dispatch (61 of them found), 1235 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.992 if they were counted wrong
-- recall when both ends are indexed symbols: 0.944 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1229}
-- lidx: 4566 resolved in-repo CALLS pairs; 4482 graded (4445 correct, 37 wrong); lidx indexed in 59.9s
+- recall when both ends are indexed symbols: 0.944 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1235}
+- lidx: 4583 resolved in-repo CALLS pairs; 4499 graded (4462 correct, 37 wrong); lidx indexed in 8.2s
 - ungradable lidx pairs: caller_file_not_covered 11, caller_not_judged 73
 
 | resolution_kind | graded | correct | precision | 95% CI |
 |---|---:|---:|---:|---|
-| receiver_type | 2306 | 2292 | 0.994 | [0.990, 0.996] |
+| receiver_type | 2323 | 2309 | 0.994 | [0.990, 0.996] |
 | exact | 1389 | 1386 | 0.998 | [0.994, 0.999] |
 | import | 343 | 342 | 0.997 | [0.984, 1.000] |
 | bare_name | 233 | 215 | 0.923 | [0.881, 0.951] |
