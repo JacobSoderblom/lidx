@@ -168,6 +168,13 @@ class Gate(unittest.TestCase):
         self.assertEqual(self.verdict(line_of('#[cfg(feature = "default_depth")]'), 2), "wrong")
         self.assertEqual(self.verdict(line_of('rename = "default_depth"'), 2), "wrong")
 
+    def test_a_method_call_in_a_macro_body_does_not_pass(self):
+        files = {"src/lib.rs": "macro_rules! m {\n    ($x:expr) => { $x.helper() };\n    ($x:expr, $y:expr) => { helper($y) };\n}\nfn helper() {}\n"}
+        gate = tt.SiteGate(lambda p: files[p])
+        callee = {"name": "helper", "qualname": "crate::helper", "file": "src/lib.rs", "line": 5, "kind": "function"}
+        self.assertFalse(gate("src/lib.rs", [2], callee, True))  # `.helper()` even though the name is unique
+        self.assertTrue(gate("src/lib.rs", [3], callee, True))  # a bare path in the same macro still passes
+
     def test_a_pair_the_compiler_confirmed_is_untouched(self):
         oracle = roracle(["src/lib.rs"], [rref(("src/lib.rs", 0, "<module>"), ("src/lib.rs", 2, "default_depth"), site=6)], callers=[])
         summ = refs.grade_refs(oracle, self.syms(), [redge(1, 2, 6, path="src/lib.rs")], "rust", match.Sources("/nonexistent"), site_gate=self.gate())[0]

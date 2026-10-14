@@ -9,7 +9,7 @@
  "generated": "2026-10-14",
  "lidx_version": "lidx 0.7.0",
  "main_commit": "03991a85c390a54bf8b4e47d9ad530f86d90c02e",
- "head_commit": "61e742f8241701d2a44ed329e484244d80984cb4",
+ "head_commit": "1842feefae2843285529a88053c69e687bbae1d1",
  "corpus": {
   "cobra": {
    "lang": "go",
@@ -17361,7 +17361,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -18088,7 +18088,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -18826,7 +18826,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -19556,7 +19556,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -19748,7 +19748,7 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 0.7,
+   "index_seconds": 0.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -20221,7 +20221,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -20398,7 +20398,7 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "no_tests",
-   "index_seconds": 0.7,
+   "index_seconds": 0.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -20875,7 +20875,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -21050,7 +21050,7 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "with_tests",
-   "index_seconds": 0.7,
+   "index_seconds": 0.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -21523,7 +21523,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -21700,7 +21700,7 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 0.7,
+   "index_seconds": 0.6,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -22174,7 +22174,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -22351,7 +22351,7 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.7,
+   "index_seconds": 4.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -22514,8 +22514,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
       "live": 241,
       "oracle_buckets": {
@@ -22714,8 +22714,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
       "live": 209,
       "oracle_buckets": {
@@ -22891,7 +22891,7 @@
       "src/syntax_mapping/builtin.rs"
      ]
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -23070,7 +23070,7 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.7,
+   "index_seconds": 4.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -23233,8 +23233,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
       "live": 252,
       "oracle_buckets": {
@@ -23433,8 +23433,8 @@
       },
       "dead": 5,
       "dead_by_kind": {
-       "function": 2,
-       "method": 3
+       "method": 3,
+       "function": 2
       },
       "live": 217,
       "oracle_buckets": {
@@ -23610,7 +23610,7 @@
       "src/syntax_mapping/builtin.rs"
      ]
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -23952,8 +23952,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 55,
       "oracle_buckets": {
@@ -24152,8 +24152,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 48,
       "oracle_buckets": {
@@ -24319,7 +24319,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -24661,8 +24661,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 55,
       "oracle_buckets": {
@@ -24861,8 +24861,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "function": 2,
-       "method": 1
+       "method": 1,
+       "function": 2
       },
       "live": 48,
       "oracle_buckets": {
@@ -25028,7 +25028,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -25666,7 +25666,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -26304,7 +26304,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -26481,7 +26481,7 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 10.7,
+   "index_seconds": 10.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -26965,7 +26965,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -27149,7 +27149,7 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 10.7,
+   "index_seconds": 10.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -27634,7 +27634,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -28313,7 +28313,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -28992,7 +28992,7 @@
      "no_importer_files": [],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -29346,8 +29346,8 @@
       "dead": 26,
       "dead_by_kind": {
        "function": 17,
-       "method": 7,
-       "type": 2
+       "type": 2,
+       "method": 7
       },
       "live": 1132,
       "oracle_buckets": {
@@ -29723,7 +29723,7 @@
      ],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {
@@ -30077,8 +30077,8 @@
       "dead": 26,
       "dead_by_kind": {
        "function": 17,
-       "method": 7,
-       "type": 2
+       "type": 2,
+       "method": 7
       },
       "live": 1132,
       "oracle_buckets": {
@@ -30454,7 +30454,7 @@
      ],
      "unreachable_files": []
     },
-    "cached_oracle": false
+    "cached_oracle": true
    },
    "hierarchy": {
     "relations": {

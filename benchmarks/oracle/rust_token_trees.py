@@ -116,6 +116,8 @@ class Source:
             if not pm:
                 return None
             return ("path", [x.strip() for x in pm.group(1).split("::") if x.strip()])
+        if re.search(r"\.\s*$", t[:off]):
+            return None  # `$x.helper()`: a method call on some value, never a path to a function
         pm = re.search(r"((?:[A-Za-z_]\w*\s*::\s*)+)$", t[:off])
         segs = [x.strip() for x in pm.group(1).split("::") if x.strip()] if pm else []
         return ("path", segs)
