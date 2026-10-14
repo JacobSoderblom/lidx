@@ -185,6 +185,9 @@ pub struct LayerResult {
     /// other layer reports `false` since they don't walk resolved graph
     /// edges the same way.
     pub traversed_heuristic_kind: bool,
+    /// Direct layer only: distinct symbols one level past the depth ceiling
+    /// that a deeper walk would add (0 when the ceiling cut nothing).
+    pub beyond_depth: usize,
 }
 
 /// Configuration for multi-layer impact analysis
@@ -290,6 +293,10 @@ impl Default for HistoricalConfig {
     }
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// Result from multi-layer impact analysis
 #[derive(Debug, Serialize)]
 pub struct UnifiedImpactResult {
@@ -313,6 +320,15 @@ pub struct UnifiedImpactResult {
     /// when the direct layer is disabled, since only that layer traverses
     /// resolvable graph edges.
     pub lower_bound: LowerBound,
+    /// The direct layer stopped at `config.max_depth` with more reachable
+    /// beyond it (see `beyond_depth`): the set is the part within the depth,
+    /// not the whole closure. Absent when the depth cut nothing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub depth_limited: bool,
+    /// Distinct symbols one level past `config.max_depth` that a deeper walk
+    /// would add (a lower bound on what the depth hides).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub beyond_depth: usize,
     /// Issue #81 (R5): whether the direct layer's own traversal crossed at
     /// least one heuristic (`bare_name`/`two_segment`) edge -- gates the
     /// "retry excluding heuristics" next_hops suggestion in
@@ -334,6 +350,12 @@ pub struct BatchImpactEntry {
     pub truncation_reason: Option<String>,
     pub layers: LayerMetadata,
     pub lower_bound: LowerBound,
+    /// See [`UnifiedImpactResult::depth_limited`].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub depth_limited: bool,
+    /// See [`UnifiedImpactResult::beyond_depth`].
+    #[serde(skip_serializing_if = "is_zero")]
+    pub beyond_depth: usize,
     /// Present only when seed resolution failed; contains next_hops and a message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<serde_json::Value>,

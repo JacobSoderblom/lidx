@@ -1,3 +1,6 @@
 [
-
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"middleware/logger_test.go","key":"middleware/logger_test.go:17","kind":"method","lidx_kind":"method","line":17,"name":"Hijack","policy":false,"qualname":"middleware/logger_test.testLoggerWriter.Hijack","subkind":""},
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"middleware/middleware_test.go","key":"middleware/middleware_test.go:27","kind":"method","lidx_kind":"method","line":27,"name":"ServeHTTP","policy":false,"qualname":"middleware/middleware_test.customMiddleware.ServeHTTP","subkind":""},
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"middleware/wrap_writer_test.go","key":"middleware/wrap_writer_test.go:21","kind":"method","lidx_kind":"method","line":21,"name":"ReadFrom","policy":false,"qualname":"middleware/wrap_writer_test.readerFromRecorder.ReadFrom","subkind":""},
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"mux_test.go","key":"mux_test.go:2109","kind":"method","lidx_kind":"method","line":2109,"name":"String","policy":false,"qualname":"mux_test.ctxKey.String","subkind":""}
 ]

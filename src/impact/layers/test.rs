@@ -154,6 +154,7 @@ impl<'a> TestImpactLayer<'a> {
             parent_map,
             alt_parents,
             traversed_heuristic_kind: traversal.traversed_heuristic_kind,
+            beyond_depth: 0,
         })
     }
 }

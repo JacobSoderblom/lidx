@@ -149,7 +149,7 @@ struct AnalyzeImpactParams {
     max_depth: Option<usize>,
     /// "upstream" (find consumers/callers), "downstream" (follow calls), or "both" (default). Use "upstream" for "what depends on this?" Case-insensitive; aliases "up"/"callers" and "down"/"callees"; anything else is an error.
     direction: Option<String>,
-    /// Edge kinds to follow, upper-case names such as CALLS, DISPATCH, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
+    /// Edge kinds to follow, upper-case names such as CALLS, DISPATCH, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default (omitted or empty): every edge kind, which also follows references, USES, imports, IMPLEMENTS and EXTENDS and so returns dependents that are not callers; pass ["CALLS", "DISPATCH"] for callers (or callees) only.
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
     /// to exclude the guarded name-fallback tier's heuristic edges. "containment" is also
@@ -373,7 +373,7 @@ struct TraceFlowParams {
     direction: Option<String>,
     /// Max hops (default: 5, max: 10)
     max_hops: Option<usize>,
-    /// Edge kinds to follow, upper-case names such as CALLS, DISPATCH, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
+    /// Edge kinds to follow, upper-case names such as CALLS, DISPATCH, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: every call and flow kind (CALLS, DISPATCH, RPC_*, HTTP_*, CHANNEL_*, CONFIG_*, qualified XREF); not references, USES, imports or the type hierarchy.
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
     /// to exclude the guarded name-fallback tier's heuristic edges. "containment" is also
@@ -1304,6 +1304,23 @@ mod tests {
                 method
             );
         }
+    }
+
+    /// #480: the `kinds` text names the default the handler actually applies.
+    #[test]
+    fn kinds_default_text_matches_what_the_methods_follow() {
+        let kinds = |method: &str| {
+            super::method_param_schema(method)["properties"]["kinds"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let impact = kinds("analyze_impact");
+        assert!(!impact.contains("Default: CALLS, RPC_IMPL"), "{impact}");
+        assert!(impact.contains("every edge kind"), "{impact}");
+        let trace = kinds("trace_flow");
+        assert!(!trace.contains("Default: CALLS, RPC_IMPL"), "{trace}");
+        assert!(trace.contains("not references"), "{trace}");
     }
 
     #[test]

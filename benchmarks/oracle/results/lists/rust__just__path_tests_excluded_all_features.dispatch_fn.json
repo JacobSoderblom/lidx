@@ -1,4 +1,5 @@
 [
+{"callee":{"file":"src/color_display.rs","line":11,"name":"fmt"},"caller":{"file":"src/color_display.rs","line":17,"name":"[Display]fmt"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/color_display.rs:18"]},
 {"callee":{"file":"src/color_display.rs","line":4,"name":"color_display"},"caller":{"file":"src/error.rs","line":458,"name":"unwrap_const"},"category":"dispatch","detail":null,"dispatch":true,"fanout":2,"sites":["src/error.rs:479"]},
 {"callee":{"file":"src/color_display.rs","line":4,"name":"color_display"},"caller":{"file":"src/item.rs","line":79,"name":"[ColorDisplay]fmt"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/item.rs:140"]},
 {"callee":{"file":"src/color_display.rs","line":4,"name":"color_display"},"caller":{"file":"src/recipe.rs","line":749,"name":"[ColorDisplay]fmt"},"category":"dispatch","detail":null,"dispatch":true,"fanout":1,"sites":["src/recipe.rs:757"]},

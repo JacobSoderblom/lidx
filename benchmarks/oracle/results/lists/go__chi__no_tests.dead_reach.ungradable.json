@@ -1,7 +1,12 @@
 [
+{"confidence":"medium","file":"_examples/custom-handler/main.go","key":"_examples/custom-handler/main.go:12","lidx_kind":"method","name":"ServeHTTP","qualname":"_examples/custom-handler/main.Handler.ServeHTTP","reason":"file_not_in_program"},
 {"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:301","lidx_kind":"method","name":"Bind","qualname":"_examples/rest/main.UserPayload.Bind","reason":"file_not_in_program"},
 {"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:305","lidx_kind":"method","name":"Render","qualname":"_examples/rest/main.UserPayload.Render","reason":"file_not_in_program"},
 {"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:327","lidx_kind":"method","name":"Bind","qualname":"_examples/rest/main.ArticleRequest.Bind","reason":"file_not_in_program"},
 {"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:372","lidx_kind":"method","name":"Render","qualname":"_examples/rest/main.ArticleResponse.Render","reason":"file_not_in_program"},
-{"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:410","lidx_kind":"method","name":"Render","qualname":"_examples/rest/main.ErrResponse.Render","reason":"file_not_in_program"}
+{"confidence":"medium","file":"_examples/rest/main.go","key":"_examples/rest/main.go:410","lidx_kind":"method","name":"Render","qualname":"_examples/rest/main.ErrResponse.Render","reason":"file_not_in_program"},
+{"confidence":"medium","file":"middleware/logger_test.go","key":"middleware/logger_test.go:17","lidx_kind":"method","name":"Hijack","qualname":"middleware/logger_test.testLoggerWriter.Hijack","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"middleware/middleware_test.go","key":"middleware/middleware_test.go:27","lidx_kind":"method","name":"ServeHTTP","qualname":"middleware/middleware_test.customMiddleware.ServeHTTP","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"middleware/wrap_writer_test.go","key":"middleware/wrap_writer_test.go:21","lidx_kind":"method","name":"ReadFrom","qualname":"middleware/wrap_writer_test.readerFromRecorder.ReadFrom","reason":"test_file_outside_cell"},
+{"confidence":"medium","file":"mux_test.go","key":"mux_test.go:2109","lidx_kind":"method","name":"String","qualname":"mux_test.ctxKey.String","reason":"test_file_outside_cell"}
 ]

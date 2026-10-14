@@ -1,3 +1,4 @@
 [
-
+{"callee":{"file":"src/language/mod.rs","line":38,"name":"new","qualname":"crate::language::Language::new"},"caller":{"file":"src/utils/fs.rs","line":0,"name":"fs","qualname":"crate::utils::fs"},"edge_kinds":["USES"],"evidence_file":"src/utils/fs.rs","evidence_lines":[],"reason":"no_evidence_line","resolution_kind":"exact"},
+{"callee":{"file":"src/stats.rs","line":21,"name":"new","qualname":"crate::stats::CodeStats::new"},"caller":{"file":"src/language/language_type.rs","line":0,"name":"language_type","qualname":"crate::language::language_type"},"edge_kinds":["USES"],"evidence_file":"src/language/language_type.rs","evidence_lines":[],"reason":"no_evidence_line","resolution_kind":"exact"}
 ]

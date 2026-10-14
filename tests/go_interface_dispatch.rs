@@ -482,3 +482,442 @@ fn a_method_with_other_parameter_or_result_types_is_no_implementation() {
         ]
     );
 }
+
+// ---- #482: a call fans out to the implementers of the receiver's interface
+
+const EMBED_IFACES: &str = "package app
+
+type Identifiable interface{ ID() string }
+
+type Source interface {
+	Identifiable
+	Close() error
+}
+";
+const EMBED_TYPES: &str = "package app
+
+type Adapter struct{}
+
+func (a Adapter) ID() string { return \"a\" }
+
+type File struct{}
+
+func (f File) ID() string   { return \"f\" }
+func (f File) Close() error { return nil }
+
+type Dir struct{}
+
+func (d Dir) ID() string   { return \"d\" }
+func (d Dir) Close() error { return nil }
+";
+const EMBED_USE: &str = "package app
+
+func UseSource(s Source) { s.ID() }
+
+func UseIdentifiable(i Identifiable) { i.ID() }
+";
+
+fn embed_files() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("go.mod", GO_MOD),
+        ("ifaces.go", EMBED_IFACES),
+        ("types.go", EMBED_TYPES),
+        ("use.go", EMBED_USE),
+    ]
+}
+
+fn impact_up(root: &std::path::Path, target: &str) -> String {
+    impact_up_to(root, target, 3)
+}
+
+fn impact_up_to(root: &std::path::Path, target: &str, depth: usize) -> String {
+    let result = rpc_result(
+        root,
+        "analyze_impact",
+        &format!(
+            r#"{{"qualname":"{target}","direction":"upstream","max_depth":{depth},"kinds":["CALLS","DISPATCH"],
+                "enable_test":false,"enable_historical":false}}"#
+        ),
+    );
+    result["affected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["symbol"]["qualname"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn trace_down(root: &std::path::Path, start: &str) -> String {
+    let result = rpc_result(
+        root,
+        "trace_flow",
+        &format!(r#"{{"start_qualname":"{start}","direction":"downstream","max_hops":3}}"#),
+    );
+    result["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["symbol"]["qualname"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn a_call_on_the_outer_interface_does_not_reach_a_type_of_the_inner_one_only() {
+    let (_tmp, root, _indexer) = indexed(&embed_files());
+    // `Adapter` implements `Identifiable` but not `Source`: it can never be
+    // the dynamic type of `UseSource`'s receiver.
+    let callers = impact_up(&root, "types.Adapter.ID");
+    assert!(callers.contains("use.UseIdentifiable"), "{callers}");
+    assert!(!callers.contains("use.UseSource"), "{callers}");
+    // Types of the outer interface are reached by both callers.
+    for target in ["types.File.ID", "types.Dir.ID"] {
+        let callers = impact_up(&root, target);
+        assert!(
+            callers.contains("use.UseIdentifiable"),
+            "{target}: {callers}"
+        );
+        assert!(callers.contains("use.UseSource"), "{target}: {callers}");
+    }
+}
+
+#[test]
+fn trace_flow_from_the_outer_interface_call_reaches_only_its_implementers() {
+    let (_tmp, root, _indexer) = indexed(&embed_files());
+    let from_source = trace_down(&root, "use.UseSource");
+    assert!(from_source.contains("types.File.ID"), "{from_source}");
+    assert!(from_source.contains("types.Dir.ID"), "{from_source}");
+    assert!(!from_source.contains("types.Adapter.ID"), "{from_source}");
+    let from_inner = trace_down(&root, "use.UseIdentifiable");
+    for t in ["types.Adapter.ID", "types.File.ID", "types.Dir.ID"] {
+        assert!(from_inner.contains(t), "{t}: {from_inner}");
+    }
+}
+
+#[test]
+fn the_receiver_interface_follows_edits_and_ends_equal_to_a_fresh_reindex() {
+    let (_tmp, root, mut indexer) = indexed(&embed_files());
+    assert!(!impact_up(&root, "types.Adapter.ID").contains("use.UseSource"));
+
+    // `Adapter` gains `Close`: it now implements `Source` too.
+    let widened = "package app
+
+type Adapter struct{}
+
+func (a Adapter) ID() string    { return \"a\" }
+func (a Adapter) Close() error  { return nil }
+
+type File struct{}
+
+func (f File) ID() string   { return \"f\" }
+func (f File) Close() error { return nil }
+
+type Dir struct{}
+
+func (d Dir) ID() string   { return \"d\" }
+func (d Dir) Close() error { return nil }
+";
+    let files = with(&embed_files(), ("types.go", widened));
+    sync(&mut indexer, &root, &files);
+    assert!(impact_up(&root, "types.Adapter.ID").contains("use.UseSource"));
+    assert_incremental_equals_fresh(&indexer, &files);
+    let (_tmp2, root2, _i2) = indexed(&files);
+    assert!(impact_up(&root2, "types.Adapter.ID").contains("use.UseSource"));
+
+    // ...and loses it again.
+    let narrowed = embed_files();
+    sync(&mut indexer, &root, &narrowed);
+    assert!(!impact_up(&root, "types.Adapter.ID").contains("use.UseSource"));
+    assert_incremental_equals_fresh(&indexer, &narrowed);
+}
+
+#[test]
+fn a_type_embedding_the_inner_implementer_still_reaches_the_outer_call() {
+    // `Wrapper` embeds `Adapter` (which has `ID`) and adds `Close`: it
+    // implements `Source`, and its `ID` is `Adapter.ID`.
+    let wrapper = "package app
+
+type Wrapper struct{ Adapter }
+
+func (w Wrapper) Close() error { return nil }
+";
+    let mut files = embed_files();
+    files.push(("wrapper.go", wrapper));
+    let (_tmp, root, _indexer) = indexed(&files);
+    let callers = impact_up(&root, "types.Adapter.ID");
+    assert!(callers.contains("use.UseSource"), "{callers}");
+}
+
+// ---- #482: the narrowing follows the method sets, not the embedding alone
+
+const SHADOW: &str = "package app
+
+type Doer interface{ Do() }
+
+type Wider interface {
+	Doer
+	Extra()
+}
+
+type L0 struct{}
+
+func (L0) Do() {}
+
+type W struct{ L0 }
+
+func (w W) Do()    { w.L0.Do() }
+func (w W) Extra() {}
+
+func use(d Wider) { d.Do() }
+";
+
+#[test]
+fn an_embedder_that_redeclares_the_method_does_not_lend_its_interfaces() {
+    let (_tmp, root, _indexer) = indexed(&[("go.mod", GO_MOD), ("app.go", SHADOW)]);
+    // `L0` is no `Wider`; `W` is, but runs `L0.Do` only from its own body, so
+    // `use` is two calls from `L0.Do`, not one.
+    let near = impact_up_to(&root, "app.L0.Do", 1);
+    assert!(!near.contains("app.use"), "{near}");
+    assert!(near.contains("app.W.Do"), "{near}");
+    let far = impact_up_to(&root, "app.L0.Do", 2);
+    assert!(far.contains("app.use"), "{far}");
+    // `W.Do` itself is a `Wider`: `use` is one call away.
+    assert!(impact_up_to(&root, "app.W.Do", 1).contains("app.use"));
+}
+
+const CHAIN: &str = "package app
+
+type Doer interface{ Do() }
+
+type Wider interface {
+	Doer
+	Extra()
+}
+
+type L0 struct{}
+
+func (L0) Do() {}
+
+type L1 struct{ L0 }
+type L2 struct{ L1 }
+type L3 struct{ L2 }
+type L4 struct{ L3 }
+
+func (L4) Extra() {}
+
+// A second `Doer` method keeps the call a dispatch.
+type K struct{}
+
+func (K) Do() {}
+
+func use(d Wider) { d.Do() }
+";
+
+#[test]
+fn the_embedding_chain_is_followed_as_deep_as_it_goes() {
+    // `L4` reaches `L0.Do` through four embeddings and is a `Wider`.
+    let (_tmp, root, _indexer) = indexed(&[("go.mod", GO_MOD), ("app.go", CHAIN)]);
+    let callers = impact_up_to(&root, "app.L0.Do", 1);
+    assert!(callers.contains("app.use"), "{callers}");
+}
+
+const GENERIC: &str = "package app
+
+type Getter[T any] interface{ Get() T }
+
+type Named[T any] interface {
+	Getter[T]
+	Name() string
+}
+
+type A[T any] struct{ v T }
+
+func (a A[T]) Get() T { return a.v }
+
+type B[T any] struct{ v T }
+
+func (b B[T]) Get() T       { return b.v }
+func (b B[T]) Name() string { return \"b\" }
+
+func useNamed(n Named[int])   { n.Get() }
+func useGetter(g Getter[int]) { g.Get() }
+";
+
+#[test]
+fn a_generic_interface_narrows_like_a_plain_one() {
+    let (_tmp, root, _indexer) = indexed(&[("go.mod", GO_MOD), ("app.go", GENERIC)]);
+    let a = impact_up_to(&root, "app.A.Get", 1);
+    assert!(a.contains("app.useGetter"), "{a}");
+    assert!(!a.contains("app.useNamed"), "{a}");
+    let b = impact_up_to(&root, "app.B.Get", 1);
+    assert!(
+        b.contains("app.useGetter") && b.contains("app.useNamed"),
+        "{b}"
+    );
+}
+
+const BASE_IFACE: &str = "package app\n\ntype Base interface{ Do() }\n";
+const EXT_EMBEDS: &str = "package app\n\ntype Ext interface {\n\tBase\n\tClose()\n}\n";
+const EXT_OWN: &str = "package app\n\ntype Ext interface {\n\tDo()\n\tClose()\n}\n";
+const EXT_TYPES: &str = "package app
+
+type P struct{}
+
+func (P) Do()    {}
+func (P) Close() {}
+
+type Q struct{}
+
+func (Q) Do()    {}
+func (Q) Close() {}
+
+type R struct{}
+
+func (R) Do() {}
+";
+const EXT_USE: &str = "package app\n\nfunc use(e Ext) { e.Do() }\n";
+
+#[test]
+fn an_interface_that_stops_embedding_matches_a_fresh_reindex() {
+    let files = vec![
+        ("go.mod", GO_MOD),
+        ("base.go", BASE_IFACE),
+        ("ext.go", EXT_EMBEDS),
+        ("types.go", EXT_TYPES),
+        ("use.go", EXT_USE),
+    ];
+    let (_tmp, root, mut indexer) = indexed(&files);
+    assert!(!impact_up(&root, "types.R.Do").contains("use.use"));
+    assert!(impact_up(&root, "types.P.Do").contains("use.use"));
+
+    // Only the declaring file changes: `Ext` now declares `Do` itself.
+    let edited = with(&files, ("ext.go", EXT_OWN));
+    sync(&mut indexer, &root, &[("ext.go", EXT_OWN)]);
+    assert_incremental_equals_fresh(&indexer, &edited);
+    assert!(impact_up(&root, "types.P.Do").contains("use.use"));
+    assert!(!impact_up(&root, "types.R.Do").contains("use.use"));
+
+    // ...and embeds again.
+    sync(&mut indexer, &root, &[("ext.go", EXT_EMBEDS)]);
+    assert_incremental_equals_fresh(&indexer, &files);
+}
+
+fn use_edges(indexer: &Indexer) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.kind || ' ' || COALESCE(t.qualname, '?') || ' ' || COALESCE(e.receiver_scope, '-')
+             FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE s.qualname = 'use.use' AND e.kind IN ('CALLS', 'DISPATCH') AND e.graph_version = ?1
+             ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+#[test]
+fn the_call_edge_of_an_unchanged_caller_follows_an_edit_of_the_declaring_file() {
+    let files = vec![
+        ("go.mod", GO_MOD),
+        ("base.go", BASE_IFACE),
+        ("ext.go", EXT_EMBEDS),
+        ("types.go", EXT_TYPES),
+        ("use.go", EXT_USE),
+    ];
+    let (_tmp, root, mut indexer) = indexed(&files);
+    let edited = with(&files, ("ext.go", EXT_OWN));
+    sync(&mut indexer, &root, &[("ext.go", EXT_OWN)]);
+    let (_tmp2, _root2, fresh) = indexed(&edited);
+    assert_eq!(use_edges(&indexer), use_edges(&fresh));
+    sync(&mut indexer, &root, &[("ext.go", EXT_EMBEDS)]);
+    let (_tmp3, _root3, fresh) = indexed(&files);
+    assert_eq!(use_edges(&indexer), use_edges(&fresh));
+}
+
+#[test]
+fn every_way_a_type_gains_or_loses_the_embedded_method_matches_a_fresh_reindex() {
+    let base = "package app\n\ntype Base interface{ Do() }\n";
+    let types = "package app\n\ntype P struct{}\n\nfunc (P) Do() {}\n\ntype Q struct{}\n\nfunc (Q) Do() {}\n";
+    let usep = "package app\n\nfunc use(e Ext) { e.Do() }\n";
+    let iface_embeds = "package app\n\ntype Ext interface {\n\tBase\n\tClose()\n}\n";
+    let iface_own = "package app\n\ntype Ext interface {\n\tDo()\n\tClose()\n}\n";
+    let iface_none = "package app\n\ntype Ext interface {\n\tClose()\n}\n";
+    let struct_embeds = "package app\n\ntype Ext struct{ Base }\n";
+    let struct_own = "package app\n\ntype Ext struct{}\n\nfunc (Ext) Do() {}\n";
+    let struct_none = "package app\n\ntype Ext struct{}\n";
+    for (from, to) in [
+        (iface_embeds, iface_own),
+        (iface_own, iface_embeds),
+        (iface_embeds, iface_none),
+        (struct_embeds, struct_own),
+        (struct_own, struct_embeds),
+        (struct_embeds, struct_none),
+    ] {
+        let before = vec![
+            ("go.mod", GO_MOD),
+            ("base.go", base),
+            ("ext.go", from),
+            ("types.go", types),
+            ("use.go", usep),
+        ];
+        let (_tmp, root, mut indexer) = indexed(&before);
+        let after = with(&before, ("ext.go", to));
+        sync(&mut indexer, &root, &[("ext.go", to)]);
+        assert_incremental_equals_fresh(&indexer, &after);
+        let (_tmp2, _root2, fresh) = indexed(&after);
+        assert_eq!(use_edges(&indexer), use_edges(&fresh), "{from} -> {to}");
+    }
+}
+
+/// The edges of the current graph version only: older versions keep their
+/// rows by design (history), so an unfiltered query shows both.
+fn current_call_edges(indexer: &Indexer) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.kind || ' ' || s.qualname || ' ' || COALESCE(t.qualname, '?') || ' ' ||
+                    COALESCE(e.receiver_scope, '-') || ' ' || COALESCE(e.resolution_kind, '-')
+             FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind IN ('CALLS', 'DISPATCH') AND e.graph_version = ?1 ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+#[test]
+fn editing_only_the_declaring_file_leaves_one_call_edge_like_a_fresh_reindex() {
+    // `Impl` does not implement `Ext` (no `Other`), so the call stays a dispatch.
+    let b = "package a\n\ntype Impl struct{}\n\nfunc (Impl) Do() {}\n";
+    let c = "package a\n\nfunc use(e Ext) { e.Do() }\n";
+    let embeds =
+        "package a\n\ntype Base interface{ Do() }\n\ntype Ext interface {\n\tBase\n\tOther()\n}\n";
+    let own =
+        "package a\n\ntype Base interface{ Do() }\n\ntype Ext interface {\n\tDo()\n\tOther()\n}\n";
+    let files = vec![
+        ("go.mod", "module ex\n\ngo 1.22\n"),
+        ("b.go", b),
+        ("c.go", c),
+        ("a.go", embeds),
+    ];
+    let (_tmp, root, mut indexer) = indexed(&files);
+    for (edit, name) in [(own, "own"), (embeds, "embeds"), (own, "own again")] {
+        sync(&mut indexer, &root, &[("a.go", edit)]);
+        let after = with(&files, ("a.go", edit));
+        let (_t, _r, fresh) = indexed(&after);
+        let edges = current_call_edges(&indexer);
+        assert_eq!(edges, current_call_edges(&fresh), "{name}");
+        assert_eq!(edges.len(), 1, "{name}: {edges:?}");
+        assert_incremental_equals_fresh(&indexer, &after);
+    }
+}
