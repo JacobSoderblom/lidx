@@ -874,3 +874,50 @@ fn every_way_a_type_gains_or_loses_the_embedded_method_matches_a_fresh_reindex()
         assert_eq!(use_edges(&indexer), use_edges(&fresh), "{from} -> {to}");
     }
 }
+
+/// The edges of the current graph version only: older versions keep their
+/// rows by design (history), so an unfiltered query shows both.
+fn current_call_edges(indexer: &Indexer) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.kind || ' ' || s.qualname || ' ' || COALESCE(t.qualname, '?') || ' ' ||
+                    COALESCE(e.receiver_scope, '-') || ' ' || COALESCE(e.resolution_kind, '-')
+             FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind IN ('CALLS', 'DISPATCH') AND e.graph_version = ?1 ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+#[test]
+fn editing_only_the_declaring_file_leaves_one_call_edge_like_a_fresh_reindex() {
+    // `Impl` does not implement `Ext` (no `Other`), so the call stays a dispatch.
+    let b = "package a\n\ntype Impl struct{}\n\nfunc (Impl) Do() {}\n";
+    let c = "package a\n\nfunc use(e Ext) { e.Do() }\n";
+    let embeds =
+        "package a\n\ntype Base interface{ Do() }\n\ntype Ext interface {\n\tBase\n\tOther()\n}\n";
+    let own =
+        "package a\n\ntype Base interface{ Do() }\n\ntype Ext interface {\n\tDo()\n\tOther()\n}\n";
+    let files = vec![
+        ("go.mod", "module ex\n\ngo 1.22\n"),
+        ("b.go", b),
+        ("c.go", c),
+        ("a.go", embeds),
+    ];
+    let (_tmp, root, mut indexer) = indexed(&files);
+    for (edit, name) in [(own, "own"), (embeds, "embeds"), (own, "own again")] {
+        sync(&mut indexer, &root, &[("a.go", edit)]);
+        let after = with(&files, ("a.go", edit));
+        let (_t, _r, fresh) = indexed(&after);
+        let edges = current_call_edges(&indexer);
+        assert_eq!(edges, current_call_edges(&fresh), "{name}");
+        assert_eq!(edges.len(), 1, "{name}: {edges:?}");
+        assert_incremental_equals_fresh(&indexer, &after);
+    }
+}
