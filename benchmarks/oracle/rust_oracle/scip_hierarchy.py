@@ -147,7 +147,7 @@ def main():
                 continue
             kept.append(d)
             try:
-                text = open(os.path.join(repo, d["path"]), encoding="utf-8", errors="replace").read()
+                text = sc.read_source(os.path.join(repo, d["path"]))
             except OSError:
                 text = ""
             regions[d["path"]] = sc.test_regions(text)
@@ -166,7 +166,7 @@ def main():
     def lines_of(path):
         if path not in texts:
             try:
-                texts[path] = open(os.path.join(repo, path), encoding="utf-8", errors="replace").read().split("\n")
+                texts[path] = sc.split_lines(sc.read_source(os.path.join(repo, path)))
             except OSError:
                 texts[path] = []
         return texts[path]
