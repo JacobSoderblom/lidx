@@ -668,7 +668,8 @@ impl Db {
                 "AND e.file_id NOT IN ({ids})
                          AND NOT EXISTS (
                            SELECT 1 FROM symbols ts WHERE ts.id = e.source_symbol_id
-                             AND (COALESCE(ts.signature, '') LIKE '%#[test]%'
+                             AND (COALESCE(ts.signature, '') LIKE '#[go_test]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[test]%'
                                OR COALESCE(ts.signature, '') LIKE '%::test]%'
                                OR COALESCE(ts.signature, '') LIKE '%#[rstest]%'
                                OR COALESCE(ts.signature, '') LIKE '%#[test_case]%'))"
