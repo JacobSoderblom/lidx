@@ -209,7 +209,7 @@ def main():
     def text(path):
         if path not in texts:
             try:
-                texts[path] = open(os.path.join(repo, path), encoding="utf-8", errors="replace").read()
+                texts[path] = sc.read_source(os.path.join(repo, path))
             except OSError:
                 texts[path] = ""
         return texts[path]
@@ -242,7 +242,7 @@ def main():
         return clean[path]
 
     def lines_of(path):
-        return text(path).split("\n")
+        return sc.split_lines(text(path))
 
     # ---- definitions ------------------------------------------------------------------------------------------------
     defs = {}  # symbol -> record

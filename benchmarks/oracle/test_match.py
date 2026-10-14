@@ -925,6 +925,20 @@ class RustValueReferenceOracle(unittest.TestCase):
         r = [r for r in d["refs"] if "src/lib.rs:9" in r["sites"]][0]
         self.assertEqual(r["ctxs"], ["argument_or_element"])  # ref_shape reads the text before the reference at the character column
 
+    def test_a_lone_carriage_return_does_not_shift_lines(self):
+        """rust-analyzer ends a line only at `\\n`: a lone `\\r` inside a string literal stays in its line, so the call after it is still
+        at its SCIP column and later lines keep their numbers."""
+        P = "rust-analyzer cargo demo 0.1.0 "
+        src = '    let _ = ("a\rb", helper(2));\n'
+        c0 = len(src[:src.index("helper")].encode("utf-8"))
+        self.SRC = self.SRC.replace('    let _ = ("\u0428\u0428", helper(2));\n', src)
+        d = self.run_oracle(extra_occ=[(P + "third().", 7, 7, 12, 1, (7, 0, 9, 1)), (P + "helper().", 8, c0, c0 + 6, 0)])
+        self.assertEqual(sorted((e["caller"]["name"], e["callee"]["name"]) for e in d["edges"]), [("other", "helper"), ("third", "helper")])
+        self.assertEqual(sorted(r["sites"][0] for r in d["refs"]), ["src/lib.rs:4"])
+
+    def test_split_lines_like_rust_analyzer(self):
+        self.assertEqual(sc.split_lines("a\r\nb\rc\nd"), ["a", "b\rc", "d"])
+
     def test_import_role_is_left_out(self):
         P = "rust-analyzer cargo demo 0.1.0 "
         d = self.run_oracle(extra_occ=[(P + "helper().", 3, 29, 35, 2)])  # the same range again, with the Import role

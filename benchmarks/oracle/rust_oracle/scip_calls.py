@@ -359,6 +359,18 @@ def char_col(row, byte_col):
     return len(row.encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
 
 
+def read_source(path):
+    """File text with its line endings untouched: rust-analyzer ends a line only at `\\n`, while Python's default newline handling would
+    also end one at a lone `\\r` and shift every later line number."""
+    with open(path, encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
+
+
+def split_lines(text):
+    """Lines as rust-analyzer counts them: split on `\\n` only, one trailing `\\r` (CRLF) dropped; a lone `\\r` stays inside its line."""
+    return [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
+
+
 def after_turbofish(rest):
     """`rest` (what follows an identifier, left-stripped) without a leading turbofish `::<...>`."""
     if rest.startswith("::<"):
@@ -420,7 +432,7 @@ def main():
                 continue
             kept.append(d)
             try:
-                text = open(os.path.join(repo, d["path"]), encoding="utf-8", errors="replace").read()
+                text = read_source(os.path.join(repo, d["path"]))
             except OSError:
                 text = ""
             regions[d["path"]] = test_regions(text)
@@ -461,7 +473,7 @@ def main():
             continue
         out["files"].append(path)
         try:
-            lines = open(os.path.join(repo, path), encoding="utf-8", errors="replace").read().split("\n")
+            lines = split_lines(read_source(os.path.join(repo, path)))
         except OSError:
             continue
         use_lines = use_item_lines("\n".join(lines))
