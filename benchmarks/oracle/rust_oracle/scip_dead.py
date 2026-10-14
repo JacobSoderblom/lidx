@@ -272,7 +272,7 @@ def main():
     for r in defs.values():
         ls = lines_of(r["file"])
         row = ls[r["line"] - 1] if 0 < r["line"] <= len(ls) else ""
-        prefix = row[:r["col"]]
+        prefix = row[:sc.char_col(row, r["col"])]  # SCIP columns are UTF-8 byte offsets
         r["generated_decl"] = False
         if r["kind"] == "type":
             mm = re.search(r"\b(struct|enum|union|trait|type)\s+(?:r#)?$", prefix)
@@ -326,7 +326,7 @@ def main():
             self_sym = trait_sym = None
             for (l0, c0, ec, sym) in occs_by_file[path]:
                 if h0 <= l0 <= h1 and sym.endswith("#") and not sym.startswith("local "):
-                    tok = ls[l0][c0:ec] if l0 < len(ls) else ""
+                    tok = ls[l0][sc.char_col(ls[l0], c0):sc.char_col(ls[l0], ec)] if l0 < len(ls) else ""
                     if self_id and tok == self_id:
                         self_sym = sym
                     if trait_id and tok == trait_id and trait_sym is None:

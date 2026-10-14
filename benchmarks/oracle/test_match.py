@@ -279,6 +279,7 @@ import match_dead  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "rust_oracle"))
 import scip_dead  # noqa: E402
+import scip_calls as sc  # noqa: E402
 
 
 def dead_decl(file, line, name, kind="function", unref="dead", reach="dead", **kw):
@@ -797,6 +798,51 @@ class ValueRefs(unittest.TestCase):
         self.assertEqual(x, {"fp_items": 2, "with_value_reference": 1, "lidx_has_no_reference_to_it": 1})
 
 
+class ScipColumns(unittest.TestCase):
+    """char_col: rust-analyzer SCIP columns are UTF-8 byte offsets; Python strings are indexed by character (issue #476)."""
+
+    def col(self, row, needle):
+        """Character index of `needle` in `row` recovered from the byte offset a SCIP index would carry."""
+        return sc.char_col(row, row.encode("utf-8").index(needle.encode("utf-8")))
+
+    def test_ascii_is_the_identity(self):
+        self.assertEqual(sc.char_col("let x = f(1);", 8), 8)
+
+    def test_two_byte_text_before_the_identifier(self):
+        row = 'eqnice!("foo:\u0428\u0435\u0440", cmd.stdout());'
+        self.assertEqual(self.col(row, "stdout"), row.index("stdout"))
+        self.assertEqual(row[self.col(row, "stdout"):].startswith("stdout"), True)
+        self.assertNotEqual(row.encode().index(b"stdout"), row.index("stdout"))
+
+    def test_three_and_four_byte_characters(self):
+        # a CJK character is 3 bytes / 1 char / 1 UTF-16 unit; an emoji is 4 bytes / 1 char / 2 UTF-16 units (a surrogate pair)
+        for text in ("\u65e5\u672c", "\U0001f600", "\U0001f600\u00e9\u65e5"):
+            row = '    f("%s", g());' % text
+            i = self.col(row, "g()")
+            self.assertEqual(i, row.index("g()"))
+            self.assertEqual(row[i:i + 3], "g()")
+
+    def test_tabs_are_one_byte_and_one_character(self):
+        row = "\t\tcall(\u00e9\t, other());"
+        self.assertEqual(self.col(row, "other"), row.index("other"))
+        self.assertEqual(sc.char_col("\t\tfoo()", 2), 2)
+
+    def test_crlf_line_end_does_not_shift_columns(self):
+        row = "    foo(\u0428);\r"  # a line split on \n keeps the \r at its end
+        e = self.col(row, "foo") + 3
+        self.assertEqual(row[e:].lstrip()[:1], "(")
+
+    def test_end_column_of_a_multibyte_identifier(self):
+        row = "let \u00e9t\u00e9 = f();"
+        start = row.encode().index("\u00e9t\u00e9".encode())
+        self.assertEqual(sc.char_col(row, start + len("\u00e9t\u00e9".encode())), row.index(" = "))
+
+    def test_out_of_range_and_mid_character_columns_are_clamped(self):
+        self.assertEqual(sc.char_col("ab", 99), 2)
+        self.assertEqual(sc.char_col("\u0428\u0428", 99), 2)
+        self.assertEqual(sc.char_col("a\u0428b", 2), 1)  # inside the two-byte character: its start
+
+
 class RustValueReferenceOracle(unittest.TestCase):
     """scip_calls.py through a synthetic SCIP index: a function passed to `.map` is a reference, a call is not, an occurrence inside a
     `use` item or with the Import role is left out."""
@@ -854,14 +900,30 @@ class RustValueReferenceOracle(unittest.TestCase):
         self.assertEqual(d["refs_dropped"], {"use_item": 1})
         self.assertEqual(r["ctxs"], ["argument_or_element", "assignment"])
 
-    def test_a_call_after_non_ascii_text_is_not_a_reference(self):
-        """SCIP columns count UTF-8 bytes, so on a line with Cyrillic text the characters after it are shifted and `helper(2)` read as a reference."""
+    def test_a_call_after_non_ascii_text_is_a_call_edge(self):
+        """SCIP columns count UTF-8 bytes, so on a line with Cyrillic text the characters after it are shifted: `helper(2)` must still be a
+        call (an edge of third(), as it is for an ASCII line), not a reference and not lost (issue #476)."""
         P = "rust-analyzer cargo demo 0.1.0 "
         prefix = '    let _ = ("\u0428\u0428", '
         c0 = len(prefix.encode("utf-8"))
         d = self.run_oracle(extra_occ=[(P + "third().", 7, 7, 12, 1, (7, 0, 9, 1)), (P + "helper().", 8, c0, c0 + 6, 0)])
         self.assertEqual(sorted(r["sites"][0] for r in d["refs"]), ["src/lib.rs:4"])  # no reference from third()
-        self.assertEqual(d["refs_dropped"]["call_on_non_ascii_line"], 1)
+        self.assertEqual(sorted((e["caller"]["name"], e["callee"]["name"]) for e in d["edges"]), [("other", "helper"), ("third", "helper")])
+        self.assertNotIn("call_on_non_ascii_line", d["refs_dropped"])
+
+    def test_a_real_reference_after_non_ascii_text_is_not_read_as_a_call(self):
+        """The shift can also hide the paren-less end of a reference: bytes shifted past `)` read as a call. `map(helper)` after Cyrillic
+        text is a reference with the right shape."""
+        P = "rust-analyzer cargo demo 0.1.0 "
+        src = '    let _ = ["\u0428\u0428"].iter().map(helper);\n'
+        prefix = src[:src.index("helper")]
+        c0 = len(prefix.encode("utf-8"))
+        self.SRC = self.SRC.replace('    let _ = ("\u0428\u0428", helper(2));\n', src)
+        d = self.run_oracle(extra_occ=[(P + "third().", 7, 7, 12, 1, (7, 0, 9, 1)), (P + "helper().", 8, c0, c0 + 6, 0)])
+        self.assertIn("src/lib.rs:9", [x for r in d["refs"] for x in r["sites"]])
+        self.assertEqual([(e["caller"]["name"], e["callee"]["name"]) for e in d["edges"]], [("other", "helper")])
+        r = [r for r in d["refs"] if "src/lib.rs:9" in r["sites"]][0]
+        self.assertEqual(r["ctxs"], ["argument_or_element"])  # ref_shape reads the text before the reference at the character column
 
     def test_import_role_is_left_out(self):
         P = "rust-analyzer cargo demo 0.1.0 "

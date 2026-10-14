@@ -335,8 +335,7 @@ def use_item_lines(text):
 def ref_shape(row, col):
     """(form, context) of a function reference at `row[col:]`, from the text before it: a path (`Type::method`, `self::f`) or a bare
     name, and the character that introduces the expression."""
-    i = min(col, len(row))  # SCIP columns count UTF-16 units, so a line with wide characters can end before `col`
-    col = i
+    i = col = min(col, len(row))  # `col` is a character index (see char_col)
     while i > 0 and (row[i - 1].isalnum() or row[i - 1] in "_:"):
         i -= 1
     form = "path" if "::" in row[i:col] else "ident"
@@ -348,9 +347,16 @@ def ref_shape(row, col):
     return form, ctx
 
 
-def row_text_after(row, byte_col):
-    """What follows byte offset `byte_col` of `row` (SCIP columns are UTF-8 byte offsets), left-stripped."""
-    return row.encode("utf-8")[byte_col:].decode("utf-8", errors="ignore").lstrip()
+def char_col(row, byte_col):
+    """Index into `row` (a Python string, so counted in characters) of the SCIP column `byte_col`.
+
+    rust-analyzer's SCIP columns are UTF-8 byte offsets from the start of the line, not characters and not UTF-16 units (verified
+    on ripgrep tests/feature.rs:21, where the `stdout` of `cmd.stdout()` comes 11 bytes later than the string literal's Cyrillic
+    text puts it in characters). A tab is one byte and one character; a carriage return before a CRLF line end sits after every
+    column. A column inside a multibyte character (never emitted) maps to that character; one past the end maps to the end."""
+    if row.isascii():
+        return min(byte_col, len(row))
+    return len(row.encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
 
 
 def after_turbofish(rest):
@@ -490,20 +496,14 @@ def main():
                 if s <= (l, c) <= e and (best is None or s >= best[0]):
                     best = (s, e, fs)
             row = lines[el] if el < len(lines) else ""
-            rest = after_turbofish(row[ec:].lstrip())
+            ecc = char_col(row, ec)  # SCIP columns are UTF-8 byte offsets; `row` is indexed by character
+            rest = after_turbofish(row[ecc:].lstrip())
             is_call = rest.startswith("(")
             if not is_call and not ctor and (o["roles"] & 2 or any(a0 <= l <= b0 for a0, b0 in use_lines)):
                 # an import, or an occurrence inside a `use` item: not a use of the function as a value
                 out["refs_dropped"]["use_item"] += 1
                 if best is None:
                     out["dropped"]["caller_not_in_function"] += 1  # as before: the call benchmark's counter is unchanged
-                continue
-            if not is_call and not ctor and not row.isascii() and after_turbofish(row_text_after(row, ec)).startswith("("):
-                # SCIP columns count UTF-8 bytes: on a line with non-ASCII text the slice above is shifted and a call reads as a reference.
-                # The call tables keep their long-standing reading of such lines; a reference is only taken when the corrected column agrees.
-                out["refs_dropped"]["call_on_non_ascii_line"] += 1
-                if best is None:
-                    out["dropped"]["caller_not_in_function"] += 1
                 continue
             if best is None:
                 out["dropped"]["caller_not_in_function"] += 1
@@ -514,10 +514,12 @@ def main():
                 out["refs_dropped"]["ref_at_module_level"] += 1
             else:
                 cdef = best[2]
-            if not is_call and not ctor and l == el and ec <= len(lines[l]) and lines[l][:ec].isascii():
+            lrow = lines[l] if l < len(lines) else ""
+            cc = char_col(lrow, c)  # the start column, in characters
+            if not is_call and not ctor and l == el:
                 # the occurrence is not spelled like the function: an overloaded operator (`a += b` is `add_assign`), a deref (`*x`), an index
                 # (`m[k]`) or another implicit call. It is a call, not a function used as a value.
-                if lines[l][c:ec].strip("`").removeprefix("r#") != fn_ident(sym):
+                if lrow[cc:ecc].strip("`").removeprefix("r#") != fn_ident(sym):
                     out["refs_dropped"]["implicit_call"] += 1
                     continue
             if ctor:
@@ -537,7 +539,7 @@ def main():
                 if len(seen_set[key]["sites"]) < 20:
                     seen_set[key]["sites"].append(site)
                 if not is_call:
-                    form, ctx = ref_shape(lines[l] if l < len(lines) else '', c)
+                    form, ctx = ref_shape(lrow, cc)
                     for lst, v in ((seen_set[key]["forms"], form), (seen_set[key]["ctxs"], ctx)):
                         if v not in lst:
                             lst.append(v)
@@ -546,7 +548,7 @@ def main():
                  "callee": {"file": tgt[0], "line": tgt[1], "name": tgt[2]},
                  "sites": [site]}
             if not is_call:
-                form, ctx = ref_shape(lines[l] if l < len(lines) else '', c)
+                form, ctx = ref_shape(lrow, cc)
                 e["forms"], e["ctxs"] = [form], [ctx]
                 im = IMPL_RE.match(last_segment(sym))
                 if im:
