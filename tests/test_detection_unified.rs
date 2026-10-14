@@ -42,7 +42,7 @@ fn indexed_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, Indexer) {
 }
 
 const GO_FILE: &str = "go/mathutil/add_test.go";
-const GO_SRC: &str = "package mathutil\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n\nfunc TestAdd() {\n\tAdd(1, 2)\n}\n";
+const GO_SRC: &str = "package mathutil\n\nimport \"testing\"\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n\nfunc TestAdd(t *testing.T) {\n\tAdd(1, 2)\n}\n";
 
 // Neither in a `tests/` directory nor named like a test (`verifies_addition`
 // doesn't start with `test_`/end with `_test`), so this only passes via the

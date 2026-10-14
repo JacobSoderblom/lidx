@@ -45,8 +45,9 @@ fn is_js_ts_source(path: &str) -> bool {
 /// - Qualname contains `.Tests.` or `.Test.` namespace
 ///
 /// ## Go
-/// - Function name starts with `Test` (Go convention)
-/// - File ends with `_test.go`
+/// - Receiver-less `Test*` / `Benchmark*` / `Fuzz*` function of a
+///   `_test.go` file whose first parameter is `*testing.T` / `*testing.B` /
+///   `*testing.F` or an `Example*` with an output comment: the Go extractor marks them (`GO_TEST_MARKER`, import aliases and dot imports resolved); lowercase `test*` helpers are not tests
 ///
 pub fn is_test_symbol(symbol: &Symbol) -> bool {
     // Check symbol kind first (most reliable)
@@ -157,10 +158,12 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
         }
     }
 
-    // Go tests
-    if file_lower.ends_with(".go")
-        && file_lower.ends_with("_test.go")
-        && name_lower.starts_with("test")
+    if file_lower.ends_with("_test.go")
+        && symbol.kind == "function"
+        && symbol
+            .signature
+            .as_deref()
+            .is_some_and(|s| s.starts_with(crate::model::GO_TEST_MARKER))
     {
         return true;
     }
@@ -347,6 +350,36 @@ mod tests {
 
         let sym = make_symbol("src/utils.ts", "function", "formatDate", None);
         assert!(!is_test_symbol(&sym), "Not a test");
+    }
+
+    #[test]
+    fn go_tests_are_the_marked_functions_of_test_files() {
+        let marked = "#[go_test]\n(t *testing.T)";
+        let go = |path: &str, kind: &str, name: &str, sig: Option<&str>| {
+            make_symbol(path, kind, name, sig)
+        };
+        assert!(is_test_symbol(&go(
+            "pkg/x_test.go",
+            "function",
+            "TestFoo",
+            Some(marked)
+        )));
+        for (path, kind, name, sig) in [
+            (
+                "pkg/x_test.go",
+                "function",
+                "TestFoo",
+                Some("(t *testing.T)"),
+            ),
+            ("pkg/x_test.go", "function", "TestFoo", None),
+            ("pkg/x_test.go", "method", "TestFoo", Some(marked)),
+            ("pkg/x.go", "function", "TestFoo", Some(marked)),
+        ] {
+            assert!(
+                !is_test_symbol(&go(path, kind, name, sig)),
+                "{path} {kind} {name} {sig:?}"
+            );
+        }
     }
 
     #[test]
