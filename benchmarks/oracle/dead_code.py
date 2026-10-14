@@ -187,11 +187,20 @@ def request_dead_symbols(binary, repo_dir, db, extra=None):
     return res
 
 
-def lidx_claims(binary, repo_dir, db, syms):
+def cell_params(cell):
+    """Extra `dead_symbols` params for a cell. Where the oracle leaves test code out of its roots (the `no_tests` variants: Go without
+    `-tests`, the Rust `--no-tests` cell, and TypeScript, graded on production code) lidx is asked not to treat tests as roots
+    (`tests_are_roots: false`), so what only tests reach is claimed like the oracle says. The cells that include tests, and the Rust
+    `path_tests_excluded` cells (which keep inline `#[cfg(test)]` code as roots), use the default."""
+    return {"tests_are_roots": False} if cell["variant"] == "no_tests" else {}
+
+
+def lidx_claims(binary, repo_dir, db, syms, cell):
     """(claims of the default output, their count, the `public_api` group as claims (empty for a binary without the group), its size)."""
-    res = request_dead_symbols(binary, repo_dir, db)
+    params = cell_params(cell)
+    res = request_dead_symbols(binary, repo_dir, db, params)
     try:
-        api = request_dead_symbols(binary, repo_dir, db, {"include_public_api": True})
+        api = request_dead_symbols(binary, repo_dir, db, dict(params, include_public_api=True))
     except subprocess.CalledProcessError as e:
         # a binary that predates the parameter rejects it ("unknown param(s) ..."): no group to size; any other failure is real
         if "unknown param" not in (e.stderr or ""):
@@ -286,10 +295,10 @@ def run_cell(cell, repo, repo_dir, cache, binary, db, syms, force, results_dir, 
     """Run the dead-code oracle for one cell, grade lidx, write the lists. Returns the dict stored under cells.json[cell]['dead']."""
     lang = cell["lang"]
     oracle, cached = get_dead_oracle(cell, repo, repo_dir, cache, force, helpers, call_meta)
-    claims, n_claims, api_group, api_total = lidx_claims(binary, repo_dir, db, syms)
+    claims, n_claims, api_group, api_total = lidx_claims(binary, repo_dir, db, syms, cell)
     fid = cell["id"].replace("/", "__")
     out = {"oracle_meta": oracle.get("_meta", {}), "library": bool(oracle.get("library")), "universe_note": universe_note(oracle, lang, cell),
-           "lidx_claims": n_claims, "public_api_group": api_total, "load_errors": len(oracle.get("load_errors", []) or []), "oracle_stats": oracle.get("stats", {}),
+           "tests_are_roots": cell_params(cell).get("tests_are_roots", True), "lidx_claims": n_claims, "public_api_group": api_total, "load_errors": len(oracle.get("load_errors", []) or []), "oracle_stats": oracle.get("stats", {}),
            "decls": len(oracle["decls"]), "columns": {}}
     if lang == "go":
         out["oracle_mode"] = oracle.get("mode")

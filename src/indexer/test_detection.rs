@@ -227,6 +227,7 @@ pub fn is_test_file(path: &str) -> bool {
     JS_TS_TEST_EXTENSIONS.iter().any(|ext| {
         name_lower.ends_with(&format!(".test.{ext}"))
             || name_lower.ends_with(&format!(".spec.{ext}"))
+            || name_lower.ends_with(&format!(".bench.{ext}"))
             || name_lower.ends_with(&format!("_test.{ext}"))
     })
 }
@@ -234,6 +235,19 @@ pub fn is_test_file(path: &str) -> bool {
 /// Directory names that mark test code (also the layout boundary used for
 /// service identity in `indexer::config`).
 pub const TEST_DIR_NAMES: &[&str] = &["test", "tests", "_test", "__tests__", "spec", "specs"];
+
+/// More directories that hold test code or its support (end-to-end suites,
+/// shared test utilities); not a service boundary, so kept out of
+/// [`TEST_DIR_NAMES`]. A directory named `<x>-tests` / `<x>_tests` counts too.
+const TEST_SUPPORT_DIR_NAMES: &[&str] = &[
+    "e2e",
+    "test-utils",
+    "test_utils",
+    "testutils",
+    "test-helpers",
+    "test_helpers",
+    "testing-utils",
+];
 
 fn is_test_directory(path_lower: &str) -> bool {
     let Some((dir, _file_name)) = path_lower.rsplit_once('/') else {
@@ -243,6 +257,46 @@ fn is_test_directory(path_lower: &str) -> bool {
     };
     dir.split('/')
         .any(|segment| TEST_DIR_NAMES.contains(&segment) || segment.starts_with("test_"))
+}
+
+/// Whether directory `segment` is one of the extra test-code names
+/// ([`TEST_SUPPORT_DIR_NAMES`], `<x>-tests`, `<x>_tests`).
+fn is_test_support_dir(segment: &str) -> bool {
+    TEST_SUPPORT_DIR_NAMES.contains(&segment)
+        || segment.ends_with("-tests")
+        || segment.ends_with("_tests")
+}
+
+/// Manifests that make a directory a package of its own.
+const PACKAGE_MANIFESTS: &[&str] = &[
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "pyproject.toml",
+    "setup.py",
+];
+
+/// [`is_test_file`] plus the extra test-code directories (`e2e`,
+/// `test-utils`, `<x>-tests`, ...), for callers that know the repository
+/// root: a directory with its own manifest is a package (published test
+/// tooling, say), not test code, so those names do not make its files tests.
+/// The plain rule is unchanged for every other caller.
+pub fn is_test_file_in(repo_root: &std::path::Path, path: &str) -> bool {
+    if is_test_file(path) {
+        return true;
+    }
+    let Some((dir, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    let segments: Vec<&str> = dir.split('/').collect();
+    segments.iter().enumerate().any(|(i, segment)| {
+        is_test_support_dir(&segment.to_lowercase()) && {
+            let package = segments[..=i].join("/");
+            !PACKAGE_MANIFESTS
+                .iter()
+                .any(|m| repo_root.join(&package).join(m).is_file())
+        }
+    })
 }
 
 /// Classify test type based on file path and symbol properties
@@ -276,6 +330,52 @@ pub fn classify_test_type(symbol: &Symbol) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_support_directories_and_bench_files_are_test_code() {
+        let root = tempfile::tempdir().unwrap();
+        for path in [
+            "packages/x/test-utils/helper.ts",
+            "e2e/login.ts",
+            "src/runtime-tests/deno/run.ts",
+            "pkg/integration_tests/db.go",
+            "src/foo.bench.ts",
+        ] {
+            assert!(is_test_file_in(root.path(), path), "{path}");
+        }
+        for path in [
+            "src/contest/rules.ts",
+            "src/latest/index.ts",
+            "src/utils.ts",
+        ] {
+            assert!(!is_test_file_in(root.path(), path), "{path}");
+        }
+        // the plain rule does not know the extra directories
+        assert!(!is_test_file("e2e/login.ts"));
+        assert!(is_test_file("src/foo.bench.ts"));
+    }
+
+    #[test]
+    fn a_package_root_named_like_test_code_is_not_test_code() {
+        let root = tempfile::tempdir().unwrap();
+        for manifest in ["packages/test-utils/package.json", "tools/e2e/go.mod"] {
+            let file = root.path().join(manifest);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "{}").unwrap();
+        }
+        // its files are the package's own code ...
+        assert!(!is_test_file_in(
+            root.path(),
+            "packages/test-utils/src/index.ts"
+        ));
+        assert!(!is_test_file_in(root.path(), "tools/e2e/main.go"));
+        // ... while a manifest-less sibling directory still is test code
+        assert!(is_test_file_in(
+            root.path(),
+            "packages/app/test-utils/helper.ts"
+        ));
+        assert!(is_test_file_in(root.path(), "app/e2e/login.ts"));
+    }
 
     fn make_symbol(file_path: &str, kind: &str, name: &str, signature: Option<&str>) -> Symbol {
         Symbol {

@@ -1607,13 +1607,17 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
     let include_orphan_tests = params.include_orphan_tests.unwrap_or(true);
 
     let include_public_api = params.include_public_api.unwrap_or(false);
+    let lidx_options = crate::model::DeadSymbolsOptions {
+        include_public_api,
+        tests_are_roots: params.tests_are_roots.unwrap_or(true),
+    };
     let dead = indexer.db().dead_symbols(
         limit,
         ctx.languages.as_deref(),
         ctx.paths.as_deref(),
         ctx.graph_version,
         indexer.repo_root(),
-        include_public_api,
+        lidx_options,
     )?;
 
     let unused_imports = if include_unused_imports {
@@ -1654,10 +1658,16 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
             // Public-API declarations with no incoming reference: left out of
             // `dead_symbols` unless `include_public_api` asks for them.
             "public_api": dead.public_api_total,
+            // Methods of live types that implement an external interface or
+            // trait: reached through the type, so not claims.
+            "implements_external_interface": dead.external_interface_total,
         }
     });
     if include_public_api {
         result["public_api"] = json!(dead.public_api);
+    }
+    if params.include_external_interface.unwrap_or(false) {
+        result["implements_external_interface"] = json!(dead.external_interface);
     }
     Ok(result)
 }

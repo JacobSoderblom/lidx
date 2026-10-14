@@ -897,67 +897,250 @@ fn method_signature(signature: Option<&str>) -> MethodSig {
     )
 }
 
+type GoInterfaceMethods = &'static [(&'static str, &'static str)];
+
 /// The methods of the standard-library interfaces repositories embed most
-/// (name and Go signature); any other foreign embedded interface leaves the
-/// embedding one incomplete.
-fn std_interface(path: &str, name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+/// (name and Go signature), as `((import path, name), methods)`; any other
+/// foreign embedded interface leaves the embedding one incomplete.
+const STD_INTERFACES: &[((&str, &str), GoInterfaceMethods)] = {
     const READ: (&str, &str) = ("Read", "(p []byte) -> (n int, err error)");
     const WRITE: (&str, &str) = ("Write", "(p []byte) -> (n int, err error)");
     const CLOSE: (&str, &str) = ("Close", "() -> error");
-    Some(match (path, name) {
-        ("io", "Reader") => &[READ],
-        ("io", "Writer") => &[WRITE],
-        ("io", "Closer") => &[CLOSE],
-        ("io", "Seeker") => &[("Seek", "(offset int64, whence int) -> (int64, error)")],
-        ("io", "ReaderAt") => &[("ReadAt", "(p []byte, off int64) -> (n int, err error)")],
-        ("io", "WriterAt") => &[("WriteAt", "(p []byte, off int64) -> (n int, err error)")],
-        ("io", "ReaderFrom") => &[("ReadFrom", "(r io.Reader) -> (n int64, err error)")],
-        ("io", "WriterTo") => &[("WriteTo", "(w io.Writer) -> (n int64, err error)")],
-        ("io", "ByteReader") => &[("ReadByte", "() -> (byte, error)")],
-        ("io", "ByteWriter") => &[("WriteByte", "(c byte) -> error")],
-        ("io", "RuneReader") => &[("ReadRune", "() -> (r rune, size int, err error)")],
-        ("io", "StringWriter") => &[("WriteString", "(s string) -> (n int, err error)")],
-        ("io", "ReadWriter") => &[READ, WRITE],
-        ("io", "ReadCloser") => &[READ, CLOSE],
-        ("io", "WriteCloser") => &[WRITE, CLOSE],
-        ("io", "ReadWriteCloser") => &[READ, WRITE, CLOSE],
-        ("fmt", "Stringer") => &[("String", "() -> string")],
-        ("sort", "Interface") => &[
-            ("Len", "() -> int"),
-            ("Less", "(i, j int) -> bool"),
-            ("Swap", "(i, j int)"),
-        ],
-        ("net/http", "Handler") => &[("ServeHTTP", "(http.ResponseWriter, *http.Request)")],
-        ("net/http", "ResponseWriter") => &[
-            ("Header", "() -> http.Header"),
-            WRITE,
-            ("WriteHeader", "(statusCode int)"),
-        ],
-        ("net/http", "Flusher") => &[("Flush", "()")],
-        ("net/http", "Hijacker") => &[("Hijack", "() -> (net.Conn, *bufio.ReadWriter, error)")],
-        ("net/http", "Pusher") => &[("Push", "(target string, opts *http.PushOptions) -> error")],
+    &[
+        (("io", "Reader"), &[READ]),
+        (("io", "Writer"), &[WRITE]),
+        (("io", "Closer"), &[CLOSE]),
+        (
+            ("io", "Seeker"),
+            &[("Seek", "(offset int64, whence int) -> (int64, error)")],
+        ),
+        (
+            ("io", "ReaderAt"),
+            &[("ReadAt", "(p []byte, off int64) -> (n int, err error)")],
+        ),
+        (
+            ("io", "WriterAt"),
+            &[("WriteAt", "(p []byte, off int64) -> (n int, err error)")],
+        ),
+        (
+            ("io", "ReaderFrom"),
+            &[("ReadFrom", "(r io.Reader) -> (n int64, err error)")],
+        ),
+        (
+            ("io", "WriterTo"),
+            &[("WriteTo", "(w io.Writer) -> (n int64, err error)")],
+        ),
+        (("io", "ByteReader"), &[("ReadByte", "() -> (byte, error)")]),
+        (("io", "ByteWriter"), &[("WriteByte", "(c byte) -> error")]),
+        (
+            ("io", "RuneReader"),
+            &[("ReadRune", "() -> (r rune, size int, err error)")],
+        ),
+        (
+            ("io", "StringWriter"),
+            &[("WriteString", "(s string) -> (n int, err error)")],
+        ),
+        (("io", "ReadWriter"), &[READ, WRITE]),
+        (("io", "ReadCloser"), &[READ, CLOSE]),
+        (("io", "WriteCloser"), &[WRITE, CLOSE]),
+        (("io", "ReadWriteCloser"), &[READ, WRITE, CLOSE]),
+        (("fmt", "Stringer"), &[("String", "() -> string")]),
+        (
+            ("sort", "Interface"),
+            &[
+                ("Len", "() -> int"),
+                ("Less", "(i, j int) -> bool"),
+                ("Swap", "(i, j int)"),
+            ],
+        ),
+        (
+            ("net/http", "Handler"),
+            &[("ServeHTTP", "(http.ResponseWriter, *http.Request)")],
+        ),
+        (
+            ("net/http", "ResponseWriter"),
+            &[
+                ("Header", "() -> http.Header"),
+                WRITE,
+                ("WriteHeader", "(statusCode int)"),
+            ],
+        ),
+        (("net/http", "Flusher"), &[("Flush", "()")]),
+        (
+            ("net/http", "Hijacker"),
+            &[("Hijack", "() -> (net.Conn, *bufio.ReadWriter, error)")],
+        ),
+        (
+            ("net/http", "Pusher"),
+            &[("Push", "(target string, opts *http.PushOptions) -> error")],
+        ),
         // A struct, not an interface: the exported methods of *exec.Cmd
         // (Go 1.24), which an embedding type promotes.
-        ("os/exec", "Cmd") => &[
-            ("CombinedOutput", "() -> ([]byte, error)"),
-            ("Environ", "() -> []string"),
-            ("Output", "() -> ([]byte, error)"),
-            ("Run", "() -> error"),
-            ("Start", "() -> error"),
-            ("StderrPipe", "() -> (io.ReadCloser, error)"),
-            ("StdinPipe", "() -> (io.WriteCloser, error)"),
-            ("StdoutPipe", "() -> (io.ReadCloser, error)"),
-            ("String", "() -> string"),
-            ("Wait", "() -> error"),
-        ],
-        ("context", "Context") => &[
-            ("Deadline", "() -> (deadline time.Time, ok bool)"),
-            ("Done", "() -> <-chan struct{}"),
-            ("Err", "() -> error"),
-            ("Value", "(key any) -> any"),
-        ],
-        _ => return None,
-    })
+        (
+            ("os/exec", "Cmd"),
+            &[
+                ("CombinedOutput", "() -> ([]byte, error)"),
+                ("Environ", "() -> []string"),
+                ("Output", "() -> ([]byte, error)"),
+                ("Run", "() -> error"),
+                ("Start", "() -> error"),
+                ("StderrPipe", "() -> (io.ReadCloser, error)"),
+                ("StdinPipe", "() -> (io.WriteCloser, error)"),
+                ("StdoutPipe", "() -> (io.ReadCloser, error)"),
+                ("String", "() -> string"),
+                ("Wait", "() -> error"),
+            ],
+        ),
+        (
+            ("context", "Context"),
+            &[
+                ("Deadline", "() -> (deadline time.Time, ok bool)"),
+                ("Done", "() -> <-chan struct{}"),
+                ("Err", "() -> error"),
+                ("Value", "(key any) -> any"),
+            ],
+        ),
+        // Further standard-library interfaces a type satisfies by name and
+        // signature; the runtime or another package calls them through the
+        // interface (`dead_symbols`' `implements_external_interface`).
+        (("builtin", "error"), &[("Error", "() -> string")]),
+        (("errors", "unwrapper"), &[("Unwrap", "() -> error")]),
+        (("errors", "isser"), &[("Is", "(target error) -> bool")]),
+        (("errors", "aser"), &[("As", "(target any) -> bool")]),
+        (
+            ("sort", "heap.Interface"),
+            &[
+                ("Len", "() -> int"),
+                ("Less", "(i, j int) -> bool"),
+                ("Swap", "(i, j int)"),
+                ("Push", "(x any)"),
+                ("Pop", "() -> any"),
+            ],
+        ),
+        (
+            ("encoding", "TextMarshaler"),
+            &[("MarshalText", "() -> (text []byte, err error)")],
+        ),
+        (
+            ("encoding", "TextUnmarshaler"),
+            &[("UnmarshalText", "(text []byte) -> error")],
+        ),
+        (
+            ("encoding", "BinaryMarshaler"),
+            &[("MarshalBinary", "() -> (data []byte, err error)")],
+        ),
+        (
+            ("encoding", "BinaryUnmarshaler"),
+            &[("UnmarshalBinary", "(data []byte) -> error")],
+        ),
+        (
+            ("encoding/json", "Marshaler"),
+            &[("MarshalJSON", "() -> ([]byte, error)")],
+        ),
+        (
+            ("encoding/json", "Unmarshaler"),
+            &[("UnmarshalJSON", "([]byte) -> error")],
+        ),
+        (
+            ("fmt", "Formatter"),
+            &[("Format", "(f fmt.State, verb rune)")],
+        ),
+        (("fmt", "GoStringer"), &[("GoString", "() -> string")]),
+        (
+            ("fmt", "Scanner"),
+            &[("Scan", "(state fmt.ScanState, verb rune) -> error")],
+        ),
+        (
+            ("flag", "Value"),
+            &[("String", "() -> string"), ("Set", "(string) -> error")],
+        ),
+        (
+            ("io/fs", "FS"),
+            &[("Open", "(name string) -> (fs.File, error)")],
+        ),
+        (
+            ("io/fs", "ReadDirFS"),
+            &[("ReadDir", "(name string) -> ([]fs.DirEntry, error)")],
+        ),
+        (
+            ("io/fs", "StatFS"),
+            &[("Stat", "(name string) -> (fs.FileInfo, error)")],
+        ),
+        (
+            ("io/fs", "File"),
+            &[("Stat", "() -> (fs.FileInfo, error)"), READ, CLOSE],
+        ),
+        (
+            ("io/fs", "FileInfo"),
+            &[
+                ("Name", "() -> string"),
+                ("Size", "() -> int64"),
+                ("Mode", "() -> fs.FileMode"),
+                ("ModTime", "() -> time.Time"),
+                ("IsDir", "() -> bool"),
+                ("Sys", "() -> any"),
+            ],
+        ),
+        (
+            ("io/fs", "DirEntry"),
+            &[
+                ("Name", "() -> string"),
+                ("IsDir", "() -> bool"),
+                ("Type", "() -> fs.FileMode"),
+                ("Info", "() -> (fs.FileInfo, error)"),
+            ],
+        ),
+        (
+            ("database/sql", "Scanner"),
+            &[("Scan", "(src any) -> error")],
+        ),
+        (
+            ("database/sql/driver", "Valuer"),
+            &[("Value", "() -> (driver.Value, error)")],
+        ),
+        (
+            ("net/http", "RoundTripper"),
+            &[("RoundTrip", "(*http.Request) -> (*http.Response, error)")],
+        ),
+    ]
+};
+
+fn std_interface(path: &str, name: &str) -> Option<GoInterfaceMethods> {
+    STD_INTERFACES
+        .iter()
+        .find(|((p, n), _)| *p == path && *n == name)
+        .map(|(_, methods)| *methods)
+}
+
+/// The standard-library interface a Go method
+/// implements, if any: `name` with `signature` is one method of an interface
+/// of `STD_INTERFACES`, and `own` (the methods its
+/// receiver type declares, `(name, signature)`) holds every method of that
+/// interface by name and signature. Returns the interface, `pkg.Name`.
+pub(crate) fn go_std_interface(
+    name: &str,
+    signature: Option<&str>,
+    own: &[(String, Option<String>)],
+) -> Option<String> {
+    let wanted = method_signature(signature);
+    let declared: HashMap<&str, MethodSig> = own
+        .iter()
+        .map(|(n, sig)| (n.as_str(), method_signature(sig.as_deref())))
+        .collect();
+    let satisfied = |methods: GoInterfaceMethods| {
+        methods
+            .iter()
+            .any(|(m, sig)| *m == name && method_signature(Some(sig)) == wanted)
+            && methods
+                .iter()
+                .all(|(m, sig)| declared.get(m) == Some(&method_signature(Some(sig))))
+    };
+    STD_INTERFACES
+        .iter()
+        // `os/exec.Cmd` is a struct: promoted, never implemented.
+        .filter(|((p, n), _)| !(*p == "os/exec" && *n == "Cmd"))
+        .find(|(_, methods)| satisfied(methods))
+        .map(|((p, n), _)| format!("{}.{n}", p.rsplit('/').next().unwrap_or(p)))
 }
 
 impl Resolver<'_> {

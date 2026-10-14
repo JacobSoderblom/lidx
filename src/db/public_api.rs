@@ -218,6 +218,7 @@ fn package_entries(repo_root: &Path, package: &str, files: &HashSet<String>) -> 
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Vec::new();
     };
+    let build_map = tsconfig_build_map(repo_root, package);
     let mut targets = Vec::new();
     for key in [
         "main", "module", "types", "typings", "browser", "bin", "exports",
@@ -228,7 +229,7 @@ fn package_entries(repo_root: &Path, package: &str, files: &HashSet<String>) -> 
     }
     let mut found: Vec<String> = Vec::new();
     for target in targets {
-        for file in map_target(package, &target, files) {
+        for file in map_target(package, &target, files, build_map.as_ref()) {
             if !found.contains(&file) {
                 found.push(file);
             }
@@ -236,6 +237,71 @@ fn package_entries(repo_root: &Path, package: &str, files: &HashSet<String>) -> 
     }
     found.sort();
     found
+}
+
+/// `(outDir, rootDir)` of the package's `tsconfig.json` (`compilerOptions`,
+/// `./` and trailing `/` dropped), when it sets an `outDir`; `rootDir` is
+/// empty when unset. The tsconfig may carry comments and trailing commas.
+fn tsconfig_build_map(repo_root: &Path, package: &str) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(repo_root.join(package).join("tsconfig.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&strip_jsonc(&text)).ok()?;
+    let options = json.get("compilerOptions")?;
+    let dir = |key: &str| {
+        options.get(key).and_then(|v| v.as_str()).map(|d| {
+            d.trim_start_matches("./")
+                .trim_end_matches('/')
+                .trim_start_matches('.')
+                .to_string()
+        })
+    };
+    let out = dir("outDir").filter(|d| !d.is_empty())?;
+    Some((out, dir("rootDir").unwrap_or_default()))
+}
+
+/// `text` as plain JSON: `//` and `/* */` comments outside strings and
+/// trailing commas removed.
+fn strip_jsonc(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut in_string = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            out.push(c);
+            if c == '\\' && i + 1 < chars.len() {
+                out.push(chars[i + 1]);
+                i += 1;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+            out.push(c);
+        } else if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        } else if c == ',' {
+            // a trailing comma: the next significant character closes
+            let next = chars[i + 1..].iter().find(|c| !c.is_whitespace());
+            if !matches!(next, Some('}' | ']')) {
+                out.push(c);
+            }
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    out
 }
 
 fn leaf_strings(v: &serde_json::Value, out: &mut Vec<String>) {
@@ -263,7 +329,12 @@ const SOURCE_SUFFIXES: &[&str] = &[
 
 /// The indexed source file(s) an entry-field string `target` (relative to
 /// the package directory `package`) stands for.
-fn map_target(package: &str, target: &str, files: &HashSet<String>) -> Vec<String> {
+fn map_target(
+    package: &str,
+    target: &str,
+    files: &HashSet<String>,
+    build_map: Option<&(String, String)>,
+) -> Vec<String> {
     let rel = target.trim_start_matches("./");
     if [".json", ".node", ".css"].iter().any(|e| rel.ends_with(e)) {
         return Vec::new();
@@ -273,6 +344,30 @@ fn map_target(package: &str, target: &str, files: &HashSet<String>) -> Vec<Strin
         .find_map(|ext| rel.strip_suffix(&format!(".{ext}")))
         .map(|s| s.strip_suffix(".d").unwrap_or(s))
         .unwrap_or(rel);
+    if let Some((out_dir, root_dir)) = build_map
+        && !stem.contains('*')
+        && let Some(rest) = stem
+            .strip_prefix(out_dir.as_str())
+            .and_then(|r| r.strip_prefix('/'))
+    {
+        // The project's own answer: `outDir` holds what `rootDir` compiles to.
+        let mut base = String::new();
+        if !package.is_empty() {
+            base.push_str(package);
+            base.push('/');
+        }
+        if !root_dir.is_empty() {
+            base.push_str(root_dir);
+            base.push('/');
+        }
+        if let Some(hit) = SOURCE_SUFFIXES
+            .iter()
+            .map(|suffix| format!("{base}{rest}{suffix}"))
+            .find(|cand| files.contains(cand))
+        {
+            return vec![hit];
+        }
+    }
     let segs: Vec<&str> = stem.split('/').collect();
     let join = |base: &str, v: &str| {
         let mut p = String::new();
@@ -290,7 +385,7 @@ fn map_target(package: &str, target: &str, files: &HashSet<String>) -> Vec<Strin
             break;
         }
         let variant = segs[i..].join("/");
-        for base in ["", "src/"] {
+        for base in ["", "src/", "source/"] {
             let prefix = join(base, &variant);
             if let Some((head, tail)) = prefix.split_once('*') {
                 for f in files {

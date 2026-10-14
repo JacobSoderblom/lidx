@@ -1,4 +1,3 @@
 [
-{"category":"exported_used_by_rule","confidence":"medium","exported":true,"file":"detect/reader_test.go","key":"detect/reader_test.go:25","kind":"method","lidx_kind":"method","line":25,"name":"Read","policy":true,"qualname":"detect/reader_test.mockReader.Read","subkind":""},
-{"category":"exported_used_by_rule","confidence":"medium","exported":true,"file":"report/report_test.go","key":"report/report_test.go:40","kind":"method","lidx_kind":"method","line":40,"name":"Close","policy":true,"qualname":"report/report_test.testWriter.Close","subkind":""}
+
 ]

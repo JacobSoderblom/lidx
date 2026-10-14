@@ -4,8 +4,8 @@ use super::resolver::{ImplicitRootFacts, profile_for, qualname_trailing_name};
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::edge_views;
 use crate::model::{
-    DeadConfidence, DeadSymbol, DeadSymbols, DuplicateGroup, Edge, Symbol, SymbolComplexity,
-    SymbolCoupling, UnresolvedSample,
+    DeadConfidence, DeadSymbol, DeadSymbols, DeadSymbolsOptions, DuplicateGroup, Edge, Symbol,
+    SymbolComplexity, SymbolCoupling, UnresolvedSample,
 };
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -619,8 +619,12 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
         repo_root: &Path,
-        include_public_api: bool,
+        options: DeadSymbolsOptions,
     ) -> Result<DeadSymbols> {
+        let DeadSymbolsOptions {
+            include_public_api,
+            tests_are_roots,
+        } = options;
         // Issue #122: impl methods called only through their interface are live.
         let dispatch_from = super::graph_query::dispatch_pairs_from(
             graph_version,
@@ -645,10 +649,46 @@ impl Db {
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let reachability = edge_views::sql_list(edge_views::REACHABILITY);
         let entrypoint = edge_views::sql_list(edge_views::ENTRYPOINT);
+        // With `tests_are_roots` off, an edge written in a test file or by a
+        // test function does not keep its target alive.
+        let test_files = if tests_are_roots {
+            HashSet::new()
+        } else {
+            self.test_file_ids(graph_version, repo_root)?
+        };
+        let test_guard = if tests_are_roots {
+            String::new()
+        } else {
+            let ids = test_files
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "AND e.file_id NOT IN ({ids})
+                         AND NOT EXISTS (
+                           SELECT 1 FROM symbols ts WHERE ts.id = e.source_symbol_id
+                             AND (COALESCE(ts.signature, '') LIKE '#[go_test]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[cfg(test)]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[test]%'
+                               OR COALESCE(ts.signature, '') LIKE '%::test]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[rstest]%'
+                               OR COALESCE(ts.signature, '') LIKE '%#[test_case]%'))"
+            )
+        };
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id,
-                          f.language, s.visibility
+                          f.language, s.visibility,
+                          (SELECT pc.source_symbol_id FROM edges pc
+                           WHERE pc.target_symbol_id = s.id AND pc.kind = 'CONTAINS'
+                             AND pc.graph_version = {gv} LIMIT 1),
+                          s.kind = 'method' AND f.language = 'rust' AND EXISTS (
+                            SELECT 1 FROM edges xe JOIN symbols xs ON xs.id = xe.target_symbol_id
+                            WHERE xe.source_symbol_id = s.id AND xe.kind = 'IMPLEMENTS'
+                              AND xe.graph_version = {gv} AND xs.kind = 'external'),
+                          EXISTS (SELECT 1 FROM edges te WHERE te.target_symbol_id = s.id
+                                    AND te.kind IN ({reachability}) AND te.graph_version = {gv})
                    FROM symbols s
                    JOIN files f ON s.file_id = f.id
                    WHERE s.graph_version = ?
@@ -682,6 +722,7 @@ impl Db {
                        WHERE sib.file_id = s.file_id AND sib.qualname = s.qualname
                          AND sib.graph_version = s.graph_version AND sib.id != s.id
                          AND e.kind IN ({reachability}) AND e.graph_version = {gv}
+                         {test_guard}
                      ))
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
                      -- Operators and finalizers are invoked implicitly (#247).
@@ -698,6 +739,7 @@ impl Db {
                        WHERE e.target_symbol_id = s.id
                          AND e.kind IN ({reachability})
                          AND e.graph_version = ?
+                         {test_guard}
                      )
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
@@ -735,11 +777,15 @@ impl Db {
                          )
                      )
                      AND NOT (s.kind IN ('method', 'function') AND (
+                       -- A Rust impl method of an external trait is judged
+                       -- afterwards: live only with its type (#472).
                        EXISTS (
                          SELECT 1 FROM edges e
+                         LEFT JOIN symbols et ON et.id = e.target_symbol_id
                          WHERE e.source_symbol_id = s.id
                            AND e.kind = 'IMPLEMENTS'
                            AND e.graph_version = ?
+                           AND NOT (f.language = 'rust' AND et.kind = 'external')
                        )
                        OR EXISTS (
                          SELECT 1 FROM unresolved_references ur
@@ -799,6 +845,9 @@ impl Db {
                 row.get::<_, Option<String>>(11)?.unwrap_or_default(),
                 row.get::<_, String>(16)?,
                 row.get::<_, Option<String>>(17)?,
+                row.get::<_, Option<i64>>(18)?,
+                row.get::<_, bool>(19)?,
+                row.get::<_, bool>(20)?,
             ))
         })?;
         let mut candidates = Vec::new();
@@ -858,8 +907,12 @@ impl Db {
         let member_names: std::cell::OnceCell<Option<HashSet<String>>> = std::cell::OnceCell::new();
         let mut api = PublicApi::new(repo_root, js_files.clone(), rust_libs);
 
-        let mut out = DeadSymbols::default();
-        for (symbol, signature, language, visibility) in candidates {
+        // Judged in two passes: a method is live through an external
+        // interface only when its type is not itself a claim (#472).
+        let mut judged: Vec<Judged> = Vec::new();
+        for (symbol, signature, language, visibility, parent_id, external_trait_impl, tests_only) in
+            candidates
+        {
             let profile = profile_for(&language);
             if let Some(is_root) = profile.implicit_root
                 && is_root(&ImplicitRootFacts {
@@ -931,23 +984,189 @@ impl Db {
                     false,
                 ),
             };
-            let claim = DeadSymbol {
-                symbol,
-                confidence,
-                reason,
+            let reason = if tests_only {
+                format!("{TESTS_ONLY_REASON}: {reason}")
+            } else {
+                reason
             };
-            if public {
+            judged.push(Judged {
+                claim: DeadSymbol {
+                    symbol,
+                    confidence,
+                    reason,
+                },
+                signature,
+                language,
+                public,
+                named_by_unresolved: unresolved,
+                parent_id,
+                external_trait_impl,
+            });
+        }
+
+        // A type an unresolved reference names is not proven dead (a
+        // function-local `struct V;` passed as a value, say): its methods
+        // keep the benefit of the doubt.
+        let claimed: HashSet<i64> = judged
+            .iter()
+            .filter(|j| !j.public && !j.named_by_unresolved)
+            .map(|j| j.claim.symbol.id)
+            .collect();
+        let mut probe = ExternalInterfaceProbe {
+            conn: &conn,
+            graph_version,
+            claimed: &claimed,
+            reachability: &reachability,
+            test_files: &test_files,
+            go_evidence: Default::default(),
+            live: None,
+            implemented: HashMap::new(),
+            siblings: HashMap::new(),
+        };
+        let mut out = DeadSymbols::default();
+        for mut j in judged {
+            if j.claim.symbol.kind == "method"
+                && let Some(iface) = probe.of(&j)?
+            {
+                // Live through its type: not a claim. Listed on request only,
+                // never above medium.
+                out.external_interface_total += 1;
+                if out.external_interface.len() < limit {
+                    j.claim.confidence = DeadConfidence::Medium;
+                    j.claim.reason = format!(
+                        "{}: {iface}, on a live type",
+                        super::external_ifaces::REASON
+                    );
+                    out.external_interface.push(j.claim);
+                }
+                continue;
+            }
+            if j.public {
                 out.public_api_total += 1;
                 if include_public_api && out.public_api.len() < limit {
-                    out.public_api.push(claim);
+                    out.public_api.push(j.claim);
                 }
             } else if out.dead.len() < limit {
-                out.dead.push(claim);
+                out.dead.push(j.claim);
             }
         }
         Ok(out)
     }
+}
 
+/// Finds the external interface that makes a method live through its type
+/// (`external_ifaces`), caching what it reads.
+struct ExternalInterfaceProbe<'a> {
+    conn: &'a rusqlite::Connection,
+    graph_version: i64,
+    claimed: &'a HashSet<i64>,
+    reachability: &'a str,
+    test_files: &'a HashSet<i64>,
+    go_evidence: super::external_ifaces::GoExternalEvidence,
+    /// Computed on the first method that needs it.
+    live: Option<HashSet<i64>>,
+    implemented: HashMap<i64, Vec<String>>,
+    siblings: HashMap<i64, Vec<(String, Option<String>)>>,
+}
+
+impl ExternalInterfaceProbe<'_> {
+    /// The interface method `j` implements, or `None` when it implements none
+    /// or its type is not live. A method whose type cannot be found is given
+    /// the benefit of the doubt.
+    fn of(&mut self, j: &Judged) -> Result<Option<String>> {
+        let (conn, graph_version) = (self.conn, self.graph_version);
+        if let Some(parent) = j.parent_id {
+            if self.live.is_none() {
+                self.live = Some(live_symbols(
+                    conn,
+                    graph_version,
+                    self.reachability,
+                    self.claimed,
+                    self.test_files,
+                )?);
+            }
+            if !self.live.as_ref().is_some_and(|l| l.contains(&parent)) {
+                return Ok(None);
+            }
+        }
+        let method = &j.claim.symbol;
+        let found = match j.language.as_str() {
+            "rust" => j
+                .external_trait_impl
+                .then(|| "implements an external trait".to_string()),
+            "go" => {
+                let Some(parent) = j.parent_id else {
+                    return Ok(None);
+                };
+                if let std::collections::hash_map::Entry::Vacant(slot) = self.siblings.entry(parent)
+                {
+                    let mut stmt = conn.prepare_cached(
+                        "SELECT m.name, m.signature FROM edges c
+                         JOIN symbols m ON m.id = c.target_symbol_id
+                         WHERE c.source_symbol_id = ?1 AND c.kind = 'CONTAINS'
+                           AND c.graph_version = ?2 AND m.kind = 'method'",
+                    )?;
+                    let rows = stmt
+                        .query_map(rusqlite::params![parent, graph_version], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    slot.insert(rows);
+                }
+                let std = super::resolver::go_std_interface(
+                    &method.name,
+                    Some(j.signature.as_str()),
+                    &self.siblings[&parent],
+                )
+                .map(|i| format!("implements {i}"));
+                // Only an exported method can satisfy an interface of
+                // another package.
+                if std.is_none() && method.name.chars().next().is_some_and(char::is_uppercase) {
+                    let type_name = method
+                        .qualname
+                        .strip_suffix(method.name.as_str())
+                        .and_then(|q| q.strip_suffix('.'))
+                        .and_then(|q| q.rsplit('.').next())
+                        .unwrap_or_default();
+                    let dir = method.file_path.rsplit_once('/').map_or("", |(d, _)| d);
+                    self.go_evidence
+                        .of(conn, graph_version, parent, type_name, dir)?
+                } else {
+                    std
+                }
+            }
+            "typescript" | "tsx" | "javascript" => {
+                let names: &[String] = match j.parent_id {
+                    Some(parent) => {
+                        if let std::collections::hash_map::Entry::Vacant(slot) =
+                            self.implemented.entry(parent)
+                        {
+                            let mut stmt = conn.prepare_cached(
+                                "SELECT reference_name FROM unresolved_references
+                                 WHERE source_symbol_id = ?1 AND edge_kind = 'IMPLEMENTS'
+                                   AND graph_version = ?2 AND reference_name IS NOT NULL",
+                            )?;
+                            let rows = stmt
+                                .query_map(rusqlite::params![parent, graph_version], |r| {
+                                    r.get::<_, String>(0)
+                                })?
+                                .collect::<rusqlite::Result<Vec<_>>>()?;
+                            slot.insert(rows);
+                        }
+                        &self.implemented[&parent]
+                    }
+                    None => &[],
+                };
+                super::external_ifaces::ts_external_interface(&method.name, names)
+                    .map(|i| format!("implements {i}"))
+            }
+            _ => None,
+        };
+        Ok(found)
+    }
+}
+
+impl Db {
     /// Issue #79: an IMPORTS reference the write path never resolved (an
     /// external package, e.g. `import json`) no longer gets a placeholder
     /// edge at all -- it lives only in `unresolved_references` (`edge_id IS
@@ -1419,6 +1638,227 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
     signature
         .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .any(|token| token == alias)
+}
+
+/// The symbols reachable from the roots along `reachability` edges. A root
+/// is a symbol nothing references that is not a claim (public API, tests,
+/// modules, members reached by dispatch or an interface); a symbol referenced
+/// only from claims, or from a cluster no root reaches, is not live even
+/// though `dead_symbols` finds an incoming edge for it (#472).
+///
+/// A Go type mention is stored as one `USES` edge per file from the file's
+/// module, its `detail` listing the declarations that hold a mention
+/// (`{"in": [..]}`, `""` for one outside any declaration). Those edges are
+/// settled last: the type is live when a listed declaration is live, the
+/// type's own declaration and methods not counting. An edge without the list
+/// (an index from before it) keeps the benefit of the doubt.
+fn live_symbols(
+    conn: &rusqlite::Connection,
+    graph_version: i64,
+    reachability: &str,
+    claimed: &HashSet<i64>,
+    test_files: &HashSet<i64>,
+) -> Result<HashSet<i64>> {
+    struct Mention {
+        target: i64,
+        qualname: String,
+        file_id: i64,
+        declarations: Option<Vec<String>>,
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT e.source_symbol_id, e.target_symbol_id, e.kind, ss.kind, f.language,
+                t.qualname, e.file_id, e.detail
+         FROM edges e
+         LEFT JOIN symbols ss ON ss.id = e.source_symbol_id
+         JOIN symbols t ON t.id = e.target_symbol_id
+         JOIN files f ON f.id = e.file_id
+         WHERE e.kind IN ({reachability}) AND e.graph_version = ?1
+           AND (e.source_symbol_id IS NULL OR e.source_symbol_id != e.target_symbol_id)"
+    ))?;
+    let mut out_edges: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut referenced: HashSet<i64> = HashSet::new();
+    let mut live: HashSet<i64> = HashSet::new();
+    let mut stack: Vec<i64> = Vec::new();
+    let mut mentions: Vec<Mention> = Vec::new();
+    let rows = stmt.query_map([graph_version], |r| {
+        Ok((
+            r.get::<_, Option<i64>>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, i64>(6)?,
+            r.get::<_, Option<String>>(7)?,
+        ))
+    })?;
+    for row in rows {
+        let (source, target, kind, source_kind, language, qualname, file_id, detail) = row?;
+        if test_files.contains(&file_id) {
+            continue;
+        }
+        referenced.insert(target);
+        match source {
+            // not owned by a symbol: a file-level reference
+            None => {
+                if live.insert(target) {
+                    stack.push(target);
+                }
+            }
+            Some(_)
+                if kind == "USES"
+                    && language == "go"
+                    && source_kind.as_deref() == Some("module") =>
+            {
+                let declarations = detail
+                    .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+                    .and_then(|v| {
+                        v["in"].as_array().map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                    });
+                mentions.push(Mention {
+                    target,
+                    qualname,
+                    file_id,
+                    declarations,
+                });
+            }
+            Some(source) => out_edges.entry(source).or_default().push(target),
+        }
+    }
+    drop(stmt);
+    // A method no claim covers is live with its type, not on its own: the
+    // rules that keep it from being a claim (an interface it implements, an
+    // override) all hang on the type being used.
+    let mut members: HashSet<i64> = HashSet::new();
+    let mut cstmt = conn.prepare(
+        "SELECT c.source_symbol_id, c.target_symbol_id FROM edges c
+         JOIN symbols m ON m.id = c.target_symbol_id
+         WHERE c.kind = 'CONTAINS' AND c.graph_version = ?1 AND m.kind = 'method'
+           AND c.source_symbol_id IS NOT NULL",
+    )?;
+    let rows = cstmt.query_map([graph_version], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (parent, method) = row?;
+        if !claimed.contains(&method) {
+            members.insert(method);
+            out_edges.entry(parent).or_default().push(method);
+        }
+    }
+    drop(cstmt);
+    let mut ids =
+        conn.prepare("SELECT id, file_id, qualname FROM symbols WHERE graph_version = ?1")?;
+    let rows = ids.query_map([graph_version], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    // (file, qualname) -> symbol, to find the declarations a mention is in
+    let mut by_name: HashMap<(i64, String), i64> = HashMap::new();
+    let want_files: HashSet<i64> = mentions.iter().map(|m| m.file_id).collect();
+    for row in rows {
+        let (id, file_id, qualname) = row?;
+        if want_files.contains(&file_id) {
+            by_name.insert((file_id, qualname), id);
+        }
+        if test_files.contains(&file_id) {
+            continue;
+        }
+        if !referenced.contains(&id)
+            && !claimed.contains(&id)
+            && !members.contains(&id)
+            && live.insert(id)
+        {
+            stack.push(id);
+        }
+    }
+    drop(ids);
+
+    loop {
+        while let Some(id) = stack.pop() {
+            for &target in out_edges.get(&id).into_iter().flatten() {
+                if live.insert(target) {
+                    stack.push(target);
+                }
+            }
+        }
+        let mut grew = false;
+        for m in &mentions {
+            if live.contains(&m.target) {
+                continue;
+            }
+            let own = format!("{}.", m.qualname);
+            let used = match &m.declarations {
+                None => true,
+                Some(declarations) => declarations.iter().any(|d| {
+                    if d.is_empty() {
+                        return true;
+                    }
+                    if *d == m.qualname || d.starts_with(&own) {
+                        return false;
+                    }
+                    by_name
+                        .get(&(m.file_id, d.clone()))
+                        .is_none_or(|id| live.contains(id))
+                }),
+            };
+            if used {
+                live.insert(m.target);
+                stack.push(m.target);
+                grew = true;
+            }
+        }
+        if !grew && stack.is_empty() {
+            break;
+        }
+    }
+    Ok(live)
+}
+
+/// Reason prefix of a claim whose only references come from test code
+/// (`tests_are_roots: false`).
+const TESTS_ONLY_REASON: &str = "reached_only_from_tests";
+
+impl Db {
+    /// Ids of the files `is_test_file` calls tests.
+    fn test_file_ids(&self, graph_version: i64, repo_root: &Path) -> Result<HashSet<i64>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, path FROM files WHERE deleted_version IS NULL OR deleted_version > ?1",
+        )?;
+        let rows = stmt.query_map([graph_version], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = HashSet::new();
+        for row in rows {
+            let (id, path) = row?;
+            if crate::indexer::test_detection::is_test_file_in(repo_root, &path) {
+                out.insert(id);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// One candidate once classified, before external-interface liveness.
+struct Judged {
+    claim: DeadSymbol,
+    signature: String,
+    language: String,
+    public: bool,
+    /// An unresolved reference names it: it may be used after all.
+    named_by_unresolved: bool,
+    /// The declaration containing it (a method's type).
+    parent_id: Option<i64>,
+    /// A Rust method implementing a trait of a dependency or `std`.
+    external_trait_impl: bool,
 }
 
 /// The `visibility` modifiers of the symbol(s) a method's qualname hangs

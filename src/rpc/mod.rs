@@ -105,6 +105,10 @@ struct DeadSymbolsParams {
     /// Roots are never reported: Go Test*/Benchmark*/Fuzz*/Example* in
     /// _test.go, `init`, `main`; Rust #[test]/#[bench]/main.
     include_public_api: Option<bool>,
+    /// Also list methods left out because they implement a std/dependency interface on a live type (medium)
+    include_external_interface: Option<bool>,
+    /// false: references from tests are ignored; what only tests reach is claimed (default true)
+    tests_are_roots: Option<bool>,
     /// Include unused imports (default: true)
     include_unused_imports: Option<bool>,
     /// Include orphan tests (default: true)
