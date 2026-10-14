@@ -290,7 +290,7 @@ fn map_target(package: &str, target: &str, files: &HashSet<String>) -> Vec<Strin
             break;
         }
         let variant = segs[i..].join("/");
-        for base in ["", "src/"] {
+        for base in ["", "src/", "source/"] {
             let prefix = join(base, &variant);
             if let Some((head, tail)) = prefix.split_once('*') {
                 for f in files {

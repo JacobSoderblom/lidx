@@ -539,3 +539,28 @@ fn ts_exports_after_a_parse_error_are_still_public_api() {
         "{r}"
     );
 }
+
+#[test]
+fn ts_entry_in_a_source_directory_is_mapped_from_the_built_path() {
+    let (_tmp, _root, mut ix) = common::live_indexer(
+        "lidx-dead-ts-source-dir-",
+        &[
+            (
+                "package.json",
+                "{\"name\":\"p\",\"main\":\"./distribution/index.js\",\"types\":\"./distribution/index.d.ts\"}\n",
+            ),
+            (
+                "source/index.ts",
+                "export {helper} from './utils.js';\nexport const api = 1;\n",
+            ),
+            (
+                "source/utils.ts",
+                "export const helper = () => 1;\nexport const internal = () => 2;\n",
+            ),
+        ],
+    );
+    let r = call(&mut ix, true);
+    assert!(has(&names(&r, "public_api"), "utils.helper"), "{r}");
+    assert!(has(&names(&r, "public_api"), "source.api"), "{r}");
+    assert!(has(&names(&r, "dead_symbols"), "utils.internal"), "{r}");
+}
