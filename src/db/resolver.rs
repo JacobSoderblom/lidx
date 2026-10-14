@@ -2941,9 +2941,58 @@ impl<'c> Resolver<'c> {
                 if source_lang == "rust" && known_type == RUST_STD_RECEIVER {
                     return self.rust_std_receiver_method(target_qualname, edge_kind, caller);
                 }
+                // A type of the repo written bare in the module declaring it
+                // (`=module|Type`): that module's own method, exactly.
+                let mut known_type = known_type;
+                if source_lang == "rust"
+                    && let Some((module, ty)) = crate::model::parse_rust_home_receiver(known_type)
+                {
+                    let full = format!("{module}::{ty}::{method}");
+                    let hits = query_exact_candidates(
+                        &mut self.exact,
+                        &full,
+                        self.graph_version,
+                        caller.file_path,
+                        self.caller_scope.as_deref(),
+                    )?;
+                    // `crate::matcher` names a module of every package that has
+                    // one: only the caller's own package declares what the
+                    // bare type means here.
+                    let home = crate::indexer::rust::cargo_package_dir(caller.file_path);
+                    let own: Vec<_> = hits
+                        .into_iter()
+                        .filter(|c| crate::indexer::rust::cargo_package_dir(&c.path) == home)
+                        .collect();
+                    if let Some(id) = collapse_exact_candidates(&own) {
+                        return Ok(Some((id, ResolutionKind::ReceiverType)));
+                    }
+                    // The type is the package's own and has no such method: a
+                    // trait the package declares provides it, else nothing
+                    // (never a same-named type of another package).
+                    let ty_full = format!("{module}::{ty}");
+                    let type_ids: Vec<i64> = query_exact_candidates(
+                        &mut self.exact,
+                        &ty_full,
+                        self.graph_version,
+                        caller.file_path,
+                        self.caller_scope.as_deref(),
+                    )?
+                    .iter()
+                    .filter(|c| {
+                        crate::indexer::rust::cargo_package_dir(&c.path) == home
+                            && matches!(c.kind.as_str(), "struct" | "enum" | "class" | "type")
+                    })
+                    .map(|c| c.id)
+                    .collect();
+                    if !type_ids.is_empty() {
+                        return Ok(self
+                            .rust_implemented_trait_method(&type_ids, method)?
+                            .map(|id| (id, ResolutionKind::Inherited)));
+                    }
+                    known_type = ty;
+                }
                 // A Rust type of another workspace package (`@dir|Type`): a
                 // public method of that package's type, else the plain name.
-                let mut known_type = known_type;
                 if source_lang == "rust"
                     && let Some((dir, ty)) = rust_pinned_type(known_type)
                 {
@@ -3426,6 +3475,39 @@ impl<'c> Resolver<'c> {
         Ok(self
             .is_rust_trait_method(id)?
             .then_some((id, ResolutionKind::BareName)))
+    }
+
+    /// The one method named `method` declared by a trait that one of the
+    /// types `type_ids` implements (a default method, or the declaration);
+    /// `None` when there is none or several.
+    fn rust_implemented_trait_method(
+        &mut self,
+        type_ids: &[i64],
+        method: &str,
+    ) -> Result<Option<i64>> {
+        let mut found: Option<i64> = None;
+        for type_id in type_ids {
+            let ids: Vec<i64> = self
+                .conn
+                .prepare_cached(
+                    "SELECT m.id FROM edges e
+                     JOIN symbols t ON t.id = e.target_symbol_id AND t.kind = 'trait'
+                     JOIN symbols m ON m.kind = 'method' AND m.name = ?3
+                       AND m.graph_version = ?2 AND m.file_id = t.file_id
+                       AND m.qualname = t.qualname || '::' || ?3
+                     WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPLEMENTS'
+                       AND e.graph_version = ?2",
+                )?
+                .query_map(params![type_id, self.graph_version, method], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for id in ids {
+                if found.is_some_and(|f| f != id) {
+                    return Ok(None);
+                }
+                found = Some(id);
+            }
+        }
+        Ok(found)
     }
 
     /// Whether the symbol `id` is a method a trait declares or an impl of a

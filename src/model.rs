@@ -1673,3 +1673,18 @@ pub struct DeadSymbols {
     /// How many such public-API declarations exist (whether or not returned).
     pub public_api_total: usize,
 }
+
+/// Prefixes a Rust receiver type that is a type of the repo written bare in
+/// the module that declares it: `=<module qualname>|<Type>`.
+pub const RUST_HOME_PIN: char = '=';
+
+/// The `receiver_type` of a call on a value of the type `ty` written bare in
+/// the module `module` (see [`parse_rust_home_receiver`]).
+pub fn rust_home_receiver(module: &str, ty: &str) -> String {
+    format!("{RUST_HOME_PIN}{module}|{ty}")
+}
+
+/// `(module, type)` of a [`rust_home_receiver`].
+pub fn parse_rust_home_receiver(receiver_type: &str) -> Option<(&str, &str)> {
+    receiver_type.strip_prefix(RUST_HOME_PIN)?.split_once('|')
+}
