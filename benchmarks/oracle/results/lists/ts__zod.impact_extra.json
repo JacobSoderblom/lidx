@@ -3,6 +3,7 @@
 {"k":"3","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/helpers/util.ts:175","seed_name":"getParsedType"},
 {"k":"3","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/types.ts:170","seed_name":"_parse"},
 {"k":"3","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/types.ts:229","seed_name":"safeParse"},
+{"k":"3","member":"packages/zod/src/v4/classic/schemas.ts:395 _ZodString","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas._ZodString","seed":"packages/zod/src/v4/core/api.ts:1089","seed_name":"_endsWith"},
 {"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/helpers/parseUtil.ts:166","seed_name":"OK"},
 {"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/helpers/parseUtil.ts:174","seed_name":"isValid"},
 {"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/helpers/parseUtil.ts:72","seed_name":"addIssueToContext"},
@@ -15,5 +16,6 @@
 {"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/types.ts:229","seed_name":"safeParse"},
 {"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/types.ts:298","seed_name":"safeParseAsync"},
 {"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/types.ts:3979","seed_name":"_parse"},
-{"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/types.ts:698","seed_name":"isValidJWT"}
+{"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:215 ZodType","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas.ZodType","seed":"packages/zod/src/v3/types.ts:698","seed_name":"isValidJWT"},
+{"k":"inf","member":"packages/zod/src/v4/classic/schemas.ts:395 _ZodString","node":"packages/zod/src/v4/classic/schemas.ts|packages/zod/src/v4/classic/schemas._ZodString","seed":"packages/zod/src/v4/core/api.ts:1089","seed_name":"_endsWith"}
 ]

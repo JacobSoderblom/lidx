@@ -1,9 +1,9 @@
 [
-{"confidence":"high","file":"src/event.ts","key":"src/event.ts:201","lidx_kind":"method","name":"headers","qualname":"src/event.H3EventResponse.headers","reason":"not_a_judged_declaration"},
-{"confidence":"high","file":"src/event.ts","key":"src/event.ts:205","lidx_kind":"method","name":"errHeaders","qualname":"src/event.H3EventResponse.errHeaders","reason":"not_a_judged_declaration"},
 {"confidence":"high","file":"test/errors.test.ts","key":"test/errors.test.ts:111","lidx_kind":"class","name":"CustomError","qualname":"test/errors.test.CustomError","reason":"test_file_outside_cell"},
 {"confidence":"high","file":"test/json-rpc-ws.test.ts","key":"test/json-rpc-ws.test.ts:334","lidx_kind":"function","name":"sendMessage","qualname":"test/json-rpc-ws.test.sendMessage","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"build.config.ts","key":"build.config.ts:7","lidx_kind":"const","name":"default","qualname":"build.config.default","reason":"outside_scope_directory"},
+{"confidence":"medium","file":"src/event.ts","key":"src/event.ts:201","lidx_kind":"method","name":"headers","qualname":"src/event.H3EventResponse.headers","reason":"not_a_judged_declaration"},
+{"confidence":"medium","file":"src/event.ts","key":"src/event.ts:205","lidx_kind":"method","name":"errHeaders","qualname":"src/event.H3EventResponse.errHeaders","reason":"not_a_judged_declaration"},
 {"confidence":"medium","file":"test/rules/cache.test.ts","key":"test/rules/cache.test.ts:214","lidx_kind":"method","name":"delete","qualname":"test/rules/cache.test.ImmutableHeaders.delete","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"test/rules/cache.test.ts","key":"test/rules/cache.test.ts:217","lidx_kind":"method","name":"set","qualname":"test/rules/cache.test.ImmutableHeaders.set","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"test/ws.test.ts","key":"test/ws.test.ts:6","lidx_kind":"method","name":"message","qualname":"test/ws.test.hooks.message","reason":"test_file_outside_cell"},
