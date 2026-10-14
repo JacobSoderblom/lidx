@@ -1,1599 +1,2083 @@
 {
- "c630f4df": {
+ "f7340f3e": {
   "verdict": "lidx_error",
   "note": "exitAltScreenMsg is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "56d1b903": {
+ "4c0fd403": {
   "verdict": "lidx_error",
   "note": "binaryClassifierOverride is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "0029fdb1": {
+ "dcf54529": {
   "verdict": "lidx_error",
   "note": "unindexedDirectoryResolverDirEntry is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "ffc358e1": {
+ "0f107903": {
   "verdict": "lidx_error",
   "note": "completedSnapshot is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "cc0c6ce1": {
+ "0269d208": {
   "verdict": "lidx_error",
   "note": "snapDownload is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "a48a151b": {
+ "6749ee1b": {
   "verdict": "lidx_error",
   "note": "parseContext is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "900d14ac": {
+ "2bdfe218": {
   "verdict": "lidx_error",
   "note": "model is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "0af463d7": {
+ "18a27f05": {
   "verdict": "lidx_error",
   "note": "encodingMatch is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "807118b7": {
+ "fd91a695": {
   "verdict": "lidx_error",
   "note": "packagePinsV1 is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "713452f2": {
+ "1b691f6b": {
   "verdict": "lidx_error",
   "note": "decoder is used in the source (composite literal, field type or conversion) so the unreferenced claim is wrong."
  },
- "9de2ce46": {
-  "verdict": "lidx_error",
-  "note": "AddFlags is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "3435977c": {
-  "verdict": "lidx_error",
-  "note": "Mode is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "ec77ef73": {
-  "verdict": "lidx_error",
-  "note": "parsePnpmLock is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "fdde5e70": {
-  "verdict": "lidx_error",
-  "note": "Sys is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "f396809f": {
-  "verdict": "lidx_error",
-  "note": "Close is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "56f61740": {
-  "verdict": "oracle_artefact",
-  "note": "AllPathQueries has no caller or interface use anywhere (git grep -w shows only its declaration and doc comment), so it is dead in both columns."
- },
- "25f8ec72": {
-  "verdict": "lidx_error",
-  "note": "PostLoad is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "ec786a39": {
-  "verdict": "lidx_error",
-  "note": "Tracef is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "342e589c": {
-  "verdict": "lidx_error",
-  "note": "DescribeFields is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "88045e4c": {
-  "verdict": "lidx_error",
-  "note": "fetchPkgs is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
- },
- "eccce8a8": {
-  "verdict": "lidx_error",
-  "note": "getCommand is called from runCosign at utils_test.go:230, so the oracle's unref=dead is wrong. (the only caller is itself unused: U1000 is transitive, so the cluster is dead by the tool's definition)"
- },
- "7089e50c": {
-  "verdict": "oracle_artefact",
-  "note": "exponentialBackoffDuration is called by exponentialBackoffDurations at utils_test.go:347, so unref=dead is wrong."
- },
- "d0bf55aa": {
-  "verdict": "oracle_artefact",
-  "note": "exponentialBackoffDurations is called by testRetryIntervals at utils_test.go:338, so unref=dead is wrong."
- },
- "92a2c5b4": {
-  "verdict": "lidx_error",
-  "note": "App.suggestFlagFromError is only called from suggestions_test.go; command.go:172 calls Command's method, so it is dead in the no_tests cell."
- },
- "d212c91d": {
-  "verdict": "lidx_error",
-  "note": "debugPrintTree is only called by itself (recursion at tree_test.go:469) plus commented-out calls, so it is really dead."
- },
- "23e86dc0": {
-  "verdict": "lidx_error",
-  "note": "Only callers are NewFromUnindexedDirectory and NewFromRootedUnindexedDirectory, which have no non-test callers, so unreachable in the production cell."
- },
- "d9321af0": {
-  "verdict": "lidx_error",
-  "note": "FromDirectory is only invoked from tests and the pkgtest test helper in an internal package, unreachable from production roots."
- },
- "d030b012": {
-  "verdict": "lidx_error",
-  "note": "testutil.DirectoryInput is only called from _test.go files in an internal package, unreachable with tests excluded."
- },
- "e3bd9b18": {
-  "verdict": "lidx_error",
-  "note": "WithPatternRedactors is only called from encoder tests, unreachable with tests excluded."
- },
- "ff5a27c5": {
-  "verdict": "lidx_error",
-  "note": "isRegularFile is only called by UnindexedDirectory methods whose constructors have no production callers, so unreachable."
- },
- "e2370220": {
-  "verdict": "lidx_error",
-  "note": "dereferenceToStruct is only used inside pkgtest MetadataTracker, which has no production users, so unreachable."
- },
- "5243901b": {
-  "verdict": "lidx_error",
-  "note": "Deferred is only constructed (NewDeferred) in deferred_test.go, so its FilesByMIMEType is unreachable from production roots."
- },
- "0023ba67": {
-  "verdict": "lidx_error",
-  "note": "RecordParser is only called inside the pkgtest MetadataTracker, which no production code uses, so unreachable."
- },
- "d9ecfbe8": {
-  "verdict": "lidx_error",
-  "note": "DefaultLicenseComparer is only used by internal/cmptest and pkgtest test helpers, unreachable from production roots."
- },
- "857181f8": {
-  "verdict": "lidx_error",
-  "note": "ObservingResolver exists only in the pkgtest helper, so its AllLocations is unreachable from production roots."
- },
- "7194652b": {
-  "verdict": "correct_exclusion",
-  "note": "Swap is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "78b91603": {
-  "verdict": "correct_exclusion",
-  "note": "LicenseInfo is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "9bf1f1a9": {
-  "verdict": "correct_exclusion",
-  "note": "MarshalJSON is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "194e9cda": {
-  "verdict": "misbucketed",
-  "note": "Exported Info in internal/log has no caller anywhere (only its own declaration; internal package is not public API), so it should be judged."
- },
- "98c47e62": {
-  "verdict": "correct_exclusion",
-  "note": "ConvertOptions is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "bddc4884": {
-  "verdict": "correct_exclusion",
-  "note": "PostLoad is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "2758276a": {
-  "verdict": "correct_exclusion",
-  "note": "Warnf is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "024c5479": {
-  "verdict": "correct_exclusion",
-  "note": "Infof is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "5272b3ac": {
-  "verdict": "correct_exclusion",
-  "note": "DescribeFields is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "0b4fd80b": {
-  "verdict": "correct_exclusion",
-  "note": "String is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
- },
- "5e6201ad": {
-  "verdict": "correct_exclusion",
-  "note": "GetBool is exported API of an importable library package (viper)."
- },
- "dfc9ecca": {
-  "verdict": "correct_exclusion",
-  "note": "Error is exported API of an importable library package (viper)."
- },
- "f10733f9": {
-  "verdict": "correct_exclusion",
-  "note": "WriteConfigAs is exported API of an importable library package (viper)."
- },
- "c3675aea": {
-  "verdict": "correct_exclusion",
-  "note": "GetFloat64 is exported API of an importable library package (viper)."
- },
- "67e2d2e1": {
-  "verdict": "correct_exclusion",
-  "note": "GetString is exported API of an importable library package (viper)."
- },
- "61961592": {
-  "verdict": "correct_exclusion",
-  "note": "MarkZshCompPositionalArgumentWords is exported API of an importable library package (cobra)."
- },
- "a52bfaf9": {
-  "verdict": "correct_exclusion",
-  "note": "AddRemoteProvider is exported API of an importable library package (viper)."
- },
- "1f3305f4": {
-  "verdict": "correct_exclusion",
-  "note": "ReadConfig is exported API of an importable library package (viper)."
- },
- "14c06c79": {
-  "verdict": "correct_exclusion",
-  "note": "Connect is exported API of an importable library package (chi)."
- },
- "e067a460": {
-  "verdict": "correct_exclusion",
-  "note": "Error is exported API of an importable library package (viper)."
- },
- "fac62195": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "505af2cd": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "fedccdfd": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "1df6aaee": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "706672fe": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "aeb6870a": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "928a16c8": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "ebb6aa62": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "08140307": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "9b1a2d34": {
-  "verdict": "correct_exclusion",
-  "note": "init is a func init() run automatically at startup."
- },
- "29d2df41": {
-  "verdict": "correct_exclusion",
-  "note": "BindPFlags is exported from a non-internal importable package (public API)."
- },
- "a3207fbe": {
-  "verdict": "correct_exclusion",
-  "note": "Catalog is exported from a non-internal importable package (public API)."
- },
- "e4208ac5": {
-  "verdict": "correct_exclusion",
-  "note": "EnterAltScreen is exported from a non-internal importable package (public API)."
- },
- "513dded1": {
-  "verdict": "correct_exclusion",
-  "note": "SetOptions is exported from a non-internal importable package (public API)."
- },
- "05b38b80": {
-  "verdict": "misbucketed",
-  "note": "Remove is a method on the unexported generic type ptrMap with no call in the package, not exported API of an importable package."
- },
- "f5028e67": {
-  "verdict": "correct_exclusion",
-  "note": "ErrBadPayload is exported from a non-internal importable package (public API)."
- },
- "e636d046": {
-  "verdict": "correct_exclusion",
-  "note": "ApplyInputSourceValue is exported from a non-internal importable package (public API)."
- },
- "14f55e88": {
-  "verdict": "correct_exclusion",
-  "note": "VisibleFlagCategories is exported from a non-internal importable package (public API)."
- },
- "7ee24f27": {
-  "verdict": "correct_exclusion",
-  "note": "RustBinaryAuditEntry is exported from a non-internal importable package (public API)."
- },
- "7a1a94a3": {
-  "verdict": "correct_exclusion",
-  "note": "ApplyInputSourceValue is exported from a non-internal importable package (public API)."
- },
- "2a97959a": {
-  "verdict": "correct_exclusion",
-  "note": "Test_corruptStackYaml is a Test function in a _test.go file."
- },
- "c17ea1c8": {
-  "verdict": "correct_exclusion",
-  "note": "TestIntSliceApplyInputSourceValue_Alias is a Test function in a _test.go file."
- },
- "a7323916": {
-  "verdict": "correct_exclusion",
-  "note": "TestHelpflagCommandExecutedWithoutVersionSet is a Test function in a _test.go file."
- },
- "7bd9d74a": {
-  "verdict": "correct_exclusion",
-  "note": "TestExtractReceiverTypeName is a Test function in a _test.go file."
- },
- "eb28244d": {
-  "verdict": "correct_exclusion",
-  "note": "TestClientIPFromXFFTrustedProxies is a Test function in a _test.go file."
- },
- "5b44d268": {
-  "verdict": "correct_exclusion",
-  "note": "Test_IndexingNestedSymLinksOutsideOfRoot is a Test function in a _test.go file."
- },
- "b5ef43c0": {
-  "verdict": "correct_exclusion",
-  "note": "TestPkgCoverageImage is a Test function in a _test.go file."
- },
- "9b4bb269": {
-  "verdict": "correct_exclusion",
-  "note": "TestGetClientIPAddr_RoundTrip is a Test function in a _test.go file."
- },
- "67c0ffb6": {
-  "verdict": "correct_exclusion",
-  "note": "TestCustomizedSliceFlagSeparator is a Test function in a _test.go file."
- },
- "ea317322": {
-  "verdict": "correct_exclusion",
-  "note": "TestNormalizeGitleaksIgnorePaths is a Test function in a _test.go file."
- },
- "f25fc8c0": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "e4ea6b3a": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "a54a88f5": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "e8c3cf84": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "6ee341f8": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "e55d0de5": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "bb42a2a1": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "61a253f3": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "45dbd1d4": {
-  "verdict": "correct_exclusion",
-  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
- },
- "ac1b98ed": {
-  "verdict": "correct_exclusion",
-  "note": "Not Go in the module build (python file)."
- },
- "3e2c5f15": {
-  "verdict": "correct_exclusion",
-  "note": "ArchiveSearchConfig is a type declaration, not a function, so the reach column does not judge it."
- },
- "144a5465": {
-  "verdict": "correct_exclusion",
-  "note": "errZipSlipDetected is a type declaration, not a function, so the reach column does not judge it."
- },
- "9de9d5f2": {
-  "verdict": "correct_exclusion",
-  "note": "DiscoveredParser is a type declaration, not a function, so the reach column does not judge it."
- },
- "98623172": {
-  "verdict": "correct_exclusion",
-  "note": "SuspendMsg is a type declaration, not a function, so the reach column does not judge it."
- },
- "b7c0d0d3": {
-  "verdict": "correct_exclusion",
-  "note": "Config is a type declaration, not a function, so the reach column does not judge it."
- },
- "1b78837f": {
-  "verdict": "correct_exclusion",
-  "note": "depsBinaryCataloger is a type declaration, not a function, so the reach column does not judge it."
- },
- "5fc2b7bd": {
-  "verdict": "correct_exclusion",
-  "note": "candidateKey is a type declaration, not a function, so the reach column does not judge it."
- },
- "d012c7fc": {
-  "verdict": "correct_exclusion",
-  "note": "sbomPublisher is a type declaration, not a function, so the reach column does not judge it."
- },
- "9416f724": {
-  "verdict": "correct_exclusion",
-  "note": "flagDefaultTestCaseWithEnv is a type declaration, not a function, so the reach column does not judge it."
- },
- "65b40991": {
-  "verdict": "correct_exclusion",
-  "note": "GenManHeader is a type declaration, not a function, so the reach column does not judge it."
- },
- "3d64f1ec": {
-  "verdict": "correct_exclusion",
-  "note": "t1 is an interface method spec or function-local type, not a judged declaration kind."
- },
- "ae9bf4e3": {
-  "verdict": "correct_exclusion",
-  "note": "ReadFromSBOM is an interface method spec or function-local type, not a judged declaration kind."
- },
- "dcf0d9f1": {
-  "verdict": "correct_exclusion",
-  "note": "Slice is an interface method spec or function-local type, not a judged declaration kind."
- },
- "f0f7b61d": {
-  "verdict": "correct_exclusion",
-  "note": "AddRelationships is an interface method spec or function-local type, not a judged declaration kind."
- },
- "63a0c26a": {
-  "verdict": "correct_exclusion",
-  "note": "args is an interface method spec or function-local type, not a judged declaration kind."
- },
- "c59f416f": {
-  "verdict": "correct_exclusion",
-  "note": "expected is an interface method spec or function-local type, not a judged declaration kind."
- },
- "8f0a3a57": {
-  "verdict": "correct_exclusion",
-  "note": "Tail is an interface method spec or function-local type, not a judged declaration kind."
- },
- "41f20c6f": {
-  "verdict": "correct_exclusion",
-  "note": "args is an interface method spec or function-local type, not a judged declaration kind."
- },
- "2a42ca3c": {
-  "verdict": "correct_exclusion",
-  "note": "config is an interface method spec or function-local type, not a judged declaration kind."
- },
- "18abdb12": {
-  "verdict": "correct_exclusion",
-  "note": "With is an interface method spec or function-local type, not a judged declaration kind."
- },
- "ec956979": {
-  "verdict": "correct_exclusion",
-  "note": "Test_ShowAppHelp_NoAuthor is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "eb89d892": {
-  "verdict": "correct_exclusion",
-  "note": "TestWrappedHelpSubcommand is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "170f5599": {
-  "verdict": "correct_exclusion",
-  "note": "TestParseMultiStringSliceFromEnvCascadeWithDefaults is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "d9618448": {
-  "verdict": "correct_exclusion",
-  "note": "TestClientIPFromRemoteAddr_V4MappedIsUnmapped is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "423cc066": {
-  "verdict": "correct_exclusion",
-  "note": "Test_convertBase10ToBase8 is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "4c926626": {
-  "verdict": "correct_exclusion",
-  "note": "TestSafeWriteConfigWithExistingFile is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "01739306": {
-  "verdict": "correct_exclusion",
-  "note": "TestJavaPURLs is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "8576fbfa": {
-  "verdict": "correct_exclusion",
-  "note": "TestBufferedSeeker_Read is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "32b7128b": {
-  "verdict": "correct_exclusion",
-  "note": "TestParseMultiIntSliceWithDefaultsUnset is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "89b284de": {
-  "verdict": "correct_exclusion",
-  "note": "TestParseKernelChangelog is in a _test.go file in a no_tests cell, outside the analysed program."
- },
- "9c526da9": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "c046326d": {
-  "verdict": "lidx_error",
-  "note": "Override of JSXNode.toStringToBuffer, invoked polymorphically via child.toStringToBuffer(buffer) in src/jsx/base.ts, so it is live."
- },
- "69deea67": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "71b95af7": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "70263149": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "b3bb0b59": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "cbb39b9d": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "71ea85f1": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "1a2136bd": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getHeaders, called via this.getHeaders(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "186eab52": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "2f5765b9": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "ca8657a5": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "0f6c846e": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "7441707e": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "da139318": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "860c82c6": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "7c8945ef": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "87748bed": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "5dfb577a": {
-  "verdict": "lidx_error",
-  "note": "Concrete override of abstract EventProcessor.getHeaders, called via this.getHeaders(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
- },
- "8207836e": {
-  "verdict": "lidx_error",
-  "note": "Override of JSXNode.toStringToBuffer, invoked polymorphically via child.toStringToBuffer(buffer) in src/jsx/base.ts, so it is live."
- },
- "9181a526": {
-  "verdict": "lidx_error",
-  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
- },
- "b63c76e2": {
-  "verdict": "lidx_error",
-  "note": "Only referenced by test/*.test.ts and not re-exported from the h3 entry, so dead in production code."
- },
- "ebb8407b": {
-  "verdict": "lidx_error",
-  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
- },
- "4f7cf9b9": {
-  "verdict": "lidx_error",
-  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
- },
- "830e7fb3": {
-  "verdict": "lidx_error",
-  "note": "Only imported by __tests__/base.js, not exported from immer.ts, so dead in production."
- },
- "52183c26": {
-  "verdict": "lidx_error",
-  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
- },
- "7bb08b15": {
-  "verdict": "lidx_error",
-  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
- },
- "72796171": {
-  "verdict": "lidx_error",
-  "note": "Type declared in types-external.ts with no other mention, and immer.ts does not re-export it by name."
- },
- "e4f3c7c7": {
-  "verdict": "lidx_error",
-  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
- },
- "512e0593": {
-  "verdict": "lidx_error",
-  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
- },
- "b4e5b98e": {
-  "verdict": "lidx_error",
-  "note": "Helper lives in a v3/benchmarks file that no package entry imports and only benchmark code calls it, so it is unreachable."
- },
- "a4ee14b3": {
-  "verdict": "oracle_artefact",
-  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
- },
- "b40838f2": {
-  "verdict": "lidx_error",
-  "note": "Helper lives in a v3/benchmarks file that no package entry imports and only benchmark code calls it, so it is unreachable."
- },
- "a390e859": {
-  "verdict": "lidx_error",
-  "note": "Empty function with no callers and not re-exported by immer.ts, so unreachable."
- },
- "17f42b50": {
-  "verdict": "lidx_error",
-  "note": "Helper lives in a v3/benchmarks file that no package entry imports and only benchmark code calls it, so it is unreachable."
- },
- "1b4bf97f": {
-  "verdict": "oracle_artefact",
-  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
- },
- "dec91f98": {
-  "verdict": "lidx_error",
-  "note": "Testing utility called only from components.test.tsx, so not reachable from production roots."
- },
- "95b9fb0b": {
-  "verdict": "oracle_artefact",
-  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
- },
- "9e13c45f": {
-  "verdict": "oracle_artefact",
-  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
- },
- "874dec08": {
-  "verdict": "oracle_artefact",
-  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
- },
- "2837cadb": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "0ff89544": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "d06f2c1f": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "22113ca2": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "f7b660a5": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "9ea3828b": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "142724db": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "49c9af24": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "42d2bd0f": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "597c9013": {
-  "verdict": "correct_exclusion",
-  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
- },
- "655796eb": {
-  "verdict": "correct_exclusion",
-  "note": "src/types/globals.d.ts is a declaration file excluded from the oracle program, and it is an ambient declare const."
- },
- "782a072e": {
-  "verdict": "correct_exclusion",
-  "note": "src/types/globals.d.ts is a declaration file excluded from the oracle program, and it is an ambient declare const."
- },
- "f4872690": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a type declaration, not a function/method."
- },
- "0f358c0c": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
- },
- "a561160a": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
- },
- "d05bf2b5": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
- },
- "9e6c66f8": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
- },
- "2c2363b5": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
- },
- "68278517": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a type declaration, not a function/method."
- },
- "eb6362b2": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a type declaration, not a function/method."
- },
- "af50a8bc": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
- },
- "ba9cd957": {
-  "verdict": "correct_exclusion",
-  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
- },
- "c680e2dd": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "e5b45f1c": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "acd7b48e": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "20761469": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "f0375ae1": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "01ca901f": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "d4277418": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "048222f9": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "31afe6b8": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "68e964d5": {
-  "verdict": "correct_exclusion",
-  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
- },
- "15a2a683": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (packages/openapi/src/types.ts) lies outside it."
- },
- "fa2ca200": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (www/src/pages/pricing.tsx) lies outside it."
- },
- "423e55ae": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (packages/client/src/createTRPCClient.ts) lies outside it."
- },
- "91cb6f39": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (packages/client/src/links/wsLink/wsClient/requestManager.ts) lies outside it."
- },
- "7180c1fd": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (packages/next/src/app-dir/links/nextHttp.ts) lies outside it."
- },
- "5cc89211": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (packages/upgrade/src/transforms/provider.ts) lies outside it."
- },
- "00df5c8f": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (examples/next-sse-chat/drizzle.config.ts) lies outside it."
- },
- "a6d34199": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (packages/react-query/vitest.config.ts) lies outside it."
- },
- "1cb29935": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (packages/openapi/src/types.ts) lies outside it."
- },
- "711a8ca9": {
-  "verdict": "correct_exclusion",
-  "note": "trpc cell scope is packages/server/src and this file (www/src/components/YouTubeEmbed.tsx) lies outside it."
- },
- "81a615e7": {
-  "verdict": "correct_exclusion",
-  "note": "File runtime-tests/lambda-edge/vitest.config.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "0f5d4878": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/cyclicTypesRouter-heyapi/core/bodySerializer.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "d30fafed": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/appRouter-heyapi/types.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "04c5a59d": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/cyclicTypesRouter-heyapi/sdk.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "9b651dc6": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/procedureErrorsRouter-heyapi/sdk.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "184ce89f": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/edgeCaseRouter-heyapi/types.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "2a39d3b7": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/defaultErrorFormatterRouter-heyapi/client/client.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "30dfee2b": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/superjsonRouter-heyapi/sdk.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "0fa86d36": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/zod/src/v4/classic/tests/instanceof.test.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "013561e9": {
-  "verdict": "correct_exclusion",
-  "note": "File packages/openapi/test/routers/appRouter-heyapi/types.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
- },
- "c7fa8c79": {
-  "verdict": "lidx_error",
-  "note": "defs.rs:59 lists &ContextSeparator in the flag table, a real use of this defs-local struct."
- },
- "fc52222f": {
-  "verdict": "lidx_error",
-  "note": "theme.rs:25 and 39 pass &TerminalColorSchemeDetector."
- },
- "ebb11c41": {
-  "verdict": "oracle_artefact",
-  "note": "The Ordinal trait is needed for the .ordinal() calls in token.rs and compile_error.rs."
- },
- "8056eeaa": {
-  "verdict": "oracle_artefact",
-  "note": "compiler.rs:89/164/187 call .clean() from the Clean trait."
- },
- "6c3513ca": {
-  "verdict": "lidx_error",
-  "note": "grep of tokei src finds only the trait declaration and impl at ext.rs:5/14, so the method is never called."
- },
- "19260e05": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(not(windows)) method with a cfg(windows) twin of the same name in util.rs, so name-keyed matching cannot judge it."
- },
- "4525d64f": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(not(windows)) method with a cfg(windows) twin of the same name in util.rs, so name-keyed matching cannot judge it."
- },
- "fba77adc": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "eea497e7": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "80551c56": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "321138d5": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "1b355411": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "e6ef40c1": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "545153ef": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "2e1d5183": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "104f769c": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "accdb74a": {
-  "verdict": "correct_exclusion",
-  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
- },
- "5de74ca0": {
-  "verdict": "correct_exclusion",
-  "note": "Data::text is called as an associated fn in tests; the name is ambiguous for the oracle."
- },
- "53d99dfa": {
-  "verdict": "correct_exclusion",
-  "note": "multi_line is a common builder name and the oracle left call sites unresolved."
- },
- "5c8783af": {
-  "verdict": "correct_exclusion",
-  "note": "ByteSet is a pub struct at the matcher crate root, so pub empty() is public API."
- },
- "9af7af5b": {
-  "verdict": "correct_exclusion",
-  "note": "is_empty is a default method of the pub trait Captures in the matcher library."
- },
- "9cfc820d": {
-  "verdict": "correct_exclusion",
-  "note": "ScriptId is re-exported through the pub config module of nextest-runner, so pub as_identifier is public API."
- },
- "9c3434be": {
-  "verdict": "correct_exclusion",
-  "note": "pub Language::is_empty in the tokei library, with a public doctest."
- },
- "c5b66d02": {
-  "verdict": "correct_exclusion",
-  "note": "Summary is pub in the printer library, so pub new is public API."
- },
- "523438df": {
-  "verdict": "correct_exclusion",
-  "note": "model is a pub mod of the lidx library and ModuleMapResult is pub."
- },
- "5ef74c15": {
-  "verdict": "correct_exclusion",
-  "note": "pub Summary::into_inner in the printer library."
- },
- "bbd70f7c": {
-  "verdict": "correct_exclusion",
-  "note": "console is a pub mod of nextest-runner and spawn is pub."
- },
- "9670d7e6": {
-  "verdict": "correct_exclusion",
-  "note": "PrettyPrinter is re-exported pub from the bat library, so pub snip is public API."
- },
- "1fa8b789": {
-  "verdict": "correct_exclusion",
-  "note": "pub Searcher::search_file in the searcher library."
- },
- "5dcf3e1d": {
-  "verdict": "correct_exclusion",
-  "note": "#[bench] fn is invoked by the bench harness, so it is a test-style root."
- },
- "8cd0e78d": {
-  "verdict": "correct_exclusion",
-  "note": "#[bench] fn is invoked by the bench harness, so it is a test-style root."
- },
- "e97cf4b5": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(not(windows)) method with a windows twin at util.rs:233."
- },
- "3cb70aa7": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "a72b9dac": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "ff9935de": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "3420998a": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "070e1d34": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "921c86ea": {
-  "verdict": "correct_exclusion",
-  "note": "site/src/ext/slugs.py is a Python docs file, not part of the Rust program."
- },
- "24eb7456": {
-  "verdict": "correct_exclusion",
-  "note": "serde_impl.rs is behind the non-default serde1 feature (lib.rs:142), so it is not in the program."
- },
- "f5c0dbf5": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "a982c4c1": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "4cbff307": {
-  "verdict": "correct_exclusion",
-  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
- },
- "330bb51f": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "eb4e1bc2": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "5a75d64b": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "767d6b4f": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "3a7d0ad4": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "e85ba652": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "ba11d5d3": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "6b66327d": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "18b77a65": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "ea08b32f": {
-  "verdict": "correct_exclusion",
-  "note": "A struct, which the reach column does not judge (functions only)."
- },
- "07d45cb6": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(windows) twin of is_socket, invisible to the unix oracle. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "783cddea": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(not(unix)) twin of host, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "65f75038": {
-  "verdict": "misbucketed",
-  "note": "V is a plain struct (judged kind; the sibling V in leak_timeout.rs is judged) that max_fail.rs:102 uses via deserialize_any, so it should have been matched, not dropped as not-a-judged-kind."
- },
- "b7d9d712": {
-  "verdict": "correct_exclusion",
-  "note": "Windows-only mod imp (input.rs:401) method, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "78cdd16e": {
-  "verdict": "correct_exclusion",
-  "note": "Inside cfg(not(unix)) mod imp at double_spawn.rs:202, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "db66c8bb": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(not(unix)) twin of make_executable. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "66293036": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(not(any(unix,windows))) twin of imp, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "e22087da": {
-  "verdict": "correct_exclusion",
-  "note": "Inside cfg(not(unix)) mod imp at double_spawn.rs:202, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "744f78ce": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(not(any(unix,windows))) twin of imp, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "8d82ad39": {
-  "verdict": "correct_exclusion",
-  "note": "cfg(windows) twin of is_char_device, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
- },
- "2d2a4f54": {
-  "verdict": "correct_exclusion",
-  "note": "A Python benchmark source file under tests/, outside a cell without tests."
- },
- "4c29291c": {
-  "verdict": "correct_exclusion",
-  "note": "A Python benchmark source file under tests/, outside a cell without tests."
- },
- "ad54ab10": {
-  "verdict": "correct_exclusion",
-  "note": "A Python benchmark source file under tests/, outside a cell without tests."
- },
- "0ecfacc1": {
-  "verdict": "correct_exclusion",
-  "note": "Python fixture under tests/fixtures, a test file in a cell without tests."
- },
- "b5b696d4": {
-  "verdict": "correct_exclusion",
-  "note": "C# fixture under tests/fixtures, a test file in a cell without tests."
- },
- "74240c81": {
-  "verdict": "correct_exclusion",
-  "note": "A Python benchmark source file under tests/, outside a cell without tests."
- },
- "7cf8cc3e": {
-  "verdict": "correct_exclusion",
-  "note": "Go fixture under tests/fixtures, a test file in a cell without tests."
- },
- "92f427c1": {
-  "verdict": "correct_exclusion",
-  "note": "A Python benchmark source file under tests/, outside a cell without tests."
- },
- "8b21aea8": {
-  "verdict": "correct_exclusion",
-  "note": "A Python benchmark source file under tests/, outside a cell without tests."
- },
- "457fc182": {
-  "verdict": "correct_exclusion",
-  "note": "A Python benchmark source file under tests/, outside a cell without tests."
- },
- "e6e9b2e8": {
-  "verdict": "lidx_error",
-  "note": "Listed as &NoMessages in the flags table at defs.rs:110."
- },
- "eb2a48d9": {
-  "verdict": "lidx_error",
-  "note": "Listed as &BeforeContext in the flags table."
- },
- "8072661e": {
-  "verdict": "lidx_error",
-  "note": "Listed as &Type in the flags table."
- },
- "5a4c5146": {
-  "verdict": "lidx_error",
-  "note": "Listed as &IgnoreCase in the flags table."
- },
- "b4766f1a": {
-  "verdict": "lidx_error",
-  "note": "Passed to deserialize_seq(GlobSetVisitor) at serde_impl.rs:73."
- },
- "13ff9ad3": {
-  "verdict": "lidx_error",
-  "note": "TestCommand::pipe is called from several ripgrep tests (feature.rs, multiline.rs, binary.rs)."
- },
- "9beee19d": {
-  "verdict": "lidx_error",
-  "note": "CommandBuilder::push is called as builder.push(&path, ...) at exec/mod.rs:104."
- },
- "092cdd0e": {
-  "verdict": "lidx_error",
-  "note": "ScriptType::matches is called at config_impl.rs:622 on script_info.script_type."
- },
- "b2e84758": {
-  "verdict": "lidx_error",
-  "note": "Styles::colorize is called by ArchiveReporter::colorize (archive_reporter.rs:38), which dispatch.rs calls."
- },
- "82e43144": {
-  "verdict": "lidx_error",
-  "note": "apply_build_platforms is called from dispatch.rs:1482 and others."
- },
- "fa15a207": {
-  "verdict": "lidx_error",
-  "note": "not_indexed_message is called in validate.rs:233/239 and reading.rs:306."
- },
- "9aa5fdec": {
-  "verdict": "lidx_error",
-  "note": "GlobSet strategies dispatch to matches_all on the Extension strategy via the enum match."
- },
- "3282188d": {
-  "verdict": "lidx_error",
-  "note": "Passed as parse_and_or_difference_operator in the repeat tuple at parsing.rs:873."
- },
- "7da1c147": {
-  "verdict": "lidx_error",
-  "note": "Called by ParsedLeaf::strategy in proptest_helpers.rs:117, reachable from the pub ParsedExpr::strategy."
- },
- "1c4aad4e": {
-  "verdict": "lidx_error",
-  "note": "Dispatched through the strategy enum matches_into arms (Prefix/Suffix) from GlobSet::matches_into."
- },
- "18e7e4cc": {
-  "verdict": "lidx_error",
-  "note": "Used in the thiserror #[error(...)] attribute of the pub UnknownArchiveFormat, invisible to a macro-less view."
- },
- "9fbd1fef": {
-  "verdict": "lidx_error",
-  "note": "Called by the analysis_error! macro bodies, which expand into #[test] fns used across analyzer tests."
- },
- "7732e76e": {
-  "verdict": "lidx_error",
-  "note": "Switch::apply is called at invocation_parser.rs:138."
- },
- "a4d721dc": {
-  "verdict": "lidx_error",
-  "note": "Logic is only ever used with Option<bool>; the bool impl's logic_or is never called, so it is really dead."
- },
- "1095b4f5": {
-  "verdict": "lidx_error",
-  "note": "Logic::top() at expression.rs:269 resolves to Option<bool>; the bool impl's top is never used, so it is really dead."
- },
- "222490b4": {
-  "verdict": "lidx_error",
-  "note": "The bool impl's logic_and is never called (all callers use Option<bool> or FilterBinaryMatch), so it is really dead."
- },
- "a289dc86": {
-  "verdict": "lidx_error",
-  "note": "IgnoreOverridesOpt has no use anywhere except its own declaration and derives, so it is really dead."
- },
- "828745e9": {
-  "verdict": "lidx_error",
-  "note": "AsciiExt::is_not_line_ending_whitespace has no caller anywhere, so it is really dead."
- },
- "727fa4a6": {
-  "verdict": "lidx_error",
-  "note": "The u8 impl of is_not_line_ending_whitespace has no caller anywhere, so it is really dead."
- },
- "e273c306": {
-  "verdict": "lidx_error",
-  "note": "Only caller is statically_unreachable, which is #[expect(dead_code)] and has no callers, so it is really dead."
- },
- "ff3cb322": {
-  "verdict": "oracle_artefact",
-  "note": "CommandExt is used: output_guard_stdout() is called via the trait in load_dotenv.rs, evaluator.rs and windows.rs; SCIP records no trait-name reference for method calls."
- },
- "2734b26d": {
-  "verdict": "oracle_artefact",
-  "note": "SliceExt::trim is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls."
- },
- "726d99c3": {
-  "verdict": "oracle_artefact",
-  "note": "SliceExt::trim is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls."
- },
- "ba9b80ca": {
-  "verdict": "oracle_artefact",
-  "note": "SliceExt::trim_first_and_last_line_of_whitespace is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls."
- },
- "d07139c8": {
-  "verdict": "oracle_artefact",
-  "note": "SliceExt::trim_first_and_last_line_of_whitespace is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls."
- },
- "7270b19d": {
-  "verdict": "oracle_artefact",
-  "note": "SliceExt::trim_start is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls."
- },
- "0cd664e3": {
-  "verdict": "oracle_artefact",
-  "note": "SliceExt::contains_slice is called on &[u8] in language/syntax.rs (SliceExt imported there); the oracle missed the trait-method calls."
- },
- "782d252c": {
-  "verdict": "lidx_error",
-  "note": "ParsedLeaf::drop_source_span is called by ParsedExpr::drop_source_span, used by the proptest-attribute test, so it is used."
- },
- "4b71e984": {
-  "verdict": "oracle_artefact",
-  "note": "sort_lines is called from many tests inside rgtest!-generated #[test] fns, which the oracle cannot see as roots."
- },
- "6c86302a": {
-  "verdict": "oracle_artefact",
-  "note": "cmd_exists is called from rgtest!-generated #[test] fns in misc.rs, which the oracle cannot see as roots."
- },
- "aa2053c9": {
-  "verdict": "correct_exclusion",
-  "note": "argument_range is called on a proc-macro-derived AttributeKind receiver, which the oracle could not resolve."
- },
- "0deace31": {
-  "verdict": "correct_exclusion",
-  "note": "parse_millis is referenced only from a clap #[arg(value_parser = ...)] attribute."
- },
- "8af5d846": {
-  "verdict": "correct_exclusion",
-  "note": "ErrorList::iter is called in a closure in error_description.rs whose receiver type the oracle could not resolve."
- },
- "2ac103f4": {
-  "verdict": "correct_exclusion",
-  "note": "correct is called only inside the func_tests! macro body."
- },
- "b58114b8": {
-  "verdict": "correct_exclusion",
-  "note": "Referenced only via serde serialize_with attribute strings."
- },
- "99a5932b": {
-  "verdict": "correct_exclusion",
-  "note": "Referenced only via serde default attribute string."
- },
- "db9adc10": {
-  "verdict": "correct_exclusion",
-  "note": "Referenced only via serde deserialize_with attribute string."
- },
- "4bd0fdc6": {
-  "verdict": "correct_exclusion",
-  "note": "default_lexeme is called only from inside a macro body."
- },
- "fae2e81e": {
-  "verdict": "correct_exclusion",
-  "note": "ignore_messages is called only inside the ignore_message! macro body."
- },
- "a63f972a": {
-  "verdict": "correct_exclusion",
-  "note": "is_false is referenced only via serde skip_serializing_if string."
- },
- "3bdb5d26": {
-  "verdict": "correct_exclusion",
-  "note": "compile_strategic_matcher is called only inside the cfg(test) test macro body."
- },
- "f6bfc02a": {
-  "verdict": "correct_exclusion",
-  "note": "interpolate_string is called only inside a test macro body."
- },
- "f5d8c18c": {
-  "verdict": "correct_exclusion",
-  "note": "GlobStrategic::is_match is called only inside the cfg(test) test macro body."
- },
- "c89b97de": {
-  "verdict": "correct_exclusion",
-  "note": "Referenced only via serde default attribute string."
- },
- "7843eecc": {
-  "verdict": "correct_exclusion",
-  "note": "Referenced only via serde deserialize_with attribute string."
- },
- "b3d7d2b6": {
-  "verdict": "correct_exclusion",
-  "note": "Referenced only via serde deserialize_with attribute strings."
- },
- "4aa1eb23": {
-  "verdict": "correct_exclusion",
-  "note": "Referenced only inside thiserror #[error(...)] attribute."
- },
- "096d5730": {
-  "verdict": "correct_exclusion",
-  "note": "#[bench] function is a bench root by policy."
- },
- "454db86c": {
-  "verdict": "correct_exclusion",
-  "note": "#[bench] function is a bench root by policy."
- },
- "d577ccf2": {
-  "verdict": "correct_exclusion",
-  "note": "Criterion bench function registered in criterion_group!, a bench root."
- },
- "99e467cd": {
-  "verdict": "correct_exclusion",
-  "note": "Criterion bench function registered in criterion_group!, a bench root."
- },
- "ab0031fe": {
-  "verdict": "correct_exclusion",
-  "note": "Criterion bench function registered in criterion_group!, a bench root."
- },
- "957994ee": {
-  "verdict": "correct_exclusion",
-  "note": "Criterion bench function registered in criterion_group!, a bench root."
- },
- "caff2ec5": {
-  "verdict": "correct_exclusion",
-  "note": "Criterion bench function registered in criterion_group!, a bench root."
- },
- "b7e4f373": {
-  "verdict": "correct_exclusion",
-  "note": "Criterion bench function registered in criterion_group!, a bench root."
- },
- "bafd2787": {
-  "verdict": "misbucketed",
-  "note": "The oracle resolved 99 SCIP references (live) and tests call dir.create_dir everywhere, so the withheld flag is unnecessary and the item is gradable as live."
- },
- "_notes": "**How to read this.** Each item was read against the source by a Sonnet subagent per language (one pass per language, the Rust draw repeated after the Rust oracle was fixed), with the cell's scope and the column's definition in hand; the main agent changed three Go verdicts (staticcheck's U1000 is transitive: a helper whose only caller is itself unused is dead by the tool's definition, so those are not oracle errors). **What the first draw found and what changed.** The first Rust draw had 19 oracle artefacts among 20 FN: trait-impl names were parsed with their `[Trait]` prefix so trait-declared methods lost their impls, serde/clap attribute uses inside strings were invisible, and bench / macro-registered tests were not roots. All three were fixed and the Rust sample re-drawn. **Known remaining oracle artefacts (listed in the samples above).** TypeScript: a helper reached only through dynamic indexing of a namespace import (`ns[tag]`) is reported unreachable (hono, 5 items). Rust: extension-trait methods called on foreign types (`SliceExt` on `&[u8]` in tokei, `Ordinal`/`Clean`/`CommandExt` in just) and helpers called only from `rgtest!`-generated tests are reported dead, because rust-analyzer's SCIP carries no occurrence for those calls (11 of the 20 Rust FN). Rust recall in the dead cells is therefore an upper-bound-of-the-oracle figure: some of its dead declarations are alive. Go: two buckets are conservative by rule (an exported method of an unexported type counts as public API; an exported symbol of an internal package is `exported_used_by_rule` in the unreferenced column).",
- "da0aff18": {
+ "c5b72283": {
   "verdict": "lidx_error",
   "note": "Used: fmt.Formatter: fmt calls Format when the value is printed; the oracle is right."
  },
- "652d5081": {
+ "3154817c": {
   "verdict": "lidx_error",
   "note": "Used: implements the UI interface of the event loop, called through it; the oracle is right."
  },
- "02febcf9": {
+ "1279087f": {
   "verdict": "lidx_error",
   "note": "Used: implements the clio flag-adder interface, called through it; the oracle is right."
  },
- "54c04f38": {
+ "986acefd": {
   "verdict": "lidx_error",
   "note": "Used: implements partybus handler interface, called through it; the oracle is right."
  },
- "9b799937": {
+ "1b33c8e2": {
   "verdict": "lidx_error",
   "note": "Used: implements cmp.Reporter, called by cmp.Equal; the oracle is right."
  },
- "1ec9308c": {
+ "93358b66": {
+  "verdict": "lidx_error",
+  "note": "PostLoad is live at runtime via a call, method value, interface dispatch or reflective clio/fs interface use, so lidx's dead claim is wrong."
+ },
+ "2ad09444": {
   "verdict": "lidx_error",
   "note": "Used: returned as a function value at command.go:514 and called through it; the oracle is right."
  },
- "b3eb8e33": {
+ "d39fd1ef": {
   "verdict": "lidx_error",
   "note": "Used: test double for the file.Resolver interface, called through it; the oracle is right."
  },
- "420767a3": {
+ "698b2ce8": {
   "verdict": "lidx_error",
   "note": "Used: io.Reader implementation, called by the reader consumer; the oracle is right."
  },
- "5ea726b7": {
+ "e5d97bd2": {
   "verdict": "lidx_error",
   "note": "Used: json.Unmarshaler, called by encoding/json; the oracle is right."
  },
- "df041667": {
+ "1439ef95": {
+  "verdict": "lidx_error",
+  "note": "getCommand is called from runCosign at utils_test.go:230, so the oracle's unref=dead is wrong. (the only caller is itself unused: U1000 is transitive, so the cluster is dead by the tool's definition)"
+ },
+ "00148eeb": {
+  "verdict": "oracle_artefact",
+  "note": "exponentialBackoffDuration is called by exponentialBackoffDurations at utils_test.go:347, so unref=dead is wrong."
+ },
+ "964d492f": {
+  "verdict": "oracle_artefact",
+  "note": "exponentialBackoffDurations is called by testRetryIntervals at utils_test.go:338, so unref=dead is wrong."
+ },
+ "ab3fef1f": {
+  "verdict": "lidx_error",
+  "note": "App.suggestFlagFromError is only called from suggestions_test.go; command.go:172 calls Command's method, so it is dead in the no_tests cell."
+ },
+ "21e6b743": {
+  "verdict": "lidx_error",
+  "note": "debugPrintTree is only called by itself (recursion at tree_test.go:469) plus commented-out calls, so it is really dead."
+ },
+ "b3f3199b": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "a106d6cb": {
+ "df89f0bc": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "8bfb7556": {
+ "99a9b71a": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "36b9ca51": {
+ "9326ef3a": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "b4027573": {
+ "8e9a23f9": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "6e58cb15": {
+ "4674c075": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "ce3eac52": {
+ "37670f96": {
+  "verdict": "lidx_error",
+  "note": "FromDirectory is only invoked from tests and the pkgtest test helper in an internal package, unreachable from production roots."
+ },
+ "3138a0d5": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "1879275c": {
+ "3ad7d44c": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "c0731e67": {
+ "50e798e9": {
   "verdict": "lidx_error",
   "note": "Only reached from test files or test-support code; with tests outside the program it is really dead in the production program (the cell scope), which lidx cannot tell because its index includes the tests."
  },
- "9b4d1abf": {
+ "63b7b6e2": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "d234ea0e": {
+  "verdict": "lidx_error",
+  "note": "Override of JSXNode.toStringToBuffer, invoked polymorphically via child.toStringToBuffer(buffer) in src/jsx/base.ts, so it is live."
+ },
+ "a5843f99": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "81fe92ac": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "18787359": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "795409f0": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "b15fbf01": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "c1e10aa7": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "094ccb76": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getHeaders, called via this.getHeaders(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "e52ade1f": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "e2b36f9b": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "d6420a06": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "2eb9829d": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getQueryString, called via this.getQueryString(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "755cd865": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "f7abb378": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "e1508c90": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getMethod, called via this.getMethod(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "6958cc02": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getPath, called via this.getPath(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "2d3b1241": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.setCookiesToResult, called via this.setCookiesToResult(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "b43cee24": {
+  "verdict": "lidx_error",
+  "note": "Concrete override of abstract EventProcessor.getHeaders, called via this.getHeaders(event) in the base-class process() in aws-lambda/handler.ts (dynamic dispatch), so it is live."
+ },
+ "1eda964b": {
+  "verdict": "lidx_error",
+  "note": "Override of JSXNode.toStringToBuffer, invoked polymorphically via child.toStringToBuffer(buffer) in src/jsx/base.ts, so it is live."
+ },
+ "0f354289": {
+  "verdict": "lidx_error",
+  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
+ },
+ "114dd58f": {
+  "verdict": "lidx_error",
+  "note": "Only referenced by test/*.test.ts and not re-exported from the h3 entry, so dead in production code."
+ },
+ "cbdacc32": {
+  "verdict": "lidx_error",
+  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
+ },
+ "496e0b99": {
+  "verdict": "lidx_error",
+  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
+ },
+ "36146749": {
+  "verdict": "lidx_error",
+  "note": "Only imported by __tests__/base.js, not exported from immer.ts, so dead in production."
+ },
+ "cf0d511d": {
+  "verdict": "lidx_error",
+  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
+ },
+ "ed7e26b6": {
+  "verdict": "lidx_error",
+  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
+ },
+ "2b74b4c9": {
+  "verdict": "lidx_error",
+  "note": "Type declared in types-external.ts with no other mention, and immer.ts does not re-export it by name."
+ },
+ "319715d2": {
+  "verdict": "lidx_error",
+  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
+ },
+ "99c0525b": {
+  "verdict": "lidx_error",
+  "note": "Interface in zsf.ts never referenced anywhere else in the repo (git grep -w shows only the declaration) and not re-exported, so it is dead."
+ },
+ "dcaefa81": {
+  "verdict": "lidx_error",
+  "note": "Helper lives in a v3/benchmarks file that no package entry imports and only benchmark code calls it, so it is unreachable."
+ },
+ "a0ac3e63": {
+  "verdict": "oracle_artefact",
+  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
+ },
+ "fc58bb92": {
+  "verdict": "lidx_error",
+  "note": "Helper lives in a v3/benchmarks file that no package entry imports and only benchmark code calls it, so it is unreachable."
+ },
+ "d4f9a8b4": {
+  "verdict": "lidx_error",
+  "note": "Empty function with no callers and not re-exported by immer.ts, so unreachable."
+ },
+ "eb196bee": {
+  "verdict": "lidx_error",
+  "note": "Helper lives in a v3/benchmarks file that no package entry imports and only benchmark code calls it, so it is unreachable."
+ },
+ "b93c8189": {
+  "verdict": "oracle_artefact",
+  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
+ },
+ "ddd1b49d": {
+  "verdict": "lidx_error",
+  "note": "Testing utility called only from components.test.tsx, so not reachable from production roots."
+ },
+ "1fa8cafc": {
+  "verdict": "oracle_artefact",
+  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
+ },
+ "331dd188": {
+  "verdict": "oracle_artefact",
+  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
+ },
+ "453a25b9": {
+  "verdict": "oracle_artefact",
+  "note": "Called from exported tag components (title/script/form/input...) in intrinsic-element/components.ts, which base.ts reaches via dynamic intrinsicElementTags[tag] namespace indexing, so it is live."
+ },
+ "11fb02b9": {
+  "verdict": "lidx_error",
+  "note": "defs.rs:59 lists &ContextSeparator in the flag table, a real use of this defs-local struct."
+ },
+ "8c317a1e": {
+  "verdict": "lidx_error",
+  "note": "Listed as &NoMessages in the flags table at defs.rs:110."
+ },
+ "707d44c8": {
+  "verdict": "lidx_error",
+  "note": "Listed as &BeforeContext in the flags table."
+ },
+ "21a62d0b": {
+  "verdict": "lidx_error",
+  "note": "Passed to deserialize_seq(GlobSetVisitor) at serde_impl.rs:73."
+ },
+ "f203ca12": {
+  "verdict": "lidx_error",
+  "note": "TestCommand::pipe is called from several ripgrep tests (feature.rs, multiline.rs, binary.rs)."
+ },
+ "b8e131c0": {
+  "verdict": "lidx_error",
+  "note": "theme.rs:25 and 39 pass &TerminalColorSchemeDetector."
+ },
+ "d93c9e57": {
+  "verdict": "lidx_error",
+  "note": "CommandBuilder::push is called as builder.push(&path, ...) at exec/mod.rs:104."
+ },
+ "06647462": {
+  "verdict": "lidx_error",
+  "note": "Listed as &Type in the flags table."
+ },
+ "04ae6a71": {
+  "verdict": "lidx_error",
+  "note": "ScriptType::matches is called at config_impl.rs:622 on script_info.script_type."
+ },
+ "adff4860": {
+  "verdict": "lidx_error",
+  "note": "Listed as &IgnoreCase in the flags table."
+ },
+ "11bf7efd": {
+  "verdict": "lidx_error",
+  "note": "Styles::colorize is called by ArchiveReporter::colorize (archive_reporter.rs:38), which dispatch.rs calls."
+ },
+ "e53191a2": {
+  "verdict": "lidx_error",
+  "note": "apply_build_platforms is called from dispatch.rs:1482 and others."
+ },
+ "c7eee980": {
+  "verdict": "lidx_error",
+  "note": "not_indexed_message is called in validate.rs:233/239 and reading.rs:306."
+ },
+ "4db6c761": {
+  "verdict": "lidx_error",
+  "note": "GlobSet strategies dispatch to matches_all on the Extension strategy via the enum match."
+ },
+ "ed2bc453": {
+  "verdict": "lidx_error",
+  "note": "Passed as parse_and_or_difference_operator in the repeat tuple at parsing.rs:873."
+ },
+ "6f6de3bb": {
+  "verdict": "lidx_error",
+  "note": "Called by ParsedLeaf::strategy in proptest_helpers.rs:117, reachable from the pub ParsedExpr::strategy."
+ },
+ "d9382745": {
+  "verdict": "lidx_error",
+  "note": "Dispatched through the strategy enum matches_into arms (Prefix/Suffix) from GlobSet::matches_into."
+ },
+ "4425adb9": {
+  "verdict": "lidx_error",
+  "note": "Used in the thiserror #[error(...)] attribute of the pub UnknownArchiveFormat, invisible to a macro-less view."
+ },
+ "6330ce4f": {
+  "verdict": "lidx_error",
+  "note": "Called by the analysis_error! macro bodies, which expand into #[test] fns used across analyzer tests."
+ },
+ "8a003281": {
+  "verdict": "lidx_error",
+  "note": "Switch::apply is called at invocation_parser.rs:138."
+ },
+ "44bec28a": {
+  "verdict": "lidx_error",
+  "note": "IgnoreOverridesOpt has no use anywhere except its own declaration and derives, so it is really dead."
+ },
+ "c8068254": {
+  "verdict": "lidx_error",
+  "note": "ParsedLeaf::drop_source_span is called by ParsedExpr::drop_source_span, used by the proptest-attribute test, so it is used."
+ },
+ "f2b30402": {
+  "verdict": "oracle_artefact",
+  "note": "sort_lines is called from many tests inside rgtest!-generated #[test] fns, which the oracle cannot see as roots."
+ },
+ "e6878b7b": {
+  "verdict": "lidx_error",
+  "note": "Only caller is statically_unreachable, which is #[expect(dead_code)] and has no callers, so it is really dead."
+ },
+ "40d861fb": {
+  "verdict": "oracle_artefact",
+  "note": "cmd_exists is called from rgtest!-generated #[test] fns in misc.rs, which the oracle cannot see as roots."
+ },
+ "a50fac27": {
+  "verdict": "correct_exclusion",
+  "note": "Swap is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "bc532264": {
+  "verdict": "correct_exclusion",
+  "note": "LicenseInfo is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "da490947": {
+  "verdict": "correct_exclusion",
+  "note": "MarshalJSON is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "1c459c4d": {
+  "verdict": "misbucketed",
+  "note": "Exported Info in internal/log has no caller anywhere (only its own declaration; internal package is not public API), so it should be judged."
+ },
+ "feb0c0ad": {
+  "verdict": "correct_exclusion",
+  "note": "ConvertOptions is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "99833916": {
+  "verdict": "correct_exclusion",
+  "note": "PostLoad is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "4c678460": {
+  "verdict": "correct_exclusion",
+  "note": "Warnf is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "8fbe9567": {
+  "verdict": "correct_exclusion",
+  "note": "Infof is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "65d36cc2": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "b0fa9a02": {
+ "dea3e4ca": {
+  "verdict": "correct_exclusion",
+  "note": "String is exported and used via interface or type reference (sort/json/fmt/clio/logger or direct type use), so exclusion is right."
+ },
+ "f426e61f": {
+  "verdict": "correct_exclusion",
+  "note": "GetBool is exported API of an importable library package (viper)."
+ },
+ "7f03739b": {
+  "verdict": "correct_exclusion",
+  "note": "Error is exported API of an importable library package (viper)."
+ },
+ "00538b53": {
+  "verdict": "correct_exclusion",
+  "note": "WriteConfigAs is exported API of an importable library package (viper)."
+ },
+ "62a9b367": {
+  "verdict": "correct_exclusion",
+  "note": "GetFloat64 is exported API of an importable library package (viper)."
+ },
+ "44ac80c2": {
+  "verdict": "correct_exclusion",
+  "note": "GetString is exported API of an importable library package (viper)."
+ },
+ "d7f6eba4": {
+  "verdict": "correct_exclusion",
+  "note": "MarkZshCompPositionalArgumentWords is exported API of an importable library package (cobra)."
+ },
+ "365b03a2": {
+  "verdict": "correct_exclusion",
+  "note": "AddRemoteProvider is exported API of an importable library package (viper)."
+ },
+ "5c5fd8f1": {
+  "verdict": "correct_exclusion",
+  "note": "ReadConfig is exported API of an importable library package (viper)."
+ },
+ "483330ea": {
+  "verdict": "correct_exclusion",
+  "note": "Connect is exported API of an importable library package (chi)."
+ },
+ "88322cf8": {
+  "verdict": "correct_exclusion",
+  "note": "Error is exported API of an importable library package (viper)."
+ },
+ "f89d8251": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "7161dd52": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "78674247": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "e8d8ac04": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "7a30fb6b": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "055ff3f1": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "fe7a1b65": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "c0873c6f": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "386c101d": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "a6c28b24": {
+  "verdict": "correct_exclusion",
+  "note": "init is a func init() run automatically at startup."
+ },
+ "92f476e4": {
+  "verdict": "correct_exclusion",
+  "note": "BindPFlags is exported from a non-internal importable package (public API)."
+ },
+ "cfe38b09": {
+  "verdict": "correct_exclusion",
+  "note": "Catalog is exported from a non-internal importable package (public API)."
+ },
+ "a6de0b9c": {
+  "verdict": "correct_exclusion",
+  "note": "EnterAltScreen is exported from a non-internal importable package (public API)."
+ },
+ "63f81709": {
+  "verdict": "correct_exclusion",
+  "note": "SetOptions is exported from a non-internal importable package (public API)."
+ },
+ "13d83182": {
+  "verdict": "misbucketed",
+  "note": "Remove is a method on the unexported generic type ptrMap with no call in the package, not exported API of an importable package."
+ },
+ "4fc261c4": {
+  "verdict": "correct_exclusion",
+  "note": "ErrBadPayload is exported from a non-internal importable package (public API)."
+ },
+ "c5546881": {
+  "verdict": "correct_exclusion",
+  "note": "ApplyInputSourceValue is exported from a non-internal importable package (public API)."
+ },
+ "06a12188": {
+  "verdict": "correct_exclusion",
+  "note": "VisibleFlagCategories is exported from a non-internal importable package (public API)."
+ },
+ "aa22aaa0": {
+  "verdict": "correct_exclusion",
+  "note": "RustBinaryAuditEntry is exported from a non-internal importable package (public API)."
+ },
+ "9b7319d7": {
+  "verdict": "correct_exclusion",
+  "note": "ApplyInputSourceValue is exported from a non-internal importable package (public API)."
+ },
+ "de9993a5": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "a3281430": {
+ "0f9e5753": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "431982e8": {
+ "8150dfc4": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "95d7b3f3": {
+ "be5170a7": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "8ba96f28": {
+ "84e9a82f": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "2ecf830b": {
+ "8b423498": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "fe2c0278": {
+ "9783b8dd": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "45746554": {
+ "cc783dfe": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "b13f4ad4": {
+ "bcb1b54b": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "13db7343": {
+ "b40d5fea": {
   "verdict": "correct_exclusion",
   "note": "Go test function / exported method in the rule-based bucket: live by construction, correct exclusion."
  },
- "12ac2273": {
+ "c19c7d66": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "a343152e": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "696f5c08": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "9637d318": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "39b50641": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "6612024c": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "ab96de76": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "10d3818c": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "d3010b91": {
+  "verdict": "correct_exclusion",
+  "note": "File sits in a testdata, _examples, or separate-module (own go.mod) directory outside the analysed program."
+ },
+ "c3181c9b": {
+  "verdict": "correct_exclusion",
+  "note": "Not Go in the module build (python file)."
+ },
+ "2097c870": {
+  "verdict": "correct_exclusion",
+  "note": "ArchiveSearchConfig is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "40dc2514": {
+  "verdict": "correct_exclusion",
+  "note": "errZipSlipDetected is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "6d721dc3": {
+  "verdict": "correct_exclusion",
+  "note": "DiscoveredParser is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "75554d87": {
+  "verdict": "correct_exclusion",
+  "note": "SuspendMsg is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "ced37e89": {
+  "verdict": "correct_exclusion",
+  "note": "Config is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "524b64ed": {
+  "verdict": "correct_exclusion",
+  "note": "depsBinaryCataloger is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "df4e8a47": {
+  "verdict": "correct_exclusion",
+  "note": "candidateKey is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "5b504366": {
+  "verdict": "correct_exclusion",
+  "note": "sbomPublisher is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "5dffd8ea": {
+  "verdict": "correct_exclusion",
+  "note": "flagDefaultTestCaseWithEnv is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "d8662c50": {
+  "verdict": "correct_exclusion",
+  "note": "GenManHeader is a type declaration, not a function, so the reach column does not judge it."
+ },
+ "5ab2662f": {
+  "verdict": "correct_exclusion",
+  "note": "t1 is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "06d3a7af": {
+  "verdict": "correct_exclusion",
+  "note": "ReadFromSBOM is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "b2fdc117": {
+  "verdict": "correct_exclusion",
+  "note": "Slice is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "f7f5956c": {
+  "verdict": "correct_exclusion",
+  "note": "AddRelationships is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "defa7c2d": {
+  "verdict": "correct_exclusion",
+  "note": "args is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "cc2b4e91": {
+  "verdict": "correct_exclusion",
+  "note": "expected is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "ae1a0029": {
+  "verdict": "correct_exclusion",
+  "note": "Tail is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "7c2c7458": {
+  "verdict": "correct_exclusion",
+  "note": "args is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "f2ba0b43": {
+  "verdict": "correct_exclusion",
+  "note": "config is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "2999aa3b": {
+  "verdict": "correct_exclusion",
+  "note": "With is an interface method spec or function-local type, not a judged declaration kind."
+ },
+ "c3289f0d": {
+  "verdict": "correct_exclusion",
+  "note": "Test_ShowAppHelp_NoAuthor is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "690ec6af": {
+  "verdict": "correct_exclusion",
+  "note": "TestWrappedHelpSubcommand is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "8c7e9096": {
+  "verdict": "correct_exclusion",
+  "note": "TestParseMultiStringSliceFromEnvCascadeWithDefaults is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "6895bc9b": {
+  "verdict": "correct_exclusion",
+  "note": "TestClientIPFromRemoteAddr_V4MappedIsUnmapped is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "f0c3340f": {
+  "verdict": "correct_exclusion",
+  "note": "Test_convertBase10ToBase8 is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "935fcdae": {
+  "verdict": "correct_exclusion",
+  "note": "TestSafeWriteConfigWithExistingFile is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "f493e4b6": {
+  "verdict": "correct_exclusion",
+  "note": "TestJavaPURLs is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "175286fe": {
+  "verdict": "correct_exclusion",
+  "note": "TestBufferedSeeker_Read is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "592c0b07": {
+  "verdict": "correct_exclusion",
+  "note": "TestParseMultiIntSliceWithDefaultsUnset is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "58b2fca9": {
+  "verdict": "correct_exclusion",
+  "note": "TestParseKernelChangelog is in a _test.go file in a no_tests cell, outside the analysed program."
+ },
+ "2b8d15bb": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "97f70690": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "bb79bce9": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "fee53b1f": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "c972ce8c": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "dcefe863": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "87a9df1a": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "6b8017b6": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "052e17f9": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "b997f699": {
+  "verdict": "correct_exclusion",
+  "note": "Exported through the package entry chain (index/export * or the exported subpath barrel), so it is public API."
+ },
+ "46dbb07f": {
+  "verdict": "correct_exclusion",
+  "note": "src/types/globals.d.ts is a declaration file excluded from the oracle program, and it is an ambient declare const."
+ },
+ "76fb6b8d": {
+  "verdict": "correct_exclusion",
+  "note": "src/types/globals.d.ts is a declaration file excluded from the oracle program, and it is an ambient declare const."
+ },
+ "338d6fa4": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a type declaration, not a function/method."
+ },
+ "3c272c70": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
+ },
+ "ab76e514": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
+ },
+ "f11ad7f0": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
+ },
+ "2eeecb17": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
+ },
+ "af0398f0": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
+ },
+ "8242574a": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a type declaration, not a function/method."
+ },
+ "cdc8478a": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a type declaration, not a function/method."
+ },
+ "a4f4c549": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
+ },
+ "7deaaa7f": {
+  "verdict": "correct_exclusion",
+  "note": "Reach column judges functions only and this is a const declaration, not a function/method."
+ },
+ "88732941": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "28d24963": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "4a5b68bc": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "96f3facc": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "b8a8500c": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "65c780cb": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "eba99899": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "6e02520c": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "ea4fed89": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "a3ef71a5": {
+  "verdict": "correct_exclusion",
+  "note": "Getter, constructor, abstract method or object-literal property, a kind the oracle does not enumerate (it only lists bodied method declarations)."
+ },
+ "899d15cb": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (packages/openapi/src/types.ts) lies outside it."
+ },
+ "bb162acb": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (www/src/pages/pricing.tsx) lies outside it."
+ },
+ "aa8be8f9": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (packages/client/src/createTRPCClient.ts) lies outside it."
+ },
+ "148f4d59": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (packages/client/src/links/wsLink/wsClient/requestManager.ts) lies outside it."
+ },
+ "9ed67bbc": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (packages/next/src/app-dir/links/nextHttp.ts) lies outside it."
+ },
+ "3503d998": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (packages/upgrade/src/transforms/provider.ts) lies outside it."
+ },
+ "6a9a563c": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (examples/next-sse-chat/drizzle.config.ts) lies outside it."
+ },
+ "5d04f720": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (packages/react-query/vitest.config.ts) lies outside it."
+ },
+ "a2465eac": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (packages/openapi/src/types.ts) lies outside it."
+ },
+ "99b90781": {
+  "verdict": "correct_exclusion",
+  "note": "trpc cell scope is packages/server/src and this file (www/src/components/YouTubeEmbed.tsx) lies outside it."
+ },
+ "6467c360": {
+  "verdict": "correct_exclusion",
+  "note": "File runtime-tests/lambda-edge/vitest.config.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "5cdc9088": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/cyclicTypesRouter-heyapi/core/bodySerializer.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "8fca9396": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/appRouter-heyapi/types.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "08ffdb03": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/cyclicTypesRouter-heyapi/sdk.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "decae7c0": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/procedureErrorsRouter-heyapi/sdk.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "09a53d4b": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/edgeCaseRouter-heyapi/types.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "3f5f99c3": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/defaultErrorFormatterRouter-heyapi/client/client.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "6394140d": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/superjsonRouter-heyapi/sdk.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "c6c19caa": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/zod/src/v4/classic/tests/instanceof.test.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "e93240fa": {
+  "verdict": "correct_exclusion",
+  "note": "File packages/openapi/test/routers/appRouter-heyapi/types.gen.ts is a test/runtime-tests/tests path and tests are outside the production cell."
+ },
+ "5a227a74": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(not(windows)) method with a cfg(windows) twin of the same name in util.rs, so name-keyed matching cannot judge it."
+ },
+ "24f7b9fc": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(not(windows)) method with a cfg(windows) twin of the same name in util.rs, so name-keyed matching cannot judge it."
+ },
+ "5a591fec": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "334bdb83": {
+ "3d2be8bc": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "8e127e13": {
+ "9e088488": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "5eadc90d": {
+ "9078d35b": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "be366ecc": {
+ "f771b512": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "65c86ba4": {
+ "9a1ffe32": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "c4e2e43d": {
+ "fe558984": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "4ef798ac": {
+ "b3d009bb": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "f6334fd6": {
+ "0f08d4d4": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "228b99e1": {
+ "804e299d": {
   "verdict": "correct_exclusion",
   "note": "Method of an impl (or trait method with only impls) for a foreign or primitive self type (bool, Option<bool>, [u8], str, u8, Command, &Path); SCIP does not resolve its call sites, so correctly unjudged."
  },
- "4a08ae2f": {
+ "7b7bca7b": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "421f406d": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "0285c714": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "8f047cb1": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "8a996262": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "617adc71": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "edc7e56c": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "d35b6a92": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "8b444fb5": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "05181e2f": {
+  "verdict": "correct_exclusion",
+  "note": "The declaration is produced by a test-generating macro (rgtest!/test!/literal!/syntax!), so the oracle cannot attribute it."
+ },
+ "760cff98": {
+  "verdict": "correct_exclusion",
+  "note": "argument_range is called on a proc-macro-derived AttributeKind receiver, which the oracle could not resolve."
+ },
+ "18a0d735": {
+  "verdict": "correct_exclusion",
+  "note": "multi_line is a common builder name and the oracle left call sites unresolved."
+ },
+ "76f8152f": {
+  "verdict": "correct_exclusion",
+  "note": "parse_millis is referenced only from a clap #[arg(value_parser = ...)] attribute."
+ },
+ "085fcb43": {
+  "verdict": "correct_exclusion",
+  "note": "ErrorList::iter is called in a closure in error_description.rs whose receiver type the oracle could not resolve."
+ },
+ "17f6265c": {
+  "verdict": "misbucketed",
+  "note": "The oracle resolved 99 SCIP references (live) and tests call dir.create_dir everywhere, so the withheld flag is unnecessary and the item is gradable as live."
+ },
+ "e6ae1d4f": {
+  "verdict": "correct_exclusion",
+  "note": "correct is called only inside the func_tests! macro body."
+ },
+ "87ef7574": {
+  "verdict": "correct_exclusion",
+  "note": "Data::text is called as an associated fn in tests; the name is ambiguous for the oracle."
+ },
+ "cb1bc2bd": {
+  "verdict": "correct_exclusion",
+  "note": "Referenced only via serde serialize_with attribute strings."
+ },
+ "0f1a8475": {
+  "verdict": "correct_exclusion",
+  "note": "Referenced only via serde default attribute string."
+ },
+ "5c2e8b83": {
+  "verdict": "correct_exclusion",
+  "note": "Referenced only via serde deserialize_with attribute string."
+ },
+ "d4c28c2b": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "f97ec624": {
+ "9914e33c": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "4745b21e": {
+ "d3e530d2": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "8e324c20": {
+ "1537c72d": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "7d7ccb16": {
+ "6a471c88": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "5517ae1a": {
+ "86ac80e7": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "dbed8146": {
+ "10c71ad6": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "fabf2acc": {
+ "ab522517": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "d9425fea": {
+ "6d4dc7af": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
  },
- "5d6fe196": {
+ "66e19ff4": {
   "verdict": "correct_exclusion",
   "note": "A trait item: dead_symbols has no trait kind, so lidx cannot claim it; correctly excluded."
+ },
+ "81396f99": {
+  "verdict": "correct_exclusion",
+  "note": "ByteSet is a pub struct at the matcher crate root, so pub empty() is public API."
+ },
+ "a251ee9e": {
+  "verdict": "correct_exclusion",
+  "note": "is_empty is a default method of the pub trait Captures in the matcher library."
+ },
+ "b5669edd": {
+  "verdict": "correct_exclusion",
+  "note": "ScriptId is re-exported through the pub config module of nextest-runner, so pub as_identifier is public API."
+ },
+ "7800503c": {
+  "verdict": "correct_exclusion",
+  "note": "pub Language::is_empty in the tokei library, with a public doctest."
+ },
+ "ece8a916": {
+  "verdict": "correct_exclusion",
+  "note": "Summary is pub in the printer library, so pub new is public API."
+ },
+ "48cdf393": {
+  "verdict": "correct_exclusion",
+  "note": "model is a pub mod of the lidx library and ModuleMapResult is pub."
+ },
+ "95df9e1f": {
+  "verdict": "correct_exclusion",
+  "note": "pub Summary::into_inner in the printer library."
+ },
+ "9059408d": {
+  "verdict": "correct_exclusion",
+  "note": "console is a pub mod of nextest-runner and spawn is pub."
+ },
+ "c0b9eb22": {
+  "verdict": "correct_exclusion",
+  "note": "PrettyPrinter is re-exported pub from the bat library, so pub snip is public API."
+ },
+ "73366028": {
+  "verdict": "correct_exclusion",
+  "note": "pub Searcher::search_file in the searcher library."
+ },
+ "594dc364": {
+  "verdict": "correct_exclusion",
+  "note": "#[bench] function is a bench root by policy."
+ },
+ "b4862124": {
+  "verdict": "correct_exclusion",
+  "note": "#[bench] fn is invoked by the bench harness, so it is a test-style root."
+ },
+ "d679f10f": {
+  "verdict": "correct_exclusion",
+  "note": "#[bench] fn is invoked by the bench harness, so it is a test-style root."
+ },
+ "5c38ae1d": {
+  "verdict": "correct_exclusion",
+  "note": "Criterion bench function registered in criterion_group!, a bench root."
+ },
+ "bcc768bb": {
+  "verdict": "correct_exclusion",
+  "note": "Criterion bench function registered in criterion_group!, a bench root."
+ },
+ "f9351f94": {
+  "verdict": "correct_exclusion",
+  "note": "#[bench] function is a bench root by policy."
+ },
+ "21614d01": {
+  "verdict": "correct_exclusion",
+  "note": "Criterion bench function registered in criterion_group!, a bench root."
+ },
+ "151403d8": {
+  "verdict": "correct_exclusion",
+  "note": "Criterion bench function registered in criterion_group!, a bench root."
+ },
+ "4a08b2bc": {
+  "verdict": "correct_exclusion",
+  "note": "Criterion bench function registered in criterion_group!, a bench root."
+ },
+ "3c4b15bd": {
+  "verdict": "correct_exclusion",
+  "note": "Criterion bench function registered in criterion_group!, a bench root."
+ },
+ "b740fd28": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(not(windows)) method with a windows twin at util.rs:233."
+ },
+ "4b9f131d": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "d58a4388": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "0e3b55c0": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "fdada873": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "347deb7d": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "180cba27": {
+  "verdict": "correct_exclusion",
+  "note": "site/src/ext/slugs.py is a Python docs file, not part of the Rust program."
+ },
+ "4ae7e431": {
+  "verdict": "correct_exclusion",
+  "note": "serde_impl.rs is behind the non-default serde1 feature (lib.rs:142), so it is not in the program."
+ },
+ "68eb1a17": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "9e5010c4": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "d2ebbdf7": {
+  "verdict": "correct_exclusion",
+  "note": "A Python or Go file under benchmarks/, not part of the Rust program."
+ },
+ "cc3cc482": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "65bf17c7": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "90b82c57": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "c123be17": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "75338b8b": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "2657f864": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "dbf4686a": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "5b54440e": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "7c61e337": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "d23d379f": {
+  "verdict": "correct_exclusion",
+  "note": "A struct, which the reach column does not judge (functions only)."
+ },
+ "0632f6e8": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(windows) twin of is_socket, invisible to the unix oracle. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "bd6d7cf7": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(not(unix)) twin of host, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "bff52c11": {
+  "verdict": "misbucketed",
+  "note": "V is a plain struct (judged kind; the sibling V in leak_timeout.rs is judged) that max_fail.rs:102 uses via deserialize_any, so it should have been matched, not dropped as not-a-judged-kind."
+ },
+ "661d8572": {
+  "verdict": "correct_exclusion",
+  "note": "Windows-only mod imp (input.rs:401) method, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "9ed93363": {
+  "verdict": "correct_exclusion",
+  "note": "Inside cfg(not(unix)) mod imp at double_spawn.rs:202, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "d6e17779": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(not(unix)) twin of make_executable. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "6bfd8f65": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(not(any(unix,windows))) twin of imp, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "9c0bd1ac": {
+  "verdict": "correct_exclusion",
+  "note": "Inside cfg(not(unix)) mod imp at double_spawn.rs:202, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "e370b87c": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(not(any(unix,windows))) twin of imp, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "053b9893": {
+  "verdict": "correct_exclusion",
+  "note": "cfg(windows) twin of is_char_device, not compiled. The label says not-a-judged-kind, but the effect (oracle has no declaration) is right."
+ },
+ "4f1690ce": {
+  "verdict": "correct_exclusion",
+  "note": "default_lexeme is called only from inside a macro body."
+ },
+ "421f1bbf": {
+  "verdict": "correct_exclusion",
+  "note": "ignore_messages is called only inside the ignore_message! macro body."
+ },
+ "94a97231": {
+  "verdict": "correct_exclusion",
+  "note": "is_false is referenced only via serde skip_serializing_if string."
+ },
+ "83bc09e3": {
+  "verdict": "correct_exclusion",
+  "note": "compile_strategic_matcher is called only inside the cfg(test) test macro body."
+ },
+ "df0ebc92": {
+  "verdict": "correct_exclusion",
+  "note": "interpolate_string is called only inside a test macro body."
+ },
+ "833f3e0b": {
+  "verdict": "correct_exclusion",
+  "note": "GlobStrategic::is_match is called only inside the cfg(test) test macro body."
+ },
+ "557e79e8": {
+  "verdict": "correct_exclusion",
+  "note": "Referenced only via serde default attribute string."
+ },
+ "16605721": {
+  "verdict": "correct_exclusion",
+  "note": "Referenced only via serde deserialize_with attribute string."
+ },
+ "b3c7c2a6": {
+  "verdict": "correct_exclusion",
+  "note": "Referenced only via serde deserialize_with attribute strings."
+ },
+ "7870ec9c": {
+  "verdict": "correct_exclusion",
+  "note": "Referenced only inside thiserror #[error(...)] attribute."
+ },
+ "bf94117a": {
+  "verdict": "correct_exclusion",
+  "note": "A Python benchmark source file under tests/, outside a cell without tests."
+ },
+ "2f247b33": {
+  "verdict": "correct_exclusion",
+  "note": "A Python benchmark source file under tests/, outside a cell without tests."
+ },
+ "2611aea3": {
+  "verdict": "correct_exclusion",
+  "note": "A Python benchmark source file under tests/, outside a cell without tests."
+ },
+ "765db554": {
+  "verdict": "correct_exclusion",
+  "note": "Python fixture under tests/fixtures, a test file in a cell without tests."
+ },
+ "800884dd": {
+  "verdict": "correct_exclusion",
+  "note": "C# fixture under tests/fixtures, a test file in a cell without tests."
+ },
+ "82969e27": {
+  "verdict": "correct_exclusion",
+  "note": "A Python benchmark source file under tests/, outside a cell without tests."
+ },
+ "85a3ed9a": {
+  "verdict": "correct_exclusion",
+  "note": "Go fixture under tests/fixtures, a test file in a cell without tests."
+ },
+ "eb095792": {
+  "verdict": "correct_exclusion",
+  "note": "A Python benchmark source file under tests/, outside a cell without tests."
+ },
+ "577b43ed": {
+  "verdict": "correct_exclusion",
+  "note": "A Python benchmark source file under tests/, outside a cell without tests."
+ },
+ "31048c41": {
+  "verdict": "correct_exclusion",
+  "note": "A Python benchmark source file under tests/, outside a cell without tests."
+ },
+ "_notes": "**How to read this.** Each item was read against the source by a Sonnet subagent per language (one pass per language, the Rust draw repeated after the Rust oracle was fixed), with the cell's scope and the column's definition in hand; the main agent changed three Go verdicts (staticcheck's U1000 is transitive: a helper whose only caller is itself unused is dead by the tool's definition, so those are not oracle errors). **What the first draw found and what changed.** The first Rust draw had 19 oracle artefacts among 20 FN: trait-impl names were parsed with their `[Trait]` prefix so trait-declared methods lost their impls, serde/clap attribute uses inside strings were invisible, and bench / macro-registered tests were not roots. All three were fixed and the Rust sample re-drawn. **Known remaining oracle artefacts (listed in the samples above).** TypeScript: a helper reached only through dynamic indexing of a namespace import (`ns[tag]`) is reported unreachable (hono, 5 items). Rust: extension-trait methods called on foreign types (`SliceExt` on `&[u8]` in tokei, `Ordinal`/`Clean`/`CommandExt` in just) and helpers called only from `rgtest!`-generated tests are reported dead, because rust-analyzer's SCIP carries no occurrence for those calls (11 of the 20 Rust FN). Rust recall in the dead cells is therefore an upper-bound-of-the-oracle figure: some of its dead declarations are alive. Go: two buckets are conservative by rule (an exported method of an unexported type counts as public API; an exported symbol of an internal package is `exported_used_by_rule` in the unreferenced column).",
+ "77a5c8c1": {
+  "verdict": "lidx_error",
+  "note": "test_generic_parser.go: getCatalogerName (line 528) is called at line 633 inside trackCatalogerMetadata, reached from exported TestCataloger, so U1000 treats it as used."
+ },
+ "aa847a1b": {
+  "verdict": "lidx_error",
+  "note": "test_generic_parser.go: diffPackages (line 433) is called at test_generic_parser.go:252 from exported ExpectsPackageStrings, so U1000 treats it as used."
+ },
+ "a2f6e4ac": {
+  "verdict": "lidx_error",
+  "note": "test_generic_parser.go: getPackagePathFromCataloger (line 566) is called at line 639 inside trackCatalogerMetadata, reached from exported TestCataloger, so U1000 treats it as used."
+ },
+ "f934933b": {
+  "verdict": "lidx_error",
+  "note": "app.go:296 App.newFlagSet implements the used iterativeParser interface (parse.go:9, used by parseIter at command.go:325), so U1000 counts it used."
+ },
+ "218864c8": {
+  "verdict": "lidx_error",
+  "note": "excluding_file_test.go:175 mockResolver.FilesByBasename implements file.Resolver and is called through the interface in a tests cell."
+ },
+ "a959745c": {
+  "verdict": "lidx_error",
+  "note": "classifier_cataloger_test.go:3218 panicyResolver.FilesByBasename implements file.Resolver and is called via the interface by the cataloger under test in a tests cell."
+ },
+ "bdf3faaf": {
+  "verdict": "lidx_error",
+  "note": "utils_test.go:341 exponentialBackoffDurations is only called by testRetryIntervals (line 337), which nothing references in test/cli, so it is truly dead."
+ },
+ "2f6a49f4": {
+  "verdict": "lidx_error",
+  "note": "fileresolver/empty.go:30 Empty is never allocated in production code (only a var _ nil-pointer assertion at line 10) and the package is internal, so the method is dead in a no_tests cell; slight doubt over whether RTA counts the var _ conversion."
+ },
+ "b1668dc9": {
+  "verdict": "lidx_error",
+  "note": "pkgtest/metadata_tracker.go:46 getTracker is only called from pkgtest code, and pkgtest is imported only by _test.go files, so it is dead in a no_tests cell."
+ },
+ "c4049dca": {
+  "verdict": "lidx_error",
+  "note": "xcoff/file.go:129 SectionByType is only called by ImportedSymbols:576 and ImportedLibraries:682, which nothing outside the internal xcoff package calls (parse_go_binary.go only uses NewFile:357)."
+ },
+ "0f1b68b4": {
+  "verdict": "lidx_error",
+  "note": "pkgtest/metadata_tracker.go:404 dereferenceToStruct is only called from metadata_tracker.go:366/383/427 inside pkgtest, which only tests import, so dead in a no_tests cell."
+ },
+ "46f59516": {
+  "verdict": "lidx_error",
+  "note": "cmptest/license.go:20 is only used via common_options.go:19 and pkgtest/test_generic_parser.go:223; cmptest is imported only by pkgtest, which only tests import, so dead without tests."
+ },
+ "a3e516e0": {
+  "verdict": "lidx_error",
+  "note": "testutil/snippet_or_binary.go:84 validateSnippet is called at line 51 (testutil is imported only by tests) and from a _test.go file, so dead in a no_tests cell."
+ },
+ "19bfdbab": {
+  "verdict": "lidx_error",
+  "note": "cmptest/license.go:12 DefaultLicenseComparer is only used at common_options.go:24 and pkgtest/test_generic_parser.go:91; cmptest and pkgtest are internal and only test-imported, so dead without tests."
+ },
+ "9ab44d7e": {
+  "verdict": "lidx_error",
+  "note": "pkgtest/observing_resolver.go:136 removeStrings is only called at lines 94/103 inside pkgtest, which only _test.go files import, so dead in a no_tests cell."
+ },
+ "abd81c7d": {
+  "verdict": "lidx_error",
+  "note": "utils_test.go:244 getCommand is only called by runCosign (line 229), which has no callers in test/cli, so it is truly dead."
+ },
+ "d0c1141f": {
+  "verdict": "lidx_error",
+  "note": "hono handler.ts:560 is the ALBProcessor implementation of abstract getCookies (handler.ts:287); required override, findReferences groups it with the base member (no direct call to this override exists, borderline)."
+ },
+ "51a05965": {
+  "verdict": "lidx_error",
+  "note": "hono handler.ts:611 is the LatticeV2Processor implementation of the abstract getCookies (handler.ts:287) that every processor must provide; findReferences links it to the abstract member (though no call site invokes this particular override, so borderline)."
+ },
+ "72adc4c1": {
+  "verdict": "oracle_artefact",
+  "note": "zod v4/core/standard-schema.ts StandardSchemaV1 is imported (type-only) in core/errors.ts:4 and core/schemas.ts:9, so it is referenced."
+ },
+ "85d59027": {
+  "verdict": "lidx_error",
+  "note": "zod v4/core/zsf.ts declares $ZSFArray but no file imports zsf.ts or mentions $ZSFArray, so it is genuinely unreferenced."
+ },
+ "92a65592": {
+  "verdict": "lidx_error",
+  "note": "zod v4/core/zsf.ts declares $ZSFString but no file imports zsf.ts or mentions $ZSFString, so it is genuinely unreferenced."
+ },
+ "4bb07025": {
+  "verdict": "lidx_error",
+  "note": "zod v4/core/zsf.ts declares $ZSFUnion but no file imports zsf.ts or mentions $ZSFUnion, so it is genuinely unreferenced."
+ },
+ "0b4bd842": {
+  "verdict": "lidx_error",
+  "note": "zod v3/benchmarks/realworld.ts:25 num() is only called from module-level code of realworld.ts, which only the benchmarks index imports (benchmarks/index.ts:8) and is not part of the package entry closure, so it is unreachable."
+ },
+ "25c74a77": {
+  "verdict": "oracle_artefact",
+  "note": "hono jsx/intrinsic-element/components.ts:93 helper is called by exported title/script/style/link/meta, which are reached via dynamic indexing of the namespace import in jsx/base.ts:331 and dom/jsx-dev-runtime.ts:11, which still counts as used."
+ },
+ "5b605ebe": {
+  "verdict": "oracle_artefact",
+  "note": "SearcherTester::multi_line (testutil.rs:384, #[allow(dead_code)]) is called nowhere; the multi_line(true) mentions are RegexMatcherBuilder::multi_line and a builder inside testutil. The oracle withheld it (oracle_unresolved_site) so it is a root and reach says live; by the column definition it is unreachable."
+ },
+ "bd8f7ca0": {
+  "verdict": "oracle_artefact",
+  "note": "ErrorList::iter is called nowhere: the .iter() mentions are BTreeSet/Vec iterators in thiserror #[error(..)] strings and bodies, and ErrorList is only built, displayed and chained. The oracle withheld it (oracle_unresolved_site) and a withheld item is a root, so reach says live; by the column definition it is unreachable."
+ },
+ "ddffe518": {
+  "verdict": "lidx_error",
+  "note": "FilterNameMatch::is_match (cfg(test)) has no caller: the `.is_match(` sites of test_filter.rs are regex matchers (281, 300, 303) and another type's method (431 -> 486); really dead, lidx keeps it alive through bare-name bindings of those calls."
+ },
+ "80a9c8c1": {
+  "verdict": "lidx_error",
+  "note": "ParsedExpr::drop_source_span is called only by itself (parsing.rs:191-204) and nothing else in nextest-filtering calls it; really dead, lidx keeps it alive through its self edge."
+ },
+ "0e89236e": {
+  "verdict": "correct_exclusion",
+  "note": "viper is a library cell without tests and AbsFilePath (internal/testutil/filepath.go:9) is exported so the library_root rule applies literally, though it lives in a non-importable internal package used only by viper_test.go (arguably should be judged, and would be dead)."
+ },
+ "e029882a": {
+  "verdict": "correct_exclusion",
+  "note": "AbsFilePath (internal/testutil/filepath.go:9) is exported, so U1000 treats it as used and the library_root rule applies in a library cell."
+ },
+ "bd7f8a26": {
+  "verdict": "correct_exclusion",
+  "note": "xcoff.go:203 AuxSect64 is a struct type, and the reach column judges only functions and methods."
+ },
+ "7efb41da": {
+  "verdict": "correct_exclusion",
+  "note": "xcoff.go:181 AuxFile64 is a struct type, and the reach column judges only functions and methods."
+ },
+ "24cd8a0c": {
+  "verdict": "correct_exclusion",
+  "note": "builder.go:36 is an interface method spec in Accessor, not a func declaration."
+ },
+ "30e10299": {
+  "verdict": "correct_exclusion",
+  "note": "src/utils/internal/iron-crypto.ts:52 macFormatVersion is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "569b5732": {
+  "verdict": "correct_exclusion",
+  "note": "src/utils/internal/standard-schema.ts:61 InferInput is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "ea328af5": {
+  "verdict": "correct_exclusion",
+  "note": "src/helper/css/common.ts:21 IS_CSS_ESCAPED is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "784378da": {
+  "verdict": "correct_exclusion",
+  "note": "src/middleware/language/language.ts:188 Detectors is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "4af4218b": {
+  "verdict": "correct_exclusion",
+  "note": "src/utils/internal/validate.ts:13 ValidateIssues is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "29d3e5a9": {
+  "verdict": "correct_exclusion",
+  "note": "src/helper/ssg/middleware.ts:13 SSG_DISABLED_RESPONSE is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "0365351f": {
+  "verdict": "correct_exclusion",
+  "note": "src/client/types.ts:273 InferRequestOptionsType is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "7528983c": {
+  "verdict": "correct_exclusion",
+  "note": "src/types/types-internal.ts:13 ObjectishNoSet is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "e963b333": {
+  "verdict": "correct_exclusion",
+  "note": "src/types/types-internal.ts:50 GeneratePatches is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "f9120561": {
+  "verdict": "correct_exclusion",
+  "note": "packages/server/src/adapters/aws-lambda/getPlanner.ts:13 APIGatewayResult is a type/const (oracle kind const/type), and the reach column judges only functions and methods."
+ },
+ "6b5d6503": {
+  "verdict": "correct_exclusion",
+  "note": "packages/server/src/adapters/aws-lambda/getPlanner.ts:132 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for toStream at that file:line)."
+ },
+ "6361c5a5": {
+  "verdict": "correct_exclusion",
+  "note": "src/core/proxy.ts:111 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for get at that file:line)."
+ },
+ "a029e2e8": {
+  "verdict": "correct_exclusion",
+  "note": "packages/server/src/adapters/aws-lambda/getPlanner.ts:184 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for toResult at that file:line)."
+ },
+ "6bfb0b83": {
+  "verdict": "correct_exclusion",
+  "note": "src/core/proxy.ts:219 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for deleteProperty at that file:line)."
+ },
+ "1b345bad": {
+  "verdict": "correct_exclusion",
+  "note": "packages/server/src/unstable-core-do-not-import/http/contentType.ts:215 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for isMatch at that file:line)."
+ },
+ "a87302b6": {
+  "verdict": "correct_exclusion",
+  "note": "packages/zod/src/v3/types.ts:74 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for path at that file:line)."
+ },
+ "c04731c9": {
+  "verdict": "correct_exclusion",
+  "note": "packages/server/src/unstable-core-do-not-import/http/contentType.ts:82 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for parse at that file:line)."
+ },
+ "04da6a88": {
+  "verdict": "correct_exclusion",
+  "note": "packages/server/src/adapters/aws-lambda/getPlanner.ts:60 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for getTRPCPath at that file:line)."
+ },
+ "ffaaf55e": {
+  "verdict": "correct_exclusion",
+  "note": "src/core/proxy.ts:250 is an object-literal member/accessor or property function that does not appear in the oracle declaration list (no decl for getPrototypeOf at that file:line)."
+ },
+ "4d1cc69f": {
+  "verdict": "correct_exclusion",
+  "note": "packages/openapi/test/routers/errorFormatterRouter-heyapi/client/types.gen.ts is a test-directory/test-file path and is not in the production-only program."
+ },
+ "d7777feb": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "56114561": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "d609b2a3": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "56f86e89": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "b215d379": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "deae3bcb": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "7eb77b26": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "1bc88f1a": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "ce61ecb2": {
+  "verdict": "correct_exclusion",
+  "note": "A token spelled like the declaration has no SCIP symbol at a site the sandbox cannot expand (a macro_rules! body, a serde/clap attribute, a test macro), so the oracle cannot judge it: correct exclusion."
+ },
+ "bf709dc4": {
+  "verdict": "correct_exclusion",
+  "note": "The claim is in a file the Rust program did not load (a Python file under benchmarks/, or `crates/searcher/src/testutil.rs` behind `#[cfg(test)] mod testutil;` in a no_tests cell): correct exclusion."
+ },
+ "973acb0f": {
+  "verdict": "correct_exclusion",
+  "note": "A Python unittest of the benchmark harness inside the lidx corpus checkout: not part of the Rust program, so the Rust oracle cannot judge it."
+ },
+ "c279ba83": {
+  "verdict": "correct_exclusion",
+  "note": "The claim is in a file the Rust program did not load (a Python file under benchmarks/, or `crates/searcher/src/testutil.rs` behind `#[cfg(test)] mod testutil;` in a no_tests cell): correct exclusion."
+ },
+ "9fd152c9": {
+  "verdict": "correct_exclusion",
+  "note": "A Python unittest of the benchmark harness inside the lidx corpus checkout: not part of the Rust program, so the Rust oracle cannot judge it."
+ },
+ "27a65787": {
+  "verdict": "correct_exclusion",
+  "note": "The claim is in a file the Rust program did not load (a Python file under benchmarks/, or `crates/searcher/src/testutil.rs` behind `#[cfg(test)] mod testutil;` in a no_tests cell): correct exclusion."
+ },
+ "4f5ad619": {
+  "verdict": "correct_exclusion",
+  "note": "The claim is in a file the Rust program did not load (a Python file under benchmarks/, or `crates/searcher/src/testutil.rs` behind `#[cfg(test)] mod testutil;` in a no_tests cell): correct exclusion."
+ },
+ "906c48cb": {
+  "verdict": "correct_exclusion",
+  "note": "A Python unittest of the benchmark harness inside the lidx corpus checkout: not part of the Rust program, so the Rust oracle cannot judge it."
+ },
+ "80fc4cf7": {
+  "verdict": "correct_exclusion",
+  "note": "The claim is in a file the Rust program did not load (a Python file under benchmarks/, or `crates/searcher/src/testutil.rs` behind `#[cfg(test)] mod testutil;` in a no_tests cell): correct exclusion."
+ },
+ "d2baa92f": {
+  "verdict": "correct_exclusion",
+  "note": "The claim is in a file the Rust program did not load (a Python file under benchmarks/, or `crates/searcher/src/testutil.rs` behind `#[cfg(test)] mod testutil;` in a no_tests cell): correct exclusion."
+ },
+ "ccf055d2": {
+  "verdict": "correct_exclusion",
+  "note": "A struct: the reach column judges functions and methods only: correct exclusion."
+ },
+ "81de6447": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "d1efd558": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "d3a47139": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "19ce68be": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "6ce8eebd": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "bad63be2": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "bfb48bee": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "ea03413c": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "05a905a6": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "1018644f": {
+  "verdict": "correct_exclusion",
+  "note": "A helper fn inside a `#[cfg(test)] mod tests` (or a `#[cfg(test)]` method) in a no_tests cell: the oracle drops cfg(test) regions there, so it has no declaration at that line: correct exclusion."
+ },
+ "07a55afe": {
+  "verdict": "correct_exclusion",
+  "note": "lidx's claim is on a declaration whose name is spelled at a site rust-analyzer attached no symbol to (a serde `deserialize_with` string, a test macro body, a closure the oracle left unresolved): the oracle withholds its verdict: correct exclusion."
+ },
+ "ff5fdd59": {
+  "verdict": "correct_exclusion",
+  "note": "lidx's claim is on a declaration whose name is spelled at a site rust-analyzer attached no symbol to (a serde `deserialize_with` string, a test macro body, a closure the oracle left unresolved): the oracle withholds its verdict: correct exclusion."
+ },
+ "280617b1": {
+  "verdict": "correct_exclusion",
+  "note": "A Python test of bat's highlighting-speed benchmark sources (a test file under tests/), outside the Rust cell: the oracle leaves it out."
+ },
+ "002ede21": {
+  "verdict": "correct_exclusion",
+  "note": "A Python test of bat's highlighting-speed benchmark sources (a test file under tests/), outside the Rust cell: the oracle leaves it out."
+ },
+ "85ed5b76": {
+  "verdict": "correct_exclusion",
+  "note": "A Python test of bat's highlighting-speed benchmark sources (a test file under tests/), outside the Rust cell: the oracle leaves it out."
+ },
+ "27033532": {
+  "verdict": "correct_exclusion",
+  "note": "A file under tests/ (numpy sources bat keeps for highlighting benchmarks, lidx's C#/Go fixtures, fd's tests/testenv, nextest's integration-tests) in a cell whose program leaves test files out: correct exclusion."
+ },
+ "eaef6a1d": {
+  "verdict": "correct_exclusion",
+  "note": "A Python test of bat's highlighting-speed benchmark sources (a test file under tests/), outside the Rust cell: the oracle leaves it out."
+ },
+ "75599a89": {
+  "verdict": "correct_exclusion",
+  "note": "A Python test of bat's highlighting-speed benchmark sources (a test file under tests/), outside the Rust cell: the oracle leaves it out."
+ },
+ "9f8d42bc": {
+  "verdict": "correct_exclusion",
+  "note": "A file under tests/ (numpy sources bat keeps for highlighting benchmarks, lidx's C#/Go fixtures, fd's tests/testenv, nextest's integration-tests) in a cell whose program leaves test files out: correct exclusion."
+ },
+ "b1c9e617": {
+  "verdict": "correct_exclusion",
+  "note": "A Python fixture of the golden tests in the lidx corpus checkout (tests/fixtures/), a test file outside the Rust cell: the oracle leaves it out."
+ },
+ "f7f26c57": {
+  "verdict": "correct_exclusion",
+  "note": "A file under tests/ (numpy sources bat keeps for highlighting benchmarks, lidx's C#/Go fixtures, fd's tests/testenv, nextest's integration-tests) in a cell whose program leaves test files out: correct exclusion."
+ },
+ "336515a7": {
+  "verdict": "correct_exclusion",
+  "note": "A file under tests/ (numpy sources bat keeps for highlighting benchmarks, lidx's C#/Go fixtures, fd's tests/testenv, nextest's integration-tests) in a cell whose program leaves test files out: correct exclusion."
+ },
+ "f887f628": {
+  "verdict": "lidx_error",
+  "note": "mockMavenHandler is called at mock_repo.go:41 inside MockRepo, a non-test file in the program, so it is referenced."
+ },
+ "c128f41f": {
+  "verdict": "lidx_error",
+  "note": "trackCatalogerMetadata is called at test_generic_parser.go:331 (p.trackCatalogerMetadata(...)) in a non-test file."
+ },
+ "1ea94f55": {
+  "verdict": "lidx_error",
+  "note": "getMissingFlags is the method that makes *errRequiredFlags satisfy the requiredFlagsErr interface returned by checkRequiredFlags; removing it breaks compilation, so it is not dead (never called directly though)."
+ },
+ "7ef11c7a": {
+  "verdict": "lidx_error",
+  "note": "diffRelationships is called at test_generic_parser.go:259."
+ },
+ "3c011232": {
+  "verdict": "lidx_error",
+  "note": "getPackagePath is called at test_generic_parser.go:606."
+ },
+ "e4224155": {
+  "verdict": "lidx_error",
+  "note": "pkgtest stringPackage is used as a value at test_generic_parser.go:92 (packageStringer: stringPackage); the python test one is a different declaration."
+ },
+ "98d7ab33": {
+  "verdict": "lidx_error",
+  "note": "DiffReporter.PushStep implements cmp.Reporter; &r is passed via cmp.Reporter(&r) at test_generic_parser.go:359, so go-cmp calls it."
+ },
+ "5e79bea1": {
+  "verdict": "lidx_error",
+  "note": "rpmdbTestFileResolverMock is instantiated (parse_rpm_db_test.go:48) and asserted as file.Resolver, so the method is reachable through the interface."
+ },
+ "8eb121e0": {
+  "verdict": "lidx_error",
+  "note": "customBoolFlag is instantiated as a Flag in app_test.go (lines 2512, 2545) and GetValue is called through the flag interface (docs.go:159)."
+ },
+ "f37632c2": {
+  "verdict": "lidx_error",
+  "note": "Parser.Get implements flag.Getter, which context.go:160 type-asserts and calls; Parser is used as a flag Value in the tests."
+ },
+ "74bd3d77": {
+  "verdict": "lidx_error",
+  "note": "Method of rpmdbTestFileResolverMock, an instantiated file.Resolver implementation, reachable via the interface."
+ },
+ "c7e0488c": {
+  "verdict": "lidx_error",
+  "note": "Method of rpmdbTestFileResolverMock, an instantiated file.Resolver implementation, reachable via the interface."
+ },
+ "04ae2cd0": {
+  "verdict": "lidx_error",
+  "note": "mockResolver is instantiated at excluding_file_test.go:57 and used as a file.Resolver, so the method is reachable via the interface."
+ },
+ "ed2d3616": {
+  "verdict": "oracle_artefact",
+  "note": "AllPathQueries has no caller anywhere in the repo (only its own doc comment mentions it) and is not part of file.Resolver, so it is dead."
+ },
+ "ecb559cf": {
+  "verdict": "correct_exclusion",
+  "note": "Exported function in an internal testutil package; called only from spdx encoder tests, exported rule is reasonable."
+ },
+ "82f24761": {
+  "verdict": "correct_exclusion",
+  "note": "Exported identifier of an internal package with no caller; exported_used_by_rule is deliberately conservative here (documented in the README, bucket A), so the exclusion is by rule, not an oracle error."
+ },
+ "de393f95": {
+  "verdict": "correct_exclusion",
+  "note": "Exported UnzipToDir referenced only from tests (zip_file_traversal_test.go); exported rule acceptable, oracle live via test refs."
+ },
+ "3c8c0652": {
+  "verdict": "correct_exclusion",
+  "note": "Exported identifier of an internal package with no caller; exported_used_by_rule is deliberately conservative here (documented in the README, bucket A), so the exclusion is by rule, not an oracle error."
+ },
+ "eda89111": {
+  "verdict": "correct_exclusion",
+  "note": "Exported identifier of an internal package with no caller; exported_used_by_rule is deliberately conservative here (documented in the README, bucket A), so the exclusion is by rule, not an oracle error."
+ },
+ "baa97080": {
+  "verdict": "correct_exclusion",
+  "note": "Exported builder method of CatalogTester used by many cataloger tests; exported rule fine."
+ },
+ "7a3241ae": {
+  "verdict": "correct_exclusion",
+  "note": "Exported builder method of CatalogTester used by many cataloger tests; exported rule fine."
+ },
+ "2329b672": {
+  "verdict": "correct_exclusion",
+  "note": "Exported TruncateMiddleEllipsis referenced only by string_helpers_test.go; exported rule acceptable."
+ },
+ "747e64a0": {
+  "verdict": "correct_exclusion",
+  "note": "Exported Set.Equals referenced only by set_test.go; exported rule acceptable."
+ },
+ "cb636dac": {
+  "verdict": "correct_exclusion",
+  "note": "Exported-named method on panicyResolver implementing file.Resolver, used via interface (resolver := &panicyResolver{}); exported/interface rule fine."
+ },
+ "049bf297": {
+  "verdict": "correct_exclusion",
+  "note": "JavaScript file under cmd/.../testdata/npm-lock/node_modules, not part of the Go program."
+ },
+ "acedb786": {
+  "verdict": "correct_exclusion",
+  "note": "Python fixture under testdata/setup, not part of the Go program."
+ },
+ "062e0a91": {
+  "verdict": "correct_exclusion",
+  "note": "Python script in testdata, not part of the Go program."
+ },
+ "0088e665": {
+  "verdict": "correct_exclusion",
+  "note": "JavaScript noop in testdata node_modules (pump/index.js), not part of the Go program."
+ },
+ "565bf8f5": {
+  "verdict": "correct_exclusion",
+  "note": "Python fixture under testdata/setup, not part of the Go program."
+ },
+ "1e7122eb": {
+  "verdict": "correct_exclusion",
+  "note": "Python unittest method in .github/scripts/labeler_test.py, not Go."
+ },
+ "cc8bbd42": {
+  "verdict": "correct_exclusion",
+  "note": "File is under _examples/, a directory Go tooling ignores, so not part of the analysed program."
+ },
+ "9298192d": {
+  "verdict": "correct_exclusion",
+  "note": "Python unittest method in .github/scripts/labeler_test.py, not Go."
+ },
+ "7f073d8d": {
+  "verdict": "correct_exclusion",
+  "note": "Python unittest class in .github/scripts/labeler_test.py, not Go."
+ },
+ "413bf767": {
+  "verdict": "correct_exclusion",
+  "note": "Config is a struct type declared inside a test function (local type), not a judged top-level declaration."
+ },
+ "bee56555": {
+  "verdict": "correct_exclusion",
+  "note": "Config is a struct type declared inside a test function (local type), not a judged declaration."
+ },
+ "521b77b2": {
+  "verdict": "correct_exclusion",
+  "note": "config is a struct type declared locally inside a test function, not judged."
+ },
+ "d5c9f13c": {
+  "verdict": "correct_exclusion",
+  "note": "Config is a struct type declared inside a test function (local type), not judged."
+ },
+ "eb5be649": {
+  "verdict": "correct_exclusion",
+  "note": "TestMap is a local struct type inside a test function, not judged."
+ },
+ "7cf85b95": {
+  "verdict": "correct_exclusion",
+  "note": "newFlagSet is an interface method signature in iterativeParser, not a function/method body the oracle judges."
+ },
+ "2cded4a4": {
+  "verdict": "correct_exclusion",
+  "note": "DeletePackages is an interface method signature in the Builder interface, not judged."
+ },
+ "b9d1afec": {
+  "verdict": "correct_exclusion",
+  "note": "config is a local struct type inside a test function, not judged."
+ },
+ "31b2edb2": {
+  "verdict": "correct_exclusion",
+  "note": "FindEvidence is an interface method signature in the Scanner interface, not judged."
+ },
+ "0245e59b": {
+  "verdict": "correct_exclusion",
+  "note": "validOnlyWithInvalidArgs is in args_test.go, a test file, outside the no_tests cell."
+ },
+ "1f3913e5": {
+  "verdict": "correct_exclusion",
+  "note": "Helper in parse_pnpm_lock_test.go, a test file outside the no_tests cell."
+ },
+ "73a962b8": {
+  "verdict": "correct_exclusion",
+  "note": "T4 is a type in property_encoder_test.go, a test file outside the cell."
+ },
+ "78d1913f": {
+  "verdict": "correct_exclusion",
+  "note": "restoreCache is in cache_test.go, a test file outside the cell."
+ },
+ "4f58ec61": {
+  "verdict": "correct_exclusion",
+  "note": "GetSlice is a method in completions_test.go, a test file outside the no_tests cell."
+ },
+ "22867158": {
+  "verdict": "correct_exclusion",
+  "note": "evidenceRef is a local type in load_capabilities_test.go, a test file outside the cell."
+ },
+ "b23ac3ff": {
+  "verdict": "correct_exclusion",
+  "note": "toPackageNames is in parse_apk_db_test.go, a test file outside the cell."
+ },
+ "67761936": {
+  "verdict": "correct_exclusion",
+  "note": "testFileInfo.Size is in filetree_resolver_test.go, a test file outside the cell (other mentions are different types)."
+ },
+ "634de9c9": {
+  "verdict": "correct_exclusion",
+  "note": "gzipContent is in parse_kernel_changelog_test.go, a test file outside the cell."
+ },
+ "9c2bc0ae": {
+  "verdict": "correct_exclusion",
+  "note": "strRef is in backfill_test.go, a test file outside the cell."
+ },
+ "6e6d7c9b": {
+  "verdict": "correct_exclusion",
+  "note": "www/ docusaurus theme component, outside the scoped package directory."
+ },
+ "4ae955ac": {
+  "verdict": "correct_exclusion",
+  "note": "packages/treeshake benchmark file, outside the scoped zod package directory."
+ },
+ "cc2bd88a": {
+  "verdict": "correct_exclusion",
+  "note": "Generated sponsors data under www/, outside the scoped directory."
+ },
+ "4837e5ba": {
+  "verdict": "correct_exclusion",
+  "note": "Next.js example app page under examples/, outside the scoped directory."
+ },
+ "cf0f69a6": {
+  "verdict": "correct_exclusion",
+  "note": "Generated client types under examples/openapi-codegen, outside the scoped directory."
+ },
+ "40da94bc": {
+  "verdict": "correct_exclusion",
+  "note": "tsdown config under examples/.test, outside the scoped directory."
+ },
+ "63996d9a": {
+  "verdict": "correct_exclusion",
+  "note": "ArticleCard is in www/ docs site, outside the scoped directory."
+ },
+ "8a38fa85": {
+  "verdict": "correct_exclusion",
+  "note": "Silver component is in packages/docs, outside the scoped zod package directory."
+ },
+ "8a90ad81": {
+  "verdict": "correct_exclusion",
+  "note": "getStaticProps in examples/.test page, outside the scoped directory."
+ },
+ "f92d3217": {
+  "verdict": "correct_exclusion",
+  "note": "FormIntegrations is in packages/docs, outside the scoped zod package directory."
+ },
+ "fdd699fe": {
+  "verdict": "correct_exclusion",
+  "note": "MyComponent is a local function inside useUtils.test.tsx, a test file outside the cell."
+ },
+ "61bf6c5b": {
+  "verdict": "correct_exclusion",
+  "note": "importStreaming is in context-isolation.test.ts, a test file outside the cell."
+ },
+ "3880b57e": {
+  "verdict": "correct_exclusion",
+  "note": "Generated types.gen.ts under packages/openapi/test/, test fixture outside the cell."
+ },
+ "10361ec4": {
+  "verdict": "correct_exclusion",
+  "note": "truee is a const in template-literal.test.ts, a test file outside the cell."
+ },
+ "593a4de3": {
+  "verdict": "correct_exclusion",
+  "note": "Generated bodySerializer.gen.ts under packages/openapi/test/routers, test fixture outside the cell."
+ },
+ "40433cf3": {
+  "verdict": "correct_exclusion",
+  "note": "booleanSchema is a const in async-parsing.test.ts, a test file outside the cell."
+ },
+ "a45e1dc0": {
+  "verdict": "correct_exclusion",
+  "note": "Generated params.gen.ts under packages/openapi/test/routers, test fixture outside the cell."
+ },
+ "fab1d6da": {
+  "verdict": "correct_exclusion",
+  "note": "formatRfc850Date is in test/retry.ts, a test file outside the cell."
+ },
+ "0f585b49": {
+  "verdict": "correct_exclusion",
+  "note": "Generated type alias in test/routers/.../types.gen.ts, test fixture outside the cell."
  }
 }

@@ -1,7 +1,3 @@
 [
-{"category":"public_api","confidence":"high","exported":true,"file":"src/db/analytics.rs","key":"src/db/analytics.rs:135","kind":"method","lidx_kind":"method","line":135,"name":"call_edge_count","policy":true,"qualname":"crate::db::analytics::Db::call_edge_count","subkind":"inherent"},
-{"category":"public_api","confidence":"high","exported":true,"file":"src/db/analytics.rs","key":"src/db/analytics.rs:239","kind":"method","lidx_kind":"method","line":239,"name":"top_fan_in","policy":true,"qualname":"crate::db::analytics::Db::top_fan_in","subkind":"inherent"},
-{"category":"public_api","confidence":"high","exported":true,"file":"src/db/analytics.rs","key":"src/db/analytics.rs:296","kind":"method","lidx_kind":"method","line":296,"name":"top_fan_out","policy":true,"qualname":"crate::db::analytics::Db::top_fan_out","subkind":"inherent"},
-{"category":"public_api","confidence":"high","exported":true,"file":"src/db/analytics.rs","key":"src/db/analytics.rs:496","kind":"method","lidx_kind":"method","line":496,"name":"duplicate_groups","policy":true,"qualname":"crate::db::analytics::Db::duplicate_groups","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/indexer/xref.rs","key":"src/indexer/xref.rs:291","kind":"method","lidx_kind":"method","line":291,"name":"as_str","policy":false,"qualname":"crate::indexer::xref::KeyKind::as_str","subkind":"inherent"}
+
 ]

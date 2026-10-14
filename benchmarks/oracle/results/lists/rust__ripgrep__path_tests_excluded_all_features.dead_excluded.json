@@ -785,8 +785,6 @@
 {"bucket":"macro_generated","column":"unref","file":"crates/matcher/src/interpolate.rs","kind":"function","line":309,"name":"interp12"},
 {"bucket":"macro_generated","column":"unref","file":"crates/matcher/src/interpolate.rs","kind":"function","line":317,"name":"interp13"},
 {"bucket":"macro_generated","column":"unref","file":"crates/matcher/src/interpolate.rs","kind":"function","line":325,"name":"interp14"},
-{"bucket":"oracle_unresolved_site","column":"reach","file":"crates/globset/src/glob.rs","kind":"function","line":1205,"name":"s"},
-{"bucket":"oracle_unresolved_site","column":"reach","file":"crates/globset/src/glob.rs","kind":"function","line":1209,"name":"class"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":101,"name":"messages"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":113,"name":"ignore_messages"},
 {"bucket":"oracle_unresolved_site","column":"unref","file":"crates/core/messages.rs","kind":"function","line":137,"name":"set_errored"},

@@ -1,5 +1,4 @@
 [
-{"confidence":"high","exported":false,"file":"build.rs","key":"build.rs:57","kind":"function","lidx_kind":"function","line":57,"name":"compare_json_str_len","qualname":"crate::build::compare_json_str_len","reason":"oracle_unresolved_site","subkind":"fn"},
 {"confidence":"high","file":"tests/data/rust.rs","key":"tests/data/rust.rs:22","lidx_kind":"function","name":"foo","qualname":"crate::tests::data::rust::foo","reason":"test_file_outside_cell"},
 {"confidence":"high","file":"tests/data/rust.rs","key":"tests/data/rust.rs:32","lidx_kind":"function","name":"foobar","qualname":"crate::tests::data::rust::foobar","reason":"test_file_outside_cell"},
 {"confidence":"high","file":"tests/data/rust.rs","key":"tests/data/rust.rs:43","lidx_kind":"function","name":"foo","qualname":"crate::tests::data::rust::foo","reason":"test_file_outside_cell"},

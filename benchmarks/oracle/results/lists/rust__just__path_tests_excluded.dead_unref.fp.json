@@ -1,10 +1,3 @@
 [
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/attribute_set.rs","key":"src/attribute_set.rs:7","kind":"method","lidx_kind":"method","line":7,"name":"len","policy":false,"qualname":"crate::attribute_set::AttributeSet::len","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/modulepath.rs","key":"src/modulepath.rs:22","kind":"method","lidx_kind":"method","line":22,"name":"starts_with","policy":false,"qualname":"crate::modulepath::Modulepath::starts_with","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/namepath.rs","key":"src/namepath.rs:7","kind":"method","lidx_kind":"method","line":7,"name":"join","policy":false,"qualname":"crate::namepath::Namepath::join","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/range_ext.rs","key":"src/range_ext.rs:4","kind":"method","lidx_kind":"method","line":4,"name":"display","policy":false,"qualname":"crate::range_ext::RangeExt::display","subkind":"trait_method"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/signal_handler.rs","key":"src/signal_handler.rs:50","kind":"method","lidx_kind":"method","line":50,"name":"handle","policy":false,"qualname":"crate::signal_handler::SignalHandler::handle","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/subcommand.rs","key":"src/subcommand.rs:1010","kind":"method","lidx_kind":"method","line":1010,"name":"takes_arguments","policy":false,"qualname":"crate::subcommand::Subcommand::takes_arguments","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/tree.rs","key":"src/tree.rs:102","kind":"method","lidx_kind":"method","line":102,"name":"extend","policy":false,"qualname":"crate::tree::Tree::extend","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/value.rs","key":"src/value.rs:22","kind":"method","lidx_kind":"method","line":22,"name":"push","policy":false,"qualname":"crate::value::Value::push","subkind":"inherent"}
+
 ]

@@ -1,7 +1,3 @@
 [
-{"category":"reachable_function","confidence":"high","exported":false,"file":"src/cli.rs","key":"src/cli.rs:959","kind":"function","lidx_kind":"function","line":959,"name":"parse_millis","policy":false,"qualname":"crate::cli::parse_millis","subkind":"fn"},
-{"category":"reachable_function","confidence":"high","exported":false,"file":"src/output.rs","key":"src/output.rs:168","kind":"function","lidx_kind":"function","line":168,"name":"print_entry_uncolorized","policy":false,"qualname":"crate::output::print_entry_uncolorized","subkind":"fn"},
-{"category":"reachable_method","confidence":"high","exported":true,"file":"src/filter/owner.rs","key":"src/filter/owner.rs:27","kind":"method","lidx_kind":"method","line":27,"name":"from_string","policy":false,"qualname":"crate::filter::owner::OwnerFilter::from_string","subkind":"inherent"},
-{"category":"reachable_method","confidence":"high","exported":true,"file":"src/filter/size.rs","key":"src/filter/size.rs:28","kind":"method","lidx_kind":"method","line":28,"name":"from_string","policy":false,"qualname":"crate::filter::size::SizeFilter::from_string","subkind":"inherent"},
-{"category":"reachable_method","confidence":"medium","exported":false,"file":"src/exec/mod.rs","key":"src/exec/mod.rs:173","kind":"method","lidx_kind":"method","line":173,"name":"push","policy":false,"qualname":"crate::exec::CommandBuilder::push","subkind":"inherent"}
+
 ]
