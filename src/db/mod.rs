@@ -17,6 +17,8 @@ use std::time::Duration;
 mod analytics;
 mod co_change;
 pub(crate) mod external_ifaces;
+mod go_deps;
+mod go_promotion;
 mod graph_query;
 pub use graph_query::{DispatchPeers, EntryArgs, closed_impl_args, dispatch_compatible, type_args};
 mod migrations;

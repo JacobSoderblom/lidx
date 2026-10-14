@@ -1149,7 +1149,7 @@ fn handle_interface_methods(
 /// The interfaces `type_node` embeds, as the type text each is named by
 /// (`Reader`, `io.Writer`, `Set[T]` without its arguments). A union or a
 /// `~T` approximation element is a type-set constraint, not an embedding.
-fn embedded_interfaces(type_node: Node<'_>, source: &str) -> Vec<String> {
+pub(super) fn embedded_interfaces(type_node: Node<'_>, source: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cursor = type_node.walk();
     for elem in type_node.named_children(&mut cursor) {
@@ -1538,8 +1538,10 @@ fn emit_calls_edge(
         }
         // `Func(..)`: a function of the calling file's package (a sibling
         // file's included), unless a local variable of that name is called.
+        // The local must be in scope at the call: `x, err := x(..)` evaluates
+        // its right-hand side before the new `x` exists (issue #503).
         Some((None, name)) => {
-            if ctx.bound_names.contains(&name) {
+            if ctx.types.is_bound(&name, function_node.start_byte()) {
                 target = None;
                 local_call = true;
             } else {
@@ -2045,7 +2047,7 @@ fn collect_import_specs(root: Node<'_>, source: &str) -> Vec<(Option<String>, St
 }
 
 /// Import alias (or the path's guessed package name) -> import path.
-fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, String> {
+pub(super) fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, String> {
     collect_import_specs(root, source)
         .into_iter()
         .filter_map(|(alias, path)| {
@@ -2971,7 +2973,7 @@ fn struct_signature(struct_node: Node<'_>, source: &str) -> Option<String> {
     Some(crate::model::go_type_marker(&out))
 }
 
-fn extract_function_signature(node: Node<'_>, source: &str) -> Option<String> {
+pub(super) fn extract_function_signature(node: Node<'_>, source: &str) -> Option<String> {
     let params = node
         .child_by_field_name("parameters")
         .map(|n| node_text(n, source));

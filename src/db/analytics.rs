@@ -906,6 +906,14 @@ impl Db {
         // `.name` read mentions is not provably dead.
         let member_names: std::cell::OnceCell<Option<HashSet<String>>> = std::cell::OnceCell::new();
         let mut api = PublicApi::new(repo_root, js_files.clone(), rust_libs);
+        // Issue #503: what embedding promotes, for the Go methods among the
+        // candidates: public API through an exported embedding type, or
+        // reached by interface dispatch through one.
+        let promotion = if has_language(&["go"]) {
+            super::go_promotion::go_promotion(&conn, graph_version, &test_guard)?
+        } else {
+            super::go_promotion::GoPromotion::default()
+        };
 
         // Judged in two passes: a method is live through an external
         // interface only when its type is not itself a claim (#472).
@@ -913,6 +921,9 @@ impl Db {
         for (symbol, signature, language, visibility, parent_id, external_trait_impl, tests_only) in
             candidates
         {
+            if promotion.live.contains(&symbol.id) {
+                continue;
+            }
             let profile = profile_for(&language);
             if let Some(is_root) = profile.implicit_root
                 && is_root(&ImplicitRootFacts {
@@ -943,15 +954,18 @@ impl Db {
             } else {
                 None
             };
-            let exposure = api.classify(&Candidate {
-                language: &language,
-                path: &symbol.file_path,
-                kind: &symbol.kind,
-                name: &symbol.name,
-                qualname: &symbol.qualname,
-                visibility: visibility.as_deref(),
-                parent_visibility: parent_visibility.as_deref(),
-            });
+            let exposure = match promotion.public.get(&symbol.id) {
+                Some(why) => Exposure::PublicApi(why.clone()),
+                None => api.classify(&Candidate {
+                    language: &language,
+                    path: &symbol.file_path,
+                    kind: &symbol.kind,
+                    name: &symbol.name,
+                    qualname: &symbol.qualname,
+                    visibility: visibility.as_deref(),
+                    parent_visibility: parent_visibility.as_deref(),
+                }),
+            };
             let named = if mentioned {
                 "; a property read of that name has a receiver the index could not resolve"
             } else if unresolved {
@@ -1007,27 +1021,50 @@ impl Db {
         // A type an unresolved reference names is not proven dead (a
         // function-local `struct V;` passed as a value, say): its methods
         // keep the benefit of the doubt.
-        let claimed: HashSet<i64> = judged
+        let mut claimed: HashSet<i64> = judged
             .iter()
             .filter(|j| !j.public && !j.named_by_unresolved)
             .map(|j| j.claim.symbol.id)
             .collect();
-        let mut probe = ExternalInterfaceProbe {
-            conn: &conn,
-            graph_version,
-            claimed: &claimed,
-            reachability: &reachability,
-            test_files: &test_files,
-            go_evidence: Default::default(),
-            live: None,
-            implemented: HashMap::new(),
-            siblings: HashMap::new(),
-        };
+        // Liveness is a fixpoint: a method rescued here is live, so a type
+        // only it references is live too and its own interface methods may
+        // be rescued next (syft's `TrackProgress` builds the `readCloser`
+        // whose `Close` is `io.Closer`'s). Each pass judges the remaining
+        // claims with the previous pass's rescues taken out of the claims,
+        // until a pass rescues nothing (issue #503).
+        let mut rescued: HashMap<i64, String> = HashMap::new();
+        loop {
+            let mut probe = ExternalInterfaceProbe {
+                conn: &conn,
+                graph_version,
+                claimed: &claimed,
+                reachability: &reachability,
+                test_files: &test_files,
+                go_evidence: Default::default(),
+                live: None,
+                implemented: HashMap::new(),
+                siblings: HashMap::new(),
+            };
+            let mut newly = Vec::new();
+            for j in &judged {
+                if j.claim.symbol.kind == "method"
+                    && !rescued.contains_key(&j.claim.symbol.id)
+                    && let Some(iface) = probe.of(j)?
+                {
+                    newly.push((j.claim.symbol.id, iface));
+                }
+            }
+            if newly.is_empty() {
+                break;
+            }
+            for (id, iface) in newly {
+                claimed.remove(&id);
+                rescued.insert(id, iface);
+            }
+        }
         let mut out = DeadSymbols::default();
         for mut j in judged {
-            if j.claim.symbol.kind == "method"
-                && let Some(iface) = probe.of(&j)?
-            {
+            if let Some(iface) = rescued.get(&j.claim.symbol.id) {
                 // Live through its type: not a claim. Listed on request only,
                 // never above medium.
                 out.external_interface_total += 1;
@@ -1129,8 +1166,22 @@ impl ExternalInterfaceProbe<'_> {
                         .and_then(|q| q.rsplit('.').next())
                         .unwrap_or_default();
                     let dir = method.file_path.rsplit_once('/').map_or("", |(d, _)| d);
-                    self.go_evidence
+                    match self
+                        .go_evidence
                         .of(conn, graph_version, parent, type_name, dir)?
+                    {
+                        Some(found) => Some(found),
+                        // Issue #495: an interface of a dependency whose
+                        // sources were on disk at index time, satisfied by
+                        // the type's own exported methods.
+                        None => self.go_evidence.dependency_interface(
+                            conn,
+                            graph_version,
+                            dir,
+                            &self.siblings[&parent],
+                            &method.name,
+                        )?,
+                    }
                 } else {
                     std
                 }

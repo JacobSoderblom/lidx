@@ -10,9 +10,14 @@ bucket** that is excluded from precision and recall as a root or as something th
 
   public_api             exported from a library: Go exported in an importable package, TypeScript reachable from the package
                          entry, Rust `pub` in a library crate. Other code may use it, so no tool can prove it dead.
-  exported_used_by_rule  Go, unreferenced column: U1000 treats every exported identifier as used.
   test_root, main_init, library_root, ffi_or_macro_entry
                          live by construction (test functions, `main`/`init`, the exported surface a library cell uses as roots).
+  exported_used_by_rule  Go, unreferenced column: an exported identifier of a package nobody can import (`internal/`, `main`).
+                         U1000's rules 1.1-1.4 and 2.1 mark every exported function, type and (on a used type) exported method
+                         as used, so its verdict on one is by rule, never a judgement (issue #503: across the corpus no such
+                         declaration carries a U1000 dead verdict, while RTA finds most of lidx's claims on them dead). The
+                         oracle cannot judge it, so a claim on it is ungradable, like the buckets below; the unreachable column
+                         judges the same declaration.
   impl_for_foreign_type  Rust: a method of an impl whose self type is foreign or primitive (`impl Logic for bool`), or a trait method
                          all of whose impls are such; SCIP does not resolve the call sites, so the oracle cannot judge it.
   trait_declaration      Rust: a `trait` item itself (not a kind `dead_symbols` returns, so it is not claimable).
@@ -29,7 +34,7 @@ declarations: what an exported-symbol policy would buy.
 import math
 from collections import Counter, defaultdict
 
-POLICY_BUCKETS = ("public_api", "exported_used_by_rule")
+POLICY_BUCKETS = ("public_api",)
 ROOT_BUCKETS = ("test_root", "main_init", "library_root", "ffi_or_macro_entry")
 # lidx symbol kinds dead_symbols can return (src/db/analytics.rs), and the oracle kind each belongs to
 KIND_MAP = {"function": "function", "method": "method", "class": "type", "struct": "type", "type": "type", "interface": "type",

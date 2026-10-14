@@ -26,7 +26,7 @@ SEED = 450
 N = 10  # per language, per column, for each of FP and FN
 NB = 10  # per bucket per language
 GLOB = {"go": ["*.go"], "ts": ["*.ts", "*.tsx"], "rust": ["*.rs"]}
-POLICY = ("public_api", "exported_used_by_rule", "test_root", "main_init", "library_root", "ffi_or_macro_entry")
+POLICY = ("public_api", "test_root", "main_init", "library_root", "ffi_or_macro_entry")
 EXPLAIN = {
     "unref": "unreferenced: nothing refers to the declaration (outside its own text, imports, the declaring file's export list, `use` lines and the "
              "impl blocks of its own type)",

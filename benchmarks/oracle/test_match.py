@@ -331,9 +331,13 @@ class DeadCodeUniverse(unittest.TestCase):
         self.assertEqual(set(match_dead.universe(o, "reach", "go")), {"internal/b.go:4"})
         claims = [claim("a.go", 3, "Public"), claim("internal/b.go", 4, "Helper")]
         summ, fp, fn, ungr = match_dead.grade_column(o, claims, "go", "unref", is_test)
-        self.assertEqual({f["category"] for f in fp}, {"public_api", "exported_used_by_rule"})
-        self.assertEqual((summ["all"]["tp"], summ["all"]["fp"]), (0, 2))
-        # an exported-symbol policy drops both claims
+        # the public-API claim is wrong by construction; the internal one is a declaration U1000 has no verdict on
+        # (its `live` is by rule 1.2), so the claim is ungradable in this column (issue #503), not wrong
+        self.assertEqual([f["category"] for f in fp], ["public_api"])
+        self.assertEqual([u["reason"] for u in ungr], ["exported_used_by_rule"])
+        self.assertEqual((summ["all"]["tp"], summ["all"]["fp"]), (0, 1))
+        self.assertEqual(summ["claims_ungradable"], {"exported_used_by_rule": 1})
+        # an exported-symbol policy drops the public-API claim
         self.assertEqual((summ["no_exported"]["graded"], summ["fp_categories_no_exported"]), (0, {}))
         summ_r, fp_r, _, _ = match_dead.grade_column(o, claims, "go", "reach", is_test)
         self.assertEqual([f["category"] for f in fp_r], ["public_api"])

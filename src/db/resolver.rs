@@ -59,7 +59,9 @@
 
 #[path = "resolver_go.rs"]
 mod resolver_go;
-pub(crate) use resolver_go::{go_deferred_candidate, go_std_interface};
+pub(crate) use resolver_go::{
+    MethodSig, go_deferred_candidate, go_std_interface, method_signature, std_interface,
+};
 
 use super::Db;
 use super::graph_query::{
@@ -2511,6 +2513,18 @@ impl<'c> Resolver<'c> {
             None if receiver_type == Some("")
                 && profile_for(r.source_lang).untyped_receiver_is_external =>
             {
+                // Issue #503: a Go method name declared only in the calling
+                // package names one of its methods, not a dependency's; the
+                // receiver's type is what could not be told. Calls only: a
+                // value reference `x.From` (call shape `ref`, stored as a
+                // `REFERENCES` row) may read a field of that name.
+                if r.source_lang == "go"
+                    && r.edge_kind == edge_views::CALLS
+                    && !matches!(r.call_shape, Some(shape) if shape.is_ref)
+                    && self.go_untyped_call_is_package_local(r)?
+                {
+                    return Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous));
+                }
                 Ok(Resolution::Unresolved(UnresolvedReason::External))
             }
             None if self.saw_ambiguous => Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous)),

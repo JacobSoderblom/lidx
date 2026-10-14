@@ -25,6 +25,7 @@
 {"confidence":"high","file":"helpers_test.go","key":"helpers_test.go:21","lidx_kind":"function","name":"expectNotEqual","qualname":"helpers_test.expectNotEqual","reason":"test_file_outside_cell"},
 {"confidence":"high","file":"parse.go","key":"parse.go:9","lidx_kind":"method","name":"newFlagSet","qualname":"parse.iterativeParser.newFlagSet","reason":"not_a_judged_declaration"},
 {"confidence":"high","file":"sliceflag_test.go","key":"sliceflag_test.go:981","lidx_kind":"class","name":"intSliceWrapperDefaultingNil","qualname":"sliceflag_test.intSliceWrapperDefaultingNil","reason":"test_file_outside_cell"},
+{"confidence":"medium","exported":true,"file":"internal/build/build.go","key":"internal/build/build.go:238","kind":"function","lidx_kind":"function","line":238,"name":"VetActionFunc","qualname":"internal/build/build.VetActionFunc","reason":"exported_used_by_rule","subkind":""},
 {"confidence":"medium","file":"app_test.go","key":"app_test.go:2477","lidx_kind":"method","name":"String","qualname":"app_test.customBoolFlag.String","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"app_test.go","key":"app_test.go:2485","lidx_kind":"method","name":"TakesValue","qualname":"app_test.customBoolFlag.TakesValue","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"app_test.go","key":"app_test.go:2489","lidx_kind":"method","name":"GetValue","qualname":"app_test.customBoolFlag.GetValue","reason":"test_file_outside_cell"},

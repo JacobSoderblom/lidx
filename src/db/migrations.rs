@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// The identity columns of an `unresolved_references` row beyond
 /// `(graph_version, file_id)`, NULL-normalised so the unique index treats
@@ -644,6 +644,33 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 ON unresolved_references(graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS})
                 WHERE edge_id IS NULL;"
         ))?;
+    }
+
+    if existing < 28 {
+        // Issue #495: the exported interfaces of the Go dependency packages
+        // the repository imports, read from `vendor/` or the module cache
+        // (`indexer::go_deps`). `go_dep_packages` keys the scan by module
+        // version: a package read for the version `go.mod` requires is not
+        // read again; one no longer required is dropped.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS go_dep_packages (
+                module TEXT NOT NULL,
+                version TEXT NOT NULL,
+                pkg_path TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                PRIMARY KEY (module, version, pkg_path)
+            );
+            CREATE TABLE IF NOT EXISTS go_dep_interfaces (
+                module TEXT NOT NULL,
+                version TEXT NOT NULL,
+                pkg_path TEXT NOT NULL,
+                name TEXT NOT NULL,
+                methods TEXT NOT NULL,
+                embeds TEXT NOT NULL,
+                PRIMARY KEY (module, version, pkg_path, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_go_dep_interfaces_pkg ON go_dep_interfaces(pkg_path);",
+        )?;
     }
 
     if existing < SCHEMA_VERSION {

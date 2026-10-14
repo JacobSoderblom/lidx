@@ -1,3 +1,3 @@
 [
-{"callee":{"file":"sources/git.go","line":299,"name":"Fragments"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"other_call_on_line_missed","detail":null,"fanout":6,"sites":["sources/git.go:383","sources/git.go:300","sources/git.go:420"]}
+{"callee":{"file":"sources/git.go","line":299,"name":"Fragments"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"other_call_on_line_missed","detail":null,"fanout":6,"sites":["sources/git.go:383","sources/git.go:407","sources/git.go:300"]}
 ]

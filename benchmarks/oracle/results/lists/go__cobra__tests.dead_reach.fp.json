@@ -1,4 +1,3 @@
 [
-{"category":"reachable_method","confidence":"medium","exported":true,"file":"completions_test.go","key":"completions_test.go:689","kind":"method","lidx_kind":"method","line":689,"name":"Type","policy":false,"qualname":"completions_test.customMultiString.Type","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"completions_test.go","key":"completions_test.go:693","kind":"method","lidx_kind":"method","line":693,"name":"GetSlice","policy":false,"qualname":"completions_test.customMultiString.GetSlice","subkind":""}
 ]
