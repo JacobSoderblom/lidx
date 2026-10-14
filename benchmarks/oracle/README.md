@@ -494,20 +494,20 @@ bucket), 0 oracle or matching artefacts, 0 mis-bucketed exclusions, all 60 sampl
 | go/urfavecli/tests | 1.000 [0.904, 1.000] | 1.000 [0.904, 1.000] | 36 (0) | 36 (36) |
 | go/bubbletea/tests | 1.000 [0.851, 1.000] | 1.000 [0.851, 1.000] | 22 (0) | 22 (22) |
 | go/viper | no value reference in the repository | | 0 | 0 |
-| ts/zod | 1.000 [0.973, 1.000] | 1.000 [0.973, 1.000] | 139 (0) | 140 (140) |
-| ts/hono | 1.000 [0.972, 1.000] | 1.000 [0.972, 1.000] | 135 (0) | 135 (135) |
-| ts/trpc | 1.000 [0.918, 1.000] (1 dropped as calls) | 1.000 [0.918, 1.000] | 43 (0) | 43 (43) |
-| ts/ky | 1.000 [0.723, 1.000] | 1.000 [0.723, 1.000] | 10 (0) | 10 (10) |
-| ts/immer | 1.000 [0.824, 1.000] (1 dropped as calls) | 1.000 [0.824, 1.000] | 18 (0) | 18 (18) |
-| ts/h3 | 1.000 [0.918, 1.000] (1 dropped as calls) | 0.878 [0.758, 0.943] | 43 (0) | 49 (43) |
-| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] (+1 lineless ungraded (5% of pairs)) | 0.679 [0.493, 0.821] | 19 (0) | 28 (19) |
-| rust/fd/path_tests_excluded | 1.000 [0.646, 1.000] | 1.000 [0.646, 1.000] | 7 (0) | 7 (7) |
-| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
-| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] | 0.667 [0.208, 0.939] | 2 (0) | 3 (2) |
+| ts/zod | 0.721 [0.598, 0.818] | 0.321 [0.250, 0.403] | 61 (17) | 140 (45) |
+| ts/hono | 0.974 [0.926, 0.991] (3 dropped as calls) | 0.830 [0.757, 0.884] | 115 (3) | 135 (112) |
+| ts/trpc | 0.867 [0.621, 0.963] (7 dropped as calls; weakly supported) | 0.302 [0.186, 0.451] | 15 (2) | 43 (13) |
+| ts/ky | 0.875 [0.529, 0.978] | 0.700 [0.397, 0.892] | 8 (1) | 10 (7) |
+| ts/immer | 1.000 [0.342, 1.000] (1 dropped as calls; weakly supported) | 0.111 [0.031, 0.328] | 2 (0) | 18 (2) |
+| ts/h3 | 0.854 [0.716, 0.931] (6 dropped as calls) | 0.633 [0.493, 0.753] | 41 (6) | 49 (31) |
+| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] (+14 lineless ungraded (42% of pairs)) | 0.679 [0.493, 0.821] | 19 (0) | 28 (19) |
+| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] (+6 lineless ungraded (50% of pairs)) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] (+5 lineless ungraded (45% of pairs)) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] (+2 lineless ungraded (50% of pairs)) | 0.667 [0.208, 0.939] | 2 (0) | 3 (2) |
 | rust/xsv/path_tests_excluded | no pair graded | 0.000 [0.000, 0.354] | 0 | 7 (0) |
-| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] (+2 lineless ungraded (3% of pairs)) | 0.935 [0.846, 0.975] | 58 (0) | 62 (58) |
-| rust/just/path_tests_excluded | 1.000 [0.959, 1.000] | 0.968 [0.910, 0.989] | 90 (0) | 94 (91) |
-| rust/nextest/path_tests_excluded | 0.959 [0.863, 0.989] | 0.940 [0.838, 0.979] | 49 (2) | 50 (47) |
+| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] (+9 lineless ungraded (13% of pairs)) | 0.935 [0.846, 0.975] | 58 (0) | 62 (58) |
+| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] (+13 lineless ungraded (14% of pairs)) | 0.862 [0.778, 0.917] | 80 (0) | 94 (81) |
+| rust/nextest/path_tests_excluded | 0.954 [0.845, 0.987] (+9 lineless ungraded (17% of pairs)) | 0.820 [0.692, 0.902] | 43 (2) | 50 (41) |
 
 **Read the notes beside P.** Rust precision is over pairs with a source line only: the lineless module-level USES rows lidx records for `Type::f` paths (`no_evidence_line`) are not graded and are 29-50% of lidx's pairs in several cells, so the Rust 1.000 figures say little about them. Pairs dropped because lidx also has a call are not graded either; cells where they exceed 20% of the graded pairs are weakly supported. The Rust cell variants (`path_tests_excluded`, `no_tests`, `tests`, `_all_features`) duplicate each other for value references (identical or nearly so), so do not count them as independent evidence.
 
