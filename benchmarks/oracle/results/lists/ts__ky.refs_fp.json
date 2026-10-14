@@ -1,3 +1,3 @@
 [
-{"callee":{"file":"source/core/constants.ts","line":263,"name":"retry","qualname":"source/core/constants.retry"},"callee_kind":"function","caller":{"file":"source/types/ky.ts","line":5,"name":"KyInstance","qualname":"source/types/ky.KyInstance"},"caller_kind":"type","category":"no_reference_at_site","detail":null,"edge_kinds":["USES"],"evidence_file":"source/types/ky.ts","evidence_lines":[204],"resolution_kind":"import"}
+
 ]

@@ -93,7 +93,9 @@ def load_lidx(db_path, repo, lang):
     for r in con.execute(
         "select e.kind, e.source_symbol_id as s, e.target_symbol_id as t, e.target_qualname, e.resolution_kind, "
         "e.evidence_start_line as line, e.evidence_end_line as end_line, f.path as epath from edges e join files f on f.id = e.file_id "
-        "where e.kind in ('CALLS','DISPATCH','REFERENCES','USES') and f.deleted_version is null"
+        "where e.kind in ('CALLS','DISPATCH','REFERENCES','USES') and f.deleted_version is null "
+        # a property read or write that lands on a get / set accessor is no function used as a value
+        "and coalesce(e.call_shape, '') != 'member'"
     ):
         edges.append(dict(r))
     con.close()

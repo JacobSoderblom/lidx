@@ -228,3 +228,71 @@ fn a_function_turning_into_a_constant_changes_the_stored_kind_like_a_fresh_index
         &[("src/app.ts", APP_TS), ("src/lib.ts", LIB_CONST_TS)],
     );
 }
+
+const BOX_GETTER_TS: &str =
+    "export class Box {\n  static create = () => 1;\n  get size() { return 1; }\n  run() {}\n}\n";
+const BOX_METHOD_TS: &str =
+    "export class Box {\n  static create = () => 1;\n  size() { return 1; }\n  run() {}\n}\n";
+const BOX_USER_TS: &str = "import { Box } from './box';\nconst make = Box.create;\nconst box = new Box();\nexport const table = { make };\nexport function use() {\n  const cb = () => 1;\n  return [make, { cb }];\n}\nexport const size = box.size;\n";
+
+fn ts_references(indexer: &Indexer) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = references(indexer)
+        .into_iter()
+        .map(|(s, t, _)| (s, t))
+        .collect();
+    rows.sort();
+    rows
+}
+
+#[test]
+fn a_getter_turning_into_a_method_adds_the_reference_like_a_fresh_index() {
+    let (_tmp, root, mut indexer) =
+        indexed(&[("src/box.ts", BOX_GETTER_TS), ("src/user.ts", BOX_USER_TS)]);
+    let want: Vec<(String, String)> = vec![
+        ("src/user".into(), "src/box.Box.create".into()),
+        ("src/user".into(), "src/user.make".into()),
+        ("src/user.use".into(), "src/user.make".into()),
+        ("src/user.use".into(), "src/user.use.cb".into()),
+    ];
+    assert_eq!(ts_references(&indexer), want);
+
+    common::write_files(&root, &[("src/box.ts", BOX_METHOD_TS)]);
+    indexer.sync_rel_paths(&["src/box.ts".to_string()]).unwrap();
+    let mut want = want;
+    want.push(("src/user".into(), "src/box.Box.size".into()));
+    want.sort();
+    assert_eq!(ts_references(&indexer), want);
+    assert_incremental_equals_fresh(
+        &indexer,
+        &[("src/box.ts", BOX_METHOD_TS), ("src/user.ts", BOX_USER_TS)],
+    );
+
+    common::write_files(&root, &[("src/box.ts", BOX_GETTER_TS)]);
+    indexer.sync_rel_paths(&["src/box.ts".to_string()]).unwrap();
+    assert_incremental_equals_fresh(
+        &indexer,
+        &[("src/box.ts", BOX_GETTER_TS), ("src/user.ts", BOX_USER_TS)],
+    );
+}
+
+#[test]
+fn editing_a_local_callback_and_its_user_matches_a_fresh_index() {
+    let (_tmp, root, mut indexer) =
+        indexed(&[("src/box.ts", BOX_GETTER_TS), ("src/user.ts", BOX_USER_TS)]);
+    let renamed = BOX_USER_TS
+        .replace("const cb = ", "const cb2 = ")
+        .replace("{ cb }", "{ cb2 }");
+    common::write_files(&root, &[("src/user.ts", &renamed)]);
+    indexer
+        .sync_rel_paths(&["src/user.ts".to_string()])
+        .unwrap();
+    assert!(
+        ts_references(&indexer).contains(&("src/user.use".into(), "src/user.use.cb2".into())),
+        "{:?}",
+        ts_references(&indexer)
+    );
+    assert_incremental_equals_fresh(
+        &indexer,
+        &[("src/box.ts", BOX_GETTER_TS), ("src/user.ts", &renamed)],
+    );
+}
