@@ -3019,7 +3019,7 @@ impl TypeEnv<'_> {
                 match (name.as_deref(), args.len()) {
                     // Method calls auto-deref, so for receiver purposes a
                     // smart pointer to `T` is a `T`.
-                    (Some("Box" | "Arc" | "Rc"), 1) => arg(0),
+                    (Some("Box" | "Arc" | "Rc"), 1) => demote_local(arg(0)),
                     (Some("Option"), 1) => Ty::Option(Box::new(arg(0))),
                     (Some("Result"), 1) => Ty::Result(Box::new(arg(0)), Box::new(Ty::Unknown)),
                     (Some("Result"), 2) => Ty::Result(Box::new(arg(0)), Box::new(arg(1))),
@@ -3305,7 +3305,7 @@ impl TypeEnv<'_> {
         ) {
             return call_arguments(call)
                 .first()
-                .map(|inner| self.expr_ty(*inner, locals));
+                .map(|inner| demote_local(self.expr_ty(*inner, locals)));
         }
         // `mem::replace(&mut x, new)` / `mem::take(&mut x)` return `x`'s type.
         if matches!(

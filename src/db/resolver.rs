@@ -2970,7 +2970,7 @@ impl<'c> Resolver<'c> {
                     // trait the package declares provides it, else nothing
                     // (never a same-named type of another package).
                     let ty_full = format!("{module}::{ty}");
-                    let declared = query_exact_candidates(
+                    let type_ids: Vec<i64> = query_exact_candidates(
                         &mut self.exact,
                         &ty_full,
                         self.graph_version,
@@ -2978,13 +2978,15 @@ impl<'c> Resolver<'c> {
                         self.caller_scope.as_deref(),
                     )?
                     .iter()
-                    .any(|c| {
+                    .filter(|c| {
                         crate::indexer::rust::cargo_package_dir(&c.path) == home
                             && matches!(c.kind.as_str(), "struct" | "enum" | "class" | "type")
-                    });
-                    if declared {
+                    })
+                    .map(|c| c.id)
+                    .collect();
+                    if !type_ids.is_empty() {
                         return Ok(self
-                            .rust_package_trait_method(home, method)?
+                            .rust_implemented_trait_method(&type_ids, method)?
                             .map(|id| (id, ResolutionKind::Inherited)));
                     }
                     known_type = ty;
@@ -3475,29 +3477,31 @@ impl<'c> Resolver<'c> {
             .then_some((id, ResolutionKind::BareName)))
     }
 
-    /// The one method named `method` that a trait declares (or an impl of a
-    /// trait defines) in the Cargo package at `dir`; `None` when there is none
-    /// or several.
-    fn rust_package_trait_method(&mut self, dir: &str, method: &str) -> Result<Option<i64>> {
-        let prefix = if dir.is_empty() {
-            "%".to_string()
-        } else {
-            format!("{dir}/%")
-        };
-        let ids: Vec<i64> = self
-            .conn
-            .prepare_cached(
-                "SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
-                 WHERE s.name = ?1 AND s.kind = 'method' AND s.graph_version = ?2
-                   AND f.language = 'rust' AND f.path LIKE ?3
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
-            )?
-            .query_map(params![method, self.graph_version, prefix], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut found = None;
-        for id in ids {
-            if self.is_rust_trait_method(id)? {
-                if found.is_some() {
+    /// The one method named `method` declared by a trait that one of the
+    /// types `type_ids` implements (a default method, or the declaration);
+    /// `None` when there is none or several.
+    fn rust_implemented_trait_method(
+        &mut self,
+        type_ids: &[i64],
+        method: &str,
+    ) -> Result<Option<i64>> {
+        let mut found: Option<i64> = None;
+        for type_id in type_ids {
+            let ids: Vec<i64> = self
+                .conn
+                .prepare_cached(
+                    "SELECT m.id FROM edges e
+                     JOIN symbols t ON t.id = e.target_symbol_id AND t.kind = 'trait'
+                     JOIN symbols m ON m.kind = 'method' AND m.name = ?3
+                       AND m.graph_version = ?2 AND m.file_id = t.file_id
+                       AND m.qualname = t.qualname || '::' || ?3
+                     WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPLEMENTS'
+                       AND e.graph_version = ?2",
+                )?
+                .query_map(params![type_id, self.graph_version, method], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for id in ids {
+                if found.is_some_and(|f| f != id) {
                     return Ok(None);
                 }
                 found = Some(id);
