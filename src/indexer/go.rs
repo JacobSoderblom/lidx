@@ -623,7 +623,7 @@ fn field_only_names(root: Node<'_>, source: &str) -> HashSet<String> {
 /// parameters in scope are no mention.
 fn collect_type_uses(root: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
-    let mut seen: HashMap<String, (usize, Vec<String>)> = HashMap::new();
+    let mut seen: HashMap<String, (usize, Vec<String>, Vec<String>)> = HashMap::new();
     // Depth-first on one cursor with the path of ancestors at hand:
     // `Node::parent` walks down from the root, which is too slow to call per
     // mention, and a child list per node is too many allocations.
@@ -645,8 +645,13 @@ fn collect_type_uses(root: Node<'_>, ctx: &Context, source: &str, output: &mut E
             }
             if is_type_mention(mention, &ancestors, &name, source) {
                 let enclosing = enclosing_declaration(ctx, &ancestors, source);
+                let built = builds_value(mention, &ancestors)
+                    .then(|| enclosing.clone())
+                    .flatten()
+                    .filter(|d| !d.is_empty());
                 push_type_use(
-                    ctx, dir, source, mention, &name, qualifier, enclosing, &mut seen, output,
+                    ctx, dir, source, mention, &name, qualifier, enclosing, built, &mut seen,
+                    output,
                 );
             }
         }
@@ -667,8 +672,14 @@ fn collect_type_uses(root: Node<'_>, ctx: &Context, source: &str, output: &mut E
     // Where each type is mentioned: the declarations (`""`: outside any)
     // whose bodies hold a mention, so `dead_symbols` can tell a type used by
     // live code from one only dead code mentions.
-    for (index, declarations) in seen.into_values() {
-        output.edges[index].detail = Some(json!({ "in": declarations }).to_string());
+    // `built_in`: the declarations holding a mention that makes a value of
+    // the type (`T{}`, `var x T`), so the type can sit behind an interface.
+    for (index, declarations, built) in seen.into_values() {
+        output.edges[index].detail = Some(if built.is_empty() {
+            json!({ "in": declarations }).to_string()
+        } else {
+            json!({ "in": declarations, "built_in": built }).to_string()
+        });
     }
 }
 
@@ -717,7 +728,8 @@ fn push_type_use(
     name: &str,
     qualifier: Option<String>,
     enclosing: Option<String>,
-    seen: &mut HashMap<String, (usize, Vec<String>)>,
+    built: Option<String>,
+    seen: &mut HashMap<String, (usize, Vec<String>, Vec<String>)>,
     output: &mut ExtractedFile,
 ) {
     let (target, candidate) = match &qualifier {
@@ -737,7 +749,12 @@ fn push_type_use(
             (format!("{path}.{name}"), format!("{path}|{name}"))
         }
     };
-    if let Some((_, declarations)) = seen.get_mut(&candidate) {
+    if let Some((_, declarations, builders)) = seen.get_mut(&candidate) {
+        if let Some(b) = built
+            && !builders.contains(&b)
+        {
+            builders.push(b);
+        }
         if let Some(e) = enclosing
             && !declarations.contains(&e)
         {
@@ -747,7 +764,11 @@ fn push_type_use(
     }
     seen.insert(
         candidate.clone(),
-        (output.edges.len(), enclosing.into_iter().collect()),
+        (
+            output.edges.len(),
+            enclosing.into_iter().collect(),
+            built.into_iter().collect(),
+        ),
     );
     let (start_line, _, end_line, _, start_byte, end_byte) = span(mention);
     output.edges.push(EdgeInput {
@@ -763,6 +784,18 @@ fn push_type_use(
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+}
+
+/// Whether the type mention makes a value of the type: the type of a
+/// composite literal (`T{}`, `&T{}`, `pkg.T{}`) or of a `var x T`. An
+/// instantiated generic (`T[int]{}`) is none: the compiler tells its
+/// instances apart by type argument, which a name cannot.
+fn builds_value(mention: Node<'_>, ancestors: &[Node<'_>]) -> bool {
+    ancestors.last().is_some_and(|p| {
+        matches!(p.kind(), "composite_literal" | "var_spec")
+            && p.child_by_field_name("type")
+                .is_some_and(|t| t.id() == mention.id())
+    })
 }
 
 /// The type `node` mentions, as `(node, name, package qualifier)`: a

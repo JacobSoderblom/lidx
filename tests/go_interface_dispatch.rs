@@ -56,6 +56,27 @@ fn edges(indexer: &Indexer, kind: &str, source_like: &str) -> Vec<String> {
         .collect()
 }
 
+/// The `CALLS` edges the resolver bound to a call site, without the ones
+/// derived from a `DISPATCH` edge (`dispatch_impl`).
+fn bound_calls(indexer: &Indexer, source_like: &str) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.qualname || ' -> ' || COALESCE(t.qualname, '?') FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'CALLS' AND e.graph_version = ?1 AND s.qualname LIKE ?2
+               AND COALESCE(e.resolution_kind, '') != 'dispatch_impl'
+             ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![gv, source_like], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
 fn sync(indexer: &mut Indexer, root: &std::path::Path, files: &[(&str, &str)]) {
     common::write_files(root, files);
     let paths: Vec<String> = files.iter().map(|(p, _)| p.to_string()).collect();
@@ -141,7 +162,7 @@ fn a_receiver_type_proven_at_the_call_site_binds_the_concrete_method() {
     }
     // not provable: assigned again, a parameter, a reassigned field
     for caller in ["use.Reassigned", "use.Param", "use.FieldReassigned"] {
-        assert!(edges(&indexer, "CALLS", caller).is_empty(), "{caller}");
+        assert!(bound_calls(&indexer, caller).is_empty(), "{caller}");
         assert_eq!(
             edges(&indexer, "DISPATCH", caller),
             vec![format!("{caller} -> doer.Doer.Do")],
@@ -393,7 +414,9 @@ fn editing_the_proof_matches_a_fresh_reindex() {
     let unproven =
         "package app\n\nfunc Use() {\n\tvar d Doer = &ImplA{}\n\td = &ImplB{}\n\td.Do()\n}\n";
     sync(&mut indexer, &root, &[("use.go", unproven)]);
-    assert!(edges(&indexer, "CALLS", "use.Use").is_empty());
+    // the bound call is gone; `Use` builds both types, so it still reaches
+    // both (derived `dispatch_impl` edges)
+    assert!(bound_calls(&indexer, "use.Use").is_empty());
     assert_eq!(
         edges(&indexer, "DISPATCH", "use.Use"),
         vec!["use.Use -> doer.Doer.Do"]

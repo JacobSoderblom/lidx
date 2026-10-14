@@ -6622,6 +6622,8 @@ impl Db {
         if deferred_rpc > 0 {
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
+        // After every step that can bind a call to a Go interface method.
+        self.rederive_go_dispatch_calls(graph_version)?;
         // After every step that can bind or rebuild an impl edge.
         let impl_sources = self.rederive_rust_impl_sources(graph_version)?;
         if impl_sources > 0 {
