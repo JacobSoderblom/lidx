@@ -407,6 +407,12 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
                     .then(|| repo.resolve_import(repo_root, file_rel_path, target))
                 {
                     Some(ImportTarget::InRepo(dir)) => format!("{GO_IMPORTED_PACKAGE}{dir}"),
+                    // No go.mod at all (a GOPATH layout): the tail of the
+                    // path may name a directory of the repository.
+                    None => match gopath_dir(repo_root, target) {
+                        Some(dir) => format!("{GO_IMPORTED_PACKAGE}{dir}"),
+                        None => target.clone(),
+                    },
                     _ => target.clone(),
                 };
                 edge.detail = Some(
@@ -420,6 +426,20 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             }
         }
     }
+}
+
+/// The directory of the repository a GOPATH-style import path ends in
+/// (`example.com/proj/util` -> `util`, or `proj/util`), the longest tail that
+/// is a directory. Only for a path with a domain first element: the standard
+/// library (`io`, `net/http`) is never the repository's.
+fn gopath_dir(repo_root: &Path, import_path: &str) -> Option<String> {
+    let segments: Vec<&str> = import_path.split('/').collect();
+    if segments.len() < 2 || !segments[0].contains('.') {
+        return None;
+    }
+    (1..segments.len())
+        .map(|i| segments[i..].join("/"))
+        .find(|tail| !tail.is_empty() && repo_root.join(tail).is_dir())
 }
 
 pub fn module_name_from_rel_path(rel_path: &str) -> String {
@@ -1238,20 +1258,32 @@ fn var_signature(spec: Node<'_>, name: &str, ctx: &Context, source: &str) -> Opt
     let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
     let scope = LocalTypes::package_scope(dir, ctx.imports.clone());
     if let Some(ty) = spec.child_by_field_name("type") {
-        let text = scope.type_text(ty, source)?;
-        // `var _ pkg.Iface = (*T)(nil)`: T is declared to implement Iface.
+        let text = scope.type_text(ty, source);
+        // `var _ pkg.Iface = (*T)(nil)`, or `var _ interface{ a.I; b.J } =
+        // ...`: T is declared to implement every qualified interface named.
         if name == "_"
-            && text.trim_start_matches('*').contains('.')
             && let Some(value) = spec.child_by_field_name("value")
             && let Some(asserted) = asserted_type(value, source)
         {
-            return Some(format!(
-                "{}\n{}",
-                crate::model::go_assert_marker(text.trim_start_matches('*'), &asserted),
-                crate::model::go_type_marker(&text)
-            ));
+            let interfaces: Vec<String> = if ty.kind() == "interface_type" {
+                embedded_interfaces(ty, source)
+            } else {
+                text.iter()
+                    .map(|t| t.trim_start_matches('*').to_string())
+                    .collect()
+            }
+            .into_iter()
+            .filter(|i| i.contains('.'))
+            .collect();
+            if !interfaces.is_empty() {
+                let marker = crate::model::go_assert_marker(&interfaces.join(","), &asserted);
+                return Some(match &text {
+                    Some(t) => format!("{marker}\n{}", crate::model::go_type_marker(t)),
+                    None => marker,
+                });
+            }
         }
-        return Some(crate::model::go_type_marker(&text));
+        return text.map(|t| crate::model::go_type_marker(&t));
     }
     let mut cursor = spec.walk();
     let names: Vec<Node<'_>> = spec.children_by_field_name("name", &mut cursor).collect();

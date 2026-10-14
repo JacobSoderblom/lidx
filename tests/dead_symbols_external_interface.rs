@@ -471,3 +471,73 @@ fn go_external_import_evidence_comes_from_unresolved_references() {
     assert!(!has(&dead, "Boxed.Close"), "{dead:?}");
     assert!(has(&dead, "NoUI.hidden"), "{dead:?}");
 }
+
+/// `var _ interface{ ui.A; ui.B; Local } = (*T)(nil)`: every member that names
+/// a package outside the repository counts, the repository's own does not.
+const GO_ANON: &[(&str, &str)] = &[
+    ("go.mod", "module github.com/acme/tool\n\ngo 1.22\n"),
+    (
+        "main.go",
+        "package main\n\nimport \"github.com/acme/tool/cmd/ui\"\n\nfunc main() { _ = ui.NewCfg(); _ = ui.NewRepoOnly() }\n",
+    ),
+    (
+        "cmd/ui/cfg.go",
+        "package ui\n\nimport \"github.com/acme/ext\"\n\ntype Local interface{ Run() }\n\ntype Cfg struct{}\n\n\
+         func NewCfg() *Cfg { return &Cfg{} }\n\n\
+         func (c *Cfg) AddFlags(f int) {}\n\
+         func (c *Cfg) PostLoad() error { return nil }\n\
+         func (c *Cfg) hidden() {}\n\n\
+         var _ interface {\n\text.FlagAdder\n\text.PostLoader\n\tLocal\n} = (*Cfg)(nil)\n\n\
+         type RepoOnly struct{}\n\nfunc NewRepoOnly() *RepoOnly { return &RepoOnly{} }\n\n\
+         func (r *RepoOnly) Run() {}\n\n\
+         var _ interface{ Local } = (*RepoOnly)(nil)\n",
+    ),
+];
+
+#[test]
+fn go_anonymous_interface_assertion_counts_each_external_member() {
+    let (_tmp, _root, mut ix) = common::live_indexer("lidx-dead-ext-go-anon-", GO_ANON);
+    let r = call(&mut ix);
+    let dead = claimed(&r);
+    for live in ["Cfg.AddFlags", "Cfg.PostLoad"] {
+        assert!(!has(&dead, live), "{live} claimed: {dead:?}");
+    }
+    assert!(has(&dead, "Cfg.hidden"), "{dead:?}");
+    // the members of the repository's own interface rescue nothing
+    assert!(has(&dead, "RepoOnly.Run"), "{dead:?}");
+    // the label names the asserted interfaces and says the membership is unknown
+    let reason = listed(&r, "Cfg.AddFlags")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("asserts ext.FlagAdder, ext.PostLoader; method set unknown"),
+        "{reason}"
+    );
+}
+
+/// Without any go.mod the import path says nothing; a path whose tail is a
+/// directory of the repository is the repository's own package (GOPATH layout).
+#[test]
+fn go_without_go_mod_a_local_package_assertion_rescues_nothing() {
+    let files = [
+        (
+            "main.go",
+            "package main\n\nimport \"example.com/proj/localpkg\"\n\nfunc main() { _ = localpkg.New() }\n",
+        ),
+        (
+            "localpkg/local.go",
+            "package localpkg\n\nimport \"example.com/proj/iface\"\n\ntype T struct{}\n\n\
+             func New() *T { return &T{} }\n\nfunc (T) Exported() {}\n\n\
+             var _ iface.Runner = (*T)(nil)\n",
+        ),
+        (
+            "iface/iface.go",
+            "package iface\n\ntype Runner interface{ Exported() }\n",
+        ),
+    ];
+    let (_tmp, _root, mut ix) = common::live_indexer("lidx-dead-ext-go-gopath-", &files);
+    let r = call(&mut ix);
+    assert!(has(&claimed(&r), "T.Exported"), "{r}");
+    assert_eq!(r["counts"]["implements_external_interface"], 0, "{r}");
+}

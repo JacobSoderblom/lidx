@@ -564,3 +564,34 @@ fn ts_entry_in_a_source_directory_is_mapped_from_the_built_path() {
     assert!(has(&names(&r, "public_api"), "source.api"), "{r}");
     assert!(has(&names(&r, "dead_symbols"), "utils.internal"), "{r}");
 }
+
+#[test]
+fn ts_entry_follows_the_tsconfig_out_dir_and_root_dir() {
+    // `compiled` and `app` are in no fallback list: only the tsconfig (with
+    // comments and a trailing comma) can say where `compiled/index.js` is built from
+    let (_tmp, _root, mut ix) = common::live_indexer(
+        "lidx-dead-ts-outdir-",
+        &[
+            (
+                "package.json",
+                "{\"name\":\"p\",\"main\":\"./compiled/index.js\"}\n",
+            ),
+            (
+                "tsconfig.json",
+                "{\n  // build\n  \"compilerOptions\": {\n    \"outDir\": \"./compiled/\", /* js */\n    \"rootDir\": \"./app\",\n  },\n}\n",
+            ),
+            (
+                "app/index.ts",
+                "export {helper} from './utils';\nexport const api = 1;\n",
+            ),
+            (
+                "app/utils.ts",
+                "export const helper = () => 1;\nexport const internal = () => 2;\n",
+            ),
+        ],
+    );
+    let r = call(&mut ix, true);
+    assert!(has(&names(&r, "public_api"), "utils.helper"), "{r}");
+    assert!(has(&names(&r, "public_api"), "app.api"), "{r}");
+    assert!(has(&names(&r, "dead_symbols"), "utils.internal"), "{r}");
+}

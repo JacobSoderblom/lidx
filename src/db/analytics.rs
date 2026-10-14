@@ -654,7 +654,7 @@ impl Db {
         let test_files = if tests_are_roots {
             HashSet::new()
         } else {
-            self.test_file_ids(graph_version)?
+            self.test_file_ids(graph_version, repo_root)?
         };
         let test_guard = if tests_are_roots {
             String::new()
@@ -1034,7 +1034,7 @@ impl Db {
                 if out.external_interface.len() < limit {
                     j.claim.confidence = DeadConfidence::Medium;
                     j.claim.reason = format!(
-                        "{}: implements {iface} on a live type",
+                        "{}: {iface}, on a live type",
                         super::external_ifaces::REASON
                     );
                     out.external_interface.push(j.claim);
@@ -1091,7 +1091,9 @@ impl ExternalInterfaceProbe<'_> {
         }
         let method = &j.claim.symbol;
         let found = match j.language.as_str() {
-            "rust" => j.external_trait_impl.then(|| "external trait".to_string()),
+            "rust" => j
+                .external_trait_impl
+                .then(|| "implements an external trait".to_string()),
             "go" => {
                 let Some(parent) = j.parent_id else {
                     return Ok(None);
@@ -1115,7 +1117,8 @@ impl ExternalInterfaceProbe<'_> {
                     &method.name,
                     Some(j.signature.as_str()),
                     &self.siblings[&parent],
-                );
+                )
+                .map(|i| format!("implements {i}"));
                 // Only an exported method can satisfy an interface of
                 // another package.
                 if std.is_none() && method.name.chars().next().is_some_and(char::is_uppercase) {
@@ -1155,6 +1158,7 @@ impl ExternalInterfaceProbe<'_> {
                     None => &[],
                 };
                 super::external_ifaces::ts_external_interface(&method.name, names)
+                    .map(|i| format!("implements {i}"))
             }
             _ => None,
         };
@@ -1824,7 +1828,7 @@ const TESTS_ONLY_REASON: &str = "reached_only_from_tests";
 
 impl Db {
     /// Ids of the files `is_test_file` calls tests.
-    fn test_file_ids(&self, graph_version: i64) -> Result<HashSet<i64>> {
+    fn test_file_ids(&self, graph_version: i64, repo_root: &Path) -> Result<HashSet<i64>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, path FROM files WHERE deleted_version IS NULL OR deleted_version > ?1",
@@ -1835,7 +1839,7 @@ impl Db {
         let mut out = HashSet::new();
         for row in rows {
             let (id, path) = row?;
-            if crate::indexer::test_detection::is_test_file(&path) {
+            if crate::indexer::test_detection::is_test_file_in(repo_root, &path) {
                 out.insert(id);
             }
         }

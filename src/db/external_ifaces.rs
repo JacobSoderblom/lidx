@@ -115,7 +115,7 @@ impl GoExternalEvidence {
             .as_ref()
             .and_then(|m| m.get(&(dir.to_string(), type_name.to_string())))
         {
-            return Ok(Some(label.clone()));
+            return Ok(Some(format!("asserts {label}; method set unknown")));
         }
         let (signature, file_id): (Option<String>, i64) = conn.query_row(
             "SELECT signature, file_id FROM symbols WHERE id = ?1",
@@ -131,10 +131,12 @@ impl GoExternalEvidence {
             return Ok(None);
         }
         let external = self.external_names(conn, graph_version, file_id)?;
-        Ok(embedded
+        let named: Vec<String> = embedded
             .into_iter()
-            .find(|(q, _)| external.contains(q))
-            .map(|(q, n)| format!("{q}.{n}")))
+            .filter(|(q, _)| external.contains(q))
+            .map(|(q, n)| format!("{q}.{n}"))
+            .collect();
+        Ok((!named.is_empty()).then(|| format!("embeds {}; method set unknown", named.join(", "))))
     }
 
     /// The names the imports of `file_id` bind to packages outside the
@@ -208,24 +210,29 @@ impl GoExternalEvidence {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
-        let mut out = HashMap::new();
+        let mut out: HashMap<(String, String), Vec<String>> = HashMap::new();
         for (signature, path, file_id) in rows {
-            let Some((iface, ty)) = crate::model::go_assert_data(&signature) else {
+            let Some((interfaces, ty)) = crate::model::go_assert_data(&signature) else {
                 continue;
             };
-            let Some((qualifier, _)) = iface.split_once('.') else {
-                continue;
-            };
-            if !self
-                .external_names(conn, graph_version, file_id)?
-                .contains(qualifier)
-            {
-                continue;
-            }
             let dir = path.rsplit_once('/').map_or("", |(d, _)| d).to_string();
-            out.entry((dir, ty.to_string()))
-                .or_insert_with(|| iface.to_string());
+            for iface in interfaces.split(',') {
+                let Some((qualifier, _)) = iface.split_once('.') else {
+                    continue;
+                };
+                if !self
+                    .external_names(conn, graph_version, file_id)?
+                    .contains(qualifier)
+                {
+                    continue;
+                }
+                let known = out.entry((dir.clone(), ty.to_string())).or_default();
+                if !known.iter().any(|k| k == iface) {
+                    known.push(iface.to_string());
+                }
+            }
         }
+        let out = out.into_iter().map(|(k, v)| (k, v.join(", "))).collect();
         Ok(out)
     }
 }
