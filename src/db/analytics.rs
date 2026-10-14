@@ -649,6 +649,7 @@ impl Db {
         let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let reachability = edge_views::sql_list(edge_views::REACHABILITY);
         let entrypoint = edge_views::sql_list(edge_views::ENTRYPOINT);
+        let nested = crate::model::NESTED_MARKER_PREFIX;
         // With `tests_are_roots` off, an edge written in a test file or by a
         // test function does not keep its target alive.
         let test_files = if tests_are_roots {
@@ -715,6 +716,12 @@ impl Db {
                               AND (f.path LIKE 'app/%' OR f.path LIKE '%/app/%'
                                    OR f.path LIKE 'pages/%' OR f.path LIKE '%/pages/%'))
                      AND NOT {is_local}
+                     -- A Rust fn item declared in a fn body (the `#[nested(..)]`
+                     -- marker) is reachable only through that body, which is
+                     -- judged itself. It keeps its symbol as the resolver's
+                     -- same-name candidate, so it is not marked `local`.
+                     AND NOT (f.language = 'rust'
+                              AND COALESCE(s.signature, '') LIKE '%{nested}%')
                      AND NOT {is_decl}
                      AND NOT ({is_accessor} AND EXISTS (
                        SELECT 1 FROM symbols sib
@@ -754,17 +761,33 @@ impl Db {
                          AND e.kind IN ({entrypoint})
                          AND e.graph_version = ?
                      )
-                     -- A call the resolver could not narrow (several same-named
-                     -- candidates, untyped receiver) calls one of them: none of
-                     -- the candidates is provably dead.
-                     AND NOT (s.kind IN ('method', 'function') AND EXISTS (
+                     -- A call or value use the resolver could not narrow
+                     -- (several same-named candidates, untyped receiver) names
+                     -- one of them: none of the candidates is provably dead.
+                     -- A type too (`deserialize_any(V)` with two function-local
+                     -- `struct V` in one module).
+                     AND NOT EXISTS (
                        SELECT 1 FROM unresolved_references ur
                        JOIN files uf ON uf.id = ur.file_id
                        WHERE ur.name_tail = s.name
                          AND ur.reason = 'ambiguous'
-                         AND ur.edge_kind IN ('CALLS', 'REFERENCES')
+                         AND ur.edge_kind IN ('CALLS', 'REFERENCES', 'USES')
                          AND ur.graph_version = {gv}
                          AND uf.language = f.language
+                     )
+                     -- Rust cfg twins: the declarations of one qualname under
+                     -- different `#[cfg(..)]` are one item to every caller (the
+                     -- call binds whichever twin the resolver merged them into),
+                     -- so a twin is live when any twin is reached.
+                     AND NOT (f.language = 'rust'
+                              AND COALESCE(s.signature, '') LIKE '%#[cfg(%'
+                              AND EXISTS (
+                       SELECT 1 FROM symbols tw
+                       JOIN edges e ON e.target_symbol_id = tw.id
+                       WHERE tw.qualname = s.qualname AND tw.kind = s.kind
+                         AND tw.graph_version = s.graph_version AND tw.id != s.id
+                         AND e.kind IN ({reachability}) AND e.graph_version = {gv}
+                         {test_guard}
                      ))
                      AND NOT EXISTS (
                        SELECT 1 {dispatch_from}
@@ -905,6 +928,19 @@ impl Db {
         // resolve leave no edge, so an accessor no edge reaches but some
         // `.name` read mentions is not provably dead.
         let member_names: std::cell::OnceCell<Option<HashSet<String>>> = std::cell::OnceCell::new();
+        // Rust: the sites that spell a candidate's name in the Rust sources
+        // outside its own declarations, `impl` headers and `use` lines
+        // (`rust_name_sites`), computed once, only when a candidate that would
+        // be `high` needs it. A site the index did not read (a macro body, an
+        // attribute, a twin's call) is how such a claim is wrong, so a name
+        // spelled anywhere else is never claimed `high`.
+        let rust_candidate_names: HashSet<String> = candidates
+            .iter()
+            .filter(|c| c.2 == "rust")
+            .map(|c| c.0.name.clone())
+            .collect();
+        let rust_sites: std::cell::OnceCell<Option<HashMap<String, usize>>> =
+            std::cell::OnceCell::new();
         let mut api = PublicApi::new(repo_root, js_files.clone(), rust_libs);
         // Issue #503: what embedding promotes, for the Go methods among the
         // candidates: public API through an exported embedding type, or
@@ -973,6 +1009,23 @@ impl Db {
             } else {
                 ""
             };
+            // Only a Rust candidate that would otherwise be `high` pays for
+            // the source scan. `None` (an indexed file could not be read):
+            // the name may be spelled anywhere.
+            let spelled =
+                if language == "rust" && !unresolved && matches!(exposure, Exposure::Internal(_)) {
+                    rust_sites
+                        .get_or_init(|| {
+                            rust_name_sites(repo_root, &conn, graph_version, &rust_candidate_names)
+                                .ok()
+                                .flatten()
+                        })
+                        .as_ref()
+                        .map_or(Some(1), |sites| sites.get(&symbol.name).copied())
+                        .filter(|&n| n > 0)
+                } else {
+                    None
+                };
             let (confidence, reason, public) = match exposure {
                 Exposure::PublicApi(why) => {
                     (DeadConfidence::Low, format!("public API: {why}"), true)
@@ -980,6 +1033,14 @@ impl Db {
                 Exposure::Internal(why) if unresolved => (
                     DeadConfidence::Medium,
                     format!("{why}, no incoming reference{named}"),
+                    false,
+                ),
+                Exposure::Internal(why) if spelled.is_some() => (
+                    DeadConfidence::Medium,
+                    format!(
+                        "{why}, no incoming reference; the name is spelled at {} site(s) in the Rust sources the index did not resolve",
+                        spelled.unwrap_or(1)
+                    ),
                     false,
                 ),
                 Exposure::Internal(why) => (
@@ -1107,11 +1168,36 @@ struct ExternalInterfaceProbe<'a> {
 }
 
 impl ExternalInterfaceProbe<'_> {
+    /// Whether the trait symbol `trait_id` has an `impl` whose self type the
+    /// index holds no symbol for.
+    fn extension_trait(&self, trait_id: i64) -> Result<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT 1 FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'IMPLEMENTS' AND e.graph_version = ?2
+               AND e.target_symbol_id = ?1 AND e.source_symbol_id IS NULL
+               AND t.kind = 'trait' LIMIT 1",
+        )?;
+        Ok(stmt.exists(rusqlite::params![trait_id, self.graph_version])?)
+    }
+
     /// The interface method `j` implements, or `None` when it implements none
     /// or its type is not live. A method whose type cannot be found is given
     /// the benefit of the doubt.
     fn of(&mut self, j: &Judged) -> Result<Option<String>> {
         let (conn, graph_version) = (self.conn, self.graph_version);
+        // A method of a trait the repository implements for a type it does not
+        // declare (`impl RangeExt<T> for RangeInclusive<T> {}`, an extension
+        // trait of a std or dependency type): its callers hold values of that
+        // type, which the index cannot type, so no call edge reaches it
+        // although the trait is used.
+        if j.language == "rust"
+            && let Some(parent) = j.parent_id
+            && self.extension_trait(parent)?
+        {
+            return Ok(Some(
+                "method of a trait implemented for a foreign type".to_string(),
+            ));
+        }
         if let Some(parent) = j.parent_id {
             if self.live.is_none() {
                 self.live = Some(live_symbols(
@@ -1934,7 +2020,174 @@ fn parent_visibility_of(
         ],
         |r| r.get(0),
     )?;
-    Ok(parent)
+    if parent.is_some() || !method.file_path.ends_with(".rs") {
+        return Ok(parent);
+    }
+    // A Rust `impl Db` outside the module that declares `Db` hangs under
+    // `<that module>::Db`, which names no symbol: the types of that name in
+    // the method's package are the candidates (`Db` is `pub` where it is
+    // declared whichever module implements it).
+    let Some(ty) = stem
+        .strip_suffix("::")
+        .and_then(|path| path.rsplit("::").next())
+    else {
+        return Ok(None);
+    };
+    let package_of = profile_for("rust").package_dir.unwrap_or(|_| "");
+    let package = package_of(&method.file_path);
+    let mut stmt = conn.prepare_cached(
+        "SELECT COALESCE(s.visibility, ''), f.path FROM symbols s
+         JOIN files f ON f.id = s.file_id
+         WHERE s.graph_version = ?1 AND s.name = ?2
+           AND s.kind IN ('struct', 'enum', 'union', 'trait', 'type')
+           AND f.language = 'rust'
+           AND (f.deleted_version IS NULL OR f.deleted_version > ?1)",
+    )?;
+    let declared = stmt
+        .query_map(rusqlite::params![graph_version, ty], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let visibilities: Vec<String> = declared
+        .into_iter()
+        .filter(|(_, path)| package_of(path) == package)
+        .map(|(visibility, _)| visibility)
+        .collect();
+    Ok((!visibilities.is_empty()).then(|| visibilities.join(" ")))
+}
+
+/// How many times each of `names` is spelled as an identifier token in the
+/// indexed Rust files, outside comments, outside the spans of the symbols
+/// declared with that name (the declaration itself and its body, so a
+/// recursive call does not count), outside `impl` headers (`impl Foo`, `impl
+/// Trait for Foo`: implementing is not using) and outside `use` lines (an
+/// import is not a use either). String literals count: an attribute names a
+/// function in one (`#[serde(default = "f")]`). Each such site is a place the
+/// index did not resolve to the declaration, so a claim on the name is not
+/// `high`. `Ok(None)` when an indexed file cannot be read: the name may be
+/// spelled anywhere, and the caller treats every candidate as spelled.
+fn rust_name_sites(
+    repo_root: &Path,
+    conn: &rusqlite::Connection,
+    graph_version: i64,
+    names: &HashSet<String>,
+) -> Result<Option<HashMap<String, usize>>> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    if names.is_empty() {
+        return Ok(Some(counts));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, path FROM files WHERE language = 'rust'
+           AND (deleted_version IS NULL OR deleted_version > ?1)",
+    )?;
+    let files = stmt
+        .query_map([graph_version], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // The byte spans of every symbol whose name is a candidate, per file.
+    let mut spans: HashMap<i64, Vec<(String, i64, i64)>> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT s.file_id, s.name, s.start_byte, s.end_byte FROM symbols s
+         JOIN files f ON f.id = s.file_id
+         WHERE s.graph_version = ?1 AND f.language = 'rust'",
+    )?;
+    let rows = stmt.query_map([graph_version], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (file_id, name, start, end) = row?;
+        if names.contains(&name) {
+            spans.entry(file_id).or_default().push((name, start, end));
+        }
+    }
+    for (file_id, rel) in files {
+        let Ok(bytes) = std::fs::read(repo_root.join(&rel)) else {
+            return Ok(None);
+        };
+        let own = spans.remove(&file_id).unwrap_or_default();
+        for (name, n) in rust_name_sites_in(&bytes, names, &own) {
+            *counts.entry(name).or_default() += n;
+        }
+    }
+    Ok(Some(counts))
+}
+
+/// `rust_name_sites` for one file's bytes; `own` is the (name, start, end)
+/// byte spans of this file's symbols named like a candidate.
+fn rust_name_sites_in(
+    bytes: &[u8],
+    names: &HashSet<String>,
+    own: &[(String, i64, i64)],
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let wanted: HashSet<&[u8]> = names.iter().map(|s| s.as_bytes()).collect();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let n = bytes.len();
+    let mut i = 0;
+    let mut in_use = false;
+    // Inside an `impl` header, until its `{`.
+    let mut impl_header = false;
+    while i < n {
+        let b = bytes[i];
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            let end = bytes[i..]
+                .iter()
+                .position(|&c| c == b'\n')
+                .map_or(n, |p| i + p);
+            i = end;
+        } else if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let mut depth = 1;
+            i += 2;
+            while i < n && depth > 0 {
+                if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        } else if b == b';' {
+            in_use = false;
+            i += 1;
+        } else if b == b'{' {
+            impl_header = false;
+            i += 1;
+        } else if is_ident(b) && !b.is_ascii_digit() && (i == 0 || !is_ident(bytes[i - 1])) {
+            let end = bytes[i..]
+                .iter()
+                .position(|&c| !is_ident(c))
+                .map_or(n, |p| i + p);
+            let word = &bytes[i..end];
+            if word == b"use" && !in_use {
+                in_use = true;
+            } else if word == b"impl" {
+                impl_header = true;
+            } else if !in_use
+                && !impl_header
+                && wanted.contains(word)
+                && !own.iter().any(|(name, s, e)| {
+                    name.as_bytes() == word && *s <= i as i64 && (i as i64) < *e
+                })
+            {
+                *counts
+                    .entry(String::from_utf8_lossy(word).into_owned())
+                    .or_default() += 1;
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    counts
 }
 
 /// Every `name` that follows a `.` (or `?.`) in the JS/TS `files` under

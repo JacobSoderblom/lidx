@@ -1,7 +1,3 @@
 [
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/cmd/join.rs","key":"src/cmd/join.rs:138","kind":"method","lidx_kind":"method","line":138,"name":"write_headers","policy":false,"qualname":"crate::cmd::join::IoState::write_headers","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/cmd/join.rs","key":"src/cmd/join.rs:147","kind":"method","lidx_kind":"method","line":147,"name":"inner_join","policy":false,"qualname":"crate::cmd::join::IoState::inner_join","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/cmd/join.rs","key":"src/cmd/join.rs:170","kind":"method","lidx_kind":"method","line":170,"name":"outer_join","policy":false,"qualname":"crate::cmd::join::IoState::outer_join","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/cmd/join.rs","key":"src/cmd/join.rs:208","kind":"method","lidx_kind":"method","line":208,"name":"full_outer_join","policy":false,"qualname":"crate::cmd::join::IoState::full_outer_join","subkind":"inherent"},
-{"category":"referenced_method","confidence":"medium","exported":false,"file":"src/cmd/join.rs","key":"src/cmd/join.rs:248","kind":"method","lidx_kind":"method","line":248,"name":"cross_join","policy":false,"qualname":"crate::cmd::join::IoState::cross_join","subkind":"inherent"}
+
 ]

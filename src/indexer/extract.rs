@@ -280,6 +280,40 @@ pub enum DeferredSource {
     /// module it names may declare the type or re-export one from a
     /// dependency, which only the resolver can read.
     Path { package: String, path: String },
+    /// A type written `Name<A, B>` (or the bare `Name`) that may be a type
+    /// alias (`type CliResult<T> = Result<T, CliError>;`), declared in another
+    /// file of the package at `package`. The resolver substitutes `args` for
+    /// the alias's parameters and carries on with what the alias stands for;
+    /// a name that is no alias is the type itself.
+    Alias {
+        package: String,
+        name: String,
+        args: Vec<AliasArg>,
+        /// The absolute path the name was imported through, when it was:
+        /// what the type is if no alias of the name exists.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<String>,
+    },
+}
+
+/// One type argument of a [`DeferredSource::Alias`] use, as far as the
+/// extractor could name it (the shapes the receiver types are built of).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AliasArg {
+    /// Not a type the extractor can name (a generic parameter, a closure).
+    Unknown,
+    /// A named type, in the receiver-type spelling.
+    Named(String),
+    /// A type only another file can finish.
+    Deferred(Box<RustDeferred>),
+    Option(Box<AliasArg>),
+    Result(Box<AliasArg>, Box<AliasArg>),
+    Tuple(Vec<AliasArg>),
+    /// `Vec<T>`, `[T]`, a set.
+    Seq(Box<AliasArg>),
+    Map(Box<AliasArg>, Box<AliasArg>),
+    Iter(Box<AliasArg>),
+    Future(Box<AliasArg>),
 }
 
 /// One projection applied to a declared type to reach the receiver's type.

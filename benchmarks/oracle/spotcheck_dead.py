@@ -96,7 +96,9 @@ def sample(results, cache):
         f, _, ln = key.rpartition(":")
         ln = int(ln)
         d = decl_info(cid, key) or {}
-        r = {"id": ident(repo, col, kind, bucket or "", key), "cell": cid, "column": col, "kind": kind, "decl": "%s %s (%s:%d)" % (item.get("kind", d.get("kind", "?")), item["name"], f, ln),
+        # keyed by the corpus repository's name (not its checkout path, which differs per cache): an item keeps its id
+        # across caches and runs as long as its declaration does, so a verdict written once carries over
+        r = {"id": ident(cid.split("/")[1], col, kind, bucket or "", key), "cell": cid, "column": col, "kind": kind, "decl": "%s %s (%s:%d)" % (item.get("kind", d.get("kind", "?")), item["name"], f, ln),
              "name": item["name"], "file": f, "line": ln, "decl_kind": item.get("kind") or d.get("kind"), "subkind": d.get("subkind"),
              "exported": d.get("exported"), "api": d.get("api"), "oracle": {k: d[k] for k in ("unref", "reach", "unref_how", "refs", "root", "withheld", "generated") if k in d},
              "column_means": EXPLAIN[col], "cell_scope": "tests are part of the program" if meta["cells"][cid]["variant"] in ("with_tests",) or cid.endswith("/tests") else "production code only (tests are not part of the program)",
