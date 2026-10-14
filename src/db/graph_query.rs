@@ -558,6 +558,29 @@ impl Db {
                 pairs.push(row?);
             }
         }
+        // Rust: an `impl Trait for Ty` method carries its own member-level
+        // `IMPLEMENTS` edge to the trait's method, also when `Ty` is no symbol
+        // of the repository (`Option<T>`, `&T`, a blanket `T`), which the
+        // class-based query above cannot see.
+        for side in ["e.source_symbol_id", "e.target_symbol_id"] {
+            let sql = format!(
+                "SELECT DISTINCT e.target_symbol_id, e.source_symbol_id
+                   FROM edges e
+                   JOIN symbols a ON a.id = e.source_symbol_id
+                   JOIN symbols b ON b.id = e.target_symbol_id
+                   JOIN files fa ON fa.id = a.file_id
+                  WHERE e.kind = 'IMPLEMENTS' AND e.graph_version = ?1
+                    AND a.kind = 'method' AND b.kind = 'method' AND fa.language = 'rust'
+                    AND {side} IN ({list})"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([graph_version], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                pairs.push(row?);
+            }
+        }
         pairs.sort_unstable();
         pairs.dedup();
         Ok(pairs)

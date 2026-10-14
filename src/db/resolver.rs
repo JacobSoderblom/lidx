@@ -692,6 +692,8 @@ pub enum DeclarationQuery<'a> {
     Item(&'a str),
     /// A Rust `type` alias named so, in any module.
     RustAlias(&'a str),
+    /// A trait with this name (Rust): a receiver typed `dyn Trait`.
+    Trait(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -1223,7 +1225,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
             )?;
             return Ok(items
                 .into_iter()
-                .filter(|item| matches!(item.kind.as_str(), "function" | "method"))
+                .filter(|item| {
+                    matches!(
+                        item.kind.as_str(),
+                        "function" | "method" | "const" | "static"
+                    )
+                })
                 .map(|item| Declaration {
                     qualname: item.qualname,
                     signature: item.signature,
@@ -1236,7 +1243,10 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
         // (filter over ?1, ?4 = method name, ?5 = qualname suffix; ?1 the arg)
         let (filter, arg, name, suffix) = match query {
             DeclarationQuery::Callable(qualname) => (
-                "s.kind IN ('function', 'method') AND s.qualname = ?1",
+                // Rust reads a `const` / `static` as a callable returning its
+                // declared type (`callable_return_ty`).
+                "(s.kind IN ('function', 'method')
+                  OR (s.kind IN ('const', 'static') AND ?3 = 'rust')) AND s.qualname = ?1",
                 qualname.to_string(),
                 String::new(),
                 String::new(),
@@ -1284,6 +1294,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 String::new(),
                 String::new(),
             ),
+            DeclarationQuery::Trait(name) => (
+                "s.kind = 'trait' AND s.name = ?1",
+                name.to_string(),
+                String::new(),
+                String::new(),
+            ),
             DeclarationQuery::Item(qualname) => (
                 "s.kind IN ('struct', 'enum', 'union', 'trait', 'type') AND s.qualname = ?1",
                 qualname.to_string(),
@@ -1314,7 +1330,9 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
     }
 
     fn is_repo_type(&self, name: &str) -> Result<bool> {
-        Ok(!self.declarations(DeclarationQuery::Type(name))?.is_empty())
+        Ok(!self.declarations(DeclarationQuery::Type(name))?.is_empty()
+            || (self.lang == "rust"
+                && !self.declarations(DeclarationQuery::Trait(name))?.is_empty()))
     }
 
     fn dependency_error(
@@ -1639,6 +1657,12 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        // A `ROUTE` edge names a route string found in a literal
+        // (`"/index.html"`), not a symbol: its tail after the last `.` or `/`
+        // must never bind to a function of that name or an external stub.
+        if r.edge_kind == edge_views::ROUTE {
+            return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        }
         self.caller_scope = r.source_qualname.map(str::to_string);
         self.go_dispatch_receiver = None;
         self.caller_file = r.source_file_path.to_string();

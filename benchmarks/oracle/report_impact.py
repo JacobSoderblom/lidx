@@ -178,18 +178,19 @@ def section(results_dir):
             w("**Test reach** (`Tests(s)`: %s; lidx: the test layer of `analyze_impact` alone, `enable_direct=false`). A seed with no oracle test and no lidx test "
               "is a correct empty answer and is counted in `empty ok`. `not root` = wrong tests that are functions the oracle analysed that are not test roots "
               "(helpers); `beyond calls` = tests lidx reaches only through a reference, use or import hop (the test layer follows every edge kind and cannot be restricted), "
-              "counted, not wrong; `missed Benchmark/Fuzz` = missing pairs whose test is a `Benchmark*` or `Fuzz*` function. `Upstream recall` is the recall of the same cell's "
+              "counted, not wrong; `missed Benchmark/Fuzz` = missing pairs whose test is a `Benchmark*` or `Fuzz*` function; `Recall, no function-value edges` (Go) = the recall against the closure without the function-value edges RTA invents (a diagnostic beside the verdict, not a verdict). `Upstream recall` is the recall of the same cell's "
               "upstream set at the same k (the transitive call recall; the test layer should not be lower), `edge recall` the call-edge benchmark's recall for the cell." % ("Go `Test*`/`Benchmark*`/`Fuzz*` in `_test.go`" if lang == "go" else "Rust `#[test]` functions"))
             w("")
-            w("| Cell | k | Seeds | Oracle pairs | Wrong | not root | beyond calls | Precision | Recall | Macro precision | Macro recall | Upstream recall | edge recall | missed Benchmark/Fuzz | empty ok | oracle test, lidx none |")
-            w("|---|---|---:|---:|---:|---:|---:|---|---|---|---|---|---|---:|---:|---:|")
+            w("| Cell | k | Seeds | Oracle pairs | Wrong | not root | beyond calls | Precision | Recall | Macro precision | Macro recall | Upstream recall | edge recall | missed Benchmark/Fuzz | Recall, no function-value edges | empty ok | oracle test, lidx none |")
+            w("|---|---|---:|---:|---:|---:|---:|---|---|---|---|---|---|---:|---|---:|---:|")
             for c in tc:
                 for kn, label in KN:
                     u = cells[c]["tables"]["tests"][kn]
-                    w("| %s | %s | %d | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s | %d | %d | %d |" % (
+                    w("| %s | %s | %d | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s | %d | %s | %d | %d |" % (
                         cell_short(c), kn, u["seeds"], u["oracle_pairs"], u["fp"], u["fp_not_root"], u["fp_noncall"], pci(u["precision"], u["precision_ci"]),
                         pci(u["recall"], u["recall_ci"]), pci(u["macro_precision"], u["macro_precision_ci"]), pci(u["macro_recall"], u["macro_recall_ci"]),
-                        p(cells[c]["tables"]["up"][kn]["recall"]), p(erec.get(c)), u["fn_bench_fuzz"], u["empty_correct"], u["nonempty_oracle_lidx_empty"]))
+                        p(cells[c]["tables"]["up"][kn]["recall"]), p(erec.get(c)), u["fn_bench_fuzz"],
+                        pci(u["alt_recall"], u["alt_recall_ci"]) if "alt_recall" in u else "-", u["empty_correct"], u["nonempty_oracle_lidx_empty"]))
             w("")
             w("")
         elif lang == "ts":

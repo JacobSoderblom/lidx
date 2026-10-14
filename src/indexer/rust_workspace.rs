@@ -56,6 +56,10 @@ struct Package {
     /// `[workspace.package]`), whose prelude adds `FromIterator`, `TryFrom`
     /// and `TryInto`.
     edition_2021: bool,
+    /// Directories (relative to the package, never inside `src/`) of the
+    /// `[lib]` / `[[bin]]` crate roots the manifest declares with an explicit
+    /// `path`: the modules of such a crate hang off that directory.
+    target_dirs: Vec<String>,
 }
 
 /// What a path's first segment names.
@@ -77,6 +81,43 @@ pub(crate) struct RustWorkspace {
     /// dependency's sources are read at, so a lock-only change (`cargo
     /// update`) makes the Rust files stale like a manifest edit does.
     locks: String,
+}
+
+/// The directories of the `[lib]` and `[[bin]]` crate roots a manifest
+/// declares with an explicit `path`, apart from the ones inside `src/`.
+fn declared_target_dirs(table: &toml::Table) -> Vec<String> {
+    let mut paths: Vec<&str> = Vec::new();
+    if let Some(path) = table
+        .get("lib")
+        .and_then(|l| l.get("path"))
+        .and_then(|p| p.as_str())
+    {
+        paths.push(path);
+    }
+    for bin in table
+        .get("bin")
+        .and_then(|b| b.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(path) = bin.get("path").and_then(|p| p.as_str()) {
+            paths.push(path);
+        }
+    }
+    let mut dirs: Vec<String> = paths
+        .into_iter()
+        .filter_map(|p| Path::new(p.trim_start_matches("./")).parent())
+        .map(|d| {
+            d.components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .filter(|d| !d.is_empty() && d != "src" && !d.starts_with("src/"))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
 }
 
 /// A parsed manifest and the directory it sits in.
@@ -213,6 +254,7 @@ impl RustWorkspace {
             workspace.packages.insert(
                 m.dir.clone(),
                 Package {
+                    target_dirs: declared_target_dirs(&m.table),
                     edition_2021,
                     lib_name,
                     deps,
@@ -222,6 +264,22 @@ impl RustWorkspace {
             );
         }
         workspace
+    }
+
+    /// `rest`, a path relative to the package at `package`, without the
+    /// directory of the crate root its manifest declares outside `src/`
+    /// (`[[bin]] path = "crates/core/main.rs"`): the modules of such a crate
+    /// are named from that directory (`crate::flags::defs`), not from the
+    /// package.
+    pub(crate) fn strip_target_dir<'a>(&self, package: &str, rest: &'a str) -> &'a str {
+        let Some(pkg) = self.packages.get(package) else {
+            return rest;
+        };
+        pkg.target_dirs
+            .iter()
+            .filter_map(|dir| rest.strip_prefix(dir.as_str())?.strip_prefix('/'))
+            .min_by_key(|tail| tail.len())
+            .unwrap_or(rest)
     }
 
     /// The package a repo-relative file belongs to: the directory of the

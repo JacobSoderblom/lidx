@@ -182,6 +182,10 @@ struct Context {
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
+    /// Names the top of the current function body imports with a `use`: a
+    /// call or value use of one is that import, never the module's own item
+    /// of the same name.
+    body_use_names: Rc<HashSet<String>>,
     /// Names the current function binds itself (parameters and every
     /// pattern: `let`, `for`, `match` arms, closures), so a value use of one
     /// is a variable and never a reference to a same-named item
@@ -371,7 +375,16 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             .parent()
             .unwrap_or_else(|| Path::new(""));
         let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
-        module_name_from_rel_path(&strip_crate_root(rel_path, crate_root.as_deref()))
+        let rest = strip_crate_root(rel_path, crate_root.as_deref());
+        let package = crate_root
+            .as_deref()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let rest = match self.workspace() {
+            Some(ws) => ws.strip_target_dir(&package, &rest).to_string(),
+            None => rest,
+        };
+        module_name_from_rel_path(&rest)
     }
 
     fn begin_run(&mut self) {
@@ -443,6 +456,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             local_types_declared: Rc::new(collect_declared_type_names(root, source)),
             shadowed_names: Rc::new(HashSet::new()),
+            body_use_names: Rc::new(HashSet::new()),
             bound_names: Rc::new(HashSet::new()),
             nested_fns: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
@@ -747,6 +761,17 @@ fn handle_named_item(
                 let origins =
                     type_origins_marker(&[aliased], node, source, ctx).unwrap_or_default();
                 format!("{origins}type {name} = {}", node_text(aliased, source))
+            }),
+            // `const FLAGS: &[&dyn Flag]`: other files read the declared type
+            // of a constant they import (`for flag in FLAGS.iter()`).
+            "const" | "static" => node.child_by_field_name("type").map(|declared| {
+                let origins =
+                    type_origins_marker(&[declared], node, source, ctx).unwrap_or_default();
+                let ty = node_text(declared, source)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{origins}{kind} {name}: {ty}")
             }),
             _ => None,
         },
@@ -1054,6 +1079,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
+    next_ctx.body_use_names = Rc::new(HashSet::new());
     next_ctx.bound_names = Rc::new(HashSet::new());
     next_ctx.nested_fns = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
@@ -1234,9 +1260,35 @@ fn handle_function(
         // Recomputed per function, never inherited.
         let mut shadowed = HashSet::new();
         collect_shadowed_names(node, source, &mut shadowed);
-        next_ctx.shadowed_names = Rc::new(shadowed);
         let mut bound = HashSet::new();
         collect_bound_names(node, source, &mut bound);
+        // A `use` at the top of the body binds its names over the module's:
+        // `use dep::{color_scheme};` makes `color_scheme(..)` here that
+        // import, not the module's own function of the same name. A name the
+        // body also binds as a variable stays suppressed.
+        let body_uses = collect_use_bindings(body, source, &ctx.module);
+        next_ctx.body_use_names = Rc::new(
+            body_uses
+                .keys()
+                .filter(|n| n.as_str() != "*" && !bound.contains(*n))
+                .cloned()
+                .collect(),
+        );
+        if !body_uses.is_empty() {
+            let mut imports = (*ctx.imports).clone();
+            for (name, targets) in body_uses {
+                if name != "*" && !bound.contains(&name) {
+                    shadowed.remove(&name);
+                }
+                if name == "*" {
+                    imports.entry(name).or_default().extend(targets);
+                } else {
+                    imports.insert(name, targets);
+                }
+            }
+            next_ctx.imports = Rc::new(imports);
+        }
+        next_ctx.shadowed_names = Rc::new(shadowed);
         next_ctx.bound_names = Rc::new(bound);
         let mut nested: HashSet<String> = (*ctx.nested_fns).clone();
         collect_nested_fn_names(body, source, &mut nested);
@@ -2082,6 +2134,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             .map(|parts| parts.name)
             .filter(|name| !name.is_empty())
     });
+    // A bare call of a name the body imports is that import's item.
+    let target = match import_candidates.first() {
+        Some(import)
+            if function_node.kind() == "identifier" && ctx.body_use_names.contains(&collapsed) =>
+        {
+            Some(import.clone())
+        }
+        _ => target,
+    };
     let detail = if target.is_some() {
         None
     } else {
@@ -2347,7 +2408,10 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
             named_import_candidates(&raw, ctx)
         };
         add_crate_markers(&raw, &mut imported, ctx);
-        (format!("{}::{raw}", ctx.module), imported)
+        match imported.first() {
+            Some(import) if ctx.body_use_names.contains(&raw) => (import.clone(), imported.clone()),
+            _ => (format!("{}::{raw}", ctx.module), imported),
+        }
     } else {
         let first = raw.split("::").next().unwrap_or_default();
         if ctx.bound_names.contains(first) {
@@ -3076,6 +3140,16 @@ fn lookup_local(locals: &Locals, name: &str, pos: usize) -> Ty {
     best.map_or(Ty::Unknown, |(_, ty)| ty)
 }
 
+/// `SCREAMING_SNAKE_CASE` of at least two characters: the spelling of a
+/// `const` or `static` (rustc warns about any other).
+fn is_constant_name(name: &str) -> bool {
+    name.len() > 1
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// Whether `name` is bound by a parameter, `let`, pattern or closure
 /// parameter of the function being read whose scope holds byte `pos`, typed
 /// or not: a call of it runs that value, never an item of the same name.
@@ -3668,11 +3742,19 @@ impl TypeEnv<'_> {
                 self.expr_ty_opt(value.named_child(0)?, locals)
             }
             "self" => self.usable("Self".to_string()).map(Ty::Named),
-            "identifier" => Some(lookup_local(
-                locals,
-                &node_text(value, source),
-                value.start_byte(),
-            )),
+            "identifier" => {
+                let name = node_text(value, source);
+                let ty = lookup_local(locals, &name, value.start_byte());
+                // A name no local binds and written like a constant
+                // (`FLAGS`): the declared type of that `const` / `static`.
+                if matches!(ty, Ty::Unknown)
+                    && is_constant_name(&name)
+                    && !is_bound_local(locals, &name, value.start_byte())
+                {
+                    return self.path_call_ty(value, value, locals);
+                }
+                Some(ty)
+            }
             "try_expression" => {
                 let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
                 Some(match inner {
@@ -4323,6 +4405,39 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
                     _ => {
                         out.insert(key, Some(ty));
                     }
+                }
+            }
+            return;
+        }
+        if matches!(node.kind(), "const_item" | "static_item")
+            && let Some(owner) = owner_of(node, source)
+            && let (Some(name), Some(declared)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("type"),
+            )
+        {
+            let empty = Adts::new();
+            let env = TypeEnv {
+                source,
+                self_ty: owner.as_deref(),
+                generics: Rc::new(collect_generic_names(node, source)),
+                adts: &empty,
+                ctx: None,
+                paths: Some(paths),
+                declared: None,
+            };
+            let mut ty = env.ty(declared);
+            if in_inline_mod(node) {
+                ty = demote_local(ty);
+            }
+            let name = node_text(name, source);
+            let key = owner.map_or(name.clone(), |o| format!("{o}::{name}"));
+            match out.get(&key) {
+                Some(prev) if *prev != Some(ty.clone()) => {
+                    out.insert(key, None);
+                }
+                _ => {
+                    out.insert(key, Some(ty));
                 }
             }
             return;
@@ -5272,6 +5387,26 @@ fn user_field_ty(
 fn callable_return_ty(qualname: &str, signature: &str, package: &str) -> Option<Ty> {
     let declared = DeclaredOrigins::of_signature(signature, package);
     let (is_async, signature) = split_callable_signature(signature);
+    // A constant or static (`const NAME: Ty`) reads as a callable returning
+    // its declared type.
+    if signature.starts_with("const ") || signature.starts_with("static ") {
+        let src = format!("{signature} = 0;");
+        let tree = parse_declaration(&src)?;
+        let item = tree.root_node().named_child(0)?;
+        if !matches!(item.kind(), "const_item" | "static_item") {
+            return None;
+        }
+        let env = TypeEnv {
+            source: &src,
+            self_ty: None,
+            generics: Rc::new(HashSet::new()),
+            adts: &Adts::new(),
+            ctx: None,
+            paths: None,
+            declared: Some(&declared),
+        };
+        return Some(env.ty(item.child_by_field_name("type")?));
+    }
     let src = format!("fn __f{signature} {{}}");
     let tree = parse_declaration(&src)?;
     let func = tree.root_node().named_child(0)?;

@@ -26,8 +26,8 @@ pub fn f1() -> &'static str {
     helper()
 }
 
-/// A function-body `use` of `helper` is a non-callee occurrence, so the
-/// import candidate is suppressed (over-suppression: real target is `b`).
+/// A `use` at the top of a function body binds its name over the module's:
+/// the call is `b::helper`.
 pub fn f2() -> &'static str {
     use crate::shadowing::b::helper;
     helper()

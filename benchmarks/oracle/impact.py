@@ -493,7 +493,10 @@ def grade_cell(cell, graph, syms, lidx, src, seeds, variant_kinds=True, log=None
                     a["fp_beyond_calls"] = len(set(a["_extra_all"]) - c["_lset"])
             if tests_graded:
                 otests = {n for n in oup if n in roots}
-                rec["tests"][kname(k)] = tests_one(otests, graph, syms, lidx, sid, k, node, roots)
+                alt_tests = None
+                if alt_graph is not None and lang == "go":
+                    alt_tests = (alt_graph, {n for n in alt_graph.closure(node, k) if n in roots and n not in alt_graph.unindexed})
+                rec["tests"][kname(k)] = tests_one(otests, graph, syms, lidx, sid, k, node, roots, alt_tests)
             rec["down"][kname(k)] = down_one(rec, node, k, graph, syms, lidx, sid, alt_graph)
         if log and (si + 1) % 25 == 0:
             log("      %d/%d seeds" % (si + 1, len(seeds)))
@@ -588,7 +591,7 @@ def plain_one(oup, graph, syms, lidx, sid, node, depth=None):
             "lower_bound": bool(res["lower_bound"]["is_lower_bound"]), "unresolved_count": res["lower_bound"]["unresolved_count"]}
 
 
-def tests_one(otests, graph, syms, lidx, sid, k, node, roots):
+def tests_one(otests, graph, syms, lidx, sid, k, node, roots, alt_tests=None):
     res = lidx.call("analyze_impact", impact_params(sid, k, True))
     if "_error" in res:
         return {"error": res["_error"]}
@@ -617,11 +620,18 @@ def tests_one(otests, graph, syms, lidx, sid, k, node, roots):
     fp = len(extra)
     nonroot = sum(1 for x in extra if x not in roots)
     bench = sum(1 for x in missing if graph.info[x]["name"].startswith(("Benchmark", "Fuzz")))
-    return {"oracle": len(otests), "lidx": len(lset), "tp": tp, "fp": fp, "fn": fn, "ungradable": ungr, "fp_not_root": nonroot, "fn_bench_fuzz": bench,
-            "fp_noncall": len(noncall),
-            "truncated": bool(res.get("truncated")) or res["layers"]["test"].get("truncated", False),
+    out = {"oracle": len(otests), "lidx": len(lset), "tp": tp, "fp": fp, "fn": fn, "ungradable": ungr, "fp_not_root": nonroot, "fn_bench_fuzz": bench,
+           "fp_noncall": len(noncall),
+           "truncated": bool(res.get("truncated")) or res["layers"]["test"].get("truncated", False),
             "extra": [graph_name(graph, x) for x in extra[:EXAMPLES]], "missing": [graph_name(graph, x) for x in missing[:EXAMPLES]],
             "empty_correct": len(otests) == 0 and len(lset) == 0}
+    if alt_tests is not None:
+        # Go: the same test reach against the closure without function-value edges (RTA joins a call of a function value to every address-taken
+        # function of its signature, so a benchmark that calls `handler(..)` "reaches" unrelated functions); a diagnostic beside the verdict
+        tp2, _, fn2, _, _, miss2 = compare(alt_tests[1], lset, alt_tests[0])
+        out["alt"] = {"oracle": len(alt_tests[1]), "tp": tp2, "fn": fn2,
+                      "fn_bench_fuzz": sum(1 for x in miss2 if alt_tests[0].info[x]["name"].startswith(("Benchmark", "Fuzz")))}
+    return out
 
 
 def down_one(rec, node, k, graph, syms, lidx, sid, alt_graph=None):
@@ -775,6 +785,12 @@ def test_family(live):
              "empty_oracle_lidx_nonempty": sum(1 for e in es if e["oracle"] == 0 and e["lidx"] > 0),
              "nonempty_oracle_lidx_empty": sum(1 for e in es if e["oracle"] > 0 and e["lidx"] == 0)}
         d.update(macro([(e["tp"], e["fp"], e["fn"], e["truncated"]) for e in es]))
+        alts = [e["alt"] for e in es if "alt" in e and not e["truncated"]]
+        if alts:
+            pa = pooled([(a["tp"], 0, a["fn"]) for a in alts])
+            d["alt_recall"], d["alt_recall_ci"] = pa["recall"], pa["recall_ci"]
+            d["alt_oracle_pairs"] = sum(a["oracle"] for a in alts)
+            d["alt_fn_bench_fuzz"] = sum(a["fn_bench_fuzz"] for a in alts)
         res[kn] = d
     return res
 

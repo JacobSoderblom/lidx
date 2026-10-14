@@ -97,11 +97,10 @@ crate::scoped_glob::tests::uses_fixture_build CALLS crate::scoped_glob::fixture_
 # import-tier match.
 crate::shadowing::f1 CALLS crate::shadowing::a::helper import
 
-# `use crate::shadowing::b::helper` written inside `f2`'s own body: its
-# path text mentions `helper` in a non-callee position, so the shadow rule
-# suppresses the import candidate outright (round 3: no longer re-pinned to
-# `b::helper` — see the round-3 header note above).
-crate::shadowing::f2 CALLS UNRESOLVED
+# `use crate::shadowing::b::helper` written inside `f2`'s own body: a `use`
+# at the top of a body binds its names over the module's, so the call is
+# that import (#500; it was left unresolved before).
+crate::shadowing::f2 CALLS crate::shadowing::b::helper exact
 
 # A local `let helper = || "local";` shadows the file-scope `use` entirely:
 # no import-tier candidate, and `a`/`b`'s two `helper`s make the bare-name

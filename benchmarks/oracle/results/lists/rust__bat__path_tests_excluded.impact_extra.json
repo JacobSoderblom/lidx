@@ -5,9 +5,6 @@
 {"k":"3","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/pretty_printer.rs:283","seed_name":"print"},
 {"k":"3","member":"src/bin/bat/main.rs:339 run","node":"src/bin/bat/main.rs|crate::bin::bat::run","seed":"src/pretty_printer.rs:283","seed_name":"print"},
 {"k":"3","member":"src/bin/bat/main.rs:422 main","node":"src/bin/bat/main.rs|crate::bin::bat::main","seed":"src/pretty_printer.rs:283","seed_name":"print"},
-{"k":"3","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:255","seed_name":"[ColorSchemeDetector]should_detect"},
-{"k":"3","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:524","seed_name":"should_detect"},
-{"k":"3","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:555","seed_name":"[ColorSchemeDetector]should_detect"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/assets.rs:109","seed_name":"get_theme_set"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/assets.rs:210","seed_name":"get_syntax"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/assets.rs:262","seed_name":"get_syntax_for_file_name"},
@@ -32,8 +29,5 @@
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/theme.rs:30","seed_name":"default_theme"},
 {"k":"inf","member":"src/bin/bat/main.rs:281 invoke_bugreport","node":"src/bin/bat/main.rs|crate::bin::bat::invoke_bugreport","seed":"src/vscreen.rs:362","seed_name":"new"},
 {"k":"inf","member":"src/bin/bat/main.rs:339 run","node":"src/bin/bat/main.rs|crate::bin::bat::run","seed":"src/pretty_printer.rs:283","seed_name":"print"},
-{"k":"inf","member":"src/bin/bat/main.rs:422 main","node":"src/bin/bat/main.rs|crate::bin::bat::main","seed":"src/pretty_printer.rs:283","seed_name":"print"},
-{"k":"inf","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:255","seed_name":"[ColorSchemeDetector]should_detect"},
-{"k":"inf","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:524","seed_name":"should_detect"},
-{"k":"inf","member":"src/theme.rs:268 [ColorSchemeDetector]detect","node":"src/theme.rs|crate::theme::TerminalColorSchemeDetector::detect","seed":"src/theme.rs:555","seed_name":"[ColorSchemeDetector]should_detect"}
+{"k":"inf","member":"src/bin/bat/main.rs:422 main","node":"src/bin/bat/main.rs|crate::bin::bat::main","seed":"src/pretty_printer.rs:283","seed_name":"print"}
 ]
