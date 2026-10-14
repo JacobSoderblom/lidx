@@ -265,7 +265,7 @@ Same grading with lidx's REFERENCES and USES edges added to CALLS (the compiler 
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.799 [0.780, 0.816]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.994 (1545 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1539 resolved in-repo CALLS pairs; 1536 graded (1536 correct, 0 wrong); lidx indexed in 1.4s
+- lidx: 1539 resolved in-repo CALLS pairs; 1536 graded (1536 correct, 0 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 2, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -286,7 +286,7 @@ Lists: `results/lists/go__cobra__tests.fn.json`, `go__cobra__tests.fp.json`, `go
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.993, 1.000], R 0.832 [0.802, 0.859]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.996 (557 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1539 resolved in-repo CALLS pairs; 555 graded (555 correct, 0 wrong); lidx indexed in 1.4s
+- lidx: 1539 resolved in-repo CALLS pairs; 555 graded (555 correct, 0 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 984
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -307,7 +307,7 @@ Lists: `results/lists/go__cobra__no_tests.fn.json`, `go__cobra__no_tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.982 [0.975, 0.988]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.999 (1557 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1690 resolved in-repo CALLS pairs; 1558 graded (1558 correct, 0 wrong); lidx indexed in 1.9s
+- lidx: 1690 resolved in-repo CALLS pairs; 1558 graded (1558 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 100, caller_not_judged 32
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -328,7 +328,7 @@ Lists: `results/lists/go__gitleaks__no_tests.fn.json`, `go__gitleaks__no_tests.f
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.957 [0.946, 0.965]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.996 (1678 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 1690 resolved in-repo CALLS pairs; 1673 graded (1673 correct, 0 wrong); lidx indexed in 1.9s
+- lidx: 1690 resolved in-repo CALLS pairs; 1673 graded (1673 correct, 0 wrong); lidx indexed in 0.8s
 - ungradable lidx pairs: caller_file_not_covered 1, caller_not_judged 16
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -349,7 +349,7 @@ Lists: `results/lists/go__gitleaks__tests.fn.json`, `go__gitleaks__tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.999, 1.000], R 0.584 [0.573, 0.595]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.993 (4653 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9386 resolved in-repo CALLS pairs; 4863 graded (4863 correct, 0 wrong); lidx indexed in 22.1s
+- lidx: 9386 resolved in-repo CALLS pairs; 4863 graded (4863 correct, 0 wrong); lidx indexed in 10.3s
 - ungradable lidx pairs: caller_file_not_covered 4198, caller_not_judged 325
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -370,7 +370,7 @@ Lists: `results/lists/go__syft__no_tests.fn.json`, `go__syft__no_tests.fp.json`,
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [1.000, 1.000], R 0.337 [0.332, 0.343]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.990 (8778 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 9386 resolved in-repo CALLS pairs; 9169 graded (9169 correct, 0 wrong); lidx indexed in 22.1s
+- lidx: 9386 resolved in-repo CALLS pairs; 9169 graded (9169 correct, 0 wrong); lidx indexed in 10.3s
 - ungradable lidx pairs: caller_file_not_covered 148, caller_not_judged 69
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -391,7 +391,7 @@ Lists: `results/lists/go__syft__tests.fn.json`, `go__syft__tests.fp.json`, `go__
 - repowise-comparable scope: 1626 oracle edges (112 module-level and 215 abstract-target edges removed), P 1.000 [0.997, 1.000], R 0.933 [0.920, 0.944]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.990 if they were counted wrong
 - recall when both ends are indexed symbols: 0.923 (1718 oracle edges); caller lifted to an enclosing declaration for 401 edges; capture gap reasons: {'callee_not_indexed': 22}
-- lidx: 1990 resolved in-repo CALLS pairs; 1620 graded (1604 correct, 16 wrong); lidx indexed in 9.0s
+- lidx: 1990 resolved in-repo CALLS pairs; 1620 graded (1604 correct, 16 wrong); lidx indexed in 5.5s
 - ungradable lidx pairs: caller_file_not_covered 370
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -415,7 +415,7 @@ Lists: `results/lists/ts__zod.fn.json`, `ts__zod.fp.json`, `ts__zod.capture_gap.
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 4 oracle edges, 4 matched by lidx
 - unresolved-site exclusion: 5 lidx pairs left out; precision would be 0.994 if they were counted wrong
 - recall when both ends are indexed symbols: 0.980 (815 oracle edges); caller lifted to an enclosing declaration for 106 edges; capture gap reasons: {'callee_not_indexed': 56}
-- lidx: 1771 resolved in-repo CALLS pairs; 821 graded (821 correct, 0 wrong); lidx indexed in 7.6s
+- lidx: 1771 resolved in-repo CALLS pairs; 821 graded (821 correct, 0 wrong); lidx indexed in 5.5s
 - ungradable lidx pairs: caller_file_not_covered 945, oracle_unresolved_site 5
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -437,7 +437,7 @@ Lists: `results/lists/ts__hono.fn.json`, `ts__hono.fp.json`, `ts__hono.capture_g
 - oracle: None, 4796 edges: 4567 static with an indexed caller, 167 dispatch (65 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.993 if they were counted wrong
 - recall when both ends are indexed symbols: 0.959 (4567 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4645 resolved in-repo CALLS pairs; 4476 graded (4445 correct, 31 wrong); lidx indexed in 15.8s
+- lidx: 4645 resolved in-repo CALLS pairs; 4476 graded (4445 correct, 31 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 151, caller_not_judged 18
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -460,7 +460,7 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded.fn.json`, `rust__ripgre
 - oracle: None, 2315 edges: 2176 static with an indexed caller, 139 dispatch (57 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.986 if they were counted wrong
 - recall when both ends are indexed symbols: 0.940 (2176 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 4645 resolved in-repo CALLS pairs; 2132 graded (2103 correct, 29 wrong); lidx indexed in 15.8s
+- lidx: 4645 resolved in-repo CALLS pairs; 2132 graded (2103 correct, 29 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 203, caller_not_judged 2310
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -482,7 +482,7 @@ Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests
 - oracle: None, 6078 edges: 4662 static with an indexed caller, 181 dispatch (69 of them found), 1235 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.993 if they were counted wrong
 - recall when both ends are indexed symbols: 0.957 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1235}
-- lidx: 4645 resolved in-repo CALLS pairs; 4561 graded (4529 correct, 32 wrong); lidx indexed in 15.8s
+- lidx: 4645 resolved in-repo CALLS pairs; 4561 graded (4529 correct, 32 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 11, caller_not_judged 73
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -505,7 +505,7 @@ Lists: `results/lists/rust__ripgrep__tests.fn.json`, `rust__ripgrep__tests.fp.js
 - oracle: None, 256 edges: 256 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.996 if they were counted wrong
 - recall when both ends are indexed symbols: 0.981 (256 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 523 resolved in-repo CALLS pairs; 252 graded (251 correct, 1 wrong); lidx indexed in 1.5s
+- lidx: 523 resolved in-repo CALLS pairs; 252 graded (251 correct, 1 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 271
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -527,7 +527,7 @@ Lists: `results/lists/rust__fd__path_tests_excluded.fn.json`, `rust__fd__path_te
 - oracle: None, 190 edges: 190 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.989 if they were counted wrong
 - recall when both ends are indexed symbols: 0.979 (190 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 523 resolved in-repo CALLS pairs; 188 graded (186 correct, 2 wrong); lidx indexed in 1.5s
+- lidx: 523 resolved in-repo CALLS pairs; 188 graded (186 correct, 2 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 271, caller_not_judged 64
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -549,7 +549,7 @@ Lists: `results/lists/rust__fd__no_tests.fn.json`, `rust__fd__no_tests.fp.json`,
 - oracle: None, 515 edges: 515 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.998 if they were counted wrong
 - recall when both ends are indexed symbols: 0.990 (515 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 523 resolved in-repo CALLS pairs; 511 graded (510 correct, 1 wrong); lidx indexed in 1.5s
+- lidx: 523 resolved in-repo CALLS pairs; 511 graded (510 correct, 1 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_not_judged 12
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -571,7 +571,7 @@ Lists: `results/lists/rust__fd__tests.fn.json`, `rust__fd__tests.fp.json`, `rust
 - oracle: None, 4819 edges: 4590 static with an indexed caller, 167 dispatch (65 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.997 if they were counted wrong
 - recall when both ends are indexed symbols: 0.959 (4590 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 4645 resolved in-repo CALLS pairs; 4482 graded (4468 correct, 14 wrong); lidx indexed in 15.8s
+- lidx: 4645 resolved in-repo CALLS pairs; 4482 graded (4468 correct, 14 wrong); lidx indexed in 3.5s
 - ungradable lidx pairs: caller_file_not_covered 142, caller_not_judged 18, cfg_gated_evidence 3
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -594,7 +594,7 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded_all_features.fn.json`, 
 - oracle: None, 256 edges: 256 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.996 if they were counted wrong
 - recall when both ends are indexed symbols: 0.981 (256 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 523 resolved in-repo CALLS pairs; 252 graded (251 correct, 1 wrong); lidx indexed in 1.5s
+- lidx: 523 resolved in-repo CALLS pairs; 252 graded (251 correct, 1 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 271
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -617,7 +617,7 @@ Lists: `results/lists/rust__fd__path_tests_excluded_all_features.fn.json`, `rust
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.978, 1.000], R 0.401 [0.355, 0.449]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.981 (161 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 862 resolved in-repo CALLS pairs; 171 graded (171 correct, 0 wrong); lidx indexed in 1.0s
+- lidx: 862 resolved in-repo CALLS pairs; 171 graded (171 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 691
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -638,7 +638,7 @@ Lists: `results/lists/go__chi__no_tests.fn.json`, `go__chi__no_tests.fp.json`, `
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.995, 1.000], R 0.485 [0.460, 0.510]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.992 (716 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 862 resolved in-repo CALLS pairs; 747 graded (747 correct, 0 wrong); lidx indexed in 1.0s
+- lidx: 862 resolved in-repo CALLS pairs; 747 graded (747 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 104, caller_not_judged 11
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -659,7 +659,7 @@ Lists: `results/lists/go__chi__tests.fn.json`, `go__chi__tests.fp.json`, `go__ch
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.987, 1.000], R 0.536 [0.494, 0.578]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.989 (271 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2311 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 1.6s
+- lidx: 2311 resolved in-repo CALLS pairs; 328 graded (328 correct, 0 wrong); lidx indexed in 1.0s
 - ungradable lidx pairs: caller_file_not_covered 1672, caller_not_judged 311
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -680,7 +680,7 @@ Lists: `results/lists/go__urfavecli__no_tests.fn.json`, `go__urfavecli__no_tests
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.998, 1.000], R 0.336 [0.325, 0.347]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.959 (2168 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 2311 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 1.6s
+- lidx: 2311 resolved in-repo CALLS pairs; 2266 graded (2266 correct, 0 wrong); lidx indexed in 1.0s
 - ungradable lidx pairs: caller_file_not_covered 21, caller_not_judged 24
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -701,7 +701,7 @@ Lists: `results/lists/go__urfavecli__tests.fn.json`, `go__urfavecli__tests.fp.js
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.984, 1.000], R 0.781 [0.731, 0.824]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (222 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 731 resolved in-repo CALLS pairs; 236 graded (236 correct, 0 wrong); lidx indexed in 0.7s
+- lidx: 731 resolved in-repo CALLS pairs; 236 graded (236 correct, 0 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: callee_file_not_covered 3, caller_file_not_covered 492
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -721,7 +721,7 @@ Lists: `results/lists/go__viper__no_tests.fn.json`, `go__viper__no_tests.fp.json
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.994, 1.000], R 0.888 [0.863, 0.909]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.998 (640 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 731 resolved in-repo CALLS pairs; 653 graded (653 correct, 0 wrong); lidx indexed in 0.7s
+- lidx: 731 resolved in-repo CALLS pairs; 653 graded (653 correct, 0 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: callee_file_not_covered 3, caller_file_not_covered 9, caller_not_judged 66
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -742,7 +742,7 @@ Lists: `results/lists/go__viper__tests.fn.json`, `go__viper__tests.fp.json`, `go
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.969, 1.000], R 0.381 [0.329, 0.435]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (118 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 640 resolved in-repo CALLS pairs; 178 graded (178 correct, 0 wrong); lidx indexed in 0.8s
+- lidx: 640 resolved in-repo CALLS pairs; 178 graded (178 correct, 0 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 462
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -762,7 +762,7 @@ Lists: `results/lists/go__bubbletea__no_tests.fn.json`, `go__bubbletea__no_tests
 - repowise rules (CALLS only, no dispatch credit): P 1.000 [0.987, 1.000], R 0.343 [0.311, 0.376]; the figures in this section are the dispatch-credited, lidx-native grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.982 (283 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 640 resolved in-repo CALLS pairs; 333 graded (333 correct, 0 wrong); lidx indexed in 0.8s
+- lidx: 640 resolved in-repo CALLS pairs; 333 graded (333 correct, 0 wrong); lidx indexed in 0.6s
 - ungradable lidx pairs: caller_file_not_covered 300, caller_not_judged 7
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -783,7 +783,7 @@ Lists: `results/lists/go__bubbletea__tests.fn.json`, `go__bubbletea__tests.fp.js
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 2 oracle edges, 2 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.997 if they were counted wrong
 - recall when both ends are indexed symbols: 0.941 (391 oracle edges); caller lifted to an enclosing declaration for 110 edges; capture gap reasons: {'callee_not_indexed': 41}
-- lidx: 2627 resolved in-repo CALLS pairs; 364 graded (363 correct, 1 wrong); lidx indexed in 13.6s
+- lidx: 2627 resolved in-repo CALLS pairs; 364 graded (363 correct, 1 wrong); lidx indexed in 8.6s
 - ungradable lidx pairs: callee_file_not_covered 5, caller_file_not_covered 2258
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -806,7 +806,7 @@ Lists: `results/lists/ts__trpc.fn.json`, `ts__trpc.fp.json`, `ts__trpc.capture_g
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 5 oracle edges, 5 matched by lidx
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 1.000 (255 oracle edges); caller lifted to an enclosing declaration for 10 edges; capture gap reasons: {'callee_not_indexed': 10}
-- lidx: 448 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 3.1s
+- lidx: 448 resolved in-repo CALLS pairs; 252 graded (252 correct, 0 wrong); lidx indexed in 1.9s
 - ungradable lidx pairs: caller_file_not_covered 196
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -827,7 +827,7 @@ Lists: `results/lists/ts__ky.fn.json`, `ts__ky.fp.json`, `ts__ky.capture_gap.jso
 - repowise-comparable scope: 282 oracle edges (1 module-level and 14 abstract-target edges removed), P 0.965 [0.937, 0.981], R 0.979 [0.954, 0.990]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.965 if they were counted wrong
 - recall when both ends are indexed symbols: 0.982 (282 oracle edges); caller lifted to an enclosing declaration for 30 edges; capture gap reasons: {'callee_not_indexed': 2}
-- lidx: 545 resolved in-repo CALLS pairs; 286 graded (276 correct, 10 wrong); lidx indexed in 1.8s
+- lidx: 545 resolved in-repo CALLS pairs; 286 graded (276 correct, 10 wrong); lidx indexed in 1.1s
 - ungradable lidx pairs: caller_file_not_covered 259
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -848,7 +848,7 @@ Lists: `results/lists/ts__immer.fn.json`, `ts__immer.fp.json`, `ts__immer.captur
 - `super(..)` calls (oracle callee: the base class, as for `new X()`): 3 oracle edges, 3 matched by lidx
 - unresolved-site exclusion: 1 lidx pairs left out; precision would be 0.942 if they were counted wrong
 - recall when both ends are indexed symbols: 0.913 (541 oracle edges); caller lifted to an enclosing declaration for 54 edges; capture gap reasons: {'callee_not_indexed': 26}
-- lidx: 980 resolved in-repo CALLS pairs; 520 graded (491 correct, 29 wrong); lidx indexed in 4.2s
+- lidx: 980 resolved in-repo CALLS pairs; 520 graded (491 correct, 29 wrong); lidx indexed in 3.0s
 - ungradable lidx pairs: caller_file_not_covered 459, oracle_unresolved_site 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -869,7 +869,7 @@ Lists: `results/lists/ts__h3.fn.json`, `ts__h3.fp.json`, `ts__h3.capture_gap.jso
 - oracle: None, 622 edges: 614 static with an indexed caller, 8 dispatch (6 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.992 if they were counted wrong
 - recall when both ends are indexed symbols: 0.976 (614 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 986 resolved in-repo CALLS pairs; 610 graded (605 correct, 5 wrong); lidx indexed in 9.5s
+- lidx: 986 resolved in-repo CALLS pairs; 610 graded (605 correct, 5 wrong); lidx indexed in 4.5s
 - ungradable lidx pairs: callee_file_not_covered 2, caller_file_not_covered 374
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -891,7 +891,7 @@ Lists: `results/lists/rust__bat__path_tests_excluded.fn.json`, `rust__bat__path_
 - oracle: None, 127 edges: 127 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.946 if they were counted wrong
 - recall when both ends are indexed symbols: 0.819 (127 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 118 resolved in-repo CALLS pairs; 110 graded (104 correct, 6 wrong); lidx indexed in 4.3s
+- lidx: 118 resolved in-repo CALLS pairs; 110 graded (104 correct, 6 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: caller_file_not_covered 8
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -913,7 +913,7 @@ Lists: `results/lists/rust__tokei__path_tests_excluded.fn.json`, `rust__tokei__p
 - oracle: None, 376 edges: 376 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.923 (376 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 681 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 5.1s
+- lidx: 681 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 334
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -934,7 +934,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded.fn.json`, `rust__xsv__path_
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (13 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.998 if they were counted wrong
 - recall when both ends are indexed symbols: 0.991 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12547 resolved in-repo CALLS pairs; 6253 graded (6238 correct, 15 wrong); lidx indexed in 87.6s
+- lidx: 12547 resolved in-repo CALLS pairs; 6253 graded (6238 correct, 15 wrong); lidx indexed in 9.1s
 - ungradable lidx pairs: caller_file_not_covered 6294
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -956,7 +956,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded.fn.json`, `rust__lidx__pat
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (22 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.981 if they were counted wrong
 - recall when both ends are indexed symbols: 0.841 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10158 resolved in-repo CALLS pairs; 1536 graded (1506 correct, 30 wrong); lidx indexed in 9.0s
+- lidx: 10158 resolved in-repo CALLS pairs; 1536 graded (1506 correct, 30 wrong); lidx indexed in 4.5s
 - ungradable lidx pairs: caller_file_not_covered 8613, caller_not_judged 9
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -979,7 +979,7 @@ Lists: `results/lists/rust__just__path_tests_excluded.fn.json`, `rust__just__pat
 - oracle: None, 2022 edges: 1930 static with an indexed caller, 22 dispatch (4 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.975 if they were counted wrong
 - recall when both ends are indexed symbols: 0.911 (1930 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2415 resolved in-repo CALLS pairs; 1807 graded (1762 correct, 45 wrong); lidx indexed in 8.5s
+- lidx: 2415 resolved in-repo CALLS pairs; 1807 graded (1762 correct, 45 wrong); lidx indexed in 4.0s
 - ungradable lidx pairs: caller_file_not_covered 553, caller_not_judged 55
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1001,7 +1001,7 @@ Lists: `results/lists/rust__nextest__path_tests_excluded.fn.json`, `rust__nextes
 - oracle: None, 639 edges: 631 static with an indexed caller, 8 dispatch (6 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.994 if they were counted wrong
 - recall when both ends are indexed symbols: 0.976 (631 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 986 resolved in-repo CALLS pairs; 626 graded (622 correct, 4 wrong); lidx indexed in 9.5s
+- lidx: 986 resolved in-repo CALLS pairs; 626 graded (622 correct, 4 wrong); lidx indexed in 4.5s
 - ungradable lidx pairs: caller_file_not_covered 359, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1023,7 +1023,7 @@ Lists: `results/lists/rust__bat__path_tests_excluded_all_features.fn.json`, `rus
 - oracle: None, 127 edges: 127 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.946 if they were counted wrong
 - recall when both ends are indexed symbols: 0.819 (127 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 118 resolved in-repo CALLS pairs; 110 graded (104 correct, 6 wrong); lidx indexed in 4.3s
+- lidx: 118 resolved in-repo CALLS pairs; 110 graded (104 correct, 6 wrong); lidx indexed in 0.4s
 - ungradable lidx pairs: caller_file_not_covered 8
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1045,7 +1045,7 @@ Lists: `results/lists/rust__tokei__path_tests_excluded_all_features.fn.json`, `r
 - oracle: None, 376 edges: 376 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 1.000 if they were counted wrong
 - recall when both ends are indexed symbols: 0.923 (376 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 681 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 5.1s
+- lidx: 681 resolved in-repo CALLS pairs; 347 graded (347 correct, 0 wrong); lidx indexed in 0.5s
 - ungradable lidx pairs: caller_file_not_covered 334
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1066,7 +1066,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded_all_features.fn.json`, `rus
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (13 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.998 if they were counted wrong
 - recall when both ends are indexed symbols: 0.991 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12547 resolved in-repo CALLS pairs; 6253 graded (6238 correct, 15 wrong); lidx indexed in 87.6s
+- lidx: 12547 resolved in-repo CALLS pairs; 6253 graded (6238 correct, 15 wrong); lidx indexed in 9.1s
 - ungradable lidx pairs: caller_file_not_covered 6294
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1088,7 +1088,7 @@ Lists: `results/lists/rust__lidx__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 1824 edges: 1768 static with an indexed caller, 34 dispatch (22 of them found), 22 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.981 if they were counted wrong
 - recall when both ends are indexed symbols: 0.841 (1768 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 22}
-- lidx: 10158 resolved in-repo CALLS pairs; 1536 graded (1506 correct, 30 wrong); lidx indexed in 9.0s
+- lidx: 10158 resolved in-repo CALLS pairs; 1536 graded (1506 correct, 30 wrong); lidx indexed in 4.5s
 - ungradable lidx pairs: caller_file_not_covered 8613, caller_not_judged 9
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1111,7 +1111,7 @@ Lists: `results/lists/rust__just__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 2023 edges: 1931 static with an indexed caller, 22 dispatch (4 of them found), 70 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.976 if they were counted wrong
 - recall when both ends are indexed symbols: 0.911 (1931 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 67, 'callee_not_indexed': 3}
-- lidx: 2415 resolved in-repo CALLS pairs; 1806 graded (1762 correct, 44 wrong); lidx indexed in 8.5s
+- lidx: 2415 resolved in-repo CALLS pairs; 1806 graded (1762 correct, 44 wrong); lidx indexed in 4.0s
 - ungradable lidx pairs: caller_file_not_covered 553, caller_not_judged 55, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1479,8 +1479,8 @@ Tools: staticcheck (honnef.co/go/tools) v0.6.1; golang.org/x/tools (RTA, go/anal
 | go/cobra/no_tests | library (no main package) | 92 | 0 | 0 | - | - | - | - |
 | go/gitleaks/tests | binary | 103 | 1 | 1 | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] |
 | go/gitleaks/no_tests | binary | 95 | 1 | 1 | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] |
-| go/syft/tests | binary | 2572 | 11 | 111 | 0.072 [0.037, 0.136] | 0.727 [0.434, 0.902] | 0.667 [0.391, 0.862] | 0.727 [0.434, 0.902] |
-| go/syft/no_tests | binary | 2272 | 0 | 203 | 0.000 [0.000, 0.019] | - | 0.000 [0.000, 0.155] | - |
+| go/syft/tests | binary | 2572 | 11 | 78 | 0.103 [0.053, 0.190] | 0.727 [0.434, 0.902] | 0.667 [0.391, 0.862] | 0.727 [0.434, 0.902] |
+| go/syft/no_tests | binary | 2272 | 0 | 164 | 0.000 [0.000, 0.023] | - | 0.000 [0.000, 0.155] | - |
 | go/chi/tests | library (no main package) | 94 | 1 | 0 | - | 0.000 [0.000, 0.793] | - | 0.000 [0.000, 0.793] |
 | go/chi/no_tests | library (no main package) | 72 | 0 | 0 | - | - | - | - |
 | go/urfavecli/tests | binary | 187 | 0 | 7 | 0.000 [0.000, 0.354] | - | 0.000 [0.000, 0.658] | - |
@@ -1524,8 +1524,8 @@ Tools: staticcheck (honnef.co/go/tools) v0.6.1; golang.org/x/tools (RTA, go/anal
 | go/cobra/no_tests | library (no main package) | 86 | 0 | 0 | - | - | - | - |
 | go/gitleaks/tests | binary | 93 | 1 | 1 | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] |
 | go/gitleaks/no_tests | binary | 86 | 1 | 1 | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] | 1.000 [0.206, 1.000] |
-| go/syft/tests | binary | 2990 | 34 | 109 | 0.193 [0.130, 0.277] | 0.618 [0.450, 0.761] | 0.667 [0.391, 0.862] | 0.727 [0.434, 0.902] |
-| go/syft/no_tests | binary | 2627 | 243 | 201 | 0.672 [0.604, 0.733] | 0.556 [0.493, 0.617] | 0.809 [0.600, 0.923] | 0.279 [0.182, 0.402] |
+| go/syft/tests | binary | 2990 | 34 | 76 | 0.276 [0.188, 0.386] | 0.618 [0.450, 0.761] | 0.667 [0.391, 0.862] | 0.727 [0.434, 0.902] |
+| go/syft/no_tests | binary | 2627 | 243 | 162 | 0.833 [0.768, 0.883] | 0.556 [0.493, 0.617] | 0.809 [0.600, 0.923] | 0.279 [0.182, 0.402] |
 | go/chi/tests | library (no main package) | 72 | 1 | 0 | - | 0.000 [0.000, 0.793] | - | 0.000 [0.000, 0.793] |
 | go/chi/no_tests | library (no main package) | 50 | 0 | 0 | - | - | - | - |
 | go/urfavecli/tests | binary | 182 | 3 | 7 | 0.429 [0.158, 0.750] | 1.000 [0.439, 1.000] | 1.000 [0.342, 1.000] | 1.000 [0.342, 1.000] |
@@ -1612,8 +1612,8 @@ Rust recall is **not reported** (shown as `not reported`): the spot-check read a
 
 | Language | Column | Oracle-dead | Claims graded | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] | R without exported [95% CI] |
 |---|---|---:|---:|---|---|---|---|
-| Go | Unreferenced | 15 | 334 | 0.033 [0.018, 0.058] | 0.733 [0.480, 0.891] | 0.268 [0.157, 0.419] | 0.733 [0.480, 0.891] |
-| Go | Unreachable | 290 | 330 | 0.509 [0.455, 0.563] | 0.579 [0.522, 0.635] | 0.805 [0.660, 0.898] | 0.407 [0.307, 0.516] |
+| Go | Unreferenced | 15 | 262 | 0.042 [0.024, 0.074] | 0.733 [0.480, 0.891] | 0.268 [0.157, 0.419] | 0.733 [0.480, 0.891] |
+| Go | Unreachable | 290 | 258 | 0.651 [0.591, 0.707] | 0.579 [0.522, 0.635] | 0.805 [0.660, 0.898] | 0.407 [0.307, 0.516] |
 | TypeScript | Unreferenced | 41 | 25 | 0.880 [0.700, 0.958] | 0.537 [0.388, 0.679] | - | - |
 | TypeScript | Unreachable | 25 | 15 | 0.933 [0.702, 0.988] | 0.560 [0.371, 0.733] | - | 0.000 [0.000, 0.299] |
 | Rust | Unreferenced | 90 | 236 | 0.373 [0.314, 0.436] | not reported | 0.389 [0.326, 0.455] | not reported |
@@ -1625,8 +1625,8 @@ Rust recall is **not reported** (shown as `not reported`): the spot-check read a
 
 | Language | Column | high | medium | low | untiered | public_api group | of them oracle-dead |
 |---|---|---|---|---|---|---|---|
-| Go | Unreferenced | 0.314 (11/35) | 0.000 (0/299) | - | - | 796 | 0 |
-| Go | Unreachable | 0.943 (33/35) | 0.458 (135/295) | - | - | 796 | 0 |
+| Go | Unreferenced | 0.314 (11/35) | 0.000 (0/227) | - | - | 796 | 0 |
+| Go | Unreachable | 0.943 (33/35) | 0.605 (135/223) | - | - | 796 | 0 |
 | TypeScript | Unreferenced | - | 0.880 (22/25) | - | - | 973 | 0 |
 | TypeScript | Unreachable | - | 0.933 (14/15) | - | - | 973 | 0 |
 | Rust | Unreferenced | 0.534 (78/146) | 0.111 (10/90) | - | - | 728 | 0 |
@@ -1651,10 +1651,10 @@ Precision is tp/graded over lidx claims whose oracle declaration has that kind; 
 | go/gitleaks/no_tests | method | 1.000 [0.206, 1.000] (1/1) | 1.000 [0.206, 1.000] (1/1) | 1.000 [0.206, 1.000] (1/1) | 1.000 [0.206, 1.000] (1/1) |
 | go/gitleaks/no_tests | type | - (0/0) | - (0/0) | - | - |
 | go/syft/tests | function | 0.400 [0.198, 0.642] (6/15) | 0.667 [0.354, 0.879] (6/9) | 0.933 [0.702, 0.988] (14/15) | 0.824 [0.590, 0.938] (14/17) |
-| go/syft/tests | method | 0.021 [0.006, 0.074] (2/94) | 1.000 [0.342, 1.000] (2/2) | 0.074 [0.036, 0.146] (7/94) | 0.412 [0.216, 0.640] (7/17) |
+| go/syft/tests | method | 0.033 [0.009, 0.112] (2/61) | 1.000 [0.342, 1.000] (2/2) | 0.115 [0.057, 0.218] (7/61) | 0.412 [0.216, 0.640] (7/17) |
 | go/syft/tests | type | 0.000 [0.000, 0.658] (0/2) | - (0/0) | - | - |
 | go/syft/no_tests | function | 0.000 [0.000, 0.061] (0/59) | - (0/0) | 0.983 [0.910, 0.997] (58/59) | 0.592 [0.493, 0.684] (58/98) |
-| go/syft/no_tests | method | 0.000 [0.000, 0.026] (0/142) | - (0/0) | 0.542 [0.460, 0.622] (77/142) | 0.531 [0.450, 0.610] (77/145) |
+| go/syft/no_tests | method | 0.000 [0.000, 0.036] (0/103) | - (0/0) | 0.748 [0.656, 0.822] (77/103) | 0.531 [0.450, 0.610] (77/145) |
 | go/syft/no_tests | type | 0.000 [0.000, 0.658] (0/2) | - (0/0) | - | - |
 | go/chi/tests | function | - (0/0) | 0.000 [0.000, 0.793] (0/1) | - (0/0) | 0.000 [0.000, 0.793] (0/1) |
 | go/chi/tests | method | - (0/0) | - (0/0) | - (0/0) | - (0/0) |
@@ -1768,8 +1768,8 @@ What an exported-symbol policy (never claim an exported / `pub` declaration) buy
 
 | Language | Column | Graded claims | Dropped by the policy | of them wrong | P all claims | P without exported | Wrong claims, by category (all claims) |
 |---|---|---:|---:|---:|---|---|---|
-| Go | Unreferenced | 334 | 293 | 293 | 0.033 | 0.268 | exported_used_by_rule 292, referenced_method 15, referenced_function 15, library_root 1 |
-| Go | Unreachable | 330 | 289 | 154 | 0.509 | 0.805 | reachable_method 159, reachable_function 2, library_root 1 |
+| Go | Unreferenced | 262 | 221 | 221 | 0.042 | 0.268 | exported_used_by_rule 220, referenced_method 15, referenced_function 15, library_root 1 |
+| Go | Unreachable | 258 | 217 | 82 | 0.651 | 0.805 | reachable_method 87, reachable_function 2, library_root 1 |
 | TypeScript | Unreferenced | 25 | 25 | 3 | 0.880 | - | overrides_or_implements 2, referenced_function 1 |
 | TypeScript | Unreachable | 15 | 15 | 1 | 0.933 | - | reachable_function 1 |
 | Rust | Unreferenced | 236 | 20 | 16 | 0.373 | 0.389 | referenced_method 80, referenced_function 41, referenced_type 17, public_api 10 |
@@ -1779,8 +1779,8 @@ What an exported-symbol policy (never claim an exported / `pub` declaration) buy
 
 Wrong claims (lidx says dead, oracle says live, or live by construction), pooled per language and column. Categories are in `results/lists/<cell>.dead_<column>.fp.json`. Missed declarations (oracle-dead, lidx does not claim) are labelled from lidx's own incoming reachability edges to the declaration: `incoming_from_tests_only`, `incoming_from_dead_code_only` (a dead cluster keeps itself alive), `incoming_call_from_live_code` (an edge the oracle contradicts), `kind_not_in_dead_symbols` (interfaces, enums and traits are not in `dead_symbols`' kind list), `no_incoming_edge_but_filtered` (a filter in the query rescued it).
 
-- **Go, unreferenced.** Wrong claims: exported_used_by_rule 292, referenced_method 15, referenced_function 15, library_root 1. Missed: incoming_from_tests_only 3, incoming_self_edge_only 1.
-- **Go, unreachable.** Wrong claims: reachable_method 159, reachable_function 2, library_root 1. Missed: incoming_from_dead_code_only 62, no_incoming_edge_but_filtered 49, incoming_from_tests_or_dead_code 6, incoming_from_tests_only 4, incoming_self_edge_only 1.
+- **Go, unreferenced.** Wrong claims: exported_used_by_rule 220, referenced_method 15, referenced_function 15, library_root 1. Missed: incoming_from_tests_only 3, incoming_self_edge_only 1.
+- **Go, unreachable.** Wrong claims: reachable_method 87, reachable_function 2, library_root 1. Missed: incoming_from_dead_code_only 62, no_incoming_edge_but_filtered 49, incoming_from_tests_or_dead_code 6, incoming_from_tests_only 4, incoming_self_edge_only 1.
 - **TypeScript, unreferenced.** Wrong claims: overrides_or_implements 2, referenced_function 1. Missed: kind_not_in_dead_symbols 17, no_incoming_edge_but_filtered 2.
 - **TypeScript, unreachable.** Wrong claims: reachable_function 1. Missed: incoming_from_dead_code_only 6, incoming_call_from_live_code 4, no_incoming_edge_but_filtered 1.
 - **Rust, unreferenced.** Wrong claims: referenced_method 80, referenced_function 41, referenced_type 17, public_api 10. Missed: kind_not_in_dead_symbols 2.
@@ -1984,9 +1984,9 @@ Of the declarations lidx claims dead although the oracle judged them live (rule-
 | go/gitleaks/tests | unreferenced | 0 | 0 | 0 |
 | go/gitleaks/tests | unreachable | 0 | 0 | 0 |
 | go/syft/no_tests | unreferenced | 21 | 1 | 0 |
-| go/syft/no_tests | unreachable | 66 | 0 | 0 |
+| go/syft/no_tests | unreachable | 27 | 0 | 0 |
 | go/syft/tests | unreferenced | 4 | 0 | 0 |
-| go/syft/tests | unreachable | 88 | 0 | 0 |
+| go/syft/tests | unreachable | 55 | 0 | 0 |
 | ts/zod | unreferenced | 0 | 0 | 0 |
 | ts/zod | unreachable | 0 | 0 | 0 |
 | ts/hono | unreferenced | 2 | 0 | 0 |
@@ -2850,9 +2850,9 @@ Of the declarations lidx claims dead although the oracle judged them live (rule-
 | go/gitleaks/tests | unreferenced | 0 | 0 | 0 |
 | go/gitleaks/tests | unreachable | 0 | 0 | 0 |
 | go/syft/no_tests | unreferenced | 21 | 1 | 0 |
-| go/syft/no_tests | unreachable | 66 | 0 | 0 |
+| go/syft/no_tests | unreachable | 27 | 0 | 0 |
 | go/syft/tests | unreferenced | 4 | 0 | 0 |
-| go/syft/tests | unreachable | 88 | 0 | 0 |
+| go/syft/tests | unreachable | 55 | 0 | 0 |
 | ts/zod | unreferenced | 0 | 0 | 0 |
 | ts/zod | unreachable | 0 | 0 | 0 |
 | ts/hono | unreferenced | 2 | 0 | 0 |
