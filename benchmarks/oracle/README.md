@@ -374,12 +374,14 @@ rustc's `dead_code` lint is not used (it needs `cargo check`, which runs build s
 
 | Language | Column | Oracle-dead | Claims graded | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] | R without exported [95% CI] |
 |---|---|---:|---:|---|---|---|---|
-| Go | Unreferenced | 15 | 34 | 0.324 [0.191, 0.492] | 0.733 [0.480, 0.891] | 0.333 [0.198, 0.504] | 0.733 [0.480, 0.891] |
+| Go | Unreferenced (old grading: 0.042 [0.024, 0.074] over 260 claims) | 15 | 34 | 0.324 [0.191, 0.492] | 0.733 [0.480, 0.891] | 0.333 [0.198, 0.504] | 0.733 [0.480, 0.891] |
 | Go | Unreachable | 290 | 195 | 0.862 [0.806, 0.903] | 0.579 [0.522, 0.635] | 1.000 [0.896, 1.000] | 0.407 [0.307, 0.516] |
 | TypeScript | Unreferenced | 41 | 25 | 0.880 [0.700, 0.958] | 0.537 [0.388, 0.679] | - | - |
 | TypeScript | Unreachable | 25 | 15 | 0.933 [0.702, 0.988] | 0.560 [0.371, 0.733] | - | 0.000 [0.000, 0.299] |
 | Rust | Unreferenced | 90 | 236 | 0.373 [0.314, 0.436] | not reported | 0.389 [0.326, 0.455] | not reported |
 | Rust | Unreachable | 121 | 313 | 0.284 [0.237, 0.337] | not reported | 0.283 [0.234, 0.337] | not reported |
+
+Go dead-code numbers depend on the corpus modules being present in the ambient `GOMODCACHE` (or a `vendor/` directory): the dependency-interface rescue of issue #495 reads sources already on disk and never downloads, so with an empty module cache it does nothing and the Go unreachable figures fall back to roughly the pre-#495 level (the 13 dependency-interface claims on `go/syft/no_tests` return). Bucket E (issue #503): exported symbols of `internal/` packages in library cells stay wrong by construction through `library_root` (stricter than the oracle-side `exported_used_by_rule` of bucket A, which is ungradable).
 
 Reading: the default `dead_symbols` output no longer holds public API or conventional roots (issues #461, #462: the opt-in `public_api` group is 796 Go, 973 TypeScript and 728 Rust declarations, none of them oracle-dead), so the precision figures above are over genuine candidates: 262 Go unreferenced and 258 Go unreachable claims, 25 and 15 in TypeScript, 236 and 313 in Rust. Precision by confidence tier (pooled; `results/report.md`, "Confidence tiers"): Go unreachable `high` 0.943 (33/35), `medium` 0.605 (135/223); TypeScript `medium` 0.880 unreferenced and 0.933 unreachable; Rust unreferenced `high` 0.534 (78/146), `medium` 0.111 (10/90), Rust unreachable `high` 0.319, `medium` 0.173. The repositories themselves have almost nothing dead (summed over the 14 Go cells the unreferenced column has 15 dead declarations; cobra, viper, bubbletea, fd and xsv have none), so Go recall rests on small counts and its intervals are wide, and the `tests` and `no_tests` cells of one repository overlap, so a pooled interval is narrower than the evidence supports. Rust is the weakest column: precision 0.373 unreferenced and 0.284 unreachable, and its recall is not reported (see the recall caveats below). Findings filed as lidx issues: #461, #462, #463 (used types), #464 (functions and methods called through method values, interfaces, traits, overrides).
 

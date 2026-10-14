@@ -296,6 +296,9 @@ pub fn locate_packages(
     let mut out: Vec<DepPackage> = Vec::new();
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
     for (module_dir, import_path) in imports {
+        if !is_safe_relative_path(import_path) {
+            continue;
+        }
         let Some(go_mod) = go_mods.iter().find(|m| m.dir == *module_dir) else {
             continue;
         };
@@ -307,6 +310,9 @@ pub fn locate_packages(
         else {
             continue;
         };
+        if !is_safe_relative_path(module) {
+            continue;
+        }
         let rest = import_path
             .strip_prefix(module.as_str())
             .map(|r| r.trim_start_matches('/'))
@@ -472,6 +478,16 @@ fn qualify(text: &str, imports: &HashMap<String, String>) -> String {
 /// package outside the repository (an import path), or a vendored copy
 /// inside it (`><module dir>/vendor/<path>`, indexed with the repository but
 /// a dependency all the same).
+/// Whether `p` can be joined under a vendor or module-cache root without
+/// leaving it: relative, no `..` or `.` or empty segment, no backslash or NUL.
+/// Import paths come from the (untrusted) repository.
+pub(crate) fn is_safe_relative_path(p: &str) -> bool {
+    !p.is_empty()
+        && !p.contains(['\\', '\0'])
+        && !p.starts_with('/')
+        && p.split('/').all(|seg| !matches!(seg, "" | "." | ".."))
+}
+
 pub fn is_dependency_place(place: &str) -> bool {
     match place.strip_prefix('>') {
         None => true,
@@ -789,5 +805,22 @@ mod tests {
         // no module cache at all: only the vendored package
         let found = locate_packages(&root.join("repo"), &go_mods, &imports, None);
         assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn unsafe_import_paths_are_rejected() {
+        assert!(is_safe_relative_path("github.com/a/b/sub"));
+        for bad in [
+            "",
+            "/etc",
+            "github.com/a/../../x",
+            "../x",
+            "a/./b",
+            "a//b",
+            "a\\b",
+            "a/..",
+        ] {
+            assert!(!is_safe_relative_path(bad), "{bad}");
+        }
     }
 }
