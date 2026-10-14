@@ -1156,11 +1156,6 @@ struct FallbackGuard {
     /// Refuse a cross-file candidate the language's `VisibilityRule`
     /// deems not visible.
     enforce_visibility: bool,
-    /// A receiver of a known Rust type: of several visible methods of
-    /// same-named types, the one whose type is declared in the module the
-    /// call is written in (or the innermost enclosing one) is the one a bare
-    /// type name means there. Never for a bare-name guess.
-    home_module: bool,
 }
 
 impl FallbackGuard {
@@ -1170,7 +1165,6 @@ impl FallbackGuard {
         exclude_method: false,
         exclude_free_fn: false,
         enforce_visibility: false,
-        home_module: false,
     };
 }
 
@@ -2870,7 +2864,7 @@ impl<'c> Resolver<'c> {
             caller.qualname,
         );
         let kind_eligible = found.len();
-        let mut visible: Vec<i64> = found
+        let visible: Vec<i64> = found
             .iter()
             .filter(|r| {
                 !guard.enforce_visibility
@@ -2885,31 +2879,6 @@ impl<'c> Resolver<'c> {
             })
             .map(|r| r.id)
             .collect();
-        // Rust: a type declared in the module the call is written in (or one
-        // enclosing it) is what a bare type name there means, whatever a
-        // same-named type of another module declares.
-        if guard.home_module
-            && visible.len() >= 2
-            && let Some(caller_qualname) = caller.qualname
-        {
-            let mut home: Vec<(usize, i64)> = found
-                .iter()
-                .filter(|r| visible.contains(&r.id) && r.kind == "method")
-                .filter_map(|r| {
-                    let module = r.qualname.rsplitn(3, "::").nth(2)?;
-                    caller_qualname
-                        .starts_with(&format!("{module}::"))
-                        .then_some((module.len(), r.id))
-                })
-                .collect();
-            // The innermost module wins.
-            home.sort_unstable_by_key(|(depth, _)| std::cmp::Reverse(*depth));
-            match home.as_slice() {
-                [(_, only)] => visible = vec![*only],
-                [(a, only), (b, _), ..] if a > b => visible = vec![*only],
-                _ => {}
-            }
-        }
         let is_ambiguous = visible.len() >= 2;
         if is_ambiguous {
             self.saw_ambiguous = true;
@@ -2972,9 +2941,56 @@ impl<'c> Resolver<'c> {
                 if source_lang == "rust" && known_type == RUST_STD_RECEIVER {
                     return self.rust_std_receiver_method(target_qualname, edge_kind, caller);
                 }
+                // A type of the repo written bare in the module declaring it
+                // (`=module|Type`): that module's own method, exactly.
+                let mut known_type = known_type;
+                if source_lang == "rust"
+                    && let Some((module, ty)) = crate::model::parse_rust_home_receiver(known_type)
+                {
+                    let full = format!("{module}::{ty}::{method}");
+                    let hits = query_exact_candidates(
+                        &mut self.exact,
+                        &full,
+                        self.graph_version,
+                        caller.file_path,
+                        self.caller_scope.as_deref(),
+                    )?;
+                    // `crate::matcher` names a module of every package that has
+                    // one: only the caller's own package declares what the
+                    // bare type means here.
+                    let home = crate::indexer::rust::cargo_package_dir(caller.file_path);
+                    let own: Vec<_> = hits
+                        .into_iter()
+                        .filter(|c| crate::indexer::rust::cargo_package_dir(&c.path) == home)
+                        .collect();
+                    if let Some(id) = collapse_exact_candidates(&own) {
+                        return Ok(Some((id, ResolutionKind::ReceiverType)));
+                    }
+                    // The type is the package's own and has no such method: a
+                    // trait the package declares provides it, else nothing
+                    // (never a same-named type of another package).
+                    let ty_full = format!("{module}::{ty}");
+                    let declared = query_exact_candidates(
+                        &mut self.exact,
+                        &ty_full,
+                        self.graph_version,
+                        caller.file_path,
+                        self.caller_scope.as_deref(),
+                    )?
+                    .iter()
+                    .any(|c| {
+                        crate::indexer::rust::cargo_package_dir(&c.path) == home
+                            && matches!(c.kind.as_str(), "struct" | "enum" | "class" | "type")
+                    });
+                    if declared {
+                        return Ok(self
+                            .rust_package_trait_method(home, method)?
+                            .map(|id| (id, ResolutionKind::Inherited)));
+                    }
+                    known_type = ty;
+                }
                 // A Rust type of another workspace package (`@dir|Type`): a
                 // public method of that package's type, else the plain name.
-                let mut known_type = known_type;
                 if source_lang == "rust"
                     && let Some((dir, ty)) = rust_pinned_type(known_type)
                 {
@@ -3038,7 +3054,6 @@ impl<'c> Resolver<'c> {
                     exclude_method: false,
                     exclude_free_fn: false,
                     enforce_visibility: source_lang == "rust",
-                    home_module: source_lang == "rust",
                 };
                 if let Some(id) = self.unique_by_pattern(
                     &seg,
@@ -3110,7 +3125,6 @@ impl<'c> Resolver<'c> {
                         && !bare_call
                         && !target_qualname.contains("::"),
                     enforce_visibility: true,
-                    home_module: false,
                 };
                 if profile_for(source_lang).two_segment
                     && let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
@@ -3450,7 +3464,6 @@ impl<'c> Resolver<'c> {
             exclude_method: false,
             exclude_free_fn: false,
             enforce_visibility: true,
-            home_module: false,
         };
         let Some(id) =
             self.unique_by_pattern(name, (&dot, &colons), "rust", edge_kind, guard, caller)?
@@ -3460,6 +3473,37 @@ impl<'c> Resolver<'c> {
         Ok(self
             .is_rust_trait_method(id)?
             .then_some((id, ResolutionKind::BareName)))
+    }
+
+    /// The one method named `method` that a trait declares (or an impl of a
+    /// trait defines) in the Cargo package at `dir`; `None` when there is none
+    /// or several.
+    fn rust_package_trait_method(&mut self, dir: &str, method: &str) -> Result<Option<i64>> {
+        let prefix = if dir.is_empty() {
+            "%".to_string()
+        } else {
+            format!("{dir}/%")
+        };
+        let ids: Vec<i64> = self
+            .conn
+            .prepare_cached(
+                "SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.name = ?1 AND s.kind = 'method' AND s.graph_version = ?2
+                   AND f.language = 'rust' AND f.path LIKE ?3
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
+            )?
+            .query_map(params![method, self.graph_version, prefix], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut found = None;
+        for id in ids {
+            if self.is_rust_trait_method(id)? {
+                if found.is_some() {
+                    return Ok(None);
+                }
+                found = Some(id);
+            }
+        }
+        Ok(found)
     }
 
     /// Whether the symbol `id` is a method a trait declares or an impl of a

@@ -345,3 +345,116 @@ fn incremental_sync_types_receivers_when_the_declaring_file_is_added_later() {
 fn lidx_snapshot(indexer: &lidx::indexer::Indexer, gv: i64) -> BTreeSet<common::golden::EdgeKey> {
     common::golden::snapshot_edges(indexer.db(), gv).unwrap()
 }
+
+fn two_foos() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Cargo.toml", "[package]\nname = \"x\"\n"),
+        ("src/lib.rs", "pub mod a;\npub mod b;\n"),
+        (
+            "src/a.rs",
+            "pub struct Foo;\nimpl Foo { pub fn go(&self) {} }\npub fn make() -> Foo { Foo }\npub fn many() -> Vec<Foo> { vec![] }\npub struct Holder { pub foo: Foo }\n",
+        ),
+        (
+            "src/b.rs",
+            "use crate::a;\npub struct Foo;\nimpl Foo { pub fn go(&self) {} }\n\
+pub fn via_fn() { let f = a::make(); f.go(); }\n\
+pub fn via_field(h: &a::Holder) { h.foo.go(); }\n\
+pub fn via_iter() { for f in a::many() { f.go(); } }\n\
+pub fn via_param(f: &a::Foo) { f.go(); }\n\
+pub fn via_new() { let f = a::Foo::new(); f.go(); }\n\
+pub fn local_param(f: &Foo) { f.go(); }\n\
+pub fn local_ctor() { let f = Foo::new(); f.go(); }\n\
+impl Foo { pub fn new() -> Foo { Foo } }\n",
+        ),
+    ]
+}
+
+#[test]
+fn a_receiver_typed_through_another_module_never_binds_the_callers_same_named_type() {
+    let files = two_foos();
+    for caller in [
+        "crate::b::via_fn",
+        "crate::b::via_field",
+        "crate::b::via_iter",
+        "crate::b::via_param",
+        "crate::b::via_new",
+    ] {
+        let got = targets(&files, caller);
+        assert!(!got.contains("crate::b::Foo::go"), "{caller}: {got:#?}");
+    }
+}
+
+#[test]
+fn a_bare_type_declared_in_the_callers_module_binds_that_modules_method() {
+    let files = two_foos();
+    for caller in ["crate::b::local_param", "crate::b::local_ctor"] {
+        let got = targets(&files, caller);
+        assert!(got.contains("crate::b::Foo::go"), "{caller}: {got:#?}");
+        assert!(!got.contains("crate::a::Foo::go"), "{caller}: {got:#?}");
+    }
+}
+
+#[test]
+fn annotated_channel_halves_type_the_receiver() {
+    binds_entry(
+        "use std::sync::mpsc::{Receiver, Sender, channel};\npub fn go() -> u32 {\n    let (tx, rx): (Sender<Entry>, Receiver<Entry>) = channel();\n    drop(tx);\n    let mut n = 0;\n    for ent in rx {\n        n += ent.path();\n    }\n    n\n}\npub fn go2(rx: std::sync::mpsc::Receiver<Entry>) -> u32 {\n    let mut n = 0;\n    for ent in rx.iter() {\n        n += ent.path();\n    }\n    n\n}\n",
+        "crate::go",
+    );
+    binds_entry(
+        "pub fn go2(rx: crossbeam_channel::Receiver<Entry>) -> u32 {\n    let mut n = 0;\n    for ent in rx.iter() {\n        n += ent.path();\n    }\n    n\n}\n",
+        "crate::go2",
+    );
+}
+
+#[test]
+fn a_repo_type_named_receiver_is_not_a_channel() {
+    let src = format!(
+        "{TYPES}pub struct Receiver<T>(T);\nimpl<T> Receiver<T> {{\n    pub fn path(&self) -> u32 {{ 9 }}\n}}\n\
+pub fn go(rx: Receiver<Entry>) -> u32 {{\n    rx.path()\n}}\n"
+    );
+    let got = targets(&lib(&src), "crate::go");
+    assert!(got.contains("crate::Receiver::path"), "{got:#?}");
+    assert!(!got.contains("crate::Entry::path"), "{got:#?}");
+}
+
+fn two_packages() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"regex\", \"pcre\"]\n",
+        ),
+        ("regex/Cargo.toml", "[package]\nname = \"regex\"\n"),
+        ("regex/src/lib.rs", "pub mod matcher;\n"),
+        (
+            "regex/src/matcher.rs",
+            "pub struct RegexMatcher;\nimpl RegexMatcher {\n    pub fn find_candidate_line(&self) {}\n    pub fn own(&self) {}\n}\n",
+        ),
+        ("pcre/Cargo.toml", "[package]\nname = \"pcre\"\n"),
+        ("pcre/src/lib.rs", "pub mod matcher;\n"),
+        (
+            "pcre/src/matcher.rs",
+            "pub struct RegexMatcher;\nimpl RegexMatcher {\n    pub fn own(&self) {}\n}\n\
+pub trait Matcher {\n    fn find_candidate_line(&self) {}\n}\nimpl Matcher for RegexMatcher {}\n\
+pub fn trait_default(m: &RegexMatcher) { m.find_candidate_line(); }\n\
+pub fn inherent(m: &RegexMatcher) { m.own(); }\n\
+pub fn nothing(m: &RegexMatcher) { m.absent(); }\n",
+        ),
+    ]
+}
+
+#[test]
+fn a_bare_type_never_binds_the_method_of_a_same_named_type_in_another_package() {
+    let files = two_packages();
+    let got = targets(&files, "crate::matcher::trait_default");
+    assert!(
+        got.contains("crate::matcher::Matcher::find_candidate_line"),
+        "{got:#?}"
+    );
+    assert!(
+        !got.iter()
+            .any(|t| t.contains("RegexMatcher::find_candidate_line")),
+        "{got:#?}"
+    );
+    let got = targets(&files, "crate::matcher::nothing");
+    assert!(got.iter().all(|t| !t.ends_with("::absent")), "{got:#?}");
+}

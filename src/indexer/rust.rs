@@ -78,7 +78,7 @@ fn classify_twin(signature: &str) -> TwinTraits<'_> {
 /// The Cargo package directory a Rust path belongs to: everything before the
 /// first `src/`, `tests/`, `benches/` or `examples/` component (`""` for a
 /// root package). Workspace crates each have their own `crate::` root.
-fn cargo_package_dir(path: &str) -> &str {
+pub(crate) fn cargo_package_dir(path: &str) -> &str {
     let mut offset = 0;
     for component in path.split('/') {
         if matches!(component, "src" | "tests" | "benches" | "examples") {
@@ -2366,6 +2366,9 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
             }),
             None => ReceiverType::Known(pin_imported_type(ty, ctx)),
         },
+        Ty::Local(module, ty) => {
+            ReceiverType::Known(crate::model::rust_home_receiver(&module, &ty))
+        }
         Ty::Pending(p) => ReceiverType::RustDeferred(p),
         // A value of a std shape (`Vec<_>`, `Option<_>`, an iterator, a
         // tuple, a map) takes std's methods: a repo type's method sharing
@@ -2408,6 +2411,10 @@ const TRANSPARENT_WRAPPERS: &[&str] = &[
 enum Ty {
     Unknown,
     Named(String),
+    /// A type of the repo written bare, declared in the module the code is
+    /// in (`(module, name)`): the only provenance that lets the resolver bind
+    /// `module::Name::method` exactly. Behaves as `Named` everywhere else.
+    Local(String, String),
     Option(Box<Ty>),
     Result(Box<Ty>, Box<Ty>),
     Tuple(Vec<Ty>),
@@ -2859,10 +2866,32 @@ impl TypeEnv<'_> {
     fn named_ty(&self, node: Node<'_>) -> Ty {
         match self.type_named(node) {
             None => Ty::Unknown,
-            Some((name, TypeOrigin::Repo)) => Ty::Named(name),
+            Some((name, TypeOrigin::Repo)) => match self.home_module(node, &name) {
+                Some(module) => Ty::Local(module, name),
+                None => Ty::Named(name),
+            },
             Some((_, TypeOrigin::External)) => Ty::Named(RUST_EXTERNAL_RECEIVER.to_string()),
             Some((name, TypeOrigin::Via(abs))) => self.via_ty(name, abs),
         }
+    }
+
+    /// The module a type written bare as `node` is read in, when that is a
+    /// plain name of a function body being extracted: not `Self`, not a path,
+    /// not brought in by a `use`, so a type of that name declared in the module
+    /// is the one meant.
+    fn home_module(&self, node: Node<'_>, name: &str) -> Option<String> {
+        let scope = self.ctx.map(|c| c.path_scope()).or(self.paths)?;
+        let mut current = node;
+        while matches!(current.kind(), "reference_type" | "generic_type") {
+            current = current.child_by_field_name("type")?;
+        }
+        if current.kind() != "type_identifier" || node_text(current, self.source) == "Self" {
+            return None;
+        }
+        if scope.imports.get(name).is_some_and(|t| !t.is_empty()) {
+            return None;
+        }
+        Some(scope.module.to_string())
     }
 
     /// Accepts only nominal, capitalised, non-wrapper, non-generic names;
@@ -2978,6 +3007,15 @@ impl TypeEnv<'_> {
                     );
                 }
                 let arg = |i: usize| args.get(i).map_or(Ty::Unknown, |a| self.ty(*a));
+                // `Receiver<T>` of a channel crate iterates `T`; a repo type
+                // of that name is not one.
+                if name.as_deref() == Some("Receiver")
+                    && args.len() == 1
+                    && let Some(written) = node.child_by_field_name("type")
+                    && self.channel_path_external(&node_text(written, self.source))
+                {
+                    return Ty::Iter(Box::new(arg(0)));
+                }
                 match (name.as_deref(), args.len()) {
                     // Method calls auto-deref, so for receiver purposes a
                     // smart pointer to `T` is a `T`.
@@ -3047,6 +3085,7 @@ impl TypeEnv<'_> {
                 Some(match inner {
                     Ty::Option(t) | Ty::Result(t, _) => *t,
                     Ty::Named(n) => Ty::Named(n),
+                    local @ Ty::Local(..) => local,
                     Ty::Pending(_) => project(inner, Step::Method("unwrap".into())),
                     _ => Ty::Unknown,
                 })
@@ -3110,6 +3149,29 @@ impl TypeEnv<'_> {
         }
     }
 
+    /// Whether `raw`, a path written in this file, names an item of a channel
+    /// crate (std, crossbeam, flume): its first segment is imported from one,
+    /// or is one, and no module of the repo is called that.
+    fn channel_path_external(&self, raw: &str) -> bool {
+        let Some(ctx) = self.ctx else {
+            return false;
+        };
+        let segs: Vec<&str> = raw.split("::").collect();
+        if ctx.local_mods.contains(segs[0]) {
+            return false;
+        }
+        let in_crate = |path: &str| {
+            CHANNEL_CRATES.iter().any(|c| {
+                path.strip_prefix(c)
+                    .is_some_and(|rest| rest.starts_with("::"))
+            })
+        };
+        match ctx.imports.get(segs[0]) {
+            Some(targets) => !targets.is_empty() && targets.iter().all(|t| in_crate(t)),
+            None => segs.len() > 1 && in_crate(raw),
+        }
+    }
+
     /// `bounded::<T>(n)` / `mpsc::channel::<T>()`: `(sender, receiver)`, the
     /// receiver iterating `T`. Only a constructor of a known channel crate
     /// (std, crossbeam, flume) written with its message type.
@@ -3117,7 +3179,7 @@ impl TypeEnv<'_> {
         if written.kind() != "generic_function" {
             return None;
         }
-        let ctx = self.ctx?;
+        self.ctx?;
         let function = written.child_by_field_name("function")?;
         let args = written.child_by_field_name("type_arguments")?;
         let mut cursor = args.walk();
@@ -3127,21 +3189,8 @@ impl TypeEnv<'_> {
             return None;
         }
         let raw = collapse_call_target_whitespace(&node_text(function, self.source));
-        let segs: Vec<&str> = raw.split("::").collect();
-        let last = *segs.last()?;
-        if !CHANNEL_CONSTRUCTORS.contains(&last) || ctx.local_mods.contains(segs[0]) {
-            return None;
-        }
-        let in_crate = |path: &str| {
-            CHANNEL_CRATES.iter().any(|c| {
-                path.strip_prefix(c)
-                    .is_some_and(|rest| rest.starts_with("::"))
-            })
-        };
-        let external = match ctx.imports.get(segs[0]) {
-            Some(targets) => !targets.is_empty() && targets.iter().all(|t| in_crate(t)),
-            None => segs.len() > 1 && in_crate(&raw),
-        };
+        let last = raw.rsplit("::").next()?;
+        let external = CHANNEL_CONSTRUCTORS.contains(&last) && self.channel_path_external(&raw);
         external.then(|| Ty::Tuple(vec![Ty::Unknown, Ty::Iter(Box::new(self.ty(message)))]))
     }
 
@@ -3149,7 +3198,7 @@ impl TypeEnv<'_> {
     /// handful of std shapes, else (a `Named` receiver) the method's
     /// declaration in another file.
     fn method_call_ty(&self, recv: Ty, method: &str) -> Ty {
-        if let Ty::Named(t) = &recv {
+        if let Ty::Named(t) | Ty::Local(_, t) = &recv {
             if let Some(entry) = self
                 .ctx
                 .and_then(|c| c.returns.get(&format!("{t}::{method}")))
@@ -3185,7 +3234,7 @@ impl TypeEnv<'_> {
     fn field_ty(&self, base: Ty, field: &str) -> Ty {
         let is_index = field.chars().all(|c| c.is_ascii_digit());
         match base {
-            Ty::Named(owner) => self.adt_field(&owner, None, field),
+            Ty::Named(owner) | Ty::Local(_, owner) => self.adt_field(&owner, None, field),
             Ty::Tuple(_) | Ty::Pending(_) if is_index => {
                 project(base, Step::Tuple(field.parse().unwrap_or(usize::MAX)))
             }
@@ -3340,7 +3389,14 @@ impl TypeEnv<'_> {
             );
         }
         if cands.is_empty() {
-            return heuristic.map(Ty::Named);
+            // `Foo::new()`: the type written bare, declared in this module.
+            let bare = function
+                .child_by_field_name("path")
+                .filter(|p| p.kind() == "identifier" && node_text(*p, source) != "Self");
+            return heuristic.map(|name| match bare.and_then(|p| self.home_module(p, &name)) {
+                Some(module) => Ty::Local(module, name),
+                None => Ty::Named(name),
+            });
         }
         Some(self.pending(DeferredSource::Call { candidates: cands }, heuristic))
     }
@@ -3490,7 +3546,7 @@ impl TypeEnv<'_> {
     /// `(type, variant)` a pattern path names when matched against a `Named`
     /// scrutinee: `Type` (struct) or `Type::Variant` (enum), `Self` resolved.
     fn adt_key(&self, path: Node<'_>, scrutinee: &Ty) -> Option<(String, Option<String>)> {
-        let Ty::Named(n) = scrutinee else {
+        let (Ty::Named(n) | Ty::Local(_, n)) = scrutinee else {
             return None;
         };
         let resolve = |s: String| {
@@ -3568,6 +3624,7 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         (Ty::Named(n), "clone") => Ty::Named(n),
         (Ty::Option(t) | Ty::Result(t, _), "unwrap" | "expect") => *t,
         (Ty::Named(n), "unwrap" | "expect") => Ty::Named(n),
+        (local @ Ty::Local(..), "clone" | "unwrap" | "expect") => local,
         (Ty::Result(t, _), "ok") => Ty::Option(t),
         (Ty::Result(_, e), "err") => Ty::Option(e),
         (t @ (Ty::Option(_) | Ty::Result(..)), "as_ref" | "as_mut" | "clone") => t,
@@ -3652,6 +3709,9 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
                 if is_async {
                     ty = Ty::Future(Box::new(ty));
                 }
+                if in_inline_mod(node) {
+                    ty = demote_local(ty);
+                }
                 let name = node_text(name, source);
                 let key = owner.map_or(name.clone(), |o| format!("{o}::{name}"));
                 match out.get(&key) {
@@ -3673,6 +3733,34 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
     let mut out = Returns::new();
     walk(root, source, paths, &mut out);
     out
+}
+
+/// Whether `node` sits inside an inline `mod name { .. }`: the module a file
+/// scope names is then not the module it is written in.
+fn in_inline_mod(node: Node<'_>) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "mod_item" {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// `ty` with every [`Ty::Local`] read as the plain [`Ty::Named`].
+fn demote_local(ty: Ty) -> Ty {
+    let boxed = |t: Box<Ty>| Box::new(demote_local(*t));
+    match ty {
+        Ty::Local(_, name) => Ty::Named(name),
+        Ty::Option(t) => Ty::Option(boxed(t)),
+        Ty::Result(t, e) => Ty::Result(boxed(t), boxed(e)),
+        Ty::Seq(t) => Ty::Seq(boxed(t)),
+        Ty::Iter(t) => Ty::Iter(boxed(t)),
+        Ty::Future(t) => Ty::Future(boxed(t)),
+        Ty::Tuple(ts) => Ty::Tuple(ts.into_iter().map(demote_local).collect()),
+        other => other,
+    }
 }
 
 /// The type written as `text` (a return type), read in `env`'s scope: parsed
@@ -4521,7 +4609,17 @@ fn collect_adts(
     paths: Option<PathScope<'_>>,
     declared: Option<&DeclaredOrigins>,
 ) -> Adts {
-    fn fields_of(env: &TypeEnv<'_>, body: Option<Node<'_>>) -> Vec<(String, Ty)> {
+    fn fields_of(env: &TypeEnv<'_>, body: Option<Node<'_>>, inline: bool) -> Vec<(String, Ty)> {
+        let fields = fields_in(env, body);
+        if inline {
+            return fields
+                .into_iter()
+                .map(|(n, t)| (n, demote_local(t)))
+                .collect();
+        }
+        fields
+    }
+    fn fields_in(env: &TypeEnv<'_>, body: Option<Node<'_>>) -> Vec<(String, Ty)> {
         let Some(body) = body else {
             return Vec::new();
         };
@@ -4569,7 +4667,7 @@ fn collect_adts(
             if kind == "struct_item" {
                 entries.push((
                     name.clone(),
-                    fields_of(&env, node.child_by_field_name("body")),
+                    fields_of(&env, node.child_by_field_name("body"), in_inline_mod(node)),
                 ));
             } else if let Some(list) = node.child_by_field_name("body") {
                 // Marks the enum as declared here (see `adt_field`).
@@ -4578,7 +4676,10 @@ fn collect_adts(
                 for v in list.named_children(&mut cursor) {
                     if let Some(vn) = v.child_by_field_name("name") {
                         let key = format!("{name}::{}", node_text(vn, source));
-                        entries.push((key, fields_of(&env, v.child_by_field_name("body"))));
+                        entries.push((
+                            key,
+                            fields_of(&env, v.child_by_field_name("body"), in_inline_mod(node)),
+                        ));
                     }
                 }
             }
@@ -4696,7 +4797,7 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
                     let ty = match env.expr_ty(value, out) {
                         // A type of the repo is iterated through its
                         // `Iterator::next`.
-                        iterated @ Ty::Named(_) => {
+                        iterated @ (Ty::Named(_) | Ty::Local(..)) => {
                             project(env.method_call_ty(iterated, "next"), Step::OptionSome)
                         }
                         iterated => project(iterated, Step::Elem),
