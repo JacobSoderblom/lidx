@@ -1,10 +1,6 @@
 [
-{"base":"Clone","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/reuse_build/mod.rs:155"},
-{"base":"Debug","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/partition.rs:41"},
-{"base":"Debug","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/reuse_build/mod.rs:155"},
 {"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/reporter/displayer/status_level.rs:20"},
 {"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/reporter/displayer/status_level.rs:57"},
 {"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/reporter/displayer/unit_output.rs:28"},
-{"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/test_filter.rs:20"},
-{"base":"Sized","bucket":"external_base","category":"no_edge","relation":"extends","sub":"nextest-runner/src/config/overrides.rs:112"}
+{"base":"From","bucket":"external_base","category":"no_edge","relation":"implements","sub":"nextest-runner/src/test_filter.rs:20"}
 ]

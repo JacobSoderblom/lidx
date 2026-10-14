@@ -1,9 +1,3 @@
 [
-{"base":"Debug","bucket":"external_base","category":"no_edge","relation":"extends","sub":"crates/core/flags/mod.rs:71"},
-{"base":"RefUnwindSafe","bucket":"external_base","category":"no_edge","relation":"extends","sub":"crates/core/flags/mod.rs:71"},
-{"base":"Send","bucket":"external_base","category":"no_edge","relation":"extends","sub":"crates/core/flags/mod.rs:71"},
-{"base":"Send","bucket":"external_base","category":"no_edge","relation":"extends","sub":"crates/ignore/src/walk.rs:1312"},
-{"base":"Sized","bucket":"external_base","category":"no_edge","relation":"extends","sub":"crates/searcher/src/sink.rs:18"},
-{"base":"Sync","bucket":"external_base","category":"no_edge","relation":"extends","sub":"crates/core/flags/mod.rs:71"},
-{"base":"UnwindSafe","bucket":"external_base","category":"no_edge","relation":"extends","sub":"crates/core/flags/mod.rs:71"}
+
 ]

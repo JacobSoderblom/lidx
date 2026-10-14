@@ -151,16 +151,19 @@ fn this_method_default_export_and_jsx() {
         ["src/shapes.Bus.handle"]
     );
     assert_eq!(ref_targets(FILES, "src/default"), ["src/default.main"]);
+    // `onBlur={local}` names the arrow declared inside `View`.
     assert_eq!(
         ref_targets(FILES, "src/view.View"),
-        ["src/lib.helper", "src/view.onClick"]
+        ["src/lib.helper", "src/view.View.local", "src/view.onClick"]
     );
 }
 
 #[test]
 fn locals_params_externals_and_calls_are_not_references() {
+    // Only the arrow declared inside the function is a reference: the
+    // parameters, the constant and the globals are not.
     let t = ref_targets(FILES, "src/shapes.negatives");
-    assert!(t.is_empty(), "{t:?}");
+    assert_eq!(t, ["src/shapes.negatives.local"], "{t:?}");
     // A constant is data, not a function: a plain USES edge, no REFERENCES.
     assert_eq!(
         edge_targets(FILES, "src/shapes.negatives", "USES"),
