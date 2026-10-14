@@ -1526,6 +1526,12 @@ pub(crate) struct Resolver<'c> {
     /// passes (one resolver, one cache, for every such edge) do: the edge
     /// insert, which makes a resolver per file, leaves the call on the spec.
     narrow_interface_calls: bool,
+    /// Set by `refine_go_interface_call` for a call left on an interface
+    /// method spec: the qualname of the interface the receiver is typed as,
+    /// when that is not the one declaring the method (it embeds it). A
+    /// `DISPATCH` edge keeps it in `receiver_scope`, so traversals fan out to
+    /// the implementers of that interface only.
+    go_dispatch_receiver: Option<String>,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
     /// The only language the exact tier may bind a candidate in, for the
@@ -1566,6 +1572,7 @@ impl<'c> Resolver<'c> {
             external_file_id: None,
             go: resolver_go::GoCaches::default(),
             narrow_interface_calls: false,
+            go_dispatch_receiver: None,
             repo_entity_memo: HashMap::new(),
             exact_language: None,
             exact_skips_modules: false,
@@ -1581,6 +1588,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.caller_scope = r.source_qualname.map(str::to_string);
+        self.go_dispatch_receiver = None;
         self.caller_file = r.source_file_path.to_string();
         // A Rust call names a Rust item: a bare method name that is also the
         // qualname of a SQL table or a Python function is no candidate.
@@ -5706,6 +5714,7 @@ impl Db {
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  JOIN symbols s ON (s.qualname = ur.reference_name OR s.name = ur.name_tail)
                  WHERE ur.graph_version = ?1
+                   AND ur.reason != 'function_value'
                    AND s.graph_version = ?1
                    AND s.id > ?2
 
@@ -5945,7 +5954,8 @@ impl Db {
         let sql = if unresolved {
             "SELECT ur.id, ur.reference_name FROM unresolved_references ur
              JOIN files f ON f.id = ur.file_id
-             WHERE ur.graph_version = ?1 AND ur.edge_kind = 'CALLS' AND f.language = 'rust'"
+             WHERE ur.graph_version = ?1 AND ur.edge_kind = 'CALLS' AND f.language = 'rust'
+               AND ur.reason != 'function_value'"
         } else {
             "SELECT e.id, e.target_qualname FROM edges e JOIN files f ON f.id = e.file_id
              WHERE e.graph_version = ?1 AND e.target_symbol_id IS NOT NULL
@@ -6125,7 +6135,30 @@ impl Db {
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
-                match row.ctx.resolve(&mut resolver, &empty_symbol_map)? {
+                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
+                // A call that stays a `DISPATCH` keeps the interface its
+                // receiver is typed as when that is not the declaring one; one
+                // that moved to another target or became a plain call keeps
+                // none.
+                let scope = resolver.go_dispatch_receiver.take();
+                if row.stored_kind == edge_views::DISPATCH {
+                    let kept = match resolution {
+                        Resolution::Resolved { target_id, .. }
+                            if target_id == row.target_symbol_id =>
+                        {
+                            scope
+                        }
+                        _ => None,
+                    };
+                    if kept != row.ctx.receiver_scope {
+                        tx.execute(
+                            "UPDATE edges SET receiver_scope = ?1 WHERE id = ?2",
+                            params![kept, row.edge_id],
+                        )?;
+                        total_resolved += 1;
+                    }
+                }
+                match resolution {
                     // A different target, or the same one whose kind now
                     // stores differently (a constant became a function).
                     Resolution::Resolved { target_id, kind }
@@ -6824,6 +6857,32 @@ pub(crate) fn store_reference_name_and_tail(
     Some((None, qualname_trailing_name(first).to_string()))
 }
 
+/// `unresolved_references.reason` of a call whose callee is a function value
+/// (a parameter, local, field or element of function type): there is no
+/// declaration to find, so the call is a gap in the graph and never a retry
+/// candidate. Its `reference_name` is the callee text, its `name_tail` empty
+/// so no name join (retry, dead-code) ever matches it.
+pub(crate) const FUNCTION_VALUE_REASON: &str = "function_value";
+
+/// The callee text of a `CALLS` edge that names nothing to resolve: no target
+/// and no import candidates, only the call-site text the extractor kept in
+/// `detail` (`fn(v)`, `middlewares[i](h)`, `f()(x)`).
+pub(crate) fn function_value_reference(
+    edge_kind: &str,
+    target_qualname: Option<&str>,
+    import_candidates: &[String],
+    detail: Option<&str>,
+) -> Option<String> {
+    if edge_kind != edge_views::CALLS || target_qualname.is_some() || !import_candidates.is_empty()
+    {
+        return None;
+    }
+    detail
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+}
+
 /// The language value the same-language tiers compare against.
 /// `typescript`, `tsx` and `javascript` are separate `files.language`
 /// values only because each needs its own tree-sitter grammar; for
@@ -6962,6 +7021,38 @@ fn qualname_trailing_two_segments(qn: &str) -> Option<&str> {
 fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
     let two = qualname_trailing_two_segments(qn)?;
     Some((two.to_string(), format!("%.{two}"), format!("%::{two}")))
+}
+
+#[cfg(test)]
+mod function_value_tests {
+    use super::function_value_reference;
+
+    #[test]
+    fn a_nameless_call_keeps_its_callee_text() {
+        assert_eq!(
+            function_value_reference("CALLS", None, &[], Some(" middlewares[i] ")),
+            Some("middlewares[i]".to_string())
+        );
+    }
+
+    #[test]
+    fn a_call_with_something_to_resolve_is_no_function_value() {
+        let cands = ["pkg|f".to_string()];
+        assert_eq!(
+            function_value_reference("CALLS", Some("f"), &[], Some("f")),
+            None
+        );
+        assert_eq!(
+            function_value_reference("CALLS", None, &cands, Some("f")),
+            None
+        );
+        assert_eq!(function_value_reference("CALLS", None, &[], None), None);
+        assert_eq!(
+            function_value_reference("CALLS", None, &[], Some("  ")),
+            None
+        );
+        assert_eq!(function_value_reference("USES", None, &[], Some("f")), None);
+    }
 }
 
 #[cfg(test)]

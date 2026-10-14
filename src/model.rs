@@ -426,6 +426,18 @@ pub const DERIVED_GO_RECEIVER: i64 = 4;
 /// `Db::edges_for_symbols_with_dispatch` (interface method -> implementor).
 pub const INTERFACE_DISPATCH_KIND: &str = "interface_dispatch";
 
+/// `detail` of the pass-through dispatch edge between an interface method and
+/// one of its implementations. The hop costs no depth level: the interface
+/// method is a transparent intermediate between a caller and the
+/// implementation it reaches, so a call through an interface counts as one
+/// call, as in a compiler's call graph.
+pub const DISPATCH_HOP_DETAIL: &str = "interface dispatch";
+
+/// `detail` of the synthetic edge that links a caller straight to a closed
+/// explicit implementation (no interface method in between): one real call,
+/// one depth level.
+pub const DISPATCH_CALL_DETAIL: &str = "interface dispatch (receiver type)";
+
 /// `resolution_kind` of the synthetic CALLS edges `Db::edges_for_symbols_with_dispatch`
 /// builds from a function's parent to a function declared inside it (a
 /// `local` symbol): whatever reaches the parent reaches the closure it holds
@@ -480,13 +492,31 @@ pub struct Edge {
     /// receiver has the same ones reaches it.
     #[serde(skip)]
     pub dispatch_args: Option<String>,
+    /// Go dispatch scope (#482). On a stored `DISPATCH` edge: the qualname of
+    /// the interface its receiver is typed as, when that embeds the one
+    /// declaring the method. On the synthetic pass-through to an
+    /// implementation: the interfaces that implementation's type satisfies,
+    /// joined by [`GO_SCOPE_SEP`]. A traversal then keeps only the pairs where
+    /// the receiver's interface is one of the implementation's.
+    #[serde(skip)]
+    pub go_scope: Option<String>,
 }
+
+/// Separator of the interface list in [`Edge::go_scope`].
+pub const GO_SCOPE_SEP: char = '\u{1}';
 
 impl Edge {
     /// Whether this edge was synthesized by interface dispatch rather than
     /// stored in the index (it has no row, so `id` is 0).
     pub fn is_synthetic(&self) -> bool {
         self.id == 0 && self.resolution_kind.as_deref() == Some(INTERFACE_DISPATCH_KIND)
+    }
+
+    /// Whether this edge is the pass-through between an interface method and
+    /// an implementation ([`DISPATCH_HOP_DETAIL`]): walking it is free, so a
+    /// call through an interface costs one depth level rather than two.
+    pub fn is_dispatch_hop(&self) -> bool {
+        self.is_synthetic() && self.detail.as_deref() == Some(DISPATCH_HOP_DETAIL)
     }
 
     /// Whether this edge is a synthetic parent-to-local-function hop (see
@@ -1365,7 +1395,17 @@ pub struct TraceFlowResult {
 pub struct TraceHop {
     pub symbol: Symbol,
     pub edge_kind: String,
+    /// Hops from the start, at least 1. A call through an interface is one
+    /// hop: the interface method and the implementation it reaches share a
+    /// distance.
     pub distance: usize,
+    /// The hop depth the traversal charged (`distance` floored at 1), and the
+    /// depth of the node this hop was reached from: equal across the free
+    /// interface-dispatch pass-through, one apart otherwise.
+    #[serde(skip)]
+    pub depth: usize,
+    #[serde(skip)]
+    pub parent_depth: usize,
     /// Qualname of the node this hop was reached from (a seed for the
     /// first hop), so a caller can rebuild the chain by following it back.
     pub predecessor: String,

@@ -116,6 +116,7 @@ impl<'a> HistoricalImpactLayer<'a> {
                 parent_map: HashMap::new(),
                 alt_parents: HashMap::new(),
                 traversed_heuristic_kind: false,
+                beyond_depth: 0,
             });
         }
 
@@ -174,6 +175,7 @@ impl<'a> HistoricalImpactLayer<'a> {
             parent_map: HashMap::new(),
             alt_parents: HashMap::new(),
             traversed_heuristic_kind: false,
+            beyond_depth: 0,
         })
     }
 

@@ -1,6 +1,9 @@
 use super::{Db, RPC_NAME_ONLY_FILTER, edge_from_row, symbol_from_row};
 use crate::edge_views;
-use crate::model::{CONTAINMENT_KIND, Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
+use crate::model::{
+    CONTAINMENT_KIND, DISPATCH_CALL_DETAIL, DISPATCH_HOP_DETAIL, Edge, EdgeSnapshotRow,
+    INTERFACE_DISPATCH_KIND, Symbol,
+};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
@@ -36,49 +39,104 @@ pub fn dispatch_compatible(call_args: Option<&str>, impl_args: Option<&str>) -> 
 /// only follows a call whose receiver has the same ones. A node reached
 /// several times keeps every distinct set, and one arrival without
 /// arguments (or with a plain edge) makes it open to every closure.
+///
+/// Go (#482) uses the same shape for interfaces: a call whose receiver is
+/// typed as an interface embedding the one declaring the method enters the
+/// method spec with that interface, and the spec then fans out only to
+/// implementations of it; walking upstream, a spec entered from an
+/// implementation only continues to the callers whose receiver interface that
+/// implementation's type satisfies (`upstream`).
 #[derive(Debug, Default)]
-pub struct EntryArgs(HashMap<i64, Option<Vec<String>>>);
+pub struct EntryArgs {
+    args: HashMap<i64, Option<Vec<String>>>,
+    impls: HashMap<i64, Option<Vec<String>>>,
+}
+
+fn merge_entry(
+    map: &mut HashMap<i64, Option<Vec<String>>>,
+    node: i64,
+    arg: Option<String>,
+) -> bool {
+    match (map.get_mut(&node), arg) {
+        (None, arg) => {
+            map.insert(node, arg.map(|a| vec![a]));
+            true
+        }
+        (Some(None), _) => false,
+        (Some(entry), None) => {
+            *entry = None;
+            true
+        }
+        (Some(Some(seen)), Some(a)) => {
+            let new = !seen.contains(&a);
+            if new {
+                seen.push(a);
+            }
+            new
+        }
+    }
+}
 
 impl EntryArgs {
     /// Note an arrival at `node` through `edge`. `true` when that widens what
     /// the node reaches, so it must be (re-)expanded even if already visited.
-    pub fn record(&mut self, node: i64, edge: &Edge, db: &Db) -> Result<bool> {
-        let args = edge.call_args(db)?;
-        Ok(match (self.0.get_mut(&node), args) {
-            (None, args) => {
-                self.0.insert(node, args.map(|a| vec![a]));
-                true
-            }
-            (Some(None), _) => false,
-            (Some(entry), None) => {
-                *entry = None;
-                true
-            }
-            (Some(Some(seen)), Some(a)) => {
-                let new = !seen.contains(&a);
-                if new {
-                    seen.push(a);
-                }
-                new
-            }
-        })
+    pub fn record(&mut self, node: i64, edge: &Edge, db: &Db, upstream: bool) -> Result<bool> {
+        if upstream {
+            let scope = edge
+                .is_dispatch_hop()
+                .then(|| edge.go_scope.clone())
+                .flatten();
+            return Ok(merge_entry(&mut self.impls, node, scope));
+        }
+        Ok(merge_entry(&mut self.args, node, edge.call_args(db)?))
     }
 
     /// Whether `edge`, expanded from `node`, may be followed.
-    pub fn allows(&self, node: i64, edge: &Edge) -> bool {
+    pub fn allows(&self, node: i64, edge: &Edge, upstream: bool) -> bool {
+        if upstream {
+            let Some(receiver) = edge
+                .go_scope
+                .as_deref()
+                .filter(|_| edge.id > 0 && edge.kind == edge_views::DISPATCH)
+            else {
+                return true;
+            };
+            return match self.impls.get(&node) {
+                Some(Some(lists)) => lists.iter().any(|l| in_scope(l, receiver)),
+                _ => true,
+            };
+        }
+        if edge.is_dispatch_hop()
+            && let Some(scope) = edge.go_scope.as_deref()
+        {
+            return match self.args.get(&node) {
+                Some(Some(seen)) => seen.iter().any(|a| in_scope(scope, a)),
+                _ => true,
+            };
+        }
         let Some(impl_args) = edge.dispatch_args.as_deref() else {
             return true;
         };
-        match self.0.get(&node) {
+        match self.args.get(&node) {
             Some(Some(seen)) => seen.iter().any(|a| a == impl_args),
             _ => true,
         }
     }
 }
 
+/// Whether `interface` is one of the `GO_SCOPE_SEP`-joined names in `list`.
+fn in_scope(list: &str, interface: &str) -> bool {
+    list.split(crate::model::GO_SCOPE_SEP)
+        .any(|x| x == interface)
+}
+
 impl Edge {
-    /// The closed generic arguments of this CALLS edge's receiver type.
+    /// The closed generic arguments of this CALLS edge's receiver type, or,
+    /// for a Go `DISPATCH` edge, the interface its receiver is typed as.
     pub fn call_args(&self, db: &Db) -> Result<Option<String>> {
+        if self.id > 0 && self.kind == edge_views::DISPATCH {
+            return Ok(self.go_scope.clone());
+        }
         if !edge_views::is_call_like(&self.kind) || self.id <= 0 {
             return Ok(None);
         }
@@ -563,6 +621,7 @@ impl Db {
         graph_version: i64,
     ) -> Result<HashMap<i64, Vec<Edge>>> {
         let mut map = self.edges_for_symbols(ids, languages, graph_version)?;
+        self.annotate_go_receivers(&mut map)?;
         for (iface, imp) in self.dispatch_pairs(ids, graph_version)? {
             let peer_file = |id: i64| -> Result<String> {
                 Ok(self
@@ -575,6 +634,10 @@ impl Db {
                 .as_ref()
                 .and_then(|s| closed_impl_args(&s.qualname, &s.name))
                 .map(str::to_string);
+            let go_scope = match imp_sym.as_ref() {
+                Some(sym) if sym.file_path.ends_with(".go") => self.go_impl_interfaces(imp)?,
+                _ => None,
+            };
             let make = |file_path: String, source: i64| Edge {
                 id: 0,
                 file_path,
@@ -582,7 +645,14 @@ impl Db {
                 source_symbol_id: Some(source),
                 target_symbol_id: Some(imp),
                 target_qualname: None,
-                detail: Some("interface dispatch".to_string()),
+                detail: Some(
+                    if source == iface {
+                        DISPATCH_HOP_DETAIL
+                    } else {
+                        DISPATCH_CALL_DETAIL
+                    }
+                    .to_string(),
+                ),
                 evidence_snippet: None,
                 evidence_start_line: None,
                 evidence_end_line: None,
@@ -594,6 +664,11 @@ impl Db {
                 span_id: None,
                 event_ts: None,
                 dispatch_args: closed.clone(),
+                go_scope: if source == iface {
+                    go_scope.clone()
+                } else {
+                    None
+                },
             };
             if ids.contains(&iface) {
                 map.entry(iface)
@@ -663,6 +738,7 @@ impl Db {
                 span_id: None,
                 event_ts: None,
                 dispatch_args: None,
+                go_scope: None,
             });
         }
         Ok(map)
@@ -739,6 +815,117 @@ impl Db {
         ))?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+    }
+
+    /// Sets [`Edge::go_scope`] on the stored `DISPATCH` edges of `map`: the
+    /// interface the call's receiver is typed as, kept in `receiver_scope`
+    /// when it embeds the interface declaring the method.
+    fn annotate_go_receivers(&self, map: &mut HashMap<i64, Vec<Edge>>) -> Result<()> {
+        let mut ids: Vec<i64> = map
+            .values()
+            .flatten()
+            .filter(|e| e.id > 0 && e.kind == edge_views::DISPATCH)
+            .map(|e| e.id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        let conn = self.read_conn()?;
+        let mut scopes: HashMap<i64, String> = HashMap::new();
+        for chunk in ids.chunks(500) {
+            let list = chunk
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, receiver_scope FROM edges
+                 WHERE id IN ({list}) AND receiver_scope IS NOT NULL"
+            ))?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (id, scope) = row?;
+                scopes.insert(id, scope);
+            }
+        }
+        for edge in map.values_mut().flatten() {
+            if let Some(scope) = scopes.get(&edge.id) {
+                edge.go_scope = Some(scope.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// The interfaces the Go type declaring method `imp` satisfies, and those
+    /// of the types that reach `imp` by embedding (directly or through other
+    /// embedders; their method sets hold it), joined by
+    /// [`crate::model::GO_SCOPE_SEP`]. An embedder that declares a method of
+    /// the same name itself shadows `imp`: it reaches it only from its own
+    /// body, so neither it nor the types embedding it count. `None` when the
+    /// type is unknown: then nothing is narrowed.
+    fn go_impl_interfaces(&self, imp: i64) -> Result<Option<String>> {
+        let conn = self.read_conn()?;
+        let gv = self.current_graph_version()?;
+        let name: String = conn.query_row(
+            "SELECT name FROM symbols WHERE id = ?1",
+            rusqlite::params![imp],
+            |r| r.get(0),
+        )?;
+        let owners: Vec<i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT source_symbol_id FROM edges
+                 WHERE target_symbol_id = ?1 AND kind = 'CONTAINS' AND graph_version = ?2
+                   AND source_symbol_id IS NOT NULL",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![imp, gv], |r| r.get::<_, i64>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if owners.is_empty() {
+            return Ok(None);
+        }
+        let mut embedders = conn.prepare(
+            "SELECT source_symbol_id FROM edges
+             WHERE target_symbol_id = ?1 AND kind = 'EXTENDS' AND graph_version = ?2
+               AND source_symbol_id IS NOT NULL",
+        )?;
+        let mut declares = conn.prepare(
+            "SELECT 1 FROM edges e JOIN symbols m ON m.id = e.target_symbol_id
+             WHERE e.source_symbol_id = ?1 AND e.kind = 'CONTAINS' AND e.graph_version = ?2
+               AND m.kind = 'method' AND m.name = ?3 AND m.id != ?4 LIMIT 1",
+        )?;
+        let mut seen: HashSet<i64> = owners.iter().copied().collect();
+        let mut frontier = owners;
+        while let Some(owner) = frontier.pop() {
+            let ids = embedders
+                .query_map(rusqlite::params![owner, gv], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for id in ids {
+                if seen.contains(&id) {
+                    continue;
+                }
+                if declares.exists(rusqlite::params![id, gv, name, imp])? {
+                    continue;
+                }
+                seen.insert(id);
+                frontier.push(id);
+            }
+        }
+        let mut names: Vec<String> = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT t.qualname FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPLEMENTS' AND e.graph_version = ?2",
+        )?;
+        for owner in &seen {
+            let rows = stmt.query_map(rusqlite::params![owner, gv], |r| r.get::<_, String>(0))?;
+            for row in rows {
+                names.push(row?);
+            }
+        }
+        names.sort();
+        names.dedup();
+        Ok(Some(names.join(&crate::model::GO_SCOPE_SEP.to_string())))
     }
 
     /// Single-symbol form of [`Db::edges_for_symbols_with_dispatch`].
