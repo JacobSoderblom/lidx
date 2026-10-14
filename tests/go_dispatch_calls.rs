@@ -361,3 +361,45 @@ fn a_calls_only_trace_leaves_the_derived_fan_out_out() {
     // CALLS alone: the inferred fan-out is declined, not a pile of paths
     assert_eq!(paths(json!(["CALLS"])), 0);
 }
+
+#[test]
+fn a_helper_in_an_ordinary_file_that_only_tests_call_still_runs() {
+    let use_go = "package main\n\nfunc run(d Doer) error {\n\treturn d.Do()\n}\n\nfunc helper(d Doer) error {\n\treturn d.Do()\n}\n";
+    let test = "package main\n\nimport \"testing\"\n\nfunc TestHelper(t *testing.T) {\n\t_ = helper(ImplA{})\n}\n";
+    let files = with(&with(&base(), ("use.go", use_go)), ("h_test.go", test));
+    let (_tmp, _root, indexer) = indexed(&files);
+    let rows = derived_rows(&indexer, "use.helper");
+    assert!(!rows.is_empty());
+    for (target, confidence, evidence) in &rows {
+        assert_eq!(*confidence, 0.8, "{target}: {evidence}");
+    }
+}
+
+#[test]
+fn a_conversion_in_a_module_the_caller_cannot_share_a_program_with_does_not_count() {
+    let req = |name: &str| {
+        format!(
+            "module example.com/{name}\n\ngo 1.22\n\nrequire example.com/m v0.0.0\n\nreplace example.com/m => ../m\n"
+        )
+    };
+    let m2_mod = req("m2");
+    let c_mod = req("c");
+    let m_go = "package m\n\ntype Iface interface {\n\tDo() error\n}\n\ntype T struct{}\n\nfunc (t *T) Do() error { return nil }\n\ntype U struct{}\n\nfunc (u *U) Do() error { return nil }\n";
+    let m2_go = "package m2\n\nimport \"example.com/m\"\n\nfunc Call(i m.Iface) error {\n\treturn i.Do()\n}\n";
+    let c_go = "package c\n\nimport \"example.com/m\"\n\nfunc Make() m.Iface {\n\treturn &m.T{}\n}\n\nfunc Use(i m.Iface) error {\n\treturn i.Do()\n}\n";
+    let files = vec![
+        ("m/go.mod", "module example.com/m\n\ngo 1.22\n"),
+        ("m/m.go", m_go),
+        ("m2/go.mod", m2_mod.as_str()),
+        ("m2/m2.go", m2_go),
+        ("c/go.mod", c_mod.as_str()),
+        ("c/c.go", c_go),
+    ];
+    let (_tmp, _root, indexer) = indexed(&files);
+    // c converts T and calls through the interface itself
+    let from_c = derived_rows(&indexer, "%c.Use");
+    assert_eq!(from_c.len(), 1, "{from_c:?}");
+    // m2 requires m, but never shares a program with c
+    let from_m2 = derived_rows(&indexer, "%m2.Call");
+    assert!(from_m2.is_empty(), "{from_m2:?}");
+}

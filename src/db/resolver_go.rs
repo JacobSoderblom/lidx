@@ -1842,6 +1842,7 @@ impl Db {
 /// One Go symbol the dispatch pass reasons about.
 struct RtaSymbol {
     qualname: String,
+    path: String,
     kind: String,
     name: String,
     signature: Option<String>,
@@ -1854,10 +1855,9 @@ struct RtaSymbol {
 struct RtaUniverse {
     /// Types put behind an interface somewhere that runs.
     converted: HashSet<i64>,
-    /// For each converted type, the function that converts it: of those that
-    /// run, the one whose qualname sorts first (so the choice does not
-    /// depend on row ids).
-    sites: HashMap<i64, i64>,
+    /// For each converted type, the functions that convert it, those that
+    /// run, ordered by qualname (so the order does not depend on row ids).
+    sites: HashMap<i64, Vec<i64>>,
     /// The functions that run.
     reach: HashSet<i64>,
 }
@@ -2119,17 +2119,19 @@ impl Resolver<'_> {
                 break;
             }
         }
-        let mut sites: HashMap<i64, i64> = HashMap::new();
+        let mut sites: HashMap<i64, Vec<i64>> = HashMap::new();
         for (&ty, decls) in &by_type {
-            let site = decls
+            let mut found: Vec<(&str, i64)> = decls
                 .iter()
                 .filter(|&&(d, strong)| {
                     reach.contains(&d) && (strong || production.unwrap_or(&reach).contains(&d))
                 })
                 .filter_map(|&(d, _)| symbols.get(&d).map(|s| (s.qualname.as_str(), d)))
-                .min();
-            if let Some((_, decl)) = site {
-                sites.insert(ty, decl);
+                .collect();
+            found.sort_unstable();
+            found.dedup();
+            if !found.is_empty() {
+                sites.insert(ty, found.into_iter().map(|(_, d)| d).collect());
             }
         }
         Ok(RtaUniverse {
@@ -2168,7 +2170,7 @@ impl Resolver<'_> {
         {
             let mut stmt = self.conn.prepare(
                 "SELECT s.id, s.kind, s.name, s.signature, substr(f.path, -8) = '_test.go',
-                        (' ' || COALESCE(s.visibility, '') || ' ') LIKE ?2, s.qualname
+                        (' ' || COALESCE(s.visibility, '') || ' ') LIKE ?2, s.qualname, f.path
                  FROM symbols s JOIN files f ON f.id = s.file_id
                  WHERE s.graph_version = ?1 AND f.language = 'go' AND f.deleted_version IS NULL
                    AND s.kind IN ('function', 'method', 'module')",
@@ -2184,6 +2186,7 @@ impl Resolver<'_> {
                         in_test: r.get(4)?,
                         main_package: r.get(5)?,
                         qualname: r.get(6)?,
+                        path: r.get(7)?,
                     },
                 ))
             })? {
@@ -2315,12 +2318,28 @@ impl Resolver<'_> {
                 if !from_test && target_symbol.in_test {
                     continue;
                 }
-                let runs = universe.reach.contains(&source);
-                let site = universe
-                    .sites
-                    .get(&ty)
-                    .and_then(|d| input.symbols.get(d))
-                    .map_or("a function that runs", |s| s.qualname.as_str());
+                // a test helper in an ordinary file runs when either universe
+                // reaches it
+                let runs = prod.reach.contains(&source) || all.reach.contains(&source);
+                // The program the type is converted in must be one the
+                // caller can be part of: the converting function's module and
+                // the caller's are the same or one requires the other.
+                let converters = universe.sites.get(&ty).map_or(&[][..], Vec::as_slice);
+                let site = converters
+                    .iter()
+                    .filter_map(|d| input.symbols.get(d))
+                    .find(|s| match (caller_module, go_module_of(modules, &s.path)) {
+                        (Some((mine, sees)), Some((theirs, their_sees))) => {
+                            mine == theirs
+                                || sees.iter().any(|d| d == theirs)
+                                || their_sees.iter().any(|d| d == mine)
+                        }
+                        _ => true,
+                    });
+                if site.is_none() && !converters.is_empty() {
+                    continue;
+                }
+                let site = site.map_or("a function that runs", |s| s.qualname.as_str());
                 let evidence = format!(
                     "go interface dispatch: the call of {} can run {}.{}; {} is converted to an interface in {}{}",
                     spec.qualname,
