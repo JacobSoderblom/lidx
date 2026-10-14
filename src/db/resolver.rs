@@ -63,7 +63,8 @@ pub(crate) use resolver_go::go_deferred_candidate;
 
 use super::Db;
 use super::graph_query::{
-    DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, has_modifier, has_modifier_sql,
+    ACCESSOR_MODIFIER, DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, has_modifier,
+    has_modifier_sql,
 };
 use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
@@ -146,17 +147,29 @@ pub(crate) fn is_value_reference(edge_kind: &str, call_shape: Option<CallShape>)
 }
 
 /// SQL predicate (over a `kind` column and a `call_shape` column) matching
-/// exactly the rows [`is_value_reference`] accepts, so counts and summaries
-/// can include or exclude value references with one definition.
+/// exactly the rows [`is_value_reference`] and [`is_member_access`] accept
+/// (both are speculative reads that mostly stay unresolved), so counts,
+/// summaries and re-judging can include or exclude them with one definition.
 pub(crate) fn value_reference_sql(kind_col: &str, shape_col: &str) -> String {
     format!(
-        "({kind_col} IN ('{}', '{}') AND COALESCE({shape_col}, '') IN ('{}', '{}', '{}'))",
+        "(({kind_col} IN ('{}', '{}') AND COALESCE({shape_col}, '') IN ('{}', '{}', '{}', '{}'))
+          OR ({kind_col} = '{}' AND COALESCE({shape_col}, '') = '{}'))",
         edge_views::REFERENCES,
         edge_views::USES,
         CallShape::REF_ENCODING,
         CallShape::REF_THIS_ENCODING,
         CallShape::REF_TYPE_ENCODING,
+        CallShape::REF_TYPEOF_ENCODING,
+        edge_views::USES,
+        CallShape::MEMBER_ENCODING,
     )
+}
+
+/// Whether an edge is a JS/TS property read or write (`this.shape`,
+/// `model.shape = v`): a `USES` with the `member` call shape, kept only when
+/// it lands on a `get` / `set` accessor.
+pub(crate) fn is_member_access(edge_kind: &str, call_shape: Option<CallShape>) -> bool {
+    edge_kind == edge_views::USES && call_shape.is_some_and(|shape| shape.is_member)
 }
 
 /// `symbols.kind` of `id`.
@@ -200,7 +213,7 @@ pub(crate) fn stored_edge_kind(
         return Ok(edge_kind.to_string());
     }
     // A type mention (`ref:type`) is a plain use of the type.
-    if call_shape.is_some_and(|shape| shape.is_type) {
+    if call_shape.is_some_and(|shape| shape.is_type || shape.is_typeof) {
         return Ok(edge_views::USES.to_string());
     }
     Ok(
@@ -266,7 +279,7 @@ pub(crate) fn drop_references_shadowed_by_calls(
         &format!(
             "DELETE FROM {from}
              WHERE graph_version = ?1 AND {value_ref}
-               AND COALESCE(call_shape, '') != '{type_ref}'
+               AND COALESCE(call_shape, '') NOT IN ('{type_ref}', '{typeof_ref}')
                AND target_symbol_id IS NOT NULL
                AND {file_filter}
                AND EXISTS (
@@ -277,6 +290,7 @@ pub(crate) fn drop_references_shadowed_by_calls(
                )",
             value_ref = value_reference_sql("kind", "call_shape"),
             type_ref = CallShape::REF_TYPE_ENCODING,
+            typeof_ref = CallShape::REF_TYPEOF_ENCODING,
             calls = edge_views::CALLS,
         ),
         params![graph_version, file_id],
@@ -411,6 +425,10 @@ pub(crate) enum UnresolvedReason {
     /// is a `Resolved` outcome (issue #80's import-known-external case),
     /// not an `Unresolved` reason.
     External,
+    /// A JS/TS property access (`CallShape::is_member`) resolved to a symbol
+    /// that is no accessor: nothing to record, so no row is stored. An
+    /// importer is re-extracted when an exporter's accessors change.
+    NotAnAccessor,
 }
 
 impl UnresolvedReason {
@@ -421,6 +439,7 @@ impl UnresolvedReason {
             Self::Ambiguous => "ambiguous",
             Self::Private => "private",
             Self::External => "external",
+            Self::NotAnAccessor => "not_accessor",
         }
     }
 }
@@ -1591,6 +1610,16 @@ impl<'c> Resolver<'c> {
             }
             return Ok(resolution);
         }
+        // A property read or write is looked up like the same text called,
+        // and kept only when it lands on an accessor.
+        if is_member_access(r.edge_kind, r.call_shape) {
+            let as_call = Reference {
+                edge_kind: "CALLS",
+                ..*r
+            };
+            let resolution = self.resolve_tiers_and_refine(&as_call, symbol_map)?;
+            return self.filter_member_access(resolution);
+        }
         if !is_value_reference(r.edge_kind, r.call_shape) {
             let resolution = self.resolve_tiers_and_refine(r, symbol_map)?;
             let resolution = self.refuse_uncallable_kind(r, resolution)?;
@@ -1874,6 +1903,25 @@ impl<'c> Resolver<'c> {
         Ok(None)
     }
 
+    /// Keep a property access only when it is trustworthy (an exact, import,
+    /// receiver-type or inherited match) and lands on a `get` / `set`
+    /// accessor: any other property is no function and no edge records it.
+    fn filter_member_access(&mut self, resolution: Resolution) -> Result<Resolution> {
+        let Resolution::Resolved { target_id, kind } = resolution else {
+            return Ok(resolution);
+        };
+        if matches!(
+            kind,
+            ResolutionKind::TwoSegment | ResolutionKind::BareName | ResolutionKind::External { .. }
+        ) {
+            return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        }
+        if !self.has_symbol_modifier(target_id, ACCESSOR_MODIFIER)? {
+            return Ok(Resolution::Unresolved(UnresolvedReason::NotAnAccessor));
+        }
+        Ok(resolution)
+    }
+
     /// Keep a value reference's resolution only when it is trustworthy and
     /// names something callable: an exact / import / receiver-type /
     /// inherited match (never the heuristic name tiers or an external stub)
@@ -1896,6 +1944,13 @@ impl<'c> Resolver<'c> {
         ) {
             return refuse;
         }
+        // A bodiless member declaration (a TypeScript interface member,
+        // `declare class` method signature) is no function to point at.
+        if self.has_symbol_modifier(target_id, DECL_MODIFIER)?
+            || self.has_symbol_modifier(target_id, ACCESSOR_MODIFIER)?
+        {
+            return refuse;
+        }
         let target_kind = symbol_kind(self.conn, target_id)?;
         // A type mention names a type and nothing else.
         if r.call_shape.is_some_and(|shape| shape.is_type) {
@@ -1904,6 +1959,12 @@ impl<'c> Resolver<'c> {
             } else {
                 refuse
             };
+        }
+        // A `typeof f` query reads a type: never a function or method.
+        if r.call_shape.is_some_and(|shape| shape.is_typeof)
+            && matches!(target_kind.as_deref(), Some("function" | "method"))
+        {
+            return refuse;
         }
         let allowed = match target_kind.as_deref() {
             Some("function" | "class") => true,
@@ -2031,7 +2092,7 @@ impl<'c> Resolver<'c> {
         self.binds_local_functions = (r.bare_call && r.edge_kind == edge_views::CALLS)
             || r.edge_kind == edge_views::CONTAINS;
         self.arity = match r.call_shape {
-            Some(shape) if !shape.is_new && !shape.is_ref => Some(Arity {
+            Some(shape) if !shape.is_new && !shape.is_ref && !shape.is_member => Some(Arity {
                 args: shape.arg_count as usize,
                 value_receiver: r.receiver_type.is_some(),
             }),
@@ -2191,7 +2252,12 @@ impl<'c> Resolver<'c> {
                 }
             }
             kind if edge_views::contains(edge_views::TYPE_HIERARCHY, kind) => MergedHalf::Type,
-            edge_views::USES if !is_value_reference(r.edge_kind, r.call_shape) => MergedHalf::Type,
+            edge_views::USES
+                if !is_value_reference(r.edge_kind, r.call_shape)
+                    && !is_member_access(r.edge_kind, r.call_shape) =>
+            {
+                MergedHalf::Type
+            }
             _ => MergedHalf::Value,
         })
     }
@@ -4290,7 +4356,7 @@ fn never_external(r: &Reference<'_>) -> bool {
     (r.edge_kind == "USES" && r.source_lang == "csharp")
         // A function passed as a value is mostly a local or a framework
         // name: never worth a stub symbol.
-        || r.call_shape.is_some_and(|shape| shape.is_ref)
+        || r.call_shape.is_some_and(|shape| shape.is_ref || shape.is_member)
 }
 
 /// Place markers of a Go package candidate `<marker><dir>|Name`: `=` the
@@ -7640,6 +7706,8 @@ mod tests {
             implicit_this: false,
             is_ref: false,
             is_type: false,
+            is_typeof: false,
+            is_member: false,
         });
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
         assert!(

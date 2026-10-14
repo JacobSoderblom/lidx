@@ -486,13 +486,13 @@ bucket), 0 oracle or matching artefacts, 0 mis-bucketed exclusions, all 60 sampl
 
 | Cell | P [95% CI] | R [95% CI] | lidx pairs graded (wrong) | oracle pairs (matched) |
 |---|---|---|---:|---:|
-| go/cobra/tests | 1.000 [0.985, 1.000] | 0.985 [0.961, 0.994] | 257 (0) | 261 (257) |
+| go/cobra/tests | 1.000 [0.986, 1.000] | 1.000 [0.986, 1.000] | 261 (0) | 261 (261) |
 | go/gitleaks/tests | 1.000 [0.741, 1.000] | 1.000 [0.741, 1.000] | 11 (0) | 11 (11) |
-| go/syft/tests | 1.000 [0.988, 1.000] (1 dropped as calls) | 0.745 [0.701, 0.785] | 310 (0) | 416 (310) |
-| go/syft/no_tests | 1.000 [0.980, 1.000] (1 dropped as calls) | 0.755 [0.698, 0.804] | 188 (0) | 249 (188) |
-| go/chi/tests | 1.000 [0.871, 1.000] | 0.929 [0.773, 0.980] | 26 (0) | 28 (26) |
-| go/urfavecli/tests | 1.000 [0.867, 1.000] | 0.694 [0.531, 0.820] | 25 (0) | 36 (25) |
-| go/bubbletea/tests | 1.000 [0.839, 1.000] | 0.909 [0.722, 0.975] | 20 (0) | 22 (20) |
+| go/syft/tests | 1.000 [0.991, 1.000] (1 dropped as calls) | 1.000 [0.991, 1.000] | 416 (0) | 416 (416) |
+| go/syft/no_tests | 1.000 [0.985, 1.000] (1 dropped as calls) | 1.000 [0.985, 1.000] | 249 (0) | 249 (249) |
+| go/chi/tests | 1.000 [0.879, 1.000] | 1.000 [0.879, 1.000] | 28 (0) | 28 (28) |
+| go/urfavecli/tests | 1.000 [0.904, 1.000] | 1.000 [0.904, 1.000] | 36 (0) | 36 (36) |
+| go/bubbletea/tests | 1.000 [0.851, 1.000] | 1.000 [0.851, 1.000] | 22 (0) | 22 (22) |
 | go/viper | no value reference in the repository | | 0 | 0 |
 | ts/zod | 0.721 [0.598, 0.818] | 0.321 [0.250, 0.403] | 61 (17) | 140 (45) |
 | ts/hono | 0.974 [0.926, 0.991] (3 dropped as calls) | 0.830 [0.757, 0.884] | 115 (3) | 135 (112) |
@@ -500,14 +500,14 @@ bucket), 0 oracle or matching artefacts, 0 mis-bucketed exclusions, all 60 sampl
 | ts/ky | 0.875 [0.529, 0.978] | 0.700 [0.397, 0.892] | 8 (1) | 10 (7) |
 | ts/immer | 1.000 [0.342, 1.000] (1 dropped as calls; weakly supported) | 0.111 [0.031, 0.328] | 2 (0) | 18 (2) |
 | ts/h3 | 0.854 [0.716, 0.931] (6 dropped as calls) | 0.633 [0.493, 0.753] | 41 (6) | 49 (31) |
-| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] (+14 lineless ungraded, 42% of pairs) | 0.679 [0.493, 0.821] | 19 (0) | 28 (19) |
-| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] (+6 lineless ungraded, 50% of pairs) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
-| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] (+5 lineless ungraded, 45% of pairs) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
-| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] (+2 lineless ungraded, 50% of pairs) | 0.667 [0.208, 0.939] | 2 (0) | 3 (2) |
+| rust/ripgrep/path_tests_excluded | 1.000 [0.832, 1.000] (+14 lineless ungraded (42% of pairs)) | 0.679 [0.493, 0.821] | 19 (0) | 28 (19) |
+| rust/fd/path_tests_excluded | 1.000 [0.610, 1.000] (+6 lineless ungraded (50% of pairs)) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/bat/path_tests_excluded | 1.000 [0.610, 1.000] (+5 lineless ungraded (45% of pairs)) | 0.857 [0.487, 0.974] | 6 (0) | 7 (6) |
+| rust/tokei/path_tests_excluded | 1.000 [0.342, 1.000] (+2 lineless ungraded (50% of pairs)) | 0.667 [0.208, 0.939] | 2 (0) | 3 (2) |
 | rust/xsv/path_tests_excluded | no pair graded | 0.000 [0.000, 0.354] | 0 | 7 (0) |
-| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] (+9 lineless ungraded, 13% of pairs) | 0.935 [0.846, 0.975] | 58 (0) | 62 (58) |
-| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] (+13 lineless ungraded, 14% of pairs) | 0.862 [0.778, 0.917] | 80 (0) | 94 (81) |
-| rust/nextest/path_tests_excluded | 0.909 [0.722, 0.975] (+9 lineless ungraded, 29% of pairs) | 0.400 [0.276, 0.538] | 22 (2) | 50 (20) |
+| rust/lidx/path_tests_excluded | 1.000 [0.938, 1.000] (+9 lineless ungraded (13% of pairs)) | 0.935 [0.846, 0.975] | 58 (0) | 62 (58) |
+| rust/just/path_tests_excluded | 1.000 [0.954, 1.000] (+13 lineless ungraded (14% of pairs)) | 0.862 [0.778, 0.917] | 80 (0) | 94 (81) |
+| rust/nextest/path_tests_excluded | 0.954 [0.845, 0.987] (+9 lineless ungraded (17% of pairs)) | 0.820 [0.692, 0.902] | 43 (2) | 50 (41) |
 
 **Read the notes beside P.** Rust precision is over pairs with a source line only: the lineless module-level USES rows lidx records for `Type::f` paths (`no_evidence_line`) are not graded and are 29-50% of lidx's pairs in several cells, so the Rust 1.000 figures say little about them. Pairs dropped because lidx also has a call are not graded either; cells where they exceed 20% of the graded pairs are weakly supported. The Rust cell variants (`path_tests_excluded`, `no_tests`, `tests`, `_all_features`) duplicate each other for value references (identical or nearly so), so do not count them as independent evidence.
 
@@ -515,13 +515,11 @@ bucket), 0 oracle or matching artefacts, 0 mis-bucketed exclusions, all 60 sampl
 
 Reading:
 
-- **Where lidx says a function is used as a value it is almost always right in Go and Rust, and wrong about one time in four in zod.** Go has no wrong pair in any cell (0 of 837 pairs in the cells above),
-  Rust two (nextest, a shorthand `VersionInfo { short, long }` whose fields are locals that lidx bound to functions of the same name). TypeScript's 29 wrong pairs are lidx errors: a getter read (`this.shape` of `get shape()`)
-  recorded as a reference to the accessor (9 of the 20 sampled), a call through an `any` cast `(checks.f as any)(..)` recorded as a reference rather than a call (6), a primitive type name `bigint` bound to a function of that name, a local variable
-  shadowing a function (`lazy[..]`) and `typeof f` in a type. `same_name_elsewhere` (a name-tier guess binding the reference to another declaration of the same name) is empty in every cell: the resolver refuses bare-name guesses here.
-- **Recall is where the gap is: 0.11 to 0.99 depending on how the codebase writes its callbacks.** The edges lidx does have are the call-argument and struct-field forms the extractors were written for. Top missed shapes (distinct pairs over the cells of a language):
-  Go (125 missed): a method value passed as an argument whose receiver is a local built by a constructor (`adapter := newGenericYarnLockAdapter(cfg); WithParserByGlobs(adapter.parseYarnLock, ..)`, 65, 52%), a package-level `var _ generic.Parser = parseX` (38), returns and assignments (19).
-  TypeScript (185 missed): entries of an object literal, at module level (`{ any: anyProcessor, .. }`, 39) or shorthand (`{ createContext }`, 30), 72 in all; a property access read as a value, `this.m = this.m.bind(this)` (26), `const x = Cls.create` (29), `immer.f.bind(immer)` (7), 66 in all; a local function passed as a callback (`.catch(handleError)`, 35).
+- **Where lidx says a function is used as a value it is right in Go and TypeScript, and almost always in Rust.** No Go or TypeScript cell has a wrong pair; Rust has two (nextest, a shorthand `VersionInfo { short, long }` whose fields are locals that lidx bound to functions of the same name).
+  The TypeScript errors of the earlier draw (a getter read recorded as a reference to the accessor, a call through an `any` cast recorded as a reference, a primitive type name `bigint` bound to a function of that name, a local variable shadowing a function, `typeof f` in a type) were fixed by #474: a property read or write that lands on an accessor is a `USES` edge with the `member` call shape, which this grading leaves out. `same_name_elsewhere` (a name-tier guess binding the reference to another declaration of the same name) is empty in every cell: the resolver refuses bare-name guesses here.
+- **Recall is 0.67 to 1.00 depending on how the codebase writes its callbacks.** The edges lidx has are the call-argument, struct-field, object-literal and member forms the extractors were written for. Top missed shapes (distinct pairs over the cells of a language):
+  Go (none missed in the cells above).
+  TypeScript (6 missed, all in h3): a bare function name read in a position the extractor does not classify (4), a property access read as a value (2).
   Rust (66 missed): a `Type::method` / `Trait::method` path passed as a callback (`.map(Node::tree)`, `.map_err(Error::f)`), 35 (24 of them lidx records only as a module-level USES row with no line and no declaration to pair with, the category `coarse_module_level`; the other 11 not at all), a parser function named in a combinator (`alt((a, b))`, `f.parse_next(..)`, 20), a function coerced in a `let` (4).
 - **What is recorded as a call stays a call.** Call wins removes 0 to 14 oracle pairs and 0 to 7 lidx pairs per cell (the largest: zod 14, trpc 13/7, h3 5/6); one `call_as_reference` wrong pair (hono) and no `reference_as_call` miss.
   A wrong lidx reference that coincides with a real call of the same pair is dropped rather than counted (the `ReturnType<typeof f>` pairs of TypeScript tests).

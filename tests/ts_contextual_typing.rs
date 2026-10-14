@@ -573,7 +573,7 @@ const CX_CONTEXT: &str = r#"import { cxCommon } from './common';
 export const createCssContext = (id: string) => {
   const cx = (...args: string[]) => cxCommon(args);
   function getContent() { return cxCommon([id]); }
-  return { cx, getContent };
+  return id;
 };
 "#;
 const CX_USER: &str = "import { createCssContext } from './context';\nexport function render() {\n  const { cx } = createCssContext('a');\n  return cx('x');\n}\n";
@@ -607,8 +607,9 @@ fn qualnames(value: &serde_json::Value) -> Vec<String> {
 #[test]
 fn upstream_traversal_climbs_out_of_a_local_function_to_its_parent() {
     let files = cx_files();
-    // Nothing calls the returned closures: `createCssContext` reaches
-    // `cxCommon` only because it contains `cx` and `getContent`.
+    // Nothing calls or names the closures (naming one is a reference, which
+    // would reach `cxCommon` too): `createCssContext` reaches it only because
+    // it contains `cx` and `getContent`.
     let impact = rpc_call(
         &files,
         "analyze_impact",
