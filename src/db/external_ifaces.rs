@@ -142,7 +142,8 @@ impl GoExternalEvidence {
         graph_version: i64,
         file_id: i64,
     ) -> Result<&HashSet<String>> {
-        if !self.external_names.contains_key(&file_id) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.external_names.entry(file_id)
+        {
             let mut stmt = conn.prepare_cached(
                 "SELECT e.detail FROM edges e
                  JOIN symbols t ON t.id = e.target_symbol_id
@@ -168,7 +169,7 @@ impl GoExternalEvidence {
                     names.insert(bound.to_string());
                 }
             }
-            self.external_names.insert(file_id, names);
+            slot.insert(names);
         }
         Ok(&self.external_names[&file_id])
     }

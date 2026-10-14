@@ -105,21 +105,9 @@ struct DeadSymbolsParams {
     /// Roots are never reported: Go Test*/Benchmark*/Fuzz*/Example* in
     /// _test.go, `init`, `main`; Rust #[test]/#[bench]/main.
     include_public_api: Option<bool>,
-    /// Also list, in `implements_external_interface`, the methods that are
-    /// not claims because they implement an interface or trait of the standard
-    /// library or a dependency (`io.Reader`, `fmt.Stringer`, `Display`,
-    /// `Disposable`, `tea.Model`, ...) on a type that is itself live; each is
-    /// at most `medium`. The same method on a dead type stays a claim.
-    /// Default false: only counted in `counts.implements_external_interface`.
+    /// Also list methods left out because they implement a std/dependency interface on a live type (medium)
     include_external_interface: Option<bool>,
-    /// Whether code in test files and test functions keeps what it references
-    /// alive (default true: a declaration only tests use is live). With false,
-    /// references from tests are ignored, so what only tests reach is claimed
-    /// with a reason starting `reached_only_from_tests`. Roots (`Test*`,
-    /// `#[test]`, `main`, public API) are unchanged. A test file is one
-    /// `is_test_file` names (`_test.go`, `tests/`, `*.test.ts`, ...); a test
-    /// function is one marked `#[test]`; code in an inline `#[cfg(test)]`
-    /// module of a non-test file still counts as a root.
+    /// false: references from tests are ignored; what only tests reach is claimed (default true)
     tests_are_roots: Option<bool>,
     /// Include unused imports (default: true)
     include_unused_imports: Option<bool>,
