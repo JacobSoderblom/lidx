@@ -41,9 +41,42 @@ func BenchmarkMismatch(t *testing.T) { PathAllowed(\"m\") }
 
 func ExamplePathAllowed() { PathAllowed(\"e\") }
 
+func ExampleOutputAllowed() {
+	PathAllowed(\"o\")
+	// Output:
+}
+
+func BenchmarkLocalType(b *T) { PathAllowed(\"l\") }
+
 type suite struct{}
 
 func (s *suite) TestMethod(t *testing.T) { PathAllowed(\"s\") }
+";
+
+const ALIAS_TESTS: &str = "package m
+
+import tst \"testing\"
+
+func TestAlias(t *tst.T) { PathAllowed(\"x\") }
+
+func BenchmarkAlias(b *tst.B) { PathAllowed(\"x\") }
+
+func TestWrongAlias(t *other.T) { PathAllowed(\"x\") }
+
+func TestWrongType(t *tst.B) { PathAllowed(\"x\") }
+";
+
+const DOT_TESTS: &str = "package m
+
+import . \"testing\"
+
+func TestDot(t *T) { PathAllowed(\"d\") }
+
+func BenchmarkDot(b *B) { PathAllowed(\"d\") }
+
+func FuzzDot(f *F) { PathAllowed(\"d\") }
+
+func TestDotWrong(b *B) { PathAllowed(\"d\") }
 ";
 
 /// Qualnames of the symbols the test layer of an upstream `analyze_impact`
@@ -75,6 +108,12 @@ fn assert_entries(found: &BTreeSet<String>) {
         "lib_test.TestPathAllowed",
         "lib_test.BenchmarkPathAllowed",
         "lib_test.FuzzPathAllowed",
+        "lib_test.ExampleOutputAllowed",
+        "alias_test.TestAlias",
+        "alias_test.BenchmarkAlias",
+        "dot_test.TestDot",
+        "dot_test.BenchmarkDot",
+        "dot_test.FuzzDot",
     ] {
         assert!(found.contains(q), "{q} missing from {found:?}");
     }
@@ -83,13 +122,23 @@ fn assert_entries(found: &BTreeSet<String>) {
         "lib_test.Testify",
         "lib_test.BenchmarkMismatch",
         "lib_test.ExamplePathAllowed",
+        "lib_test.BenchmarkLocalType",
         "lib_test.suite.TestMethod",
+        "alias_test.TestWrongAlias",
+        "alias_test.TestWrongType",
+        "dot_test.TestDotWrong",
     ] {
         assert!(!found.contains(q), "{q} wrongly a test in {found:?}");
     }
 }
 
-const FILES: &[(&str, &str)] = &[("go.mod", GO_MOD), ("lib.go", LIB), ("lib_test.go", TESTS)];
+const FILES: &[(&str, &str)] = &[
+    ("go.mod", GO_MOD),
+    ("lib.go", LIB),
+    ("lib_test.go", TESTS),
+    ("alias_test.go", ALIAS_TESTS),
+    ("dot_test.go", DOT_TESTS),
+];
 
 #[test]
 fn benchmark_and_fuzz_functions_are_in_the_test_layer() {
@@ -103,10 +152,9 @@ fn a_test_file_added_by_sync_gives_what_a_fresh_index_gives() {
         "lidx-go-test-reach-sync-",
         &[("go.mod", GO_MOD), ("lib.go", LIB)],
     );
-    common::write_files(&root, &[("lib_test.go", TESTS)]);
-    indexer
-        .sync_rel_paths(&["lib_test.go".to_string()])
-        .unwrap();
+    common::write_files(&root, &FILES[2..]);
+    let added: Vec<String> = FILES[2..].iter().map(|(p, _)| p.to_string()).collect();
+    indexer.sync_rel_paths(&added).unwrap();
     let synced = test_layer(&root);
     assert_entries(&synced);
 

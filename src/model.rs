@@ -32,6 +32,14 @@ pub const NESTED_MARKER_PREFIX: &str = "#[nested(";
 /// inherent twin wins). Resolver-only, hidden on read like the nested marker.
 pub const TRAIT_IMPL_MARKER: &str = "#[trait_impl]";
 
+/// First line of the signature of a Go function `go test` runs (#479): a
+/// receiver-less `Test*` / `Benchmark*` / `Fuzz*` whose first parameter is the
+/// `testing` package's `T` / `B` / `F` (`M` for `TestMain`) under whatever
+/// local name the file imports it as (alias or dot import), or an `Example*`
+/// with an `// Output:` comment. Not hidden on read, like Rust's `#[test]`:
+/// `test_detection::is_test_symbol` reads it for a `_test.go` file.
+pub const GO_TEST_MARKER: &str = "#[go_test]";
+
 /// Line a Go struct or package variable stores its typing data on, between
 /// `GO_TYPE_MARKER_PREFIX` and `GO_TYPE_MARKER_SUFFIX`: a struct's field list
 /// (`{conn net.Conn; ~Embedded}`) or a variable's declared type text / `= <json

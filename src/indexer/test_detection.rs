@@ -47,7 +47,7 @@ fn is_js_ts_source(path: &str) -> bool {
 /// ## Go
 /// - Receiver-less `Test*` / `Benchmark*` / `Fuzz*` function of a
 ///   `_test.go` file whose first parameter is `*testing.T` / `*testing.B` /
-///   `*testing.F` (`is_go_test_entry`); lowercase `test*` helpers are not tests
+///   `*testing.F` or an `Example*` with an output comment: the Go extractor marks them (`GO_TEST_MARKER`, import aliases and dot imports resolved); lowercase `test*` helpers are not tests
 ///
 pub fn is_test_symbol(symbol: &Symbol) -> bool {
     // Check symbol kind first (most reliable)
@@ -158,53 +158,17 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
         }
     }
 
-    // Go tests
-    if file_lower.ends_with("_test.go") && is_go_test_entry(symbol) {
+    if file_lower.ends_with("_test.go")
+        && symbol.kind == "function"
+        && symbol
+            .signature
+            .as_deref()
+            .is_some_and(|s| s.starts_with(crate::model::GO_TEST_MARKER))
+    {
         return true;
     }
 
     false
-}
-
-/// True for a function `go test` runs: a receiver-less top-level function of
-/// a `_test.go` file named `Test*` (`*testing.T`, or `TestMain` with
-/// `*testing.M`), `Benchmark*` (`*testing.B`) or `Fuzz*` (`*testing.F`),
-/// where the name after the prefix does not start with a lowercase letter
-/// (`Testify` and `testHelper` are not entries). The first parameter's type
-/// is read from the signature the Go extractor keeps; a symbol without a
-/// signature is judged by its name alone. `Example*` is not an entry here:
-/// it takes no `testing` value and calls the code under test as a demo.
-fn is_go_test_entry(symbol: &Symbol) -> bool {
-    if symbol.kind != "function" {
-        return false;
-    }
-    let name = symbol.name.as_str();
-    let entry = |prefix: &str| {
-        name.strip_prefix(prefix)
-            .filter(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
-    };
-    let wanted = if let Some(rest) = entry("Test") {
-        if rest == "Main" { "M" } else { "T" }
-    } else if entry("Benchmark").is_some() {
-        "B"
-    } else if entry("Fuzz").is_some() {
-        "F"
-    } else {
-        return false;
-    };
-    let Some(sig) = symbol.signature.as_deref() else {
-        return true;
-    };
-    let params = sig.split(" -> ").next().unwrap_or(sig);
-    let first = params
-        .trim()
-        .trim_start_matches('(')
-        .split([',', ')'])
-        .next()
-        .unwrap_or("");
-    // `t *testing.T` or an unnamed `*testing.T`.
-    let ty = first.split_whitespace().last().unwrap_or("");
-    ty.strip_prefix("*testing.") == Some(wanted)
 }
 
 /// True when a JS/TS test is a whole test file's `module` symbol rather than
@@ -389,48 +353,33 @@ mod tests {
     }
 
     #[test]
-    fn go_test_entries_are_receiver_less_testing_functions() {
-        let go = |kind: &str, name: &str, sig: Option<&str>| {
-            make_symbol("pkg/x_test.go", kind, name, sig)
+    fn go_tests_are_the_marked_functions_of_test_files() {
+        let marked = "#[go_test]\n(t *testing.T)";
+        let go = |path: &str, kind: &str, name: &str, sig: Option<&str>| {
+            make_symbol(path, kind, name, sig)
         };
-        for (name, sig) in [
-            ("TestFoo", "(t *testing.T)"),
-            ("TestMain", "(m *testing.M)"),
-            ("Test_foo", "(t *testing.T)"),
-            ("BenchmarkFoo", "(b *testing.B)"),
-            ("FuzzFoo", "(f *testing.F)"),
-            ("FuzzFoo", "(*testing.F)"),
-            ("BenchmarkFoo", "(b *testing.B, n int)"),
-        ] {
-            assert!(
-                is_test_symbol(&go("function", name, Some(sig))),
-                "{name}{sig}"
-            );
-        }
-        assert!(is_test_symbol(&go("function", "BenchmarkFoo", None)));
-        for (kind, name, sig) in [
-            ("function", "testHelper", "(t *testing.T)"),
-            ("function", "Testify", "(t *testing.T)"),
-            ("function", "benchmarkFoo", "(b *testing.B)"),
-            ("function", "TestFoo", "(b *testing.B)"),
-            ("function", "BenchmarkFoo", "(t *testing.T)"),
-            ("function", "TestFoo", "()"),
-            ("function", "FuzzFoo", "(x int)"),
-            ("function", "ExampleFoo", "()"),
-            ("method", "TestFoo", "(t *testing.T)"),
-        ] {
-            assert!(
-                !is_test_symbol(&go(kind, name, Some(sig))),
-                "{kind} {name}{sig}"
-            );
-        }
-        let prod = make_symbol(
-            "pkg/x.go",
+        assert!(is_test_symbol(&go(
+            "pkg/x_test.go",
             "function",
-            "BenchmarkFoo",
-            Some("(b *testing.B)"),
-        );
-        assert!(!is_test_symbol(&prod), "not a _test.go file");
+            "TestFoo",
+            Some(marked)
+        )));
+        for (path, kind, name, sig) in [
+            (
+                "pkg/x_test.go",
+                "function",
+                "TestFoo",
+                Some("(t *testing.T)"),
+            ),
+            ("pkg/x_test.go", "function", "TestFoo", None),
+            ("pkg/x_test.go", "method", "TestFoo", Some(marked)),
+            ("pkg/x.go", "function", "TestFoo", Some(marked)),
+        ] {
+            assert!(
+                !is_test_symbol(&go(path, kind, name, sig)),
+                "{path} {kind} {name} {sig:?}"
+            );
+        }
     }
 
     #[test]

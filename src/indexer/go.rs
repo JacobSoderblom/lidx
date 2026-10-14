@@ -16,6 +16,7 @@ use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, collect_identifier_names, module_symbol_fallback,
     module_symbol_with_span, node_text, span,
 };
+use crate::model::GO_TEST_MARKER;
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
@@ -59,19 +60,112 @@ fn go_implicit_root(f: &crate::db::resolver::ImplicitRootFacts<'_>) -> bool {
     if !f.path.ends_with("_test.go") {
         return false;
     }
-    let entry = |prefix: &str| {
-        f.name
-            .strip_prefix(prefix)
-            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
-    };
     // `go test` runs an example only when its body ends in an `// Output:`
     // (or `// Unordered output:`) comment; any other is compiled, never run.
-    if entry("Example") {
-        return f
+    match go_entry_prefix(f.name) {
+        Some("Example") => f
             .visibility
-            .is_some_and(|v| v.split_whitespace().any(|w| w == "example_output"));
+            .is_some_and(|v| v.split_whitespace().any(|w| w == "example_output")),
+        Some(_) => true,
+        None => false,
     }
-    entry("Test") || entry("Benchmark") || entry("Fuzz")
+}
+
+/// The `go test` entry prefix of a function name: `Test`, `Benchmark`, `Fuzz`
+/// or `Example`, when the name after it does not start with a lowercase
+/// letter (`Testify`, `testHelper` and `Examples` are not entries). The one
+/// rule behind both the dead-code roots and the test marker.
+pub(crate) fn go_entry_prefix(name: &str) -> Option<&'static str> {
+    ["Test", "Benchmark", "Fuzz", "Example"]
+        .into_iter()
+        .find(|prefix| {
+            name.strip_prefix(prefix)
+                .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
+        })
+}
+
+/// Local names the file binds the `testing` package to (`testing`, or an
+/// alias), and whether it is dot-imported (its names are in file scope).
+fn testing_imports(root: Node<'_>, source: &str) -> (Vec<String>, bool) {
+    fn walk(node: Node<'_>, source: &str, names: &mut Vec<String>, dot: &mut bool) {
+        if node.kind() == "import_spec" {
+            let path = node
+                .child_by_field_name("path")
+                .map(|p| extract_string_literal(p, source));
+            if path.as_deref() == Some("testing") {
+                match node
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source))
+                    .as_deref()
+                {
+                    None => names.push("testing".to_string()),
+                    Some(".") => *dot = true,
+                    Some("_") => {}
+                    Some(alias) => names.push(alias.to_string()),
+                }
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk(child, source, names, dot);
+        }
+    }
+    let (mut names, mut dot) = (Vec::new(), false);
+    walk(root, source, &mut names, &mut dot);
+    (names, dot)
+}
+
+/// Prefixes `GO_TEST_MARKER` onto the signature of every function `go test`
+/// runs (#479): the top-level `Test*` / `Benchmark*` / `Fuzz*` functions whose
+/// first parameter is `*testing.T` / `*B` / `*F` (`*M` for `TestMain`) as the
+/// file spells the package (alias or dot import), and the `Example*`
+/// functions that carry an output comment. Whether the file is a `_test.go`
+/// one is `test_detection`'s check (the extractor sees no path).
+fn mark_test_entries(root: Node<'_>, source: &str, module_name: &str, output: &mut ExtractedFile) {
+    let (names, dot) = testing_imports(root, source);
+    let mut marked = Vec::new();
+    let mut cursor = root.walk();
+    for decl in root.named_children(&mut cursor) {
+        if decl.kind() != "function_declaration" {
+            continue;
+        }
+        let Some(name_node) = decl.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name_node, source);
+        let wanted = match go_entry_prefix(&name) {
+            Some("Test") if name == "TestMain" => "M",
+            Some("Test") => "T",
+            Some("Benchmark") => "B",
+            Some("Fuzz") => "F",
+            _ => continue,
+        };
+        let first_type = decl
+            .child_by_field_name("parameters")
+            .and_then(|p| p.named_children(&mut p.walk()).next())
+            .and_then(|p| p.child_by_field_name("type"))
+            .map(|t| node_text(t, source));
+        let Some(ty) = first_type.as_deref().and_then(|t| t.strip_prefix('*')) else {
+            continue;
+        };
+        let ok = match ty.split_once('.') {
+            Some((pkg, ident)) => ident == wanted && names.iter().any(|n| n == pkg),
+            None => dot && ty == wanted,
+        };
+        if ok {
+            marked.push(format!("{module_name}.{name}"));
+        }
+    }
+    marked.extend(output.example_output_qualnames.iter().cloned());
+    for symbol in &mut output.symbols {
+        if symbol.kind == "function" && marked.contains(&symbol.qualname) {
+            symbol.signature = Some(match symbol.signature.take() {
+                Some(sig) => format!("{GO_TEST_MARKER}\n{sig}"),
+                None => GO_TEST_MARKER.to_string(),
+            });
+        }
+    }
 }
 
 /// Records the `Example*` functions whose body ends in an `// Output:` (or
@@ -94,7 +188,7 @@ fn mark_output_examples(
             continue;
         };
         let name = &source[name.byte_range()];
-        if !name.starts_with("Example") {
+        if go_entry_prefix(name) != Some("Example") {
             continue;
         }
         let mut comments = Vec::new();
@@ -279,6 +373,7 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             output.file_modifiers = constraint.modifiers();
         }
         mark_output_examples(root, source, module_name, &mut output);
+        mark_test_entries(root, source, module_name, &mut output);
         if package_name(root, source).as_deref() == Some("main") {
             output.file_modifiers.push(GO_PACKAGE_MAIN.to_string());
         }
