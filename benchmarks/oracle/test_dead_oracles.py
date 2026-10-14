@@ -30,7 +30,11 @@ class RustWorkspace(unittest.TestCase):
             touch(os.path.join(ws, "lib", "Cargo.toml"), '[package]\nname = "toylib"\nversion = "0.1.0"\nedition = "2021"\n')
             touch(os.path.join(ws, "lib", "src", "lib.rs"),
                   "pub fn lib_pub_unused() {}\nfn lib_private_unused() {}\nfn lib_helper() {}\npub fn lib_pub_used() { lib_helper(); }\n"
-                  "pub struct LibPubType;\nstruct LibPrivateType;\n")
+                  "pub struct LibPubType;\nstruct LibPrivateType;\n"
+                  # a test macro like ripgrep's `rgtest!`: the generated `#[test] fn` owns the references in its body
+                  "#[cfg(test)]\nmacro_rules! mk_test { ($n:ident, $body:expr) => { #[test] fn $n() { helper_from_body(); $body } }; }\n"
+                  "#[cfg(test)]\nfn helper_from_body() {}\n#[cfg(test)]\nfn helper_from_arg() {}\n"
+                  "#[cfg(test)]\nmk_test!(generated_test, helper_from_arg());\n")
             touch(os.path.join(ws, "app", "Cargo.toml"),
                   '[package]\nname = "toyapp"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ntoylib = { path = "../lib" }\n')
             touch(os.path.join(ws, "app", "src", "main.rs"),
@@ -67,6 +71,10 @@ class RustWorkspace(unittest.TestCase):
         self.assertEqual(by["bin_private_unused"]["unref"], "dead")
         self.assertEqual(by["bin_pub_unused"]["reach"], "dead")
         self.assertEqual(by["main"].get("root"), "main_init")
+        # the macro-generated test is a root (it cannot be classified), so what only it reaches is live
+        self.assertEqual(by["generated_test"].get("root"), "macro_generated")
+        self.assertEqual(by["helper_from_arg"]["reach"], "live")
+        self.assertEqual(by["helper_from_body"]["reach"], "live")
 
 
 if __name__ == "__main__":

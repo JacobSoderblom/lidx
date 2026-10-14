@@ -27,9 +27,10 @@ def pr(r, k="precision"):
 
 
 NOT_REPORTED = "not reported"
-# Rust recall is not reported: against the noisy SCIP dead set, 2 of the 5 missed declarations that exist in the corpus
-# (every one of them was read) were oracle artefacts (40%), above the 20% bar; precision is unaffected.
-RECALL_NOT_REPORTED = {"rust"}
+# Languages whose recall the spot-check does not allow quoting (artefact rate among the missed declarations read by hand at or
+# above 20%). Rust was here while `rgtest!`-generated tests were not oracle roots (2 of 5 missed declarations were artefacts);
+# since those are roots (#497) every missed Rust declaration of the corpus was re-read and 0 of 5 are artefacts.
+RECALL_NOT_REPORTED = set()
 
 
 def rec(lang, r, key="recall"):
@@ -50,6 +51,19 @@ def pooled(readings):
 def cell_order(cells):
     rank = {l: i for i, (l, _) in enumerate(LANGS)}
     return sorted((cid for cid, c in cells.items() if "dead" in c), key=lambda cid: (rank[cells[cid]["lang"]], list(cells).index(cid)))
+
+
+def pooled_cells(lang, ids, cells):
+    """The cells a language's pooled figures sum over. Rust: one cell per repository, the `_all_features` one (its rust-analyzer
+    run analyses every cargo feature, so code behind `#[cfg(feature = ..)]` and the references inside it are part of the
+    program); the `path_tests_excluded`, `no_tests` and `tests` variants of the same repository would count its declarations
+    two to four times over. Go and TypeScript keep every cell (the `tests` / `no_tests` pair of a Go repository overlaps)."""
+    lid = [cid for cid in ids if cells[cid]["lang"] == lang]
+    if lang == "rust":
+        allfeat = [cid for cid in lid if cells[cid].get("variant") == "path_tests_excluded_all_features"]
+        if allfeat:
+            return allfeat
+    return lid
 
 
 def kind_of_cell(c):
@@ -133,18 +147,24 @@ def section(meta, cells, results_dir):
     # ---- pooled per language ---------------------------------------------------------------------------
     w("### Pooled per language")
     w("")
-    w("Sums over the cells of a language (the `tests` and `no_tests` cells of one repository overlap, so the pooled interval is narrower than the "
-      "evidence supports; per-cell rows are the figures to quote).")
+    w("Sums over the cells of a language: Go and TypeScript over every cell (the `tests` and `no_tests` cells of one Go repository overlap, so "
+      "the pooled interval is narrower than the evidence supports; per-cell rows are the figures to quote), Rust over one cell per repository, "
+      "the `path_tests_excluded_all_features` one, whose rust-analyzer run analyses every cargo feature (the other variants of a repository "
+      "repeat its declarations).")
     w("")
-    w("Rust recall is **not reported** (shown as `not reported`): the spot-check read all 5 missed Rust declarations the corpus has and 2 of them "
-      "(40%) were oracle artefacts, calls inside `rgtest!`-generated tests that SCIP does not resolve, above the 20% bar. Precision is unaffected. "
-      "Methods of impls for foreign or primitive self types (`impl Logic for bool`) and trait items are named buckets (`impl_for_foreign_type`, "
-      "`trait_declaration`) and are not in the Rust universe.")
+    if "rust" in RECALL_NOT_REPORTED:
+        w("Rust recall is **not reported** (shown as `not reported`): the artefact rate among the missed Rust declarations read by hand is above the "
+          "20% bar. Precision is unaffected.")
+    else:
+        w("Rust recall is reported: every missed Rust declaration of the pooled cells was read by hand (the dead-code spot-check below) and the "
+          "artefact rate is under the 20% bar; `rgtest!`-style macro-generated tests are roots of the oracle since that reading. Methods of "
+          "impls for foreign or primitive self types (`impl Logic for bool`) and trait items are named buckets (`impl_for_foreign_type`, "
+          "`trait_declaration`) and are not in the Rust universe.")
     w("")
     w("| Language | Column | Oracle-dead | Claims graded | P, all claims [95% CI] | R [95% CI] | P without exported [95% CI] | R without exported [95% CI] |")
     w("|---|---|---:|---:|---|---|---|---|")
     for lang, name in LANGS:
-        lid = [cid for cid in ids if cells[cid]["lang"] == lang]
+        lid = pooled_cells(lang, ids, cells)
         if not lid:
             continue
         for col in match_dead.COLUMNS:
@@ -162,7 +182,7 @@ def section(meta, cells, results_dir):
     w("| Language | Column | high | medium | low | untiered | public_api group | of them oracle-dead |")
     w("|---|---|---|---|---|---|---|---|")
     for lang, name in LANGS:
-        lid = [cid for cid in ids if cells[cid]["lang"] == lang]
+        lid = pooled_cells(lang, ids, cells)
         for col in match_dead.COLUMNS:
             if not lid:
                 continue
@@ -207,7 +227,7 @@ def section(meta, cells, results_dir):
     w("| Language | Column | Graded claims | Dropped by the policy | of them wrong | P all claims | P without exported | Wrong claims, by category (all claims) |")
     w("|---|---|---:|---:|---:|---|---|---|")
     for lang, name in LANGS:
-        lid = [cid for cid in ids if cells[cid]["lang"] == lang]
+        lid = pooled_cells(lang, ids, cells)
         for col in match_dead.COLUMNS:
             if not lid:
                 continue
@@ -230,7 +250,7 @@ def section(meta, cells, results_dir):
       "`dead_symbols`' kind list), `no_incoming_edge_but_filtered` (a filter in the query rescued it).")
     w("")
     for lang, name in LANGS:
-        lid = [cid for cid in ids if cells[cid]["lang"] == lang]
+        lid = pooled_cells(lang, ids, cells)
         if not lid:
             continue
         for col in match_dead.COLUMNS:

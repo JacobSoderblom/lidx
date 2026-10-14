@@ -13,8 +13,10 @@ Per declaration (function, method, type) two verdicts:
          and the impl blocks of the type itself refers to it; for a trait-impl method the verdict comes from the trait method
          (a method of an external trait is "live": the trait's callers are not in the repository).
   reach  functions and methods: "live" when a root reaches it through references (calls, callbacks, any mention). Roots: `main`
-         of binary crates and build scripts, test functions, `pub` items of library crates, FFI / proc-macro entry points.
-         An impl method of an in-repo trait is reached when the trait method is; one of an external trait when its type is.
+         of binary crates and build scripts, test functions, `pub` items of library crates, FFI / proc-macro entry points, and
+         every macro-generated declaration (it owns the references in its body and cannot be classified, so it is given the
+         benefit of the doubt like a withheld item). An impl method of an in-repo trait is reached when the trait method is;
+         one of an external trait when its type is.
 
 Library crates (a `lib` target) have public API: their `pub` items get no verdict (`api`). The `pub` items of binary crates
 (`main.rs`, `src/bin`, `[[bin]]` paths, examples, build scripts) stay in the universe. Crate kinds are read from the
@@ -592,7 +594,10 @@ def main():
                 edges[r["type_symbol"]].add(r["symbol"])
     roots = {TOP}
     for r in defs.values():
-        if r["api"] or r["root"] in ("main_init", "test_root", "ffi_or_macro_entry") or r.get("withheld") or r.get("withheld_reach"):
+        # A macro-generated declaration (a `#[test] fn` that `rgtest!` or `test!` expands to) owns the references inside its
+        # body but cannot be classified (test, entry point, helper: the macro's business), so it is a root like a withheld
+        # item: what only such declarations reach is not condemned with them.
+        if r["api"] or r["root"] in ("main_init", "test_root", "ffi_or_macro_entry", "macro_generated") or r.get("withheld") or r.get("withheld_reach"):
             roots.add(r["symbol"])
         elif r["subkind"] == "trait_impl" and r["trait_method"] is None and not r.get("type_symbol"):
             roots.add(r["symbol"])  # blanket / foreign-type impl of a foreign trait: callers are outside the repository

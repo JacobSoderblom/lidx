@@ -1,14 +1,14 @@
 use crate::db::resolver::{
-    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_ARG_HINT,
-    RUST_BOUND_ITEM, RUST_CRATE_PIN, RUST_CRATE_ROOT, RUST_EXPECT_ERR, RUST_EXTERNAL_CRATE,
-    RUST_EXTERNAL_RECEIVER, RUST_IMPL_SELF, RUST_STD_RECEIVER, SameFileTwins, TwinTraits,
-    VisibilityRule, is_rust_std_root, rust_crate_pin,
+    Declaration, DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile,
+    RUST_ARG_HINT, RUST_BOUND_ITEM, RUST_CRATE_PIN, RUST_CRATE_ROOT, RUST_EXPECT_ERR,
+    RUST_EXTERNAL_CRATE, RUST_EXTERNAL_RECEIVER, RUST_IMPL_SELF, RUST_STD_RECEIVER, SameFileTwins,
+    TwinTraits, VisibilityRule, is_rust_std_root, rust_crate_pin,
 };
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, DeclIdentity, DeferredMarker, DeferredSource, EdgeInput, ExtractedFile,
+    AliasArg, CallShape, DeclIdentity, DeferredMarker, DeferredSource, EdgeInput, ExtractedFile,
     ImplIdentity, ReceiverType, RustDeferred, Step, SymbolInput, pinning_new_edges,
 };
 use crate::indexer::http;
@@ -150,8 +150,81 @@ struct AttrStart {
     byte: i64,
 }
 
+/// Where the file being extracted sits, to read `#[path = ".."]` attributes.
+#[derive(Clone, Debug)]
+struct FileHome {
+    /// Repo-relative path of the file.
+    rel: String,
+    /// Qualname of the module the file is.
+    file_module: String,
+    /// The Cargo package dir the file's module names are relative to.
+    crate_root: Option<PathBuf>,
+}
+
+impl FileHome {
+    /// The module of the file that `#[path = "<path>"] mod ..;` names when
+    /// written in `module` of this file, or `None` when the path leaves the
+    /// repository. A `mod` outside an inline module reads the path from the
+    /// directory of the file; each inline module adds its name (and, in a file
+    /// that is not `lib.rs`/`main.rs`/`mod.rs`, the file's own name first).
+    fn path_module(&self, module: &str, path: &str) -> Option<String> {
+        let rel = self.path_file(module, path)?;
+        Some(module_name_from_rel_path(&strip_crate_root(
+            &rel,
+            self.crate_root.as_deref(),
+        )))
+    }
+
+    /// The repo-relative file `#[path = "<path>"]` names (see `path_module`).
+    fn path_file(&self, module: &str, path: &str) -> Option<String> {
+        let file = Path::new(&self.rel);
+        let mut dir = file.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        let inline = module
+            .strip_prefix(&self.file_module)
+            .unwrap_or_default()
+            .split("::")
+            .filter(|seg| !seg.is_empty())
+            .collect::<Vec<_>>();
+        if !inline.is_empty() {
+            let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if !matches!(stem, "lib" | "main" | "mod") {
+                dir.push(stem);
+            }
+            dir.extend(inline);
+        }
+        let joined = util::normalize_path(&dir.join(path));
+        (!joined.starts_with("..")).then_some(joined)
+    }
+}
+
+/// The `path` of a `#[path = "x.rs"]` attribute among `attrs` (attribute text).
+fn path_attribute(attrs: &[String]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        let inner = attr.trim().strip_prefix("#[")?.strip_suffix(']')?.trim();
+        let rest = inner.strip_prefix("path")?.trim_start().strip_prefix('=')?;
+        extract_string_from_text(rest.trim())
+    })
+}
+
+/// The text of the `#[..]` attributes written right before `node`.
+fn preceding_attributes(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut prev = node.prev_sibling();
+    while let Some(p) = prev {
+        match p.kind() {
+            "attribute_item" => out.push(node_text(p, source)),
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        prev = p.prev_sibling();
+    }
+    out
+}
+
 #[derive(Clone)]
 struct Context {
+    /// Where the file is, for `#[path]` modules.
+    home: Option<Rc<FileHome>>,
     /// Same-file string constants (see `string_consts`), used to resolve
     /// channel topics given as identifiers.
     string_consts: Rc<StringConsts>,
@@ -327,6 +400,8 @@ pub struct RustExtractor {
     workspace: RefCell<Option<Rc<RustWorkspace>>>,
     /// How the file about to be extracted sees the other crates.
     file_crates: Option<Rc<PackageView>>,
+    /// Repo-relative path of the file about to be extracted.
+    file_rel: String,
 }
 
 impl RustExtractor {
@@ -340,6 +415,7 @@ impl RustExtractor {
             crate_root_cache: RefCell::new(HashMap::new()),
             workspace: RefCell::new(None),
             file_crates: None,
+            file_rel: String::new(),
         })
     }
 
@@ -393,6 +469,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
     }
 
     fn set_file(&mut self, rel_path: &str) {
+        self.file_rel = rel_path.to_string();
         self.file_crates = self
             .workspace()
             .and_then(|ws| PackageView::of_file(&ws, rel_path))
@@ -425,7 +502,22 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
         ));
         let mut macro_parser = Parser::new();
         macro_parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
-        let imports = Rc::new(collect_use_bindings(root, source, module_name));
+        let home = self.repo_root.as_deref().map(|repo_root| {
+            let dir = Path::new(&self.file_rel)
+                .parent()
+                .unwrap_or_else(|| Path::new(""));
+            Rc::new(FileHome {
+                rel: self.file_rel.clone(),
+                file_module: module_name.to_string(),
+                crate_root: find_crate_root(repo_root, dir, &self.crate_root_cache),
+            })
+        });
+        let imports = Rc::new(collect_use_bindings(
+            root,
+            source,
+            module_name,
+            home.as_deref(),
+        ));
         let local_mods = Rc::new(collect_mod_names(root, source));
         let paths = PathScope {
             imports: &imports,
@@ -439,8 +531,9 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             module.signature = crate::model::rust_uses_marker(&paths.uses_entries());
         }
         let adts = Rc::new(collect_adts(root, source, Some(paths), None));
-        let returns = Rc::new(collect_returns(root, source, paths));
+        let returns = Rc::new(collect_returns(root, source, paths, &adts));
         let ctx = Context {
+            home,
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
                 crate::indexer::string_consts::ConstLang::Rust,
                 root,
@@ -593,6 +686,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_macro_invocation(node, ctx, source, output);
             return;
         }
+        "macro_definition" => {
+            handle_macro_definition(node, ctx, source, output);
+            return;
+        }
         "mod_item" => {
             handle_mod(node, ctx, source, output);
             return;
@@ -615,18 +712,16 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             }
             return;
         }
-        "const_item" => {
+        "const_item" | "static_item" => {
+            let kind = if node.kind() == "const_item" {
+                "const"
+            } else {
+                "static"
+            };
             if ctx.container_stack.is_empty() {
-                handle_named_item(node, ctx, source, output, "const");
+                handle_named_item(node, ctx, source, output, kind);
             }
-            walk_item_value_references(node, ctx, source, output);
-            return;
-        }
-        "static_item" => {
-            if ctx.container_stack.is_empty() {
-                handle_named_item(node, ctx, source, output, "static");
-            }
-            walk_item_value_references(node, ctx, source, output);
+            handle_initializer(node, ctx, source, output);
             return;
         }
         "function_item" => {
@@ -720,6 +815,9 @@ fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &m
             if child.kind() == "function_item" {
                 handle_function_with_attributes(child, &item_ctx, source, output, &pending_attrs);
             } else {
+                // A fn reads its attributes in its own scope; any other item
+                // in the enclosing one.
+                handle_attributes(&pending_attrs, &item_ctx, source, output);
                 walk_node(child, &item_ctx, source, output);
             }
         });
@@ -760,7 +858,21 @@ fn handle_named_item(
             "type" => node.child_by_field_name("type").map(|aliased| {
                 let origins =
                     type_origins_marker(&[aliased], node, source, ctx).unwrap_or_default();
-                format!("{origins}type {name} = {}", node_text(aliased, source))
+                // The parameters stay (`type R<T> = Result<T, E>`), so a use
+                // of the alias can be read through them (`alias_target`).
+                let generics = node
+                    .child_by_field_name("type_parameters")
+                    .map(|p| {
+                        node_text(p, source)
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "{origins}type {name}{generics} = {}",
+                    node_text(aliased, source)
+                )
             }),
             // `const FLAGS: &[&dyn Flag]`: other files read the declared type
             // of a constant they import (`for flag in FLAGS.iter()`).
@@ -796,6 +908,11 @@ fn handle_named_item(
                 TraitMention::Derived,
             ));
         }
+        // The attributes of the fields and variants (`#[serde(default =
+        // "f")]`, `#[error("..", f(..))]`).
+        let mut attrs = Vec::new();
+        collect_attribute_items(node, &mut attrs);
+        handle_attributes(&attrs, ctx, source, output);
     }
 }
 
@@ -1032,11 +1149,21 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
             ctx.item_span(node);
         let snippet =
             util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+        // `#[path = "x.rs"] mod m;` is the module of that file.
+        let declared_path = path_attribute(&preceding_attributes(node, source));
+        let path_module = declared_path
+            .as_deref()
+            .zip(ctx.home.as_deref())
+            .and_then(|(path, home)| home.path_module(&ctx.module, path));
+        let (target_qualname, detail) = match (path_module, declared_path) {
+            (Some(module), Some(path)) => (module, Some(json!({ "path": path }).to_string())),
+            _ => (module_name, None),
+        };
         output.edges.push(EdgeInput {
             kind: "MODULE_FILE".to_string(),
             source_qualname: Some(ctx.module.clone()),
-            target_qualname: Some(module_name),
-            detail: None,
+            target_qualname: Some(target_qualname),
+            detail,
             evidence_snippet: snippet,
             evidence_start_line: Some(start_line),
             evidence_end_line: Some(end_line),
@@ -1073,7 +1200,12 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     next_ctx.current_scope = next_ctx.module.clone();
     // Fresh, not merged with `ctx.imports`: this module doesn't inherit its
     // parent's `use` bindings (see `Context::imports`).
-    next_ctx.imports = Rc::new(collect_use_bindings(body, source, &next_ctx.module));
+    next_ctx.imports = Rc::new(collect_use_bindings(
+        body,
+        source,
+        &next_ctx.module,
+        ctx.home.as_deref(),
+    ));
     next_ctx.local_mods = Rc::new(collect_mod_names(body, source));
     next_ctx.local_types_declared = Rc::new(collect_declared_type_names(body, source));
     // A module is its own namespace, not a function body: no shadowed
@@ -1119,7 +1251,28 @@ pub fn resolve_module_file_edges(
 
         let mut dst_path = None;
         let mut confidence = 0.4;
-        if let Some(source_dir) = module_dir_for_source(file_module, source_module, &base_dir) {
+        // `#[path = "x.rs"] mod m;` names its file (the extractor kept the
+        // attribute's path as the detail).
+        let declared_path = edge
+            .detail
+            .as_deref()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .and_then(|d| d["path"].as_str().map(str::to_string));
+        if let Some(declared) = declared_path {
+            let home = FileHome {
+                rel: file_rel_path.to_string(),
+                file_module: file_module.to_string(),
+                crate_root: None,
+            };
+            if let Some(file) = home.path_file(source_module, &declared)
+                && repo_root.join(&file).is_file()
+            {
+                dst_path = Some(file);
+                confidence = 1.0;
+            }
+        } else if let Some(source_dir) =
+            module_dir_for_source(file_module, source_module, &base_dir)
+        {
             let candidate_rs = source_dir.join(format!("{dst_name}.rs"));
             let candidate_mod = source_dir.join(&dst_name).join("mod.rs");
             if repo_root.join(&candidate_rs).is_file() {
@@ -1266,7 +1419,7 @@ fn handle_function(
         // `use dep::{color_scheme};` makes `color_scheme(..)` here that
         // import, not the module's own function of the same name. A name the
         // body also binds as a variable stays suppressed.
-        let body_uses = collect_use_bindings(body, source, &ctx.module);
+        let body_uses = collect_use_bindings(body, source, &ctx.module, ctx.home.as_deref());
         next_ctx.body_use_names = Rc::new(
             body_uses
                 .keys()
@@ -1293,6 +1446,14 @@ fn handle_function(
         let mut nested: HashSet<String> = (*ctx.nested_fns).clone();
         collect_nested_fn_names(body, source, &mut nested);
         next_ctx.nested_fns = Rc::new(nested);
+        // A type declared in the body (`struct V;` passed as a value) is
+        // declared here as far as the body is concerned.
+        let body_types = collect_declared_type_names(body, source);
+        if !body_types.is_empty() {
+            let mut declared = (*ctx.local_types_declared).clone();
+            declared.extend(body_types);
+            next_ctx.local_types_declared = Rc::new(declared);
+        }
 
         // In a trait declaration `Self` is not the trait.
         let self_ty = ctx
@@ -1338,6 +1499,11 @@ fn handle_function_with_attributes(
     for edge in route_edges_from_attribute_items(attributes, ctx, source, &qualname) {
         output.edges.push(edge);
     }
+    // The code in the fn's attributes (`#[test_case(f(1); "one")]`) runs
+    // for this fn.
+    let mut attr_ctx = ctx.clone();
+    attr_ctx.current_scope = qualname.clone();
+    handle_attributes(attributes, &attr_ctx, source, output);
     handle_function(node, ctx, source, output, attributes);
 }
 
@@ -1429,12 +1595,18 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
                 );
                 None
             };
+            // `impl Deref for W { type Target = X; }`: a method W does not
+            // declare may be X's (read by the resolver).
+            let detail = (trait_name.rsplit("::").next() == Some("Deref"))
+                .then(|| deref_target(node, source))
+                .flatten()
+                .map(|target| json!({ "deref_target": target }).to_string());
             output.edges.push(EdgeInput {
                 kind: "IMPLEMENTS".to_string(),
                 source_qualname,
                 target_qualname: Some(qualname),
                 import_candidates,
-                detail: None,
+                detail,
                 evidence_snippet: None,
                 ..Default::default()
             });
@@ -1458,6 +1630,29 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     next_ctx.in_trait_impl_external = trait_external;
     next_ctx.impl_identity = impl_identity(node, source);
     walk_node(body, &next_ctx, source, output);
+}
+
+/// The type name `X` of `type Target = X;` in the `impl Deref for ..` block
+/// `impl_node`, as a bare name (`Vec<T>` is `Vec`, `&'a Token` is `Token`);
+/// `None` when the target is no named type (a slice, a tuple, a generic).
+fn deref_target(impl_node: Node<'_>, source: &str) -> Option<String> {
+    let body = body_node(impl_node)?;
+    let mut cursor = body.walk();
+    let item = body.named_children(&mut cursor).find(|c| {
+        c.kind() == "type_item"
+            && c.child_by_field_name("name")
+                .is_some_and(|n| node_text(n, source) == "Target")
+    })?;
+    let mut ty = item.child_by_field_name("type")?;
+    while matches!(ty.kind(), "reference_type" | "generic_type") {
+        ty = ty.child_by_field_name("type")?;
+    }
+    let name = match ty.kind() {
+        "type_identifier" => node_text(ty, source),
+        "scoped_type_identifier" => node_text(ty.child_by_field_name("name")?, source),
+        _ => return None,
+    };
+    name.starts_with(char::is_uppercase).then_some(name)
 }
 
 /// Identity of an `impl` block for its methods' stable ids. Every trait impl
@@ -1943,6 +2138,25 @@ pub(crate) fn is_std_method_name(name: &str) -> bool {
 
 /// The callee of a turbofished call (`x.parse::<T>()`, `foo::<T>(..)`): the
 /// `generic_function` node's own `function`; any other callee as it is.
+/// Whether `function` is a turbofish (`f::<A, B>`) naming a type that is not
+/// std's or a placeholder: a capitalised, non-std identifier among its arguments.
+fn turbofish_names_type(function: Node<'_>, source: &str) -> bool {
+    function.kind() == "generic_function"
+        && function
+            .child_by_field_name("type_arguments")
+            .is_some_and(|args| {
+                let text = node_text(args, source);
+                text.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|word| word.starts_with(char::is_uppercase) && !is_std_type_name(word))
+            })
+}
+
+/// Whether the call's callee is a plain path, with no turbofish naming a type.
+fn function_is_plain_path(call: Node<'_>, source: &str) -> bool {
+    call.child_by_field_name("function")
+        .is_some_and(|f| !turbofish_names_type(f, source))
+}
+
 fn unwrap_turbofish(function: Node<'_>) -> Node<'_> {
     if function.kind() == "generic_function" {
         function.child_by_field_name("function").unwrap_or(function)
@@ -1986,7 +2200,7 @@ fn handle_macro_invocation(
         && node
             .parent()
             .is_some_and(|p| matches!(p.kind(), "source_file" | "declaration_list"));
-    if !item_macro && !macro_args_are_expressions(name) {
+    if name != "cfg_if" && name != "json" && !item_macro && !macro_args_are_expressions(name) {
         return;
     }
     let mut cursor = node.walk();
@@ -1996,12 +2210,22 @@ fn handle_macro_invocation(
     else {
         return;
     };
+    if name == "cfg_if" {
+        handle_cfg_if(tokens, ctx, source, output);
+        return;
+    }
     if item_macro {
         walk_item_macro(tokens, ctx, source, output);
         return;
     }
     // Arguments with no `name(` hold no call: nothing to re-parse.
     if !has_call_like_token(&source.as_bytes()[tokens.start_byte()..tokens.end_byte()]) {
+        return;
+    }
+    // `json!({ "key": value, .. })`: the values are expressions, the object
+    // around them is not.
+    if name == "json" {
+        walk_json_tokens(tokens, ctx, source, output);
         return;
     }
     let range = tree_sitter::Range {
@@ -2027,7 +2251,75 @@ fn handle_macro_invocation(
             None => return,
         }
     }
-    walk_macro_exprs(root, ctx, source, output);
+    // A closure in the arguments types its parameters as one in a body does
+    // (`rgtest!(name, |dir: Dir, mut cmd: TestCommand| { cmd.args(..); })`).
+    let env = TypeEnv {
+        source,
+        self_ty: ctx.fn_self_ty.as_deref(),
+        generics: Rc::clone(&ctx.fn_generics),
+        adts: &ctx.adts,
+        ctx: Some(ctx),
+        paths: None,
+        declared: None,
+    };
+    let mut locals = (*ctx.local_types).clone();
+    collect_local_types(root, &env, &mut locals);
+    let mut next_ctx = ctx.clone();
+    next_ctx.local_types = Rc::new(locals);
+    walk_macro_exprs(root, &next_ctx, source, output);
+}
+
+/// The expressions of the tokens of a `json!` body: `{ "key": value, .. }`
+/// (each value, or a nested object or array, read on its own), `[a, b]`, or
+/// one expression.
+fn walk_json_tokens(tokens: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = tokens.walk();
+    let children: Vec<Node<'_>> = tokens.children(&mut cursor).collect();
+    // Without the opening and closing delimiter.
+    let inner = children
+        .get(1..children.len().saturating_sub(1))
+        .unwrap_or(&[]);
+    let delimiter = children.first().map(|c| c.kind()).unwrap_or_default();
+    let mut segments: Vec<&[Node<'_>]> = Vec::new();
+    let mut from = 0;
+    for (i, token) in inner.iter().enumerate() {
+        if token.kind() == "," {
+            segments.push(&inner[from..i]);
+            from = i + 1;
+        }
+    }
+    segments.push(&inner[from..]);
+    for segment in segments {
+        // `"key": value` -- the key and the colon are not code.
+        let value = match segment {
+            [key, colon, rest @ ..]
+                if delimiter == "{" && colon.kind() == ":" && key.kind().ends_with("literal") =>
+            {
+                rest
+            }
+            other => other,
+        };
+        let (Some(first), Some(last)) = (value.first(), value.last()) else {
+            continue;
+        };
+        // A nested object or array on its own.
+        if let [only] = value
+            && only.kind() == "token_tree"
+            && matches!(node_text(*only, source).chars().next(), Some('{' | '['))
+        {
+            walk_json_tokens(*only, ctx, source, output);
+            continue;
+        }
+        let range = tree_sitter::Range {
+            start_byte: first.start_byte(),
+            end_byte: last.end_byte(),
+            start_point: first.start_position(),
+            end_point: last.end_position(),
+        };
+        if let Some(tree) = reparse_range(ctx, source, range) {
+            walk_macro_exprs(tree.root_node(), ctx, source, output);
+        }
+    }
 }
 
 /// Macros whose braces hold ordinary items (`pin_project! { struct S { .. } }`):
@@ -2091,6 +2383,442 @@ fn walk_macro_exprs(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
     }
 }
 
+/// Re-parse `range` of `source` with the file's macro parser (the included
+/// range keeps byte and line offsets those of the real file).
+fn reparse_range(
+    ctx: &Context,
+    source: &str,
+    range: tree_sitter::Range,
+) -> Option<tree_sitter::Tree> {
+    let mut parser = ctx.macro_parser.borrow_mut();
+    parser.set_included_ranges(&[range]).ok()?;
+    parser.parse(source, None)
+}
+
+/// The initialiser of a `const` or `static` is code that runs (at compile
+/// time, or on first use of a `LazyLock`): a call in it, inside a closure
+/// too, is a call of the item (`const ALIASES: &[_] = &[alias(..)]`,
+/// `static X: LazyLock<T> = LazyLock::new(|| T::new().long())`) and a function
+/// named in it is used as a value. A `let` inside a closure types its binding
+/// as in a fn body, so `inner.to_long()` finds `inner`'s type.
+fn handle_initializer(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(value) = node.child_by_field_name("value") else {
+        return;
+    };
+    let mut next_ctx = ctx.clone();
+    if ctx.container_stack.is_empty()
+        && let Some(name) = extract_name(node, source)
+    {
+        next_ctx.current_scope = format!("{}::{name}", ctx.module);
+    }
+    let mut bound = HashSet::new();
+    collect_bound_names(value, source, &mut bound);
+    next_ctx.bound_names = Rc::new(bound);
+    let mut local_types = HashMap::new();
+    let env = TypeEnv {
+        source,
+        self_ty: None,
+        generics: Rc::new(HashSet::new()),
+        adts: &ctx.adts,
+        ctx: Some(&next_ctx),
+        paths: None,
+        declared: None,
+    };
+    collect_local_types(value, &env, &mut local_types);
+    next_ctx.local_types = Rc::new(local_types);
+    walk_node(value, &next_ctx, source, output);
+}
+
+/// `cfg_if! { if #[cfg(a)] { .. } else if #[cfg(b)] { .. } else { .. } }`:
+/// each branch's braces hold items (`mod unix; use unix as os;` at module
+/// level) or statements (in a body), read as the arms of a `cfg` switch: what
+/// a branch declares carries its predicate in its identity, an `else` the
+/// negation of the predicates before it, so same-named declarations of two
+/// branches are twins like two `#[cfg]` items.
+fn handle_cfg_if(tokens: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut preds: Vec<String> = Vec::new();
+    let mut pending: Option<String> = None;
+    let mut cursor = tokens.walk();
+    for child in tokens.named_children(&mut cursor) {
+        if child.kind() != "token_tree" {
+            continue;
+        }
+        let text = node_text(child, source);
+        if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            let inner = strip_whitespace(inner);
+            if let Some(pred) = inner.strip_prefix("cfg(").and_then(|p| p.strip_suffix(')')) {
+                pending = Some(pred.to_string());
+            }
+        } else if text.starts_with('{') {
+            let pred = match pending.take() {
+                Some(pred) => {
+                    preds.push(pred.clone());
+                    pred
+                }
+                None => format!("not(any({}))", preds.join(",")),
+            };
+            let mut branch = ctx.clone();
+            branch.cfg_chain.push(pred);
+            walk_item_macro(child, &branch, source, output);
+        }
+    }
+}
+
+/// `macro_rules!` transcribers are code the macro's callers run: a call in one
+/// (`crate::messages::messages()` in `message!`, `test(..)` in a test macro, a
+/// function passed to `sort_by` in a `build.rs` macro) is a call of the scope
+/// the macro is defined in. Each rule's right-hand token tree is re-parsed
+/// with every metavariable blanked (`$crate` keeps its `crate`), which leaves
+/// the real tokens at their byte offsets and confines the parse errors to the
+/// holes. Calls, nested macro calls and the functions passed to calls are
+/// extracted; no symbol is declared, since what the macro defines is named by
+/// its callers.
+fn handle_macro_definition(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut cursor = node.walk();
+    let rules: Vec<Node<'_>> = node
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() == "macro_rule")
+        .collect();
+    let rights: Vec<Node<'_>> = rules
+        .iter()
+        .filter_map(|r| r.child_by_field_name("right"))
+        .collect();
+    if rights.is_empty() {
+        return;
+    }
+    let mut buf = source.as_bytes().to_vec();
+    for right in &rights {
+        blank_metavariables(*right, &mut buf);
+    }
+    // Metavariables are ASCII, so the buffer is still the source's UTF-8.
+    let Ok(blanked) = std::str::from_utf8(&buf) else {
+        return;
+    };
+    for right in rights {
+        let (start, end) = (right.start_position(), right.end_position());
+        if right.end_byte() < right.start_byte() + 2 || end.column == 0 {
+            continue;
+        }
+        let range = tree_sitter::Range {
+            start_byte: right.start_byte() + 1,
+            end_byte: right.end_byte() - 1,
+            start_point: tree_sitter::Point {
+                row: start.row,
+                column: start.column + 1,
+            },
+            end_point: tree_sitter::Point {
+                row: end.row,
+                column: end.column - 1,
+            },
+        };
+        let Some(tree) = reparse_range(ctx, blanked, range) else {
+            continue;
+        };
+        // A name the transcriber binds (`let expected = ..`, a closure's
+        // parameters) is a variable, not a function used as a value.
+        let mut body_ctx = ctx.clone();
+        let mut bound = (*ctx.bound_names).clone();
+        collect_bound_names(tree.root_node(), blanked, &mut bound);
+        body_ctx.bound_names = Rc::new(bound);
+        walk_macro_body(tree.root_node(), &body_ctx, blanked, output);
+    }
+}
+
+/// Overwrite the metavariables under `node` with spaces: `$name` wholly,
+/// `$crate` only its `$`, and the `$` and trailing operator of a `$( .. )*`
+/// repetition (its separator stays, a stray `,`).
+fn blank_metavariables(node: Node<'_>, buf: &mut [u8]) {
+    match node.kind() {
+        "metavariable" => {
+            let (start, end) = (node.start_byte(), node.end_byte());
+            let keep = if &buf[start..end] == b"$crate" {
+                start + 1
+            } else {
+                end
+            };
+            for b in &mut buf[start..keep] {
+                *b = b' ';
+            }
+            return;
+        }
+        "token_repetition" => {
+            if buf.get(node.start_byte()) == Some(&b'$') {
+                buf[node.start_byte()] = b' ';
+            }
+            let last = node.end_byte().saturating_sub(1);
+            if matches!(buf.get(last), Some(b'*' | b'+' | b'?')) {
+                buf[last] = b' ';
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        blank_metavariables(child, buf);
+    }
+}
+
+/// The walk of a re-parsed transcriber: calls, nested macro calls and the
+/// functions passed to calls as values; everything else is only recursed
+/// into (an item the macro defines gets no symbol).
+fn walk_macro_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    match node.kind() {
+        "call_expression" => handle_call(node, ctx, source, output),
+        "macro_invocation" => {
+            handle_macro_invocation(node, ctx, source, output);
+            return;
+        }
+        "identifier" | "scoped_identifier" => {
+            if node.parent().is_some_and(|p| p.kind() == "arguments")
+                && let Some(edge) = value_reference_edge(node, ctx, source)
+            {
+                output.edges.push(edge);
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_macro_body(child, ctx, source, output);
+    }
+}
+
+/// Attributes whose arguments are not code: predicates, lint and marker
+/// lists, documentation, derives (read as `IMPLEMENTS` elsewhere).
+const NO_EXPR_ATTRS: &[&str] = &[
+    "cfg",
+    "derive",
+    "doc",
+    "allow",
+    "warn",
+    "deny",
+    "forbid",
+    "expect",
+    "inline",
+    "must_use",
+    "repr",
+    "deprecated",
+    "test",
+    "bench",
+    "path",
+    "macro_use",
+    "macro_export",
+    "non_exhaustive",
+    "automatically_derived",
+    "link",
+    "link_name",
+    "link_section",
+    "no_mangle",
+    "export_name",
+    "track_caller",
+    "cold",
+    "ignore",
+    "should_panic",
+    "proc_macro",
+    "proc_macro_derive",
+    "proc_macro_attribute",
+    "global_allocator",
+    "panic_handler",
+    "feature",
+    "crate_type",
+    "crate_name",
+    "recursion_limit",
+    "target_feature",
+    "used",
+    "diagnostic",
+    "rustfmt",
+    "clippy",
+    "rustc",
+];
+
+/// Attribute keys whose string value is the path of a function (or of a
+/// module of functions): `#[serde(deserialize_with = "f")]`,
+/// `#[serde(default = "f")]`, `#[clap(value_parser = "f")]`.
+const FUNCTION_VALUED_KEYS: &[&str] = &[
+    "serialize_with",
+    "deserialize_with",
+    "with",
+    "default",
+    "skip_serializing_if",
+    "getter",
+    "setter",
+    "validator",
+    "value_parser",
+    "parse",
+    "default_value_fn",
+];
+
+/// Attribute arguments are macro input, read as expressions like any macro's
+/// arguments: a call is a call of the attributed scope (`#[error("..",
+/// f(..))]`, `#[test_case(f(1); "one")]`), a path on the right of `=` or
+/// passed to a call is a function used as a value (`#[arg(value_parser =
+/// f)]`, `#[arg(add = ArgValueCompleter::new(T::f))]`), and a string on the
+/// right of a function-valued key names one by path (`#[serde(default =
+/// "f")]`). `cfg`, `derive`, `doc` and the lint and test markers hold no such
+/// code (`NO_EXPR_ATTRS`); a `cfg_attr` holds attributes after its predicate.
+fn handle_attributes(
+    attributes: &[Node<'_>],
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    for attr in attribute_infos(attributes, source) {
+        let name = attr.short_name.as_str();
+        let first = attr.full_name.split("::").next().unwrap_or_default();
+        if NO_EXPR_ATTRS.contains(&name) || NO_EXPR_ATTRS.contains(&first) {
+            continue;
+        }
+        let Some(args) = attr.args else {
+            continue;
+        };
+        let range = tree_sitter::Range {
+            start_byte: args.start_byte(),
+            end_byte: args.end_byte(),
+            start_point: args.start_position(),
+            end_point: args.end_position(),
+        };
+        let Some(tree) = reparse_range(ctx, source, range) else {
+            continue;
+        };
+        if name == "cfg_attr" {
+            walk_cfg_attr(tree.root_node(), ctx, source, output);
+        } else {
+            walk_attribute_exprs(tree.root_node(), ctx, source, output);
+        }
+    }
+}
+
+/// `cfg_attr(pred, attr(args), attr2(args))` re-parsed: every call after the
+/// first element is an attribute, read like one (its callee is no call).
+fn walk_cfg_attr(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            let callee = child
+                .child_by_field_name("function")
+                .map(|f| node_text(f, source))
+                .unwrap_or_default();
+            let short = callee.rsplit("::").next().unwrap_or(&callee).to_string();
+            if NO_EXPR_ATTRS.contains(&short.as_str()) {
+                continue;
+            }
+            if let Some(args) = child.child_by_field_name("arguments") {
+                walk_attribute_exprs(args, ctx, source, output);
+            }
+        } else if child.kind() != "identifier" {
+            walk_cfg_attr(child, ctx, source, output);
+        }
+    }
+}
+
+/// The walk of re-parsed attribute arguments (`handle_attributes`).
+fn walk_attribute_exprs(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    match node.kind() {
+        "call_expression" => {
+            handle_call(node, ctx, source, output);
+            if let Some(args) = node.child_by_field_name("arguments") {
+                let mut cursor = args.walk();
+                for arg in args.named_children(&mut cursor) {
+                    if matches!(arg.kind(), "identifier" | "scoped_identifier")
+                        && let Some(edge) = value_reference_edge(arg, ctx, source)
+                    {
+                        output.edges.push(edge);
+                    }
+                }
+            }
+        }
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                match right.kind() {
+                    "identifier" | "scoped_identifier" => {
+                        if let Some(edge) = value_reference_edge(right, ctx, source) {
+                            output.edges.push(edge);
+                        }
+                    }
+                    "string_literal" | "raw_string_literal" => {
+                        let key = node_text(left, source);
+                        let key = key.rsplit("::").next().unwrap_or(&key);
+                        if FUNCTION_VALUED_KEYS.contains(&key)
+                            && let Some(path) = extract_string_literal(right, source)
+                            && let Some(edge) =
+                                string_path_reference_edge(&path, right, ctx, source)
+                        {
+                            output.edges.push(edge);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "macro_invocation" => {
+            handle_macro_invocation(node, ctx, source, output);
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_attribute_exprs(child, ctx, source, output);
+    }
+}
+
+/// `REFERENCES` edge for a function named by path in an attribute string
+/// (`"keyed::serialize_option"`, `"default_true"`), read like a path written
+/// in the attributed scope; `None` when the string is not a path.
+fn string_path_reference_edge(
+    path: &str,
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+) -> Option<EdgeInput> {
+    let raw = path.trim();
+    if raw.is_empty()
+        || !raw
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
+        || raw.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    value_reference_edge_for(
+        raw,
+        !raw.contains("::"),
+        None,
+        (start_line, end_line, start_byte, end_byte),
+        ctx,
+        source,
+    )
+}
+
+/// Every `attribute_item` under `node` that is not `node`'s own: the
+/// attributes of a struct's fields and an enum's variants.
+fn collect_attribute_items<'a>(node: Node<'a>, out: &mut Vec<Node<'a>>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "attribute_item" {
+            out.push(child);
+        } else if matches!(
+            child.kind(),
+            "field_declaration_list"
+                | "ordered_field_declaration_list"
+                | "enum_variant_list"
+                | "enum_variant"
+                | "field_declaration"
+        ) {
+            collect_attribute_items(child, out);
+        }
+    }
+}
+
 fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     for edge in http_route_edges(node, ctx, source) {
         output.edges.push(edge);
@@ -2121,6 +2849,21 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // same shape the single-line form would.
     let collapsed = collapse_call_target_whitespace(&raw);
     let mut import_candidates = import_qualified_candidates(&collapsed, ctx);
+    // `os::f()` where `os` is bound by several `use`s (the arms of a
+    // `cfg_if!`: `use unix as os;` / `use windows as os;`): a candidate per
+    // binding; the resolver binds the one that exists, or none when both do.
+    if let Some((first, rest)) = collapsed.split_once("::")
+        && !is_anchored(first)
+        && let Some(targets) = ctx.imports.get(first)
+        && targets.len() > 1
+    {
+        import_candidates.extend(
+            targets
+                .iter()
+                .filter(|t| t.starts_with(RUST_CRATE_ROOT))
+                .map(|t| format!("{t}::{rest}")),
+        );
+    }
     if is_simple_call_target(&collapsed) && !collapsed.contains('.') {
         add_crate_markers(&collapsed, &mut import_candidates, ctx);
     }
@@ -2197,42 +2940,6 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         receiver_type,
         ..Default::default()
     });
-}
-
-/// [`walk_value_references`] for a `const` / `static` item, with the names its
-/// initializer binds itself (closure parameters, `let`s in a closure body)
-/// known: `LazyLock::new(|| { let short = ..; Info { short } })` names a
-/// local, never the module's `fn short`.
-fn walk_item_value_references(
-    node: Node<'_>,
-    ctx: &Context,
-    source: &str,
-    output: &mut ExtractedFile,
-) {
-    let mut bound = HashSet::new();
-    collect_bound_names(node, source, &mut bound);
-    if bound.is_empty() {
-        walk_value_references(node, ctx, source, output);
-        return;
-    }
-    let mut item_ctx = ctx.clone();
-    item_ctx.bound_names = Rc::new(bound);
-    walk_value_references(node, &item_ctx, source, output);
-}
-
-/// Value references anywhere under `node` (a `const` / `static` item, whose
-/// initializer -- `Profile { hook: Some(f) }` -- holds functions as values).
-/// Sourced from the enclosing module symbol.
-fn walk_value_references(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if matches!(child.kind(), "identifier" | "scoped_identifier")
-            && let Some(edge) = value_reference_edge(child, ctx, source)
-        {
-            output.edges.push(edge);
-        }
-        walk_value_references(child, ctx, source, output);
-    }
 }
 
 /// Every name `node` (a function item) binds: parameters and the patterns of
@@ -2358,23 +3065,43 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         return None;
     }
     let raw = collapse_call_target_whitespace(&node_text(node, source));
-    if !is_simple_call_target(&raw) || raw.contains('.') {
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    value_reference_edge_for(
+        &raw,
+        node.kind() == "identifier",
+        Some(node),
+        (start_line, end_line, start_byte, end_byte),
+        ctx,
+        source,
+    )
+}
+
+/// [`value_reference_edge`] for a path already read as text (`raw`, `bare`
+/// when it has one segment) at the given span; `node` is the path's node when
+/// it is one in the tree (a string in an attribute has none).
+fn value_reference_edge_for(
+    raw: &str,
+    bare: bool,
+    node: Option<Node<'_>>,
+    (start_line, end_line, start_byte, end_byte): (i64, i64, i64, i64),
+    ctx: &Context,
+    source: &str,
+) -> Option<EdgeInput> {
+    if !is_simple_call_target(raw) || raw.contains('.') {
         return None;
     }
-    let bare = node.kind() == "identifier";
     let (target, import_candidates) = if bare {
         // A lowercase primitive name in value position can only be a `fn`
         // of that name (`"bool" => Unary(bool)`); the capitalised std
         // names are constructors and types.
-        let std_value =
-            is_std_type_name(&raw) && !raw.starts_with(|c: char| c.is_ascii_lowercase());
+        let std_value = is_std_type_name(raw) && !raw.starts_with(|c: char| c.is_ascii_lowercase());
         if std_value {
             return None;
         }
         // A bound name is a variable, except where it provably names the
         // item: a nested `fn` nobody rebinds, or `let f = f;`.
-        let nested = if ctx.bound_names.contains(&raw) {
-            bound_name_is_item(node, &raw, source, ctx)?
+        let nested = if ctx.bound_names.contains(raw) {
+            bound_name_is_item(node?, raw, source, ctx)?
         } else {
             false
         };
@@ -2383,7 +3110,6 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
             // the module: beside a module-level `fn` of the name it shares
             // that qualname, and the resolver refuses the two as ambiguous.
             let container = ctx.container_stack.last().unwrap_or(&ctx.module);
-            let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
             return Some(EdgeInput {
                 kind: edge_views::REFERENCES.to_string(),
                 source_qualname: Some(ctx.current_scope.clone()),
@@ -2405,11 +3131,11 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         let mut imported = if ctx.shadowed_names.contains("*") {
             Vec::new()
         } else {
-            named_import_candidates(&raw, ctx)
+            named_import_candidates(raw, ctx)
         };
-        add_crate_markers(&raw, &mut imported, ctx);
+        add_crate_markers(raw, &mut imported, ctx);
         match imported.first() {
-            Some(import) if ctx.body_use_names.contains(&raw) => (import.clone(), imported.clone()),
+            Some(import) if ctx.body_use_names.contains(raw) => (import.clone(), imported.clone()),
             _ => (format!("{}::{raw}", ctx.module), imported),
         }
     } else {
@@ -2417,18 +3143,20 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         if ctx.bound_names.contains(first) {
             return None;
         }
-        qualified_value_path(&raw, ctx)?
+        qualified_value_path(raw, ctx)?
     };
     let mut import_candidates = import_candidates;
-    if !bare && let Some(hint) = argument_type_hint(node, ctx, source) {
+    if !bare
+        && let Some(node) = node
+        && let Some(hint) = argument_type_hint(node, ctx, source)
+    {
         import_candidates.push(hint);
-        if matches!(raw.as_str(), "From::from" | "std::convert::From::from")
+        if matches!(raw, "From::from" | "std::convert::From::from")
             && let Some(expected) = tail_error_return(node, source)
         {
             import_candidates.push(format!("{RUST_EXPECT_ERR}{expected}"));
         }
     }
-    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
         kind: edge_views::REFERENCES.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
@@ -2870,7 +3598,16 @@ fn qualified_value_path(raw: &str, ctx: &Context) -> Option<(String, Vec<String>
         raw.split("::").next(),
         Some("crate" | "self" | "super" | "Self")
     ) {
-        return Some((resolve_call_target(raw, ctx)?, Vec::new()));
+        let target = resolve_call_target(raw, ctx)?;
+        // The absolute path is a candidate too: when no item is declared at
+        // it, the resolver follows the modules' re-exports (`super::f` for an
+        // `f` that `pub use m::*;` brings into the parent).
+        let candidates = if target.starts_with(RUST_CRATE_ROOT) {
+            vec![target.clone()]
+        } else {
+            Vec::new()
+        };
+        return Some((target, candidates));
     }
     let (first, rest) = raw.split_once("::")?;
     let mut expanded: Vec<String> = ctx
@@ -2977,6 +3714,8 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         | Ty::Result(..)
         | Ty::Tuple(_)
         | Ty::Seq(_)
+        | Ty::Map(..)
+        | Ty::Entry(_)
         | Ty::Iter(_)
         | Ty::Future(_) => ReceiverType::Known(RUST_STD_RECEIVER.to_string()),
         Ty::Unknown | Ty::FnPtr(_) | Ty::Ext(_) => ReceiverType::NotTracked,
@@ -3018,8 +3757,12 @@ enum Ty {
     Option(Box<Ty>),
     Result(Box<Ty>, Box<Ty>),
     Tuple(Vec<Ty>),
-    /// `Vec<T>`, `VecDeque<T>`, `[T]`, `[T; N]`.
+    /// `Vec<T>`, `VecDeque<T>`, `[T]`, `[T; N]`, the sets.
     Seq(Box<Ty>),
+    /// `HashMap<K, V>`, `BTreeMap<K, V>`, `IndexMap<K, V>`.
+    Map(Box<Ty>, Box<Ty>),
+    /// What `map.entry(key)` gives: a slot holding a `V`.
+    Entry(Box<Ty>),
     /// An iterator whose item type is known.
     Iter(Box<Ty>),
     /// Output of an `async fn`, awaited via `.await`.
@@ -3048,6 +3791,118 @@ fn with_external_paths<T>(f: impl FnOnce() -> T) -> T {
     EXTERNAL_PATHS.with(|c| c.set(before));
     out
 }
+/// A type argument of a possible alias use, as the resolver can read it.
+fn alias_arg(ty: Ty) -> AliasArg {
+    let boxed = |t: Box<Ty>| Box::new(alias_arg(*t));
+    match ty {
+        Ty::Named(n) | Ty::Local(_, n) => AliasArg::Named(n),
+        Ty::Pending(p) if p.steps.is_empty() => AliasArg::Deferred(Box::new(p)),
+        Ty::Option(t) => AliasArg::Option(boxed(t)),
+        Ty::Result(t, e) => AliasArg::Result(boxed(t), boxed(e)),
+        Ty::Tuple(ts) => AliasArg::Tuple(ts.into_iter().map(alias_arg).collect()),
+        Ty::Seq(t) => AliasArg::Seq(boxed(t)),
+        Ty::Map(k, v) => AliasArg::Map(boxed(k), boxed(v)),
+        Ty::Iter(t) => AliasArg::Iter(boxed(t)),
+        Ty::Future(t) => AliasArg::Future(boxed(t)),
+        Ty::Pending(_) | Ty::Entry(_) | Ty::FnPtr(_) | Ty::Ext(_) | Ty::Unknown => {
+            AliasArg::Unknown
+        }
+    }
+}
+
+/// [`alias_arg`] read back.
+fn alias_arg_ty(arg: &AliasArg) -> Ty {
+    let boxed = |a: &AliasArg| Box::new(alias_arg_ty(a));
+    match arg {
+        AliasArg::Unknown => Ty::Unknown,
+        AliasArg::Named(n) => Ty::Named(n.clone()),
+        AliasArg::Deferred(d) => Ty::Pending((**d).clone()),
+        AliasArg::Option(t) => Ty::Option(boxed(t)),
+        AliasArg::Result(t, e) => Ty::Result(boxed(t), boxed(e)),
+        AliasArg::Tuple(ts) => Ty::Tuple(ts.iter().map(alias_arg_ty).collect()),
+        AliasArg::Seq(t) => Ty::Seq(boxed(t)),
+        AliasArg::Map(k, v) => Ty::Map(boxed(k), boxed(v)),
+        AliasArg::Iter(t) => Ty::Iter(boxed(t)),
+        AliasArg::Future(t) => Ty::Future(boxed(t)),
+    }
+}
+
+/// `arg` with each type parameter in `bound` replaced by what it is bound to.
+fn substitute_alias_arg(arg: AliasArg, bound: &HashMap<String, Ty>) -> AliasArg {
+    let sub = |a: Box<AliasArg>| Box::new(substitute_alias_arg(*a, bound));
+    match arg {
+        AliasArg::Named(n) if bound.contains_key(&n) => alias_arg(bound[&n].clone()),
+        AliasArg::Option(t) => AliasArg::Option(sub(t)),
+        AliasArg::Result(t, e) => AliasArg::Result(sub(t), sub(e)),
+        AliasArg::Tuple(ts) => AliasArg::Tuple(
+            ts.into_iter()
+                .map(|t| substitute_alias_arg(t, bound))
+                .collect(),
+        ),
+        AliasArg::Seq(t) => AliasArg::Seq(sub(t)),
+        AliasArg::Map(k, v) => AliasArg::Map(sub(k), sub(v)),
+        AliasArg::Iter(t) => AliasArg::Iter(sub(t)),
+        AliasArg::Future(t) => AliasArg::Future(sub(t)),
+        other => other,
+    }
+}
+
+/// A value that may be of an alias (`Pending` on `DeferredSource::Alias`, no
+/// steps) read as the type its name says, as it was before the resolver reads
+/// the alias: for everything that is not a `Result`/`Option` operation (a
+/// field, a variant pattern, a method of the type itself).
+fn named_view(ty: Ty) -> Ty {
+    match ty {
+        Ty::Pending(RustDeferred {
+            source: DeferredSource::Alias { name, .. },
+            steps,
+            fallback,
+        }) if steps.is_empty() => match fallback.as_deref() {
+            Some(pinned) => match crate::model::parse_rust_home_receiver(pinned) {
+                Some((module, ty)) => Ty::Local(module.to_string(), ty.to_string()),
+                None => Ty::Named(pinned.to_string()),
+            },
+            None => Ty::Named(name),
+        },
+        other => other,
+    }
+}
+
+/// Methods of `Result` and `Option` (and their adapters): a call of one on a
+/// value that may be of an alias reads through the alias.
+const RESULT_LIKE_METHODS: &[&str] = &[
+    "unwrap_err",
+    "expect_err",
+    "context",
+    "with_context",
+    "wrap_err",
+    "or_else",
+    "unwrap",
+    "expect",
+    "unwrap_or",
+    "unwrap_or_else",
+    "unwrap_or_default",
+    "unwrap_err",
+    "expect_err",
+    "ok",
+    "err",
+    "ok_or",
+    "ok_or_else",
+    "map",
+    "map_err",
+    "and_then",
+    "or_else",
+    "is_ok",
+    "is_err",
+    "is_some",
+    "is_none",
+    "as_ref",
+    "as_mut",
+    "iter",
+    "into_iter",
+    "transpose",
+    "flatten",
+];
 
 /// Std methods that give a `Named` receiver back as it is (`method_ty`), so the
 /// resolver never looks them up as a user method.
@@ -3084,6 +3939,7 @@ fn project(ty: Ty, step: Step) -> Ty {
         (Ty::Option(t) | Ty::Seq(t) | Ty::Iter(t), Step::Arg { .. })
         | (Ty::Result(t, _), Step::Arg { err: false }) => *t,
         (Ty::Result(_, t), Step::Arg { err: true }) => *t,
+        (Ty::Map(k, v), Step::Elem) => Ty::Tuple(vec![*k, *v]),
         (ty, Step::Method(m)) => method_ty(ty, &m),
         _ => Ty::Unknown,
     }
@@ -3107,6 +3963,7 @@ type Adts = HashMap<String, Option<Vec<(String, Ty)>>>;
 /// Byte range a binding is visible in.
 type Scope = (usize, usize);
 
+#[derive(Clone)]
 struct Binding {
     scope: Scope,
     ty: Ty,
@@ -3676,7 +4533,7 @@ impl TypeEnv<'_> {
                 let arg = |i: usize| args.get(i).map_or(Ty::Unknown, |a| self.ty(*a));
                 // `Receiver<T>` of a channel crate iterates `T`; a repo type
                 // of that name is not one.
-                if name.as_deref() == Some("Receiver")
+                if matches!(name.as_deref(), Some("Receiver" | "UnboundedReceiver"))
                     && args.len() == 1
                     && let Some(written) = node.child_by_field_name("type")
                     && self.channel_path_external(&node_text(written, self.source))
@@ -3687,21 +4544,142 @@ impl TypeEnv<'_> {
                     // Method calls auto-deref, so for receiver purposes a
                     // smart pointer to `T` is a `T`.
                     (Some("Box" | "Arc" | "Rc"), 1) => demote_local(arg(0)),
+                    // A guard derefs to the value it protects.
+                    (Some("MutexGuard" | "RwLockReadGuard" | "RwLockWriteGuard"), 1)
+                        if !self.adts.contains_key(name.as_deref().unwrap_or_default()) =>
+                    {
+                        demote_local(arg(0))
+                    }
+                    (Some("Ref" | "RefMut"), 1)
+                        if matches!(
+                            self.named_ty(node),
+                            Ty::Named(ref n) if n == RUST_EXTERNAL_RECEIVER
+                        ) =>
+                    {
+                        demote_local(arg(0))
+                    }
                     (Some("Option"), 1) => Ty::Option(Box::new(arg(0))),
                     (Some("Result"), 1) => Ty::Result(Box::new(arg(0)), Box::new(Ty::Unknown)),
                     (Some("Result"), 2) => Ty::Result(Box::new(arg(0)), Box::new(arg(1))),
                     (Some("Vec" | "VecDeque"), 1) => Ty::Seq(Box::new(arg(0))),
-                    // A map iterates as its `(key, value)` pairs.
                     (Some("HashMap" | "BTreeMap" | "IndexMap"), 2..=3) => {
-                        Ty::Seq(Box::new(Ty::Tuple(vec![arg(0), arg(1)])))
+                        Ty::Map(Box::new(arg(0)), Box::new(arg(1)))
+                    }
+                    (Some("HashSet" | "BTreeSet" | "IndexSet" | "BinaryHeap"), 1..=2) => {
+                        Ty::Seq(Box::new(arg(0)))
                     }
                     (Some("IntoIter" | "Iter" | "IterMut" | "Drain"), 1) => {
                         Ty::Iter(Box::new(arg(0)))
                     }
-                    _ => self.named_ty(node),
+                    // A collection of a dependency named like a map or a set
+                    // (`IdOrdMap<Item>`, `SmallSet<T>`, `DashMap<K, V>`) is read
+                    // as std's: its values are the last type argument, its keys
+                    // (if two arguments) the first.
+                    (Some(n), 1..=3)
+                        if (n.ends_with("Map") || n.ends_with("Set"))
+                            && self.is_dependency_type(node) =>
+                    {
+                        match (n.ends_with("Map"), args.len()) {
+                            (true, 2..=3) => Ty::Map(Box::new(arg(0)), Box::new(arg(1))),
+                            (_, 1) => Ty::Seq(Box::new(arg(0))),
+                            _ => Ty::Unknown,
+                        }
+                    }
+                    _ => self.applied_ty(node, &args),
                 }
             }
             _ => self.named_ty(node),
+        }
+    }
+
+    /// Whether the type written at `node` is one of a dependency (std
+    /// included), not the repo's.
+    fn is_dependency_type(&self, node: Node<'_>) -> bool {
+        matches!(self.named_ty(node), Ty::Ext(_))
+            || matches!(self.named_ty(node), Ty::Named(ref n) if n == RUST_EXTERNAL_RECEIVER)
+    }
+
+    /// `Name<A, ..>` for a `Name` that is no std shape: the named type, or --
+    /// when this file declares no struct or enum of that name -- possibly a
+    /// type alias declared elsewhere (`type CliResult<T> = Result<T, E>;`),
+    /// which only the resolver can read (`DeferredSource::Alias`). Where no
+    /// alias of the name exists, the resolver settles on the type
+    /// [`Self::named_ty`] gives.
+    fn applied_ty(&self, node: Node<'_>, args: &[Node<'_>]) -> Ty {
+        let base = self.named_ty(node);
+        let args: Vec<AliasArg> = args.iter().map(|a| alias_arg(self.ty(*a))).collect();
+        match base {
+            Ty::Named(name) if name != RUST_EXTERNAL_RECEIVER => {
+                let fallback = name.clone();
+                self.alias_pending(name, args, None, Some(fallback))
+            }
+            Ty::Local(module, name) => {
+                let fallback = crate::model::rust_home_receiver(&module, &name);
+                self.alias_pending(name, args, None, Some(fallback))
+            }
+            Ty::Pending(RustDeferred {
+                source: DeferredSource::Path { path, .. },
+                steps,
+                fallback,
+            }) if steps.is_empty() => {
+                let name = path.rsplit("::").next().unwrap_or(&path).to_string();
+                self.alias_pending(name, args, Some(path), fallback)
+            }
+            other => other,
+        }
+    }
+
+    /// The type `name` (with `args`) that may be an alias: pending on the
+    /// declarations, unless this file declares a struct or enum of the name
+    /// (or the package it is read in cannot be told).
+    fn alias_pending(
+        &self,
+        name: String,
+        args: Vec<AliasArg>,
+        via: Option<String>,
+        fallback: Option<String>,
+    ) -> Ty {
+        let plain = |fallback: Option<String>| match &via {
+            None => fallback.map_or(
+                Ty::Unknown,
+                |f| match crate::model::parse_rust_home_receiver(&f) {
+                    Some((module, ty)) => Ty::Local(module.to_string(), ty.to_string()),
+                    None => Ty::Named(f),
+                },
+            ),
+            Some(path) => Ty::Pending(RustDeferred {
+                source: DeferredSource::Path {
+                    package: self.package().unwrap_or_default(),
+                    path: path.clone(),
+                },
+                steps: Vec::new(),
+                fallback,
+            }),
+        };
+        if self.adts.contains_key(&name) || is_std_type_name(&name) {
+            return plain(fallback);
+        }
+        let Some(package) = self.package() else {
+            return plain(fallback);
+        };
+        Ty::Pending(RustDeferred {
+            source: DeferredSource::Alias {
+                package,
+                name,
+                args,
+                via,
+            },
+            steps: Vec::new(),
+            fallback,
+        })
+    }
+
+    /// The Cargo package dir this scope's paths are read in, when known.
+    fn package(&self) -> Option<String> {
+        match (self.declared, self.path_scope()) {
+            (Some(declared), _) => Some(declared.package.clone()),
+            (None, Some(scope)) => Some(scope.package().to_string()),
+            (None, None) => None,
         }
     }
 
@@ -3759,8 +4737,18 @@ impl TypeEnv<'_> {
                 let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
                 Some(match inner {
                     Ty::Option(t) | Ty::Result(t, _) => *t,
-                    Ty::Named(n) => Ty::Named(n),
-                    local @ Ty::Local(..) => local,
+                    // `?` on a named type: only an alias of a `Result` or an
+                    // `Option` can be that.
+                    Ty::Named(n) if n != RUST_EXTERNAL_RECEIVER => {
+                        let fallback = n.clone();
+                        let pending = self.alias_pending(n, Vec::new(), None, Some(fallback));
+                        project(pending, Step::Method("unwrap".into()))
+                    }
+                    Ty::Local(module, n) => {
+                        let fallback = crate::model::rust_home_receiver(&module, &n);
+                        let pending = self.alias_pending(n, Vec::new(), None, Some(fallback));
+                        project(pending, Step::Method("unwrap".into()))
+                    }
                     Ty::Pending(_) => project(inner, Step::Method("unwrap".into())),
                     _ => Ty::Unknown,
                 })
@@ -3768,6 +4756,55 @@ impl TypeEnv<'_> {
             "await_expression" => {
                 let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
                 Some(project(inner, Step::Await))
+            }
+            // `vec![a, b]` / `vec![a; n]`: a sequence of `a`'s type.
+            "macro_invocation" => {
+                let name = node_text(value.child_by_field_name("macro")?, source);
+                if name.rsplit("::").next() != Some("vec") {
+                    return None;
+                }
+                let ctx = self.ctx?;
+                let mut cursor = value.walk();
+                let tokens = value
+                    .named_children(&mut cursor)
+                    .find(|c| c.kind() == "token_tree")?;
+                let tree = reparse_range(
+                    ctx,
+                    source,
+                    tree_sitter::Range {
+                        start_byte: tokens.start_byte(),
+                        end_byte: tokens.end_byte(),
+                        start_point: tokens.start_position(),
+                        end_point: tokens.end_position(),
+                    },
+                )?;
+                let statement = tree.root_node().named_child(0)?;
+                let array = match statement.kind() {
+                    "array_expression" => statement,
+                    _ => statement.named_child(0)?,
+                };
+                if array.kind() != "array_expression" {
+                    return None;
+                }
+                Some(Ty::Seq(Box::new(
+                    self.expr_ty(array.named_child(0)?, locals),
+                )))
+            }
+            // `xs[i]` is an element, `xs[a..b]` the sequence again. A map's
+            // index (its pairs are the sequence's tuples) says nothing.
+            "index_expression" => {
+                let base = self.expr_ty_opt(value.named_child(0)?, locals)?;
+                if let Ty::Map(_, v) = base {
+                    return Some(*v);
+                }
+                let Ty::Seq(elem) = base else {
+                    return None;
+                };
+                match value.named_child(1)?.kind() {
+                    "range_expression" => Some(Ty::Seq(elem)),
+                    _ if matches!(*elem, Ty::Tuple(_)) => None,
+                    _ => Some(*elem),
+                }
             }
             "field_expression" => {
                 let base = self.expr_ty_opt(value.child_by_field_name("value")?, locals)?;
@@ -3806,12 +4843,52 @@ impl TypeEnv<'_> {
                 if let Some(channel) = self.channel_ty(written) {
                     return Some(channel);
                 }
+                // `entry.or_insert(v)` / `entry.or_insert_with(f)` hold what the
+                // argument is; `cond.then(f)` / `cond.then_some(v)` an `Option` of it.
+                if written.kind() == "field_expression"
+                    && let Some(method) = written.child_by_field_name("field")
+                    && let Some(arg) = call_arguments(value).first().copied()
+                {
+                    match node_text(method, source).as_str() {
+                        "or_insert" => return Some(self.expr_ty(arg, locals)),
+                        "or_insert_with" => return Some(self.callable_result_ty(arg, locals)),
+                        "then_some" => {
+                            return Some(Ty::Option(Box::new(self.expr_ty(arg, locals))));
+                        }
+                        "then" => {
+                            return Some(Ty::Option(Box::new(
+                                self.callable_result_ty(arg, locals),
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
                 let function = unwrap_turbofish(written);
                 match function.kind() {
                     "field_expression" => {
                         let recv =
                             self.expr_ty_opt(function.child_by_field_name("value")?, locals)?;
                         let method = node_text(function.child_by_field_name("field")?, source);
+                        // `it.map(|c| T::new(c))`: the items are what the closure gives.
+                        if method == "map"
+                            && let Some(arg) = call_arguments(value).first().copied()
+                            && matches!(arg.kind(), "closure_expression" | "scoped_identifier")
+                        {
+                            let body = self.callable_result_ty(arg, locals);
+                            match &recv {
+                                Ty::Iter(_) | Ty::Seq(_) => return Some(Ty::Iter(Box::new(body))),
+                                Ty::Option(_) => return Some(Ty::Option(Box::new(body))),
+                                Ty::Result(_, e) => {
+                                    return Some(Ty::Result(Box::new(body), e.clone()));
+                                }
+                                _ => {}
+                            }
+                        }
+                        // `x.parse::<Config>()`: the turbofish names a type the
+                        // method returns, which the receiver's chain does not say.
+                        if turbofish_names_type(written, source) {
+                            return Some(Ty::Unknown);
+                        }
                         Some(self.method_call_ty(recv, &method))
                     }
                     "identifier" | "scoped_identifier" => {
@@ -3830,6 +4907,46 @@ impl TypeEnv<'_> {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// The item type of the iterator `value` collects (`it.collect()`,
+    /// `it.collect::<..>()`); `None` for anything else.
+    fn collect_item_ty(&self, value: Node<'_>, locals: &Locals) -> Option<Ty> {
+        if value.kind() != "call_expression" {
+            return None;
+        }
+        let function = unwrap_turbofish(value.child_by_field_name("function")?);
+        if function.kind() != "field_expression"
+            || node_text(function.child_by_field_name("field")?, self.source) != "collect"
+        {
+            return None;
+        }
+        match self.expr_ty_opt(function.child_by_field_name("value")?, locals)? {
+            Ty::Iter(item) | Ty::Seq(item) => Some(*item),
+            _ => None,
+        }
+    }
+
+    /// What calling `callable` gives: a closure's body, or a path to a
+    /// constructor (`Type::new`, `Type::default`) read as a call of it.
+    fn callable_result_ty(&self, callable: Node<'_>, locals: &Locals) -> Ty {
+        match callable.kind() {
+            "closure_expression" => callable
+                .child_by_field_name("body")
+                .map_or(Ty::Unknown, |body| self.expr_ty(body, locals)),
+            "scoped_identifier" => match self.ctor_type(callable) {
+                Some(name) => match callable
+                    .child_by_field_name("path")
+                    .filter(|p| p.kind() == "identifier")
+                    .and_then(|p| self.home_module(p, &name))
+                {
+                    Some(module) => Ty::Local(module, name),
+                    None => Ty::Named(name),
+                },
+                None => Ty::Unknown,
+            },
+            _ => Ty::Unknown,
         }
     }
 
@@ -3878,10 +4995,62 @@ impl TypeEnv<'_> {
         external.then(|| Ty::Tuple(vec![Ty::Unknown, Ty::Iter(Box::new(self.ty(message)))]))
     }
 
+    /// The types of the parameters of `closure` when it is an argument of a
+    /// method of a std shape whose receiver type is known (`Option::map`,
+    /// `Result::map_err`, `Iterator::filter`, `fold`, ..); empty otherwise.
+    fn closure_param_types(&self, closure: Node<'_>, locals: &Locals) -> Vec<Ty> {
+        let Some(arguments) = closure.parent().filter(|p| p.kind() == "arguments") else {
+            return Vec::new();
+        };
+        let Some(call) = arguments.parent().filter(|c| c.kind() == "call_expression") else {
+            return Vec::new();
+        };
+        let Some(function) = call
+            .child_by_field_name("function")
+            .map(unwrap_turbofish)
+            .filter(|f| f.kind() == "field_expression")
+        else {
+            return Vec::new();
+        };
+        let (Some(value), Some(field)) = (
+            function.child_by_field_name("value"),
+            function.child_by_field_name("field"),
+        ) else {
+            return Vec::new();
+        };
+        let method = node_text(field, self.source);
+        let mut cursor = arguments.walk();
+        let Some(position) = arguments
+            .named_children(&mut cursor)
+            .position(|a| a.id() == closure.id())
+        else {
+            return Vec::new();
+        };
+        let recv = match self.expr_ty_opt(value, locals) {
+            Some(
+                recv @ (Ty::Option(_) | Ty::Result(..) | Ty::Seq(_) | Ty::Iter(_) | Ty::Map(..)),
+            ) => recv,
+            // A receiver only a declaration can type: the closures of the
+            // methods only iterators have get its items.
+            Some(recv @ Ty::Pending(_))
+                if ITERATOR_ONLY_CLOSURE_METHODS.contains(&method.as_str()) && position == 0 =>
+            {
+                return vec![project(recv, Step::Elem)];
+            }
+            _ => return Vec::new(),
+        };
+        closure_params(&recv, &method, position)
+    }
+
     /// `recv.method(..)`: this file's `Type::method` return type, else the
     /// handful of std shapes, else (a `Named` receiver) the method's
     /// declaration in another file.
     fn method_call_ty(&self, recv: Ty, method: &str) -> Ty {
+        let recv = if RESULT_LIKE_METHODS.contains(&method) {
+            recv
+        } else {
+            named_view(recv)
+        };
         if let Ty::Named(t) | Ty::Local(_, t) = &recv {
             if let Some(entry) = self
                 .ctx
@@ -3916,18 +5085,16 @@ impl TypeEnv<'_> {
 
     /// Field `field` of a value of type `base`.
     fn field_ty(&self, base: Ty, field: &str) -> Ty {
+        let base = named_view(base);
         let is_index = field.chars().all(|c| c.is_ascii_digit());
         match base {
             Ty::Named(owner) | Ty::Local(_, owner) => self.adt_field(&owner, None, field),
             Ty::Tuple(_) | Ty::Pending(_) if is_index => {
                 project(base, Step::Tuple(field.parse().unwrap_or(usize::MAX)))
             }
-            // A value typed by a `crate::` path: its struct is found once the
-            // path resolves.
-            Ty::Pending(RustDeferred {
-                source: DeferredSource::Path { .. },
-                ..
-            }) => project(base, Step::Field(field.to_string())),
+            // A value only a declaration can type (a `crate::` path, a call's
+            // return type): its struct is found once that resolves.
+            Ty::Pending(_) => project(base, Step::Field(field.to_string())),
             _ => Ty::Unknown,
         }
     }
@@ -3978,6 +5145,29 @@ impl TypeEnv<'_> {
                         return Some(Ty::Result(wrap(Ty::Unknown), err));
                     }
                     _ => {}
+                }
+            }
+        }
+        // `serde_json::from_str::<Config>(..)` and its kin: a `Result` of the
+        // type the turbofish names.
+        if let Some(generic) = call
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "generic_function")
+            && DESERIALIZERS.contains(&raw.rsplit("::").next().unwrap_or_default())
+            && let Some(list) = generic.child_by_field_name("type_arguments")
+        {
+            let mut cursor = list.walk();
+            let types: Vec<_> = list
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() != "lifetime")
+                .collect();
+            if let [only] = types.as_slice() {
+                let ty = self.ty(*only);
+                if matches!(ty, Ty::Named(_) | Ty::Local(..) | Ty::Pending(_)) {
+                    return Some(Ty::Result(
+                        Box::new(demote_local(ty)),
+                        Box::new(Ty::Unknown),
+                    ));
                 }
             }
         }
@@ -4053,6 +5243,29 @@ impl TypeEnv<'_> {
                 .collect(),
             _ => Vec::new(),
         };
+        // Not imported by name, not declared here: a glob (`use super::*;`)
+        // may bring it in, from a module of the repo.
+        // (A constructor-named call keeps its `T::new()` is a `T` reading, which
+        // a method chain on it cannot fall back to once it is deferred.)
+        if cands.is_empty()
+            && heuristic.is_none()
+            && !shadowed
+            && imported.is_none()
+            && !ctx.local_mods.contains(segs[0])
+            && !ctx.local_types_declared.contains(segs[0])
+            && !matches!(segs[0], "crate" | "self" | "super" | "Self")
+            && !is_std_type_name(segs[0])
+            && !is_std_collection_name(segs[0])
+            && let Some(globs) = ctx.imports.get("*")
+        {
+            for glob in globs {
+                if let Some(module) = glob.strip_suffix("::*")
+                    && (module == "crate" || module.starts_with(RUST_CRATE_ROOT))
+                {
+                    cands.push(format!("{module}::{raw}"));
+                }
+            }
+        }
         // A callee in another package of the workspace is read from that
         // package's declarations, not from a same-named item elsewhere.
         if let Some(crates) = &ctx.crates {
@@ -4071,6 +5284,29 @@ impl TypeEnv<'_> {
                     .into_iter()
                     .filter(|m| m.starts_with(RUST_CRATE_PIN)),
             );
+        }
+        // A function written by its full path from a crate outside the repo
+        // (`tracing_subscriber::registry()`, `std::env::vars()`) with no `use`:
+        // like the same call through an import, its value and the chain of
+        // methods on it are that crate's, never a repo method's of the name.
+        if cands.is_empty()
+            && !shadowed
+            && imported.is_none()
+            // `toml::from_str::<Config>(..)` is a `Config`: the turbofish names it.
+            && function_is_plain_path(call, source)
+            && segs.len() > 1
+            // `module::function`, not `Type::associated` (`Mutex::new(repo_value)`
+            // wraps a repo value its methods then reach).
+            && segs.iter().all(|seg| seg.starts_with(|c: char| c.is_lowercase() || c == '_'))
+            && !ctx.local_mods.contains(segs[0])
+            && ctx.path_scope().is_external(&raw)
+        {
+            return Some(self.pending(
+                DeferredSource::Call {
+                    candidates: vec![raw],
+                },
+                None,
+            ));
         }
         if cands.is_empty() {
             // `Foo::new()`: the type written bare, declared in this module.
@@ -4230,6 +5466,7 @@ impl TypeEnv<'_> {
     /// `(type, variant)` a pattern path names when matched against a `Named`
     /// scrutinee: `Type` (struct) or `Type::Variant` (enum), `Self` resolved.
     fn adt_key(&self, path: Node<'_>, scrutinee: &Ty) -> Option<(String, Option<String>)> {
+        let scrutinee = &named_view(scrutinee.clone());
         let (Ty::Named(n) | Ty::Local(_, n)) = scrutinee else {
             return None;
         };
@@ -4298,8 +5535,103 @@ const ITEM_PRESERVING_ADAPTERS: &[&str] = &[
 
 /// Constructors of a channel (`let (tx, rx) = bounded::<T>(n)`): the crates
 /// whose receiver iterates its messages and `recv`s a `Result`.
-const CHANNEL_CONSTRUCTORS: &[&str] = &["bounded", "unbounded", "channel", "sync_channel"];
-const CHANNEL_CRATES: &[&str] = &["std", "crossbeam_channel", "crossbeam", "flume"];
+const CHANNEL_CONSTRUCTORS: &[&str] = &[
+    "bounded",
+    "unbounded",
+    "channel",
+    "sync_channel",
+    "unbounded_channel",
+];
+const CHANNEL_CRATES: &[&str] = &["std", "crossbeam_channel", "crossbeam", "flume", "tokio"];
+
+/// Methods whose closure takes an item of the iterator, which `Option` and
+/// `Result` do not have (`map`, `filter` and `inspect` are theirs too).
+const ITERATOR_ONLY_CLOSURE_METHODS: &[&str] = &[
+    "for_each",
+    "any",
+    "all",
+    "find",
+    "filter_map",
+    "flat_map",
+    "position",
+    "take_while",
+    "skip_while",
+    "find_map",
+    "max_by_key",
+    "min_by_key",
+];
+
+/// Functions that read a value of the type their turbofish names out of text
+/// or a reader, as a `Result` (`serde_json::from_str::<T>(..)`).
+const DESERIALIZERS: &[&str] = &[
+    "from_str",
+    "from_slice",
+    "from_value",
+    "from_reader",
+    "from_bytes",
+    "deserialize",
+];
+
+/// `annotation` (the declared type of a `collect()`) with its unknown parts
+/// read off `item`, the iterator's item type: `Vec<_>` of items `T` is
+/// `Vec<T>`, `Result<Vec<_>, E>` of items `Result<T, _>` is `Result<Vec<T>, E>`,
+/// a map of `(K, V)` items has them.
+fn fill_collect_holes(annotation: Ty, item: &Ty) -> Ty {
+    match (annotation, item) {
+        (Ty::Seq(inner), _) if *inner == Ty::Unknown => Ty::Seq(Box::new(item.clone())),
+        (Ty::Map(k, v), Ty::Tuple(kv))
+            if *k == Ty::Unknown && *v == Ty::Unknown && kv.len() == 2 =>
+        {
+            Ty::Map(Box::new(kv[0].clone()), Box::new(kv[1].clone()))
+        }
+        (Ty::Result(inner, e), Ty::Result(t, _)) => {
+            Ty::Result(Box::new(fill_collect_holes(*inner, t)), e)
+        }
+        (Ty::Option(inner), Ty::Option(t)) => Ty::Option(Box::new(fill_collect_holes(*inner, t))),
+        (other, _) => other,
+    }
+}
+
+/// The parameter types of the closure passed as argument number `position` of
+/// `recv.method(..)` for a receiver of a std shape; empty when the shape or
+/// the method is not one of the few whose closures are typed.
+fn closure_params(recv: &Ty, method: &str, position: usize) -> Vec<Ty> {
+    match recv {
+        Ty::Option(t) => match (method, position) {
+            ("map" | "and_then" | "filter" | "is_some_and" | "is_none_or" | "inspect", 0)
+            | ("map_or" | "map_or_else", 1) => vec![(**t).clone()],
+            _ => Vec::new(),
+        },
+        Ty::Result(t, e) => match (method, position) {
+            ("map" | "and_then" | "is_ok_and" | "inspect", 0) | ("map_or" | "map_or_else", 1) => {
+                vec![(**t).clone()]
+            }
+            ("map_err" | "or_else" | "is_err_and" | "inspect_err" | "unwrap_or_else", 0)
+            | ("map_or_else", 0) => vec![(**e).clone()],
+            _ => Vec::new(),
+        },
+        Ty::Seq(t) | Ty::Iter(t) => match (method, position) {
+            (
+                "map" | "filter" | "for_each" | "any" | "all" | "find" | "filter_map" | "flat_map"
+                | "position" | "rposition" | "take_while" | "skip_while" | "inspect" | "find_map"
+                | "max_by_key" | "min_by_key" | "map_while" | "partition" | "try_for_each"
+                | "sort_by_key" | "sort_by_cached_key" | "retain" | "dedup_by_key"
+                | "is_sorted_by_key",
+                0,
+            ) => vec![(**t).clone()],
+            ("fold" | "try_fold", 1) => vec![Ty::Unknown, (**t).clone()],
+            ("sort_by" | "max_by" | "min_by" | "sort_unstable_by" | "dedup_by", 0) => {
+                vec![(**t).clone(), (**t).clone()]
+            }
+            _ => Vec::new(),
+        },
+        Ty::Map(k, v) => match (method, position) {
+            ("retain", 0) => vec![(**k).clone(), (**v).clone()],
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
 
 /// Result type of `recv.method()` for the few std methods whose result type
 /// follows from the receiver type; everything else is `Unknown`.
@@ -4309,6 +5641,15 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         (Ty::Option(t) | Ty::Result(t, _), "unwrap" | "expect") => *t,
         (Ty::Named(n), "unwrap" | "expect") => Ty::Named(n),
         (local @ Ty::Local(..), "clone" | "unwrap" | "expect") => local,
+        (Ty::Result(t, _), "map_err" | "context" | "with_context" | "wrap_err" | "or_else") => {
+            Ty::Result(t, Box::new(Ty::Unknown))
+        }
+        (Ty::Option(t), "ok_or" | "ok_or_else") => Ty::Result(t, Box::new(Ty::Unknown)),
+        (
+            Ty::Option(t) | Ty::Result(t, _),
+            "unwrap_or" | "unwrap_or_else" | "unwrap_or_default",
+        ) => *t,
+        (Ty::Result(_, e), "unwrap_err" | "expect_err") => *e,
         (Ty::Result(t, _), "ok") => Ty::Option(t),
         (Ty::Result(_, e), "err") => Ty::Option(e),
         (t @ (Ty::Option(_) | Ty::Result(..)), "as_ref" | "as_mut" | "clone") => t,
@@ -4316,6 +5657,14 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         (t @ Ty::Option(_), "take" | "cloned" | "copied") => t,
         (Ty::Seq(t), "iter" | "into_iter" | "iter_mut" | "drain") => Ty::Iter(t),
         (t @ Ty::Iter(_), "into_iter" | "by_ref") => t,
+        (Ty::Iter(t) | Ty::Seq(t), "enumerate") => {
+            Ty::Iter(Box::new(Ty::Tuple(vec![Ty::Unknown, *t])))
+        }
+        (Ty::Seq(t), "windows" | "chunks" | "chunks_exact") => Ty::Iter(Box::new(Ty::Seq(t))),
+        (Ty::Iter(t), "flatten") => match *t {
+            Ty::Option(inner) | Ty::Seq(inner) => Ty::Iter(inner),
+            _ => Ty::Unknown,
+        },
         (t @ Ty::Iter(_), m) if ITEM_PRESERVING_ADAPTERS.contains(&m) => t,
         (Ty::Iter(t), "next" | "next_back" | "last" | "nth" | "find" | "max" | "min") => {
             Ty::Option(t)
@@ -4323,7 +5672,27 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         // A channel's receiver (`channel_ty`) iterates its messages.
         (Ty::Iter(t), "iter" | "try_iter") => Ty::Iter(t),
         (Ty::Iter(t), "recv" | "try_recv" | "recv_timeout") => Ty::Result(t, Box::new(Ty::Unknown)),
-        (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last") => Ty::Option(t),
+        (
+            Ty::Map(_, v),
+            "get" | "get_mut" | "remove" | "insert" | "swap_remove" | "shift_remove",
+        ) => Ty::Option(v),
+        (
+            Ty::Map(k, v),
+            "get_key_value" | "first_key_value" | "last_key_value" | "get_index" | "get_index_mut"
+            | "first" | "last" | "pop_first" | "pop_last",
+        ) => Ty::Option(Box::new(Ty::Tuple(vec![*k, *v]))),
+        (Ty::Map(_, v), "entry") => Ty::Entry(v),
+        (Ty::Map(_, v), "values" | "values_mut" | "into_values") => Ty::Iter(v),
+        (Ty::Map(k, _), "keys" | "into_keys") => Ty::Iter(k),
+        (Ty::Map(k, v), "iter" | "iter_mut" | "into_iter" | "drain") => {
+            Ty::Iter(Box::new(Ty::Tuple(vec![*k, *v])))
+        }
+        (t @ Ty::Map(..), "clone") => t,
+        (Ty::Entry(v), "or_insert" | "or_insert_with" | "or_default" | "or_insert_with_key") => *v,
+        (t @ Ty::Entry(_), "and_modify") => t,
+        (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last" | "get" | "get_mut") => {
+            Ty::Option(t)
+        }
         (Ty::Seq(t), "values" | "values_mut" | "into_values") => match *t {
             Ty::Tuple(mut kv) if kv.len() == 2 => Ty::Iter(Box::new(kv.remove(1))),
             _ => Ty::Unknown,
@@ -4337,7 +5706,7 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
 }
 
 /// Return types of this file's free fns and inherent/trait-impl methods.
-fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Returns {
+fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>, adts: &Adts) -> Returns {
     fn owner_of(node: Node<'_>, source: &str) -> Option<Option<String>> {
         let list = node.parent()?;
         match list.parent().map(|p| p.kind()) {
@@ -4359,18 +5728,17 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
             _ => Some(None),
         }
     }
-    fn walk(node: Node<'_>, source: &str, paths: PathScope<'_>, out: &mut Returns) {
+    fn walk(node: Node<'_>, source: &str, paths: PathScope<'_>, adts: &Adts, out: &mut Returns) {
         if node.kind() == "function_item" {
             if node.child_by_field_name("body").is_some()
                 && let Some(owner) = owner_of(node, source)
                 && let Some(name) = node.child_by_field_name("name")
             {
-                let empty = Adts::new();
                 let env = TypeEnv {
                     source,
                     self_ty: owner.as_deref(),
                     generics: Rc::new(collect_generic_names(node, source)),
-                    adts: &empty,
+                    adts,
                     ctx: None,
                     paths: Some(paths),
                     declared: None,
@@ -4444,11 +5812,11 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk(child, source, paths, out);
+            walk(child, source, paths, adts, out);
         }
     }
     let mut out = Returns::new();
-    walk(root, source, paths, &mut out);
+    walk(root, source, paths, adts, &mut out);
     out
 }
 
@@ -4470,9 +5838,22 @@ fn demote_local(ty: Ty) -> Ty {
     let boxed = |t: Box<Ty>| Box::new(demote_local(*t));
     match ty {
         Ty::Local(_, name) => Ty::Named(name),
+        // A possible alias keeps the pin of its fallback only as a local.
+        Ty::Pending(mut p) => {
+            if let Some((_, ty)) = p
+                .fallback
+                .as_deref()
+                .and_then(crate::model::parse_rust_home_receiver)
+            {
+                p.fallback = Some(ty.to_string());
+            }
+            Ty::Pending(p)
+        }
         Ty::Option(t) => Ty::Option(boxed(t)),
         Ty::Result(t, e) => Ty::Result(boxed(t), boxed(e)),
         Ty::Seq(t) => Ty::Seq(boxed(t)),
+        Ty::Map(k, v) => Ty::Map(boxed(k), boxed(v)),
+        Ty::Entry(t) => Ty::Entry(boxed(t)),
         Ty::Iter(t) => Ty::Iter(boxed(t)),
         Ty::Future(t) => Ty::Future(boxed(t)),
         Ty::Tuple(ts) => Ty::Tuple(ts.into_iter().map(demote_local).collect()),
@@ -4565,11 +5946,32 @@ fn resolve_deferred_with(
     index: &dyn DeclarationIndex,
     repo_only: bool,
 ) -> anyhow::Result<Option<Option<String>>> {
+    if let DeferredSource::Alias {
+        package,
+        name,
+        args,
+        via,
+    } = &deferred.source
+    {
+        return resolve_alias_deferred(
+            deferred,
+            package,
+            name,
+            args,
+            via.as_deref(),
+            index,
+            repo_only,
+        );
+    }
     let declarations = match &deferred.source {
         DeferredSource::Call { candidates } => {
             let mut all = Vec::new();
             for candidate in candidates {
-                all.extend(index.declarations(DeclarationQuery::Callable(candidate))?);
+                let mut found = index.declarations(DeclarationQuery::Callable(candidate))?;
+                if found.is_empty() && candidate.starts_with(RUST_CRATE_ROOT) {
+                    found = reexported_callables(index, candidate)?;
+                }
+                all.extend(found);
                 // `use util;` in an edition-2015 crate names the root's
                 // `util`, written without `crate::`.
                 if !repo_only
@@ -4595,6 +5997,7 @@ fn resolve_deferred_with(
         DeferredSource::Path { package, path } => {
             return resolve_path_deferred(deferred, package, path, index, repo_only);
         }
+        DeferredSource::Alias { .. } => unreachable!("read above"),
     };
     if declarations.is_empty()
         && let DeferredSource::Method {
@@ -4698,6 +6101,53 @@ fn finish_receiver(
     }
 }
 
+/// The callables an absolute `crate::` path names through re-exports: a
+/// function a module brings in with `pub use m::*;` / `pub use m::f;`
+/// (`crate::config::helper`), or an associated function of a type it does
+/// (`crate::config::Settings::new`). The path carries no package, so each
+/// package of the repo that declares the path is tried.
+fn reexported_callables(
+    index: &dyn DeclarationIndex,
+    candidate: &str,
+) -> anyhow::Result<Vec<Declaration>> {
+    // Each crate root of each package (a library and its binaries are several
+    // modules named `crate`), read as the file the path is written in.
+    let roots: Vec<(String, String)> = index
+        .declarations(DeclarationQuery::Module("crate"))?
+        .iter()
+        .map(|d| (cargo_package_dir(&d.path).to_string(), d.path.clone()))
+        .collect();
+    let mut out: Vec<Declaration> = Vec::new();
+    for (package, root) in &roots {
+        // What the path becomes through the re-exports; whether a callable is
+        // declared there is asked below.
+        let mut paths: Vec<String> = Vec::new();
+        if let Followed::Repo { path, .. } = follow_path(index, package, Some(root), candidate)? {
+            paths.push(path);
+        }
+        if let Some((owner, member)) = candidate.rsplit_once("::")
+            && let Followed::Repo { path, .. } = follow_path(index, package, Some(root), owner)?
+        {
+            paths.push(format!("{path}::{member}"));
+        }
+        for path in paths {
+            if path == candidate {
+                continue;
+            }
+            for found in index.declarations(DeclarationQuery::Callable(&path))? {
+                if cargo_package_dir(&found.path) == package.as_str()
+                    && !out
+                        .iter()
+                        .any(|d| d.qualname == found.qualname && d.path == found.path)
+                {
+                    out.push(found);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The receiver type `ty` (reached through the declaration of `dir`'s package)
 /// as the resolver binds it: a type from outside the repo stays so, anything
 /// else must be a type the repo declares.
@@ -4711,7 +6161,13 @@ fn repo_receiver(
     if ty == RUST_EXTERNAL_RECEIVER {
         return Ok(Some(Some(ty)));
     }
-    if !index.is_repo_type(&ty)? {
+    // A type alias (`type Assignment<'src> = Binding<..>`) is a type of the
+    // repo too: `impl Trait for Assignment<'_>` declares under its name.
+    if !index.is_repo_type(&ty)?
+        && index
+            .declarations(DeclarationQuery::RustAlias(&ty))?
+            .is_empty()
+    {
         return Ok(Some(None));
     }
     // Two packages declaring a type of this name: keep the one the
@@ -4873,10 +6329,11 @@ fn follow_step(
         return Ok(guess());
     };
     let declared_here = |index: &dyn DeclarationIndex| -> anyhow::Result<bool> {
-        Ok(index
-            .declarations(DeclarationQuery::Item(path))?
-            .iter()
-            .any(|d| cargo_package_dir(&d.path) == package))
+        // A type, trait or alias, or a function (`super::f` in a serde
+        // `deserialize_with`, brought in by `pub use m::*`).
+        let mut items = index.declarations(DeclarationQuery::Item(path))?;
+        items.extend(index.declarations(DeclarationQuery::Callable(path))?);
+        Ok(items.iter().any(|d| cargo_package_dir(&d.path) == package))
     };
     let decls: Vec<_> = index
         .declarations(DeclarationQuery::Module(module))?
@@ -5018,6 +6475,11 @@ fn resolve_path_deferred(
     repo_only: bool,
 ) -> anyhow::Result<Option<Option<String>>> {
     let start = resolve_path_type(index, package, path)?.receiver();
+    // A bare use of an alias imported from another module
+    // (`fn run() -> CliResult` and then `run()?.f()`).
+    if let Some(expanded) = find_alias(index, package, &start, &[], 0)? {
+        return finish_alias_use(deferred, expanded, package, index, repo_only);
+    }
     if deferred.steps.is_empty() {
         return Ok(Some(Some(start)));
     }
@@ -5028,24 +6490,264 @@ fn resolve_path_deferred(
     finish_receiver(ty, &dir, index, repo_only)
 }
 
+/// Longest chain of aliases that stand for aliases.
+const MAX_ALIAS_DEPTH: usize = 4;
+
+/// A use of `name<args>` that may be an alias (`DeferredSource::Alias`).
+fn resolve_alias_deferred(
+    deferred: &RustDeferred,
+    package: &str,
+    name: &str,
+    args: &[AliasArg],
+    via: Option<&str>,
+    index: &dyn DeclarationIndex,
+    repo_only: bool,
+) -> anyhow::Result<Option<Option<String>>> {
+    if let Some(expanded) = find_alias(index, package, name, args, 0)? {
+        return finish_alias_use(deferred, expanded, package, index, repo_only);
+    }
+    // No alias of that name: the type itself.
+    let start = match via {
+        Some(path) => resolve_path_type(index, package, path)?.receiver(),
+        None => name.to_string(),
+    };
+    if deferred.steps.is_empty() {
+        return Ok(Some(match via {
+            Some(_) => Some(start),
+            None => deferred.fallback.clone(),
+        }));
+    }
+    let Some((ty, dir)) = receiver_after_steps(Ty::Named(start), &deferred.steps, package, index)?
+    else {
+        return Ok(Some(None));
+    };
+    finish_receiver(ty, &dir, index, repo_only)
+}
+
+/// The receiver after `deferred`'s steps, for a use of an alias that stands
+/// for `expanded`.
+fn finish_alias_use(
+    deferred: &RustDeferred,
+    expanded: Ty,
+    package: &str,
+    index: &dyn DeclarationIndex,
+    repo_only: bool,
+) -> anyhow::Result<Option<Option<String>>> {
+    // A value of a std shape takes std's methods, not a repo type's.
+    if deferred.steps.is_empty()
+        && matches!(
+            expanded,
+            Ty::Option(_)
+                | Ty::Result(..)
+                | Ty::Tuple(_)
+                | Ty::Seq(_)
+                | Ty::Map(..)
+                | Ty::Iter(_)
+                | Ty::Future(_)
+        )
+    {
+        return Ok(Some(Some(RUST_STD_RECEIVER.to_string())));
+    }
+    let Some((ty, dir)) = receiver_after_steps(expanded, &deferred.steps, package, index)? else {
+        return Ok(Some(None));
+    };
+    finish_receiver(ty, &dir, index, repo_only)
+}
+
+/// What the repo's type alias `name`, used as `name<args>`, stands for, with
+/// every path in it settled; `None` when the repo declares no alias of that
+/// name. An alias several declarations disagree on is `Unknown`.
+fn find_alias(
+    index: &dyn DeclarationIndex,
+    package: &str,
+    name: &str,
+    args: &[AliasArg],
+    depth: usize,
+) -> anyhow::Result<Option<Ty>> {
+    let mut declarations = index.declarations(DeclarationQuery::RustAlias(name))?;
+    if declarations.is_empty() {
+        return Ok(None);
+    }
+    if depth >= MAX_ALIAS_DEPTH {
+        return Ok(Some(Ty::Unknown));
+    }
+    if declarations
+        .iter()
+        .any(|d| cargo_package_dir(&d.path) == package)
+    {
+        declarations.retain(|d| cargo_package_dir(&d.path) == package);
+    }
+    let mut found: Option<Ty> = None;
+    for declaration in &declarations {
+        let Some(signature) = &declaration.signature else {
+            return Ok(Some(Ty::Unknown));
+        };
+        let dir = cargo_package_dir(&declaration.path);
+        let Some(ty) = alias_target_ty(signature, dir, args) else {
+            return Ok(Some(Ty::Unknown));
+        };
+        let ty = settle_paths_at(ty, index, depth + 1)?;
+        // Only an alias of a std shape (`Result`, `Option`, a sequence, ..) is
+        // read through: one of a named type stays the alias's own name, as
+        // `impl Trait for Alias` declares its methods under that name.
+        let ty = match ty {
+            Ty::Option(_)
+            | Ty::Result(..)
+            | Ty::Tuple(_)
+            | Ty::Seq(_)
+            | Ty::Map(..)
+            | Ty::Iter(_)
+            | Ty::Future(_) => ty,
+            _ => Ty::Named(name.to_string()),
+        };
+        match &found {
+            Some(prev) if *prev != ty => return Ok(Some(Ty::Unknown)),
+            _ => found = Some(ty),
+        }
+    }
+    Ok(found)
+}
+
+/// The type a `type Name<P, ..> = Target;` signature stands for when used
+/// with `args` in place of its parameters (a missing one takes the
+/// parameter's default).
+fn alias_target_ty(signature: &str, package: &str, args: &[AliasArg]) -> Option<Ty> {
+    let declared = DeclaredOrigins::of_signature(signature, package);
+    let text = signature
+        .lines()
+        .find(|line| line.starts_with("type "))?
+        .to_string();
+    let src = format!("{text};");
+    let tree = parse_declaration(&src)?;
+    let item = tree.root_node().named_child(0)?;
+    if item.kind() != "type_item" {
+        return None;
+    }
+    let env = TypeEnv {
+        source: &src,
+        self_ty: None,
+        generics: Rc::new(HashSet::new()),
+        adts: &Adts::new(),
+        ctx: None,
+        paths: None,
+        declared: Some(&declared),
+    };
+    let mut bound: HashMap<String, Ty> = HashMap::new();
+    if let Some(params) = item.child_by_field_name("type_parameters") {
+        let mut cursor = params.walk();
+        let mut supplied = args.iter();
+        for param in params.named_children(&mut cursor) {
+            let (name, default) = match param.kind() {
+                "type_identifier" => (Some(param), None),
+                "constrained_type_parameter" => (param.child_by_field_name("left"), None),
+                "type_parameter" => (param.child_by_field_name("name"), None),
+                "optional_type_parameter" => (
+                    param.child_by_field_name("name"),
+                    param.child_by_field_name("default_type"),
+                ),
+                _ => continue,
+            };
+            let Some(name) = name else {
+                continue;
+            };
+            let ty = match supplied.next() {
+                Some(arg) => alias_arg_ty(arg),
+                None => default.map_or(Ty::Unknown, |d| env.ty(d)),
+            };
+            bound.insert(node_text(name, &src), ty);
+        }
+    }
+    let target = env.ty(item.child_by_field_name("type")?);
+    Some(substitute_params(target, &bound))
+}
+
+/// `ty` with each type parameter in `bound` replaced by what it is bound to.
+fn substitute_params(ty: Ty, bound: &HashMap<String, Ty>) -> Ty {
+    let sub = |t: Box<Ty>| Box::new(substitute_params(*t, bound));
+    match ty {
+        Ty::Named(n) | Ty::Local(_, n) if bound.contains_key(&n) => bound[&n].clone(),
+        Ty::Option(t) => Ty::Option(sub(t)),
+        Ty::Result(t, e) => Ty::Result(sub(t), sub(e)),
+        Ty::Seq(t) => Ty::Seq(sub(t)),
+        Ty::Map(k, v) => Ty::Map(sub(k), sub(v)),
+        Ty::Iter(t) => Ty::Iter(sub(t)),
+        Ty::Future(t) => Ty::Future(sub(t)),
+        Ty::Tuple(ts) => Ty::Tuple(
+            ts.into_iter()
+                .map(|t| substitute_params(t, bound))
+                .collect(),
+        ),
+        // An alias of an alias: the parameters in its arguments.
+        Ty::Pending(RustDeferred {
+            source:
+                DeferredSource::Alias {
+                    package,
+                    name,
+                    args,
+                    via,
+                },
+            steps,
+            fallback,
+        }) => Ty::Pending(RustDeferred {
+            source: DeferredSource::Alias {
+                package,
+                name,
+                args: args
+                    .into_iter()
+                    .map(|arg| substitute_alias_arg(arg, bound))
+                    .collect(),
+                via,
+            },
+            steps,
+            fallback,
+        }),
+        other => other,
+    }
+}
+
 /// `ty` with every `crate::` path in it (`DeferredSource::Path`) settled: the
 /// repo's type of that name, or [`RUST_EXTERNAL_RECEIVER`].
 fn settle_paths(ty: Ty, index: &dyn DeclarationIndex) -> anyhow::Result<Ty> {
-    let settle = |t: Box<Ty>| -> anyhow::Result<Box<Ty>> { Ok(Box::new(settle_paths(*t, index)?)) };
+    settle_paths_at(ty, index, 0)
+}
+
+/// [`settle_paths`], `depth` aliases deep.
+fn settle_paths_at(ty: Ty, index: &dyn DeclarationIndex, depth: usize) -> anyhow::Result<Ty> {
+    let settle = |t: Box<Ty>| -> anyhow::Result<Box<Ty>> {
+        Ok(Box::new(settle_paths_at(*t, index, depth)?))
+    };
     Ok(match ty {
         Ty::Pending(RustDeferred {
             source: DeferredSource::Path { package, path },
             steps,
             ..
         }) if steps.is_empty() => Ty::Named(resolve_path_type(index, &package, &path)?.receiver()),
+        Ty::Pending(RustDeferred {
+            source:
+                DeferredSource::Alias {
+                    package,
+                    name,
+                    args,
+                    via,
+                },
+            steps,
+            ..
+        }) if steps.is_empty() => match find_alias(index, &package, &name, &args, depth)? {
+            Some(expanded) => expanded,
+            None => match via {
+                Some(path) => Ty::Named(resolve_path_type(index, &package, &path)?.receiver()),
+                None => Ty::Named(name),
+            },
+        },
         Ty::Option(t) => Ty::Option(settle(t)?),
         Ty::Result(t, e) => Ty::Result(settle(t)?, settle(e)?),
         Ty::Seq(t) => Ty::Seq(settle(t)?),
+        Ty::Map(k, v) => Ty::Map(settle(k)?, settle(v)?),
         Ty::Iter(t) => Ty::Iter(settle(t)?),
         Ty::Future(t) => Ty::Future(settle(t)?),
         Ty::Tuple(ts) => Ty::Tuple(
             ts.into_iter()
-                .map(|t| settle_paths(t, index))
+                .map(|t| settle_paths_at(t, index, depth))
                 .collect::<anyhow::Result<_>>()?,
         ),
         other => other,
@@ -5136,6 +6838,8 @@ pub(crate) fn expected_error_type(
     let Some(ty) = callable_return_ty("__f", &format!("() -> {ret}"), package) else {
         return Ok(None);
     };
+    // (A generic alias use is a deferred type: settle it first.)
+    let ty = settle_paths(ty, index)?;
     Ok(match expand_aliases(ty, package, index, 3)? {
         Ty::Result(_, e) => match *e {
             Ty::Named(n) | Ty::Local(_, n) => Some(n),
@@ -5471,8 +7175,9 @@ fn declared_source_ty(
         DeferredSource::Call { .. } | DeferredSource::Method { .. } => {
             callable_return_ty(qualname, signature, package)
         }
-        // Read by `resolve_path_deferred`, never through a declaration.
-        DeferredSource::Path { .. } => None,
+        // Read by `resolve_path_deferred` / `resolve_alias_deferred`, never
+        // through a declaration.
+        DeferredSource::Path { .. } | DeferredSource::Alias { .. } => None,
     }
 }
 
@@ -5652,7 +7357,21 @@ fn collect_adts(
             walk(child, source, origins, empty, out);
         }
     }
-    let empty = Adts::new();
+    // The names the file declares, so a field of such a type is that type and
+    // not a possible alias (`TypeEnv::applied_ty`).
+    fn declared_names(node: Node<'_>, source: &str, out: &mut Adts) {
+        if matches!(node.kind(), "struct_item" | "enum_item")
+            && let Some(name) = node.child_by_field_name("name")
+        {
+            out.insert(node_text(name, source), None);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            declared_names(child, source, out);
+        }
+    }
+    let mut empty = Adts::new();
+    declared_names(root, source, &mut empty);
     let mut out = Adts::new();
     walk(root, source, (paths, declared), &empty, &mut out);
     out
@@ -5730,6 +7449,13 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
                     {
                         ty = env.expr_ty(v, out);
                     }
+                    // `let v: Vec<_> = it.collect();`: the holes of the
+                    // annotation are the iterator's items.
+                    if let Some(v) = child.child_by_field_name("value")
+                        && let Some(item) = env.collect_item_ty(v, out)
+                    {
+                        ty = fill_collect_holes(ty, &item);
+                    }
                     env.bind(pat, &ty, (child.end_byte(), block.end_byte()), out);
                 }
             }
@@ -5753,7 +7479,7 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
                     child.child_by_field_name("value"),
                     child.child_by_field_name("body"),
                 ) {
-                    let ty = match env.expr_ty(value, out) {
+                    let ty = match named_view(env.expr_ty(value, out)) {
                         // A type of the repo is iterated through its
                         // `Iterator::next`.
                         iterated @ (Ty::Named(_) | Ty::Local(..)) => {
@@ -5783,12 +7509,17 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
                 if let Some(params) = child.child_by_field_name("parameters") {
                     let scope = (child.start_byte(), child.end_byte());
                     let mut c = params.walk();
+                    // What the method the closure is passed to gives its
+                    // parameters (`opt.map(|x| ..)`).
+                    let given = env.closure_param_types(child, out);
                     // Typed `|e: T|` params are handled as `parameter` below.
-                    for p in params
+                    for (i, p) in params
                         .named_children(&mut c)
                         .filter(|p| p.kind() != "parameter")
+                        .enumerate()
                     {
-                        env.bind(p, &Ty::Unknown, scope, out);
+                        let ty = given.get(i).cloned().unwrap_or(Ty::Unknown);
+                        env.bind(p, &ty, scope, out);
                     }
                 }
             }
@@ -7194,6 +8925,33 @@ fn test_attribute_prefix(attributes: &[Node<'_>], source: &str) -> Option<String
     }
 }
 
+/// Std collections and smart pointers that glob imports and preludes bring in
+/// by name: a path through one is std's, not a repo item's.
+fn is_std_collection_name(name: &str) -> bool {
+    matches!(
+        name,
+        "HashMap"
+            | "HashSet"
+            | "BTreeMap"
+            | "BTreeSet"
+            | "VecDeque"
+            | "BinaryHeap"
+            | "LinkedList"
+            | "Rc"
+            | "Arc"
+            | "Cell"
+            | "RefCell"
+            | "Mutex"
+            | "RwLock"
+            | "Cow"
+            | "PathBuf"
+            | "Path"
+            | "Duration"
+            | "Instant"
+            | "PhantomData"
+    )
+}
+
 /// Primitives and ubiquitous std types: never a repo symbol, so no `USES` edge.
 fn is_std_type_name(name: &str) -> bool {
     matches!(
@@ -7298,6 +9056,19 @@ fn collect_uses(
         inner.module = format!("{}::{name}", ctx.module);
         module_ctx = inner;
         &module_ctx
+    } else if node.kind() == "function_item"
+        && let Some(body) = node.child_by_field_name("body")
+        && let types = collect_declared_type_names(body, source)
+        && !types.is_empty()
+    {
+        // A type the body declares (`struct V;`) is in scope for its uses in
+        // the body (`deserialize_any(V)`).
+        let mut inner = ctx.clone();
+        let mut declared = (*ctx.local_types_declared).clone();
+        declared.extend(types);
+        inner.local_types_declared = Rc::new(declared);
+        module_ctx = inner;
+        &module_ctx
     } else {
         ctx
     };
@@ -7355,7 +9126,9 @@ fn collect_uses(
                 emit(prefix, ctx);
             }
         }
-        // A unit or tuple struct as an expression (`&Unrestricted`).
+        // A unit or tuple struct as an expression (`&Unrestricted`), or a
+        // type this scope declares whatever its spelling (a function-local
+        // `struct V;` passed to `deserialize_any(V)`).
         if node.kind() == "identifier"
             && !is_definition_name
             && !is_inner_path
@@ -7363,7 +9136,7 @@ fn collect_uses(
             && is_struct_value_mention(node)
         {
             let raw = node_text(node, source);
-            if is_unit_struct_name(&raw) {
+            if is_unit_struct_name(&raw) || ctx.local_types_declared.contains(&raw) {
                 emit(raw, ctx);
             }
         }
@@ -7554,27 +9327,199 @@ fn collect_use_bindings(
     scope: Node<'_>,
     source: &str,
     module: &str,
+    home: Option<&FileHome>,
 ) -> HashMap<String, Vec<String>> {
     let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    // `mod utils; use utils::f;`: a path that starts with a module this
-    // scope declares is relative to it (uniform paths, edition 2018).
-    let local_mods = collect_mod_names(scope, source);
+    let mods = collect_mod_names(scope, source);
+    // `#[path = "x.rs"] mod m;`: the module is that file's, so a name that
+    // reaches `m` reaches it (a candidate per `cfg` arm).
+    let path_mods = collect_path_mods(scope, source, module, home);
+    for (name, targets) in &path_mods {
+        let entry = out.entry(name.clone()).or_default();
+        for target in targets {
+            if !entry.contains(target) {
+                entry.push(target.clone());
+            }
+        }
+    }
     let mut cursor = scope.walk();
     for child in scope.named_children(&mut cursor) {
-        if !matches!(child.kind(), "use_declaration" | "use_item") {
-            continue;
+        let texts = if matches!(child.kind(), "use_declaration" | "use_item") {
+            vec![node_text(child, source)]
+        } else {
+            // The `use` items of a `cfg_if!`'s branches bind here too (both
+            // arms of `use unix as os; / use windows as os;`: the path through
+            // `os` then has a candidate per arm, which no name tier picks).
+            cfg_if_items(child, source, "use")
+        };
+        for text in texts {
+            for (bound, raw_target) in parse_use_bindings(&text) {
+                // `mod utils; use utils::f;`: a path that starts with a module
+                // this scope declares is relative to it (uniform paths, 2018).
+                let raw_target = match raw_target.split_once("::") {
+                    Some((first, _)) if mods.contains(first) => format!("{module}::{raw_target}"),
+                    _ => raw_target,
+                };
+                let target = normalized_import_target(raw_target, module);
+                // `use unix as os;` beside `mod unix;`: the module declared
+                // here, not a crate of that name.
+                let targets = match target.split_once("::") {
+                    None if path_mods.contains_key(&target) => path_mods[&target].clone(),
+                    Some((first, rest)) if path_mods.contains_key(first) => path_mods[first]
+                        .iter()
+                        .map(|m| format!("{m}::{rest}"))
+                        .collect(),
+                    None if mods.contains(&target) => vec![format!("{module}::{target}")],
+                    _ => vec![target],
+                };
+                let entry = out.entry(bound).or_default();
+                for target in targets {
+                    if !entry.contains(&target) {
+                        entry.push(target);
+                    }
+                }
+            }
         }
-        let text = node_text(child, source);
-        for (bound, raw_target) in parse_use_bindings(&text) {
-            let raw_target = match raw_target.split_once("::") {
-                Some((first, _)) if local_mods.contains(first) => format!("{module}::{raw_target}"),
-                _ => raw_target,
-            };
-            let target = normalized_import_target(raw_target, module);
-            let entry = out.entry(bound).or_default();
+    }
+    // `use uom::si; pub use si::f64::Time;`: a path that starts with a name
+    // another `use` of the scope binds goes through that `use` (uniform
+    // paths), so `Time` is `uom::si::f64::Time`, an item of a dependency.
+    let bindings = out.clone();
+    for targets in out.values_mut() {
+        for target in targets.iter_mut() {
+            if let Some((first, rest)) = target.split_once("::")
+                && !matches!(first, "crate" | "self" | "super")
+                && !mods.contains(first)
+                && let Some([through]) = bindings.get(first).map(Vec::as_slice)
+                && through != target
+                && !through.ends_with("::*")
+            {
+                *target = format!("{through}::{rest}");
+            }
+        }
+    }
+    out
+}
+
+/// `#[path = ".."] mod name;` items written directly in `scope` (or in its
+/// `cfg_if!` branches): name -> the modules of the files they name.
+fn collect_path_mods(
+    scope: Node<'_>,
+    source: &str,
+    module: &str,
+    home: Option<&FileHome>,
+) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let Some(home) = home else {
+        return out;
+    };
+    let mut add = |name: String, path: Option<String>| {
+        if let Some(target) = path.and_then(|p| home.path_module(module, &p)) {
+            let entry = out.entry(name).or_default();
             if !entry.contains(&target) {
                 entry.push(target);
             }
+        }
+    };
+    let mut cursor = scope.walk();
+    for child in scope.named_children(&mut cursor) {
+        if child.kind() == "mod_item" && body_node(child).is_none() {
+            if let Some(name) = child.child_by_field_name("name") {
+                let path = path_attribute(&preceding_attributes(child, source));
+                add(node_text(name, source), path);
+            }
+            continue;
+        }
+        for (attrs, stmt) in cfg_if_statements(child, source) {
+            if let Some(name) = stmt_mod_name(&stmt) {
+                add(name, path_attribute(&attrs));
+            }
+        }
+    }
+    out
+}
+
+/// `name` of a `mod name`/`pub mod name` statement.
+fn stmt_mod_name(stmt: &str) -> Option<String> {
+    let after = stmt
+        .strip_prefix("pub(crate) ")
+        .or_else(|| stmt.strip_prefix("pub(super) "))
+        .or_else(|| stmt.strip_prefix("pub "))
+        .unwrap_or(stmt);
+    let name = after
+        .strip_prefix("mod")
+        .filter(|rest| rest.starts_with(|c: char| c.is_whitespace()))?
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+        .trim_start_matches("r#");
+    (!name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        .then(|| name.to_string())
+}
+
+/// The `use` (or `mod`) statements written directly in the branches of a
+/// `cfg_if!` invocation `node`, as text (`use unix as os;`); empty when
+/// `node` is no `cfg_if!`.
+fn cfg_if_items(node: Node<'_>, source: &str, keyword: &str) -> Vec<String> {
+    cfg_if_statements(node, source)
+        .into_iter()
+        .filter_map(|(_, stmt)| {
+            let after = stmt
+                .strip_prefix("pub(crate) ")
+                .or_else(|| stmt.strip_prefix("pub(super) "))
+                .or_else(|| stmt.strip_prefix("pub "))
+                .unwrap_or(&stmt);
+            (after.starts_with(keyword)
+                && after[keyword.len()..].starts_with(|c: char| c.is_whitespace()))
+            .then(|| format!("{stmt};"))
+        })
+        .collect()
+}
+
+/// The statements written directly in the branches of a `cfg_if!` invocation
+/// `node`, each with the `#[..]` attributes written before it (`#[path = ".."]
+/// mod unix`); empty when `node` is no `cfg_if!`.
+fn cfg_if_statements(node: Node<'_>, source: &str) -> Vec<(Vec<String>, String)> {
+    // At item level the invocation sits in an `expression_statement`.
+    let node = if node.kind() == "expression_statement" {
+        match node.named_child(0) {
+            Some(inner) => inner,
+            None => return Vec::new(),
+        }
+    } else {
+        node
+    };
+    if node.kind() != "macro_invocation"
+        || node
+            .child_by_field_name("macro")
+            .map(|m| node_text(m, source))
+            .is_none_or(|m| m.rsplit("::").next() != Some("cfg_if"))
+    {
+        return Vec::new();
+    }
+    let mut cursor = node.walk();
+    let Some(tokens) = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "token_tree")
+    else {
+        return Vec::new();
+    };
+    let text = node_text(tokens, source);
+    let mut out = Vec::new();
+    for segment in text.split(';') {
+        // The statement is what follows the last brace of the segment
+        // (`if #[cfg(unix)] { mod unix` holds `mod unix`).
+        let mut stmt = segment.rsplit(['{', '}']).next().unwrap_or(segment).trim();
+        let mut attrs = Vec::new();
+        while stmt.starts_with("#[") {
+            let Some(end) = stmt.find(']') else {
+                break;
+            };
+            attrs.push(stmt[..=end].to_string());
+            stmt = stmt[end + 1..].trim_start();
+        }
+        if !stmt.is_empty() {
+            out.push((attrs, stmt.to_string()));
         }
     }
     out
@@ -7632,12 +9577,29 @@ pub(crate) fn reexported_crate_aliases(source: &str) -> std::collections::BTreeM
 /// Names of the modules declared directly in `scope` (`mod a;`, `mod a { .. }`).
 fn collect_mod_names(scope: Node<'_>, source: &str) -> HashSet<String> {
     let mut cursor = scope.walk();
-    scope
+    let mut out: HashSet<String> = scope
         .named_children(&mut cursor)
         .filter(|child| child.kind() == "mod_item")
         .filter_map(|child| child.child_by_field_name("name"))
         .map(|name| node_text(name, source))
-        .collect()
+        .collect();
+    // `mod unix;` declared in a `cfg_if!` branch.
+    let mut cursor = scope.walk();
+    for child in scope.named_children(&mut cursor) {
+        for stmt in cfg_if_items(child, source, "mod") {
+            let name = stmt
+                .trim_end_matches(';')
+                .rsplit(' ')
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches("r#")
+                .to_string();
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                out.insert(name);
+            }
+        }
+    }
+    out
 }
 
 /// Strip a `use` declaration's leading visibility (`pub`, `pub(crate)`,
@@ -7782,6 +9744,320 @@ mod tests {
     };
     use crate::indexer::http;
     use crate::indexer::proto;
+
+    fn extract(source: &str) -> crate::indexer::extract::ExtractedFile {
+        RustExtractor::new()
+            .unwrap()
+            .extract(source, "crate")
+            .unwrap()
+    }
+
+    /// Whether `file` holds an edge of `kind` from `source` to `target`.
+    fn has_edge(
+        file: &crate::indexer::extract::ExtractedFile,
+        kind: &str,
+        source: &str,
+        target: &str,
+    ) -> bool {
+        file.edges.iter().any(|e| {
+            e.kind == kind
+                && e.source_qualname.as_deref() == Some(source)
+                && e.target_qualname.as_deref() == Some(target)
+        })
+    }
+
+    fn edges_of<'a>(
+        file: &'a crate::indexer::extract::ExtractedFile,
+        kind: &str,
+    ) -> Vec<(&'a str, &'a str)> {
+        file.edges
+            .iter()
+            .filter(|e| e.kind == kind)
+            .map(|e| {
+                (
+                    e.source_qualname.as_deref().unwrap_or(""),
+                    e.target_qualname.as_deref().unwrap_or(""),
+                )
+            })
+            .collect()
+    }
+
+    /// Issue #497, bucket B: calls and function values in a `macro_rules!`
+    /// transcriber belong to the scope the macro is defined in; the
+    /// metavariables declare nothing.
+    #[test]
+    fn macro_rules_transcriber_calls_are_extracted() {
+        let file = extract(
+            r#"
+fn helper() -> bool { true }
+fn key(a: &u8, b: &u8) -> std::cmp::Ordering { a.cmp(b) }
+macro_rules! log_it {
+    ($($t:tt)*) => {
+        if $crate::helper() {
+            let mut v = vec![$($t)*];
+            v.sort_by(key);
+            inner!($($t)*);
+        }
+    };
+}
+"#,
+        );
+        assert!(
+            has_edge(&file, "CALLS", "crate", "crate::helper"),
+            "{:?}",
+            edges_of(&file, "CALLS")
+        );
+        assert!(
+            has_edge(&file, "REFERENCES", "crate", "crate::key"),
+            "{:?}",
+            edges_of(&file, "REFERENCES")
+        );
+        assert!(
+            file.symbols
+                .iter()
+                .all(|s| !s.name.starts_with('$') && s.name != "log_it"),
+            "{:?}",
+            file.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Bucket C: attribute arguments are read as expressions: a call of the
+    /// attributed fn or module, a path value, a string path for a
+    /// function-valued key; `derive`, `cfg` and the lint markers are not.
+    #[test]
+    fn attribute_arguments_are_read_as_expressions() {
+        let file = extract(
+            r#"
+fn default_name() -> String { String::new() }
+fn parse_size(s: &str) -> u64 { 0 }
+fn describe() -> String { String::new() }
+fn mk_input(n: u8) -> u8 { n }
+struct Completer;
+impl Completer { fn complete_thing(c: &str) -> Vec<String> { Vec::new() } }
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct Settings {
+    #[serde(default = "default_name", rename = "n")]
+    name: String,
+    #[arg(long, hide = true, value_parser = parse_size)]
+    size: u64,
+    #[arg(add = ArgValueCompleter::new(Completer::complete_thing))]
+    thing: String,
+}
+enum Failure {
+    #[error("unsupported: {}", describe())]
+    Unsupported,
+}
+#[test_case(mk_input(1); "one")]
+#[cfg_attr(feature = "x", serde(default = "default_name"))]
+fn runs_case(_n: u8) {}
+"#,
+        );
+        let refs = edges_of(&file, "REFERENCES");
+        let calls = edges_of(&file, "CALLS");
+        assert!(refs.contains(&("crate", "crate::default_name")), "{refs:?}");
+        assert!(refs.contains(&("crate", "crate::parse_size")), "{refs:?}");
+        assert!(
+            refs.contains(&("crate", "crate::Completer::complete_thing")),
+            "{refs:?}"
+        );
+        assert!(calls.contains(&("crate", "crate::describe")), "{calls:?}");
+        assert!(
+            calls.contains(&("crate::runs_case", "crate::mk_input")),
+            "{calls:?}"
+        );
+        // `derive(Debug, Clone)`, `allow(dead_code)`, `rename = "n"`: no edge
+        assert!(
+            !calls
+                .iter()
+                .any(|(_, t)| t.ends_with("::Debug") || t.ends_with("::dead_code")),
+            "{calls:?}"
+        );
+        assert!(!refs.iter().any(|(_, t)| t.ends_with("::n")), "{refs:?}");
+    }
+
+    /// Bucket A2: `cfg_if!` branches declare cfg twins at module level and
+    /// hold statements in a body.
+    #[test]
+    fn cfg_if_branches_are_cfg_arms() {
+        let file = extract(
+            r#"
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        fn platform() -> u8 { 1 }
+    } else if #[cfg(windows)] {
+        fn platform() -> u8 { 2 }
+    } else {
+        fn platform() -> u8 { 3 }
+    }
+}
+fn helper() {}
+fn run() -> u8 {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "x")] {
+            helper();
+        }
+    }
+    platform()
+}
+"#,
+        );
+        let sigs: Vec<String> = file
+            .symbols
+            .iter()
+            .filter(|s| s.name == "platform")
+            .map(|s| s.signature.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(sigs.len(), 3, "{sigs:?}");
+        assert!(sigs[0].starts_with("#[cfg(unix)]"), "{sigs:?}");
+        assert!(sigs[1].starts_with("#[cfg(windows)]"), "{sigs:?}");
+        assert!(
+            sigs[2].starts_with("#[cfg(not(any(unix,windows)))]"),
+            "{sigs:?}"
+        );
+        assert!(
+            has_edge(&file, "CALLS", "crate::run", "crate::helper"),
+            "{:?}",
+            edges_of(&file, "CALLS")
+        );
+        assert!(has_edge(&file, "CALLS", "crate::run", "crate::platform"));
+    }
+
+    /// `use` and `mod` items in `cfg_if!` branches bind at module level: an
+    /// alias with a target per arm.
+    #[test]
+    fn cfg_if_use_items_bind_at_module_level() {
+        let source = r#"
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        mod unix;
+        use unix as os;
+    } else if #[cfg(windows)] {
+        mod windows;
+        use windows as os;
+    }
+}
+fn spawn() { os::setup_io(); }
+"#;
+        let mut parser = super::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let bindings = super::collect_use_bindings(tree.root_node(), source, "crate", None);
+        assert_eq!(
+            bindings.get("os"),
+            Some(&vec![
+                "crate::unix".to_string(),
+                "crate::windows".to_string()
+            ]),
+            "{bindings:?}"
+        );
+        let mods = super::collect_mod_names(tree.root_node(), source);
+        assert!(
+            mods.contains("unix") && mods.contains("windows"),
+            "{mods:?}"
+        );
+        let file = extract(source);
+        let edge = file
+            .edges
+            .iter()
+            .find(|e| e.kind == "CALLS" && e.source_qualname.as_deref() == Some("crate::spawn"))
+            .unwrap();
+        assert!(
+            edge.import_candidates
+                .contains(&"crate::unix::setup_io".to_string())
+                && edge
+                    .import_candidates
+                    .contains(&"crate::windows::setup_io".to_string()),
+            "{:?} {:?}",
+            edge.target_qualname,
+            edge.import_candidates
+        );
+    }
+
+    /// Bucket F: calls in `const` and `static` initialisers, a closure's
+    /// `let` typed.
+    #[test]
+    fn initializer_calls_are_extracted() {
+        let file = extract(
+            r#"
+struct Alias(&'static str);
+const fn alias(name: &'static str) -> Alias { Alias(name) }
+const ALIASES: &[Alias] = &[alias("a"), alias("b")];
+struct Inner;
+impl Inner {
+    fn new() -> Inner { Inner }
+    fn to_long(&self) -> String { String::new() }
+}
+static LONG: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let inner = Inner::new();
+    inner.to_long()
+});
+"#,
+        );
+        let calls = edges_of(&file, "CALLS");
+        assert!(
+            calls.contains(&("crate::ALIASES", "crate::alias")),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&("crate::LONG", "Inner::new")), "{calls:?}");
+        let to_long = file
+            .edges
+            .iter()
+            .find(|e| {
+                e.kind == "CALLS"
+                    && e.source_qualname.as_deref() == Some("crate::LONG")
+                    && e.target_qualname.as_deref() == Some("to_long")
+            })
+            .unwrap_or_else(|| panic!("{calls:?}"));
+        assert!(
+            matches!(to_long.receiver_type, ReceiverType::Known(ref ty) if ty.contains("Inner")),
+            "{:?}",
+            to_long.receiver_type
+        );
+    }
+
+    /// Bucket G: a `use .. as T;` in a fn body binds `T::f()` for that body.
+    #[test]
+    fn body_use_alias_binds_path_calls() {
+        let file = extract(
+            r#"
+mod sub {
+    pub struct Thing;
+    impl Thing { pub fn make() -> Thing { Thing } }
+}
+fn f() -> sub::Thing {
+    use crate::sub::Thing as T;
+    T::make()
+}
+"#,
+        );
+        assert!(
+            has_edge(&file, "CALLS", "crate::f", "crate::sub::Thing::make"),
+            "{:?}",
+            edges_of(&file, "CALLS")
+        );
+    }
+
+    /// Bucket D: a one-letter unit struct declared in the body is a value the
+    /// body passes.
+    #[test]
+    fn fn_local_unit_struct_value_is_a_use() {
+        let file = extract(
+            r#"
+fn visit(d: &dyn Fn(V) -> u8) -> u8 {
+    struct V;
+    d(V)
+}
+"#,
+        );
+        assert!(
+            has_edge(&file, "USES", "crate", "crate::V"),
+            "{:?}",
+            edges_of(&file, "USES")
+        );
+    }
 
     const USES_SRC: &str = r#"
 pub struct Foo;

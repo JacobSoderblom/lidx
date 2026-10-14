@@ -20,6 +20,7 @@ pub fn on_later_line() -> u32 { 6 }
 pub fn in_custom() -> u32 { 7 }
 pub fn in_pattern() -> u32 { 8 }
 pub fn dsl_name() -> u32 { 11 }
+pub fn in_json_value() -> u32 { 12 }
 pub fn in_path() -> u32 { 9 }
 pub struct Bag;
 impl Bag {
@@ -45,7 +46,7 @@ pub fn run(bag: Bag) {
         on_later_line()
     );
     custom!(in_custom());
-    let _d = json!({ "k": dsl_name() });
+    let _d = json!({ "k": in_json_value(), "list": [in_json_value()], "nested": { "n": in_json_value() } });
     let _s = sql!(dsl_name());
     let _p = matches!(1u32, 1 | 2 if in_pattern() > 0);
     let _q = format!("{}", m::f());
@@ -169,6 +170,18 @@ fn dsl_macro_arguments_are_skipped() {
     let edges = call_edges();
     assert!(
         !edges.iter().any(|(t, _)| t == "crate::dsl_name"),
-        "json!/sql! args are not expressions: {edges:?}"
+        "sql! args are not expressions: {edges:?}"
+    );
+}
+
+/// `json!` is serde_json's: its keys are string literals and its values are
+/// expressions (a nested object or array holds more of them), so a call in a
+/// value is a call of the enclosing fn.
+#[test]
+fn json_macro_values_are_expressions() {
+    let edges = call_edges();
+    assert!(
+        edges.iter().any(|(t, _)| t == "crate::in_json_value"),
+        "a call in a json! value is a call: {edges:?}"
     );
 }

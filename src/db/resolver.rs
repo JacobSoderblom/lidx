@@ -1209,6 +1209,22 @@ fn live_symbols(n: usize) -> String {
     format!("s.graph_version = ?{n} AND (f.deleted_version IS NULL OR f.deleted_version > ?{n})")
 }
 
+/// The target of a Rust alias signature (`type Name<P = D> = Target`), past
+/// the parameters, which may hold ` = ` themselves.
+fn rust_alias_target(signature: &str) -> Option<&str> {
+    let line = signature.lines().find(|l| l.starts_with("type "))?;
+    let mut depth = 0usize;
+    for (i, c) in line.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => return Some(line[i + 1..].trim()),
+            _ => {}
+        }
+    }
+    None
+}
+
 impl DeclarationIndex for LanguageIndex<'_, '_> {
     fn declarations(&self, query: DeclarationQuery<'_>) -> Result<Vec<Declaration>> {
         // A callable pinned to a package of this repository (`@dir|path`).
@@ -1871,6 +1887,50 @@ impl<'c> Resolver<'c> {
         Ok(None)
     }
 
+    /// Whether a `crate::` import candidate of the Rust reference names, after
+    /// the re-exports, an item of std or a dependency: `use crate::quantity::Time;`
+    /// beside `pub use uom::si::f64::Time;` in `quantity` makes `Time::new` a
+    /// call of the dependency, recorded like one written against `uom` itself.
+    fn rust_reexports_external(&mut self, r: &Reference<'_>) -> Result<bool> {
+        let package = rust_package_of(r.source_file_path);
+        // The extractor writes an import-resolved path as the target itself.
+        for candidate in r
+            .import_candidates
+            .iter()
+            .map(String::as_str)
+            .chain(r.target_qualname)
+        {
+            if !candidate.starts_with(RUST_CRATE_ROOT) {
+                continue;
+            }
+            let owner = candidate.rsplit_once("::").map(|(owner, _)| owner);
+            // A type (`Time`) a module re-exports; a lowercase tail is a
+            // module or function, which a glob's private imports can fake.
+            for path in std::iter::once(candidate).chain(owner).filter(|p| {
+                p.rsplit("::")
+                    .next()
+                    .is_some_and(|l| l.starts_with(char::is_uppercase))
+            }) {
+                let followed = {
+                    let index = LanguageIndex {
+                        resolver: self,
+                        lang: "rust",
+                    };
+                    crate::indexer::rust::follow_path(
+                        &index,
+                        package,
+                        Some(r.source_file_path),
+                        path,
+                    )?
+                };
+                if matches!(followed, crate::indexer::rust::Followed::External) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// A Rust value path `Type::member` (or `module::item`) written against a
     /// name that another module re-exports (`pub use attribute_set::AttributeSet;`
     /// beside `use super::*;`): its `crate::` import candidates, with the type
@@ -1932,6 +1992,30 @@ impl<'c> Resolver<'c> {
                     r.source_file_path,
                     false,
                 )?
+            {
+                return Ok(Some(id));
+            }
+            // The whole path through the re-exports: `super::f` names an `f`
+            // that `pub use m::*;` brings into the parent module (#497, a
+            // serde `deserialize_with = "super::f"`).
+            let followed = {
+                let index = LanguageIndex {
+                    resolver: self,
+                    lang: "rust",
+                };
+                crate::indexer::rust::follow_path(
+                    &index,
+                    package,
+                    Some(r.source_file_path),
+                    candidate,
+                )?
+            };
+            if let crate::indexer::rust::Followed::Repo {
+                path,
+                declared: true,
+            } = followed
+                && path != *candidate
+                && let Some(id) = self.exact(&path, symbol_map, r.source_file_path, false)?
             {
                 return Ok(Some(id));
             }
@@ -2538,16 +2622,33 @@ impl<'c> Resolver<'c> {
             // A path rooted at a dependency from outside the repository is
             // external: no name guess may bind it to a repo item that happens
             // to share the type's or function's name.
+            let direct = r.import_candidates.iter().any(|c| c == RUST_EXTERNAL_CRATE);
+            let through_reexport = !direct
+                && r.edge_kind == "CALLS"
+                && !types_only
+                && r.source_lang == "rust"
+                && !never_external(r)
+                && self.rust_reexports_external(r)?;
+            // Through a re-export the target is the repo path of the re-exporting
+            // module; the stub is named by the item, as a direct call is.
+            let item_name: Option<String> = through_reexport
+                .then(|| {
+                    let segments: Vec<&str> = r.target_qualname?.rsplit("::").take(2).collect();
+                    Some(segments.into_iter().rev().collect::<Vec<_>>().join("::"))
+                })
+                .flatten();
             if !types_only
                 && r.source_lang == "rust"
                 && !never_external(r)
-                && r.import_candidates.iter().any(|c| c == RUST_EXTERNAL_CRATE)
+                && (direct || through_reexport)
                 && let Some(stub) = self.stub_resolution(
                     r.source_lang,
-                    r.target_qualname,
+                    item_name.as_deref().or(r.target_qualname),
                     r.import_candidates,
                     r.bare_call,
-                    false,
+                    // Resolved through another module's re-export, which a later
+                    // edit can change: the stub is retried like a tier-6 one.
+                    through_reexport,
                 )?
             {
                 return Ok(stub);
@@ -3482,15 +3583,50 @@ impl<'c> Resolver<'c> {
                 }
                 // The receiver's own type declares no matching method (or
                 // the match there was itself ambiguous) — walk its ancestors.
-                Ok(self
-                    .resolve_via_inheritance(
-                        (full_type, known_type),
-                        method,
-                        source_lang,
-                        edge_kind,
-                        caller,
-                    )?
-                    .map(|id| (id, ResolutionKind::Inherited)))
+                let inherited = self.resolve_via_inheritance(
+                    (full_type, known_type),
+                    method,
+                    source_lang,
+                    edge_kind,
+                    caller,
+                )?;
+                if let Some(id) = inherited {
+                    return Ok(Some((id, ResolutionKind::Inherited)));
+                }
+                // `type Range = Match;`: what the alias's own impls do not
+                // declare is the aliased type's method; likewise what a type
+                // does not declare but its `Deref::Target` does
+                // (`impl Deref for Name { type Target = Token; }`).
+                if source_lang == "rust" {
+                    let mut hop = known_type.to_string();
+                    for _ in 0..3 {
+                        let target = match self.rust_type_alias(&hop)? {
+                            Some(target) => target,
+                            None => match self.rust_deref_target(&hop)? {
+                                Some(target) => target,
+                                None => break,
+                            },
+                        };
+                        if target == RUST_EXTERNAL_RECEIVER {
+                            return Ok(None);
+                        }
+                        if let Some((seg, dot, colons)) =
+                            two_segment_qualname_patterns(&format!("{target}::{method}"))
+                            && let Some(id) = self.unique_by_pattern(
+                                &seg,
+                                (&dot, &colons),
+                                source_lang,
+                                edge_kind,
+                                guard,
+                                caller,
+                            )?
+                        {
+                            return Ok(Some((id, ResolutionKind::ReceiverType)));
+                        }
+                        hop = target;
+                    }
+                }
+                Ok(None)
             }
 
             None => {
@@ -3991,6 +4127,40 @@ impl<'c> Resolver<'c> {
         Ok(found.map(|id| (id, ResolutionKind::Inherited)))
     }
 
+    /// The `Target` of the `impl Deref for <name>` the repo declares (its last
+    /// path segment); `None` when `name` has no such impl, or its impls
+    /// disagree. Recorded by the extractor on the impl's `IMPLEMENTS` edge.
+    fn rust_deref_target(&mut self, name: &str) -> Result<Option<String>> {
+        let details: Vec<String> = self
+            .conn
+            .prepare_cached(
+                "SELECT e.detail FROM edges e
+                 JOIN symbols s ON s.id = e.source_symbol_id
+                 JOIN files f ON f.id = e.file_id
+                 WHERE e.kind = 'IMPLEMENTS' AND e.graph_version = ?2
+                   AND s.name = ?1 AND s.kind IN ('struct', 'enum', 'union')
+                   AND e.detail LIKE '%deref_target%'
+                   AND f.language = 'rust'
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?2)",
+            )?
+            .query_map(params![name, self.graph_version], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut found: Option<String> = None;
+        for detail in details {
+            let Some(target) = serde_json::from_str::<serde_json::Value>(&detail)
+                .ok()
+                .and_then(|v| v["deref_target"].as_str().map(str::to_string))
+            else {
+                continue;
+            };
+            match &found {
+                Some(prev) if *prev != target => return Ok(None),
+                _ => found = Some(target),
+            }
+        }
+        Ok(found.filter(|target| target != name))
+    }
+
     /// The type a repo `type name = Target<..>;` alias stands for (its last
     /// path segment); `None` when `name` is no single alias.
     fn rust_type_alias(&mut self, name: &str) -> Result<Option<String>> {
@@ -4007,9 +4177,8 @@ impl<'c> Resolver<'c> {
         let [Some(signature)] = signatures.as_slice() else {
             return Ok(None);
         };
-        let target_text = signature
-            .split_once(" = ")
-            .map(|(_, target)| target.split('<').next().unwrap_or(target).trim());
+        let target_text = rust_alias_target(signature)
+            .map(|target| target.split('<').next().unwrap_or(target).trim());
         // `type Entry = walkdir::DirEntry;`: the extractor recorded that the
         // target is outside the repo, so no repo type stands behind the alias.
         let key: String = target_text.unwrap_or_default().split_whitespace().collect();
@@ -6580,6 +6749,26 @@ impl Db {
         self.rejudge_bound_edges(graph_version, "", &format!("AND e.id IN ({list})"))
     }
 
+    /// Re-judge the Rust calls a name tier bound although the path they were
+    /// written with is a `crate::` one: the path may go, through another
+    /// module's re-export, to an item of a dependency (an external stub, see
+    /// `rust_reexports_external`), and an edit of that module changes the
+    /// answer without touching the call.
+    pub fn retry_rust_reexport_name_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "",
+            &format!(
+                "AND e.kind = 'CALLS' AND e.target_symbol_id IS NOT NULL
+                 AND e.resolution_kind IN ('{}', '{}')
+                 AND e.target_qualname LIKE 'crate::%'
+                 AND e.file_id IN (SELECT id FROM files WHERE language = 'rust')",
+                ResolutionKind::BareName.as_str(),
+                ResolutionKind::TwoSegment.as_str(),
+            ),
+        )
+    }
+
     /// Re-judge every bound Rust `impl Trait for Type` edge that names its
     /// trait through paths (`import_candidates`): the answer hangs on other
     /// modules' `use`s and re-exports and on the packages' items, none of
@@ -7071,6 +7260,13 @@ impl Db {
         let alias_rejudged = self.retry_rust_alias_edges(graph_version)?;
         if alias_rejudged > 0 {
             eprintln!("lidx: re-judged {alias_rejudged} type-alias edge(s) after {context}");
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let reexport_rejudged = self.retry_rust_reexport_name_edges(graph_version)?;
+        if reexport_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {reexport_rejudged} re-exported call edge(s) after {context}"
+            );
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
         let hierarchy_rejudged = self.retry_rust_hierarchy_edges(graph_version)?;

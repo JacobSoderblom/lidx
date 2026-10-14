@@ -221,14 +221,16 @@ mod tests {
 "#,
 )];
 
+/// A `static` or `const` initialiser is walked like a body (#497): the
+/// references in it belong to the item, as rust-analyzer keys them, not to
+/// the module.
 #[test]
-fn module_level_initializers_reference_from_the_module() {
-    let t = ref_targets(MODULE_SCOPE, "crate");
-    assert_eq!(
-        t,
-        ["crate::handler", "crate::handler", "crate::handler"],
-        "{t:?}"
-    );
+fn module_level_initializers_reference_from_their_item() {
+    assert!(ref_targets(MODULE_SCOPE, "crate").is_empty());
+    let t = ref_targets(MODULE_SCOPE, "crate::PROFILE");
+    assert_eq!(t, ["crate::handler", "crate::handler"], "{t:?}");
+    let t = ref_targets(MODULE_SCOPE, "crate::TABLE");
+    assert_eq!(t, ["crate::handler"], "{t:?}");
 }
 
 #[test]
