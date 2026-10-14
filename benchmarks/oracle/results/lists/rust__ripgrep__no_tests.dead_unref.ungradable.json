@@ -135,6 +135,7 @@
 {"confidence":"medium","file":"crates/searcher/src/lines.rs","key":"crates/searcher/src/lines.rs:212","lidx_kind":"function","name":"m","qualname":"crate::lines::tests::m","reason":"not_a_judged_declaration"},
 {"confidence":"medium","file":"crates/searcher/src/lines.rs","key":"crates/searcher/src/lines.rs:216","lidx_kind":"function","name":"lines","qualname":"crate::lines::tests::lines","reason":"not_a_judged_declaration"},
 {"confidence":"medium","file":"crates/searcher/src/testutil.rs","key":"crates/searcher/src/testutil.rs:305","lidx_kind":"method","name":"filter","qualname":"crate::testutil::SearcherTester::filter","reason":"file_not_in_program"},
+{"confidence":"medium","file":"crates/searcher/src/testutil.rs","key":"crates/searcher/src/testutil.rs:384","lidx_kind":"method","name":"multi_line","qualname":"crate::testutil::SearcherTester::multi_line","reason":"file_not_in_program"},
 {"confidence":"medium","file":"crates/searcher/src/testutil.rs","key":"crates/searcher/src/testutil.rs:730","lidx_kind":"function","name":"m","qualname":"crate::testutil::tests::m","reason":"file_not_in_program"},
 {"confidence":"medium","file":"tests/json.rs","key":"tests/json.rs:118","lidx_kind":"method","name":"text","qualname":"crate::tests::json::Data::text","reason":"test_file_outside_cell"},
 {"confidence":"medium","file":"tests/json.rs","key":"tests/json.rs:121","lidx_kind":"method","name":"bytes","qualname":"crate::tests::json::Data::bytes","reason":"test_file_outside_cell"},

@@ -1,6 +1,5 @@
 [
 {"category":"incoming_call_from_live_code","exported":false,"file":"crates/globset/src/glob.rs","incoming":["CALLS:live","CALLS:live","CALLS:live"],"key":"crates/globset/src/glob.rs:1213","kind":"function","line":1213,"name":"classn","subkind":"fn"},
 {"category":"incoming_call_from_live_code","exported":false,"file":"crates/globset/src/glob.rs","incoming":["CALLS:live","CALLS:live","CALLS:live"],"key":"crates/globset/src/glob.rs:1217","kind":"function","line":1217,"name":"rclass","subkind":"fn"},
-{"category":"incoming_call_from_live_code","exported":false,"file":"crates/globset/src/glob.rs","incoming":["CALLS:live","CALLS:live"],"key":"crates/globset/src/glob.rs:1221","kind":"function","line":1221,"name":"rclassn","subkind":"fn"},
-{"category":"no_incoming_edge_but_filtered","exported":false,"file":"crates/searcher/src/testutil.rs","incoming":[],"key":"crates/searcher/src/testutil.rs:384","kind":"method","line":384,"name":"multi_line","subkind":"inherent"}
+{"category":"incoming_call_from_live_code","exported":false,"file":"crates/globset/src/glob.rs","incoming":["CALLS:live","CALLS:live"],"key":"crates/globset/src/glob.rs:1221","kind":"function","line":1221,"name":"rclassn","subkind":"fn"}
 ]
