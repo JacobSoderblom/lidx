@@ -9,7 +9,7 @@
  "generated": "2026-10-14",
  "lidx_version": "lidx 0.7.0",
  "main_commit": "03991a85c390a54bf8b4e47d9ad530f86d90c02e",
- "head_commit": "03991a85c390a54bf8b4e47d9ad530f86d90c02e",
+ "head_commit": "61e742f8241701d2a44ed329e484244d80984cb4",
  "corpus": {
   "cobra": {
    "lang": "go",
@@ -16962,8 +16962,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.4,
-     "peak_rss_mb": 99,
+     "seconds": 2.3,
+     "peak_rss_mb": 98,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -17559,7 +17559,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 7.8
+    "seconds": 7.7
    },
    "oracle_dropped": {
     "caller_not_in_function": 1391,
@@ -17689,8 +17689,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.2,
-     "peak_rss_mb": 95,
+     "seconds": 2.3,
+     "peak_rss_mb": 96,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -18427,7 +18427,7 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.5,
+     "seconds": 2.4,
      "peak_rss_mb": 107,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
@@ -19163,8 +19163,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 2.2,
-     "peak_rss_mb": 98,
+     "seconds": 2.3,
+     "peak_rss_mb": 99,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -19748,13 +19748,13 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 0.6,
+   "index_seconds": 0.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 4.3
+    "seconds": 4.2
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -20398,7 +20398,7 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "no_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -21050,7 +21050,7 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "with_tests",
-   "index_seconds": 0.6,
+   "index_seconds": 0.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -21183,7 +21183,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.3,
-     "peak_rss_mb": 33,
+     "peak_rss_mb": 34,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -21700,13 +21700,13 @@
    "repo": "fd",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 0.6,
+   "index_seconds": 0.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 4.2
+    "seconds": 4.1
    },
    "oracle_dropped": {
     "caller_not_in_function": 144,
@@ -22351,7 +22351,7 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 4.8,
+   "index_seconds": 4.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
@@ -23070,13 +23070,13 @@
    "repo": "bat",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 4.8,
+   "index_seconds": 4.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 5.8
+    "seconds": 5.9
    },
    "oracle_dropped": {
     "callee_external": 3074,
@@ -23926,7 +23926,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 5,
+     "peak_rss_mb": 6,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -23952,8 +23952,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "method": 1,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
       "live": 55,
       "oracle_buckets": {
@@ -24152,8 +24152,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "method": 1,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
       "live": 48,
       "oracle_buckets": {
@@ -24503,7 +24503,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 4.0
+    "seconds": 4.1
    },
    "oracle_dropped": {
     "callee_external": 1360,
@@ -24661,8 +24661,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "method": 1,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
       "live": 55,
       "oracle_buckets": {
@@ -24861,8 +24861,8 @@
       },
       "dead": 3,
       "dead_by_kind": {
-       "method": 1,
-       "function": 2
+       "function": 2,
+       "method": 1
       },
       "live": 48,
       "oracle_buckets": {
@@ -25330,7 +25330,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 5,
+     "peak_rss_mb": 6,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -25849,7 +25849,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 3.4
+    "seconds": 3.5
    },
    "oracle_dropped": {
     "caller_not_in_function": 136,
@@ -25968,7 +25968,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 0.2,
-     "peak_rss_mb": 1,
+     "peak_rss_mb": 6,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -26481,13 +26481,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 11.0,
+   "index_seconds": 10.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 19.2
+    "seconds": 18.9
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -26616,8 +26616,8 @@
    },
    "dead": {
     "oracle_meta": {
-     "seconds": 3.7,
-     "peak_rss_mb": 196,
+     "seconds": 3.6,
+     "peak_rss_mb": 195,
      "features": "default",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -27149,13 +27149,13 @@
    "repo": "lidx",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 11.0,
+   "index_seconds": 10.7,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 18.8
+    "seconds": 19.0
    },
    "oracle_dropped": {
     "callee_external": 38579,
@@ -27286,7 +27286,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 3.7,
-     "peak_rss_mb": 197,
+     "peak_rss_mb": 198,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -27824,7 +27824,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 7.9
+    "seconds": 8.0
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -28502,7 +28502,7 @@
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 8.0
+    "seconds": 7.9
    },
    "oracle_dropped": {
     "callee_external": 6364,
@@ -29175,13 +29175,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded",
-   "index_seconds": 5.1,
+   "index_seconds": 4.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "default",
-    "seconds": 12.8
+    "seconds": 13.0
    },
    "oracle_dropped": {
     "callee_external": 8747,
@@ -29346,8 +29346,8 @@
       "dead": 26,
       "dead_by_kind": {
        "function": 17,
-       "type": 2,
-       "method": 7
+       "method": 7,
+       "type": 2
       },
       "live": 1132,
       "oracle_buckets": {
@@ -29905,13 +29905,13 @@
    "repo": "nextest",
    "lang": "rust",
    "variant": "path_tests_excluded_all_features",
-   "index_seconds": 5.1,
+   "index_seconds": 4.8,
    "oracle_mode": null,
    "oracle_meta": {
     "build_scripts_run": false,
     "proc_macros_run": false,
     "features": "all",
-    "seconds": 13.3
+    "seconds": 13.5
    },
    "oracle_dropped": {
     "callee_external": 8752,
@@ -30050,7 +30050,7 @@
    "dead": {
     "oracle_meta": {
      "seconds": 1.1,
-     "peak_rss_mb": 97,
+     "peak_rss_mb": 98,
      "features": "all",
      "tool": "rust-analyzer SCIP occurrences"
     },
@@ -30077,8 +30077,8 @@
       "dead": 26,
       "dead_by_kind": {
        "function": 17,
-       "type": 2,
-       "method": 7
+       "method": 7,
+       "type": 2
       },
       "live": 1132,
       "oracle_buckets": {

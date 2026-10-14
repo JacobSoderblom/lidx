@@ -64,11 +64,12 @@ def grade_refs(oracle, syms, edges, lang, src, cfg_gate=None, site_gate=None):
     declared there is not seen, so `features.push(..)` resolves to a function of that name): an oracle reference whose every site is gated is
     left out (`oracle_refs_cfg_gated`), and an unmatched lidx pair whose evidence is gated is ungradable (`cfg_gated_evidence`).
 
-    site_gate (Rust): callable (file, [lines], name, qualname, binds_ok) -> True when every evidence line is inside an attribute or a `macro_rules!`
-    definition and spells the callee's name (rust_token_trees.py): rust-analyzer, run without proc macros, emits no occurrence there, so an unmatched
-    lidx pair is ungradable (`token_tree_site`) instead of wrong. `binds_ok` is true when the name can mean only that callee: the only function or
-    method of that name in the repository, or one declared in the caller's file; otherwise the site must write a path that agrees with the callee's
-    qualified name. A site that names another function stays wrong; a pair the compiler confirmed is untouched."""
+    site_gate (Rust): callable (file, [lines], callee, unique, caller_module) -> True when every evidence line spells the callee's name inside an
+    attribute or a `macro_rules!` body, as a path or a path-valued string, and the spelling binds to the callee (rust_token_trees.py):
+    rust-analyzer, run without proc macros, emits no occurrence there, so an unmatched lidx pair is ungradable (`token_tree_site`) instead of wrong.
+    `callee` is {name, qualname, file, line, kind}, `unique` is true when it is the only function or method of that name in the repository, and
+    `caller_module` the qualified name of the module symbol of the evidence file. A site that names another function stays wrong; a pair the
+    compiler confirmed is untouched."""
     sym_keys = {s["key"] for s in syms.values() if "key" in s}
     canon = {}
     for s in syms.values():
@@ -78,6 +79,10 @@ def grade_refs(oracle, syms, edges, lang, src, cfg_gate=None, site_gate=None):
                 canon[s["key"]] = c
     cn = lambda k: canon.get(k, k)  # noqa: E731
     name_by_key = {s["key"]: s["name"].split(".")[-1] for s in syms.values() if "key" in s}
+    module_of_file = {}  # file -> qualname of its module symbol (the shortest: an inline `mod` of the file is longer)
+    for s in syms.values():
+        if "key" in s and s["kind"] == "module" and len(s["qualname"]) < len(module_of_file.get(s["file"], s["qualname"] + "x")):
+            module_of_file[s["file"]] = s["qualname"]
     fn_keys_by_name = defaultdict(set)
     for s in syms.values():
         if "key" in s and s["kind"] in FN_KINDS:
@@ -220,8 +225,9 @@ def grade_refs(oracle, syms, edges, lang, src, cfg_gate=None, site_gate=None):
         elif cfg_gate and len(p["epaths"]) == 1 and p["lines"] - {None, 0} and cfg_gate(sorted(p["epaths"])[0], sorted(x for x in p["lines"] if x)):
             reason = "cfg_gated_evidence"
         elif site_gate and len(p["epaths"]) == 1 and p["lines"] - {None, 0} and site_gate(
-                sorted(p["epaths"])[0], sorted(x for x in p["lines"] if x), tsym["name"].split(".")[-1], tsym["qualname"],
-                len(fn_keys_by_name[tsym["name"].split(".")[-1]]) == 1 or tsym["file"] == csym["file"]):
+                sorted(p["epaths"])[0], sorted(x for x in p["lines"] if x),
+                {k: tsym[k] for k in ("name", "qualname", "file", "line", "kind")} | {"name": tsym["name"].split(".")[-1]},
+                len(fn_keys_by_name[tsym["name"].split(".")[-1]]) == 1, module_of_file.get(sorted(p["epaths"])[0])):
             reason = "token_tree_site"
         if reason:
             if reason == "oracle_call_wins":

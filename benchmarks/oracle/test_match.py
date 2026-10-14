@@ -993,12 +993,12 @@ class RustConstInitialiserReferences(unittest.TestCase):
         d = self.run_oracle()
         by = {r["caller"]["name"]: r for r in d["refs"]}
         self.assertEqual(sorted(by), ["PROFILE", "main"])
-        self.assertEqual((by["PROFILE"]["caller"]["line"], by["PROFILE"]["caller_alts"]), (3, ["src/lib.rs:0"]))
-        self.assertNotIn("caller_alts", by["main"])  # inside a function the caller is the function
+        self.assertEqual(by["PROFILE"]["caller"]["line"], 3)
+        self.assertNotIn("caller_alts", by["PROFILE"])  # the module is not an acceptable stand-in for the item
         self.assertEqual([(c["name"], c["line"]) for c in d["ref_callers"]], [("PROFILE", 3)])  # the field `f` is no item
         self.assertEqual([c["name"] for c in d["callers"]], ["helper", "main"])  # a call from an initialiser is not judged by the call benchmark
 
-    def test_grading_accepts_the_item_and_the_module_and_judges_the_item(self):
+    def test_grading_wants_the_item_and_judges_it(self):
         d = self.run_oracle()
         syms = {1: rsym("src/lib.rs", 1, "lib", "module"), 2: rsym("src/lib.rs", 1, "helper"), 3: rsym("src/lib.rs", 3, "PROFILE", "const"),
                 4: rsym("src/lib.rs", 6, "main")}
@@ -1006,9 +1006,11 @@ class RustConstInitialiserReferences(unittest.TestCase):
         syms[2]["key"] = "src/lib.rs:1"
         syms[4]["key"] = "src/lib.rs:6"
         edges = lambda src: [redge(src, 2, 4, path="src/lib.rs"), redge(4, 2, 6, path="src/lib.rs")]  # noqa: E731
-        for src in (3, 1):  # attributed to the item, or coarsely to the module
-            summ, fn, fp, gap, ungr, _ = refs.grade_refs(d, syms, edges(src), "rust", match.Sources("/nonexistent"))
-            self.assertEqual((summ["tp"], summ["fp"], summ["recall"], summ["ungradable"]), (2, 0, 1.0, {}), src)
+        summ, fn, fp, gap, ungr, _ = refs.grade_refs(d, syms, edges(3), "rust", match.Sources("/nonexistent"))
+        self.assertEqual((summ["tp"], summ["fp"], summ["recall"], summ["ungradable"]), (2, 0, 1.0, {}))
+        # attributed coarsely to the module, lidx's pair is wrong and the item's reference is missed
+        summ, fn, fp, gap, ungr, _ = refs.grade_refs(d, syms, edges(1), "rust", match.Sources("/nonexistent"))
+        self.assertEqual((summ["tp"], summ["fp"], summ["recall"]), (1, 1, 0.5))
         # a wrong pair from the item is judged because the item is a `ref_caller`; without that it would be ungradable
         syms[5] = rsym("src/lib.rs", 9, "elsewhere")
         wrong = edges(3) + [redge(3, 5, 4, path="src/lib.rs")]

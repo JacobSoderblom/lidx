@@ -584,8 +584,7 @@ def main():
                 if is_call or ctor:
                     continue
                 # a const / static / closure-in-a-static initialiser: the reference belongs to the innermost such item (lidx indexes it as a symbol and
-                # attributes the reference there), with the module, keyed at line 0 like Go and TypeScript, as the acceptable coarser caller; one
-                # outside any item (an attribute, a macro expansion) belongs to the module
+                # attributes the reference there); one outside any item (an attribute, a macro expansion) belongs to the module, keyed at line 0 like Go and TypeScript
                 inner = None
                 for s_, e_, vd in vdefs:
                     if s_ <= (l, c) <= e_ and (inner is None or s_ >= inner[0]):
@@ -627,8 +626,6 @@ def main():
             e = {"caller": {"file": cdef[0], "line": cdef[1], "name": cdef[2]},
                  "callee": {"file": tgt[0], "line": tgt[1], "name": tgt[2]},
                  "sites": [site]}
-            if not is_call and best is None and cdef[1] != 0:
-                e["caller_alts"] = ["%s:0" % path]
             if not is_call:
                 form, ctx = ref_shape(lrow, cc)
                 e["forms"], e["ctxs"] = [form], [ctx]

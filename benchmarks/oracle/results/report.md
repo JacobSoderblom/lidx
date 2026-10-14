@@ -510,7 +510,7 @@ Lists: `results/lists/rust__ripgrep__tests.fn.json`, `rust__ripgrep__tests.fp.js
 - oracle: None, 256 edges: 256 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.996 if they were counted wrong
 - recall when both ends are indexed symbols: 0.992 (256 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 529 resolved in-repo CALLS pairs; 255 graded (254 correct, 1 wrong); lidx indexed in 0.6s
+- lidx: 529 resolved in-repo CALLS pairs; 255 graded (254 correct, 1 wrong); lidx indexed in 0.7s
 - ungradable lidx pairs: caller_file_not_covered 271, caller_not_judged 3
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -532,7 +532,7 @@ Lists: `results/lists/rust__fd__path_tests_excluded.fn.json`, `rust__fd__path_te
 - oracle: None, 190 edges: 190 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.990 if they were counted wrong
 - recall when both ends are indexed symbols: 0.990 (190 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 529 resolved in-repo CALLS pairs; 190 graded (188 correct, 2 wrong); lidx indexed in 0.6s
+- lidx: 529 resolved in-repo CALLS pairs; 190 graded (188 correct, 2 wrong); lidx indexed in 0.7s
 - ungradable lidx pairs: caller_file_not_covered 271, caller_not_judged 68
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -554,7 +554,7 @@ Lists: `results/lists/rust__fd__no_tests.fn.json`, `rust__fd__no_tests.fp.json`,
 - oracle: None, 515 edges: 515 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.998 if they were counted wrong
 - recall when both ends are indexed symbols: 0.996 (515 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 529 resolved in-repo CALLS pairs; 514 graded (513 correct, 1 wrong); lidx indexed in 0.6s
+- lidx: 529 resolved in-repo CALLS pairs; 514 graded (513 correct, 1 wrong); lidx indexed in 0.7s
 - ungradable lidx pairs: caller_not_judged 15
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -599,7 +599,7 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded_all_features.fn.json`, 
 - oracle: None, 256 edges: 256 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.996 if they were counted wrong
 - recall when both ends are indexed symbols: 0.992 (256 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 529 resolved in-repo CALLS pairs; 255 graded (254 correct, 1 wrong); lidx indexed in 0.6s
+- lidx: 529 resolved in-repo CALLS pairs; 255 graded (254 correct, 1 wrong); lidx indexed in 0.7s
 - ungradable lidx pairs: caller_file_not_covered 271, caller_not_judged 3
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -880,7 +880,7 @@ Lists: `results/lists/ts__h3.fn.json`, `ts__h3.fp.json`, `ts__h3.capture_gap.jso
 - oracle: None, 622 edges: 614 static with an indexed caller, 8 dispatch (8 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.997 if they were counted wrong
 - recall when both ends are indexed symbols: 0.982 (614 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 992 resolved in-repo CALLS pairs; 613 graded (611 correct, 2 wrong); lidx indexed in 4.8s
+- lidx: 992 resolved in-repo CALLS pairs; 613 graded (611 correct, 2 wrong); lidx indexed in 4.7s
 - ungradable lidx pairs: callee_file_not_covered 2, caller_file_not_covered 376, caller_not_judged 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -945,7 +945,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded.fn.json`, `rust__xsv__path_
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (21 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.998 if they were counted wrong
 - recall when both ends are indexed symbols: 0.993 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12576 resolved in-repo CALLS pairs; 6275 graded (6262 correct, 13 wrong); lidx indexed in 11.0s
+- lidx: 12576 resolved in-repo CALLS pairs; 6275 graded (6262 correct, 13 wrong); lidx indexed in 10.7s
 - ungradable lidx pairs: caller_file_not_covered 6298, caller_not_judged 3
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -990,7 +990,7 @@ Lists: `results/lists/rust__just__path_tests_excluded.fn.json`, `rust__just__pat
 - oracle: None, 2022 edges: 1934 static with an indexed caller, 22 dispatch (4 of them found), 66 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.969 if they were counted wrong
 - recall when both ends are indexed symbols: 0.952 (1934 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 65, 'callee_not_indexed': 1}
-- lidx: 2561 resolved in-repo CALLS pairs; 1903 graded (1844 correct, 59 wrong); lidx indexed in 5.1s
+- lidx: 2561 resolved in-repo CALLS pairs; 1903 graded (1844 correct, 59 wrong); lidx indexed in 4.8s
 - ungradable lidx pairs: callee_file_not_covered 1, caller_file_not_covered 557, caller_not_judged 100
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1012,7 +1012,7 @@ Lists: `results/lists/rust__nextest__path_tests_excluded.fn.json`, `rust__nextes
 - oracle: None, 639 edges: 631 static with an indexed caller, 8 dispatch (8 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.998 if they were counted wrong
 - recall when both ends are indexed symbols: 0.983 (631 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 992 resolved in-repo CALLS pairs; 629 graded (628 correct, 1 wrong); lidx indexed in 4.8s
+- lidx: 992 resolved in-repo CALLS pairs; 629 graded (628 correct, 1 wrong); lidx indexed in 4.7s
 - ungradable lidx pairs: caller_file_not_covered 361, caller_not_judged 1, cfg_gated_evidence 1
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1077,7 +1077,7 @@ Lists: `results/lists/rust__xsv__path_tests_excluded_all_features.fn.json`, `rus
 - oracle: None, 6309 edges: 6288 static with an indexed caller, 21 dispatch (21 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.998 if they were counted wrong
 - recall when both ends are indexed symbols: 0.993 (6288 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 12576 resolved in-repo CALLS pairs; 6275 graded (6262 correct, 13 wrong); lidx indexed in 11.0s
+- lidx: 12576 resolved in-repo CALLS pairs; 6275 graded (6262 correct, 13 wrong); lidx indexed in 10.7s
 - ungradable lidx pairs: caller_file_not_covered 6298, caller_not_judged 3
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1122,7 +1122,7 @@ Lists: `results/lists/rust__just__path_tests_excluded_all_features.fn.json`, `ru
 - oracle: None, 2023 edges: 1935 static with an indexed caller, 22 dispatch (4 of them found), 66 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.970 if they were counted wrong
 - recall when both ends are indexed symbols: 0.953 (1935 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'not_indexed': 65, 'callee_not_indexed': 1}
-- lidx: 2561 resolved in-repo CALLS pairs; 1902 graded (1845 correct, 57 wrong); lidx indexed in 5.1s
+- lidx: 2561 resolved in-repo CALLS pairs; 1902 graded (1845 correct, 57 wrong); lidx indexed in 4.8s
 - ungradable lidx pairs: caller_file_not_covered 557, caller_not_judged 100, cfg_gated_evidence 2
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -1957,26 +1957,26 @@ Wall-clock seconds and peak resident set of the oracle process tree (sampled eve
 | ts/ky | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 2.2 | 242 |
 | ts/immer | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.3 | 236 |
 | ts/h3 | tsc 5.9.3 noUnusedLocals + LanguageService.findReferences | 1.5 | 274 |
-| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP occurrences | 2.4 | 99 |
-| rust/ripgrep/no_tests | rust-analyzer SCIP occurrences | 2.2 | 95 |
-| rust/ripgrep/tests | rust-analyzer SCIP occurrences | 2.5 | 107 |
-| rust/ripgrep/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 2.2 | 98 |
+| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP occurrences | 2.3 | 98 |
+| rust/ripgrep/no_tests | rust-analyzer SCIP occurrences | 2.3 | 96 |
+| rust/ripgrep/tests | rust-analyzer SCIP occurrences | 2.4 | 107 |
+| rust/ripgrep/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 2.3 | 99 |
 | rust/fd/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
 | rust/fd/no_tests | rust-analyzer SCIP occurrences | 0.2 | 6 |
-| rust/fd/tests | rust-analyzer SCIP occurrences | 0.3 | 33 |
+| rust/fd/tests | rust-analyzer SCIP occurrences | 0.3 | 34 |
 | rust/fd/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 6 |
 | rust/bat/path_tests_excluded | rust-analyzer SCIP occurrences | 0.3 | 36 |
 | rust/bat/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.3 | 36 |
-| rust/tokei/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 5 |
+| rust/tokei/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
 | rust/tokei/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 6 |
-| rust/xsv/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 5 |
-| rust/xsv/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 1 |
-| rust/lidx/path_tests_excluded | rust-analyzer SCIP occurrences | 3.7 | 196 |
-| rust/lidx/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 3.7 | 197 |
+| rust/xsv/path_tests_excluded | rust-analyzer SCIP occurrences | 0.2 | 6 |
+| rust/xsv/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.2 | 6 |
+| rust/lidx/path_tests_excluded | rust-analyzer SCIP occurrences | 3.6 | 195 |
+| rust/lidx/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 3.7 | 198 |
 | rust/just/path_tests_excluded | rust-analyzer SCIP occurrences | 0.8 | 72 |
 | rust/just/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 0.8 | 72 |
 | rust/nextest/path_tests_excluded | rust-analyzer SCIP occurrences | 1.1 | 98 |
-| rust/nextest/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 1.1 | 97 |
+| rust/nextest/path_tests_excluded_all_features | rust-analyzer SCIP occurrences | 1.1 | 98 |
 
 `go/syft/tests` (the largest cell): 32.9 s, 7124 MB peak, recorded in `cells.json` under `cells['go/syft/tests']['dead']['oracle_meta']`.
 
