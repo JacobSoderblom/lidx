@@ -219,6 +219,10 @@ struct CarriedUnresolvedRow {
     deferred: Option<String>,
 }
 
+/// `meta` key of the Go module visibility map (JSON, directory -> the
+/// directories of the modules it sees), see `Db::rederive_go_dispatch_calls`.
+pub const GO_MODULES_META_KEY: &str = "go_module_visibility";
+
 impl Db {
     pub fn new(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -2473,6 +2477,19 @@ impl Db {
             versions.push(row?);
         }
         Ok(versions)
+    }
+
+    /// Whether any live file of the index is Go.
+    pub fn has_go_files(&self) -> Result<bool> {
+        Ok(self
+            .read_conn()?
+            .query_row(
+                "SELECT 1 FROM files WHERE language = 'go' AND deleted_version IS NULL LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
     }
 
     pub fn get_meta_i64(&self, key: &str) -> Result<Option<i64>> {

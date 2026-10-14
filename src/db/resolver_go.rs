@@ -16,6 +16,7 @@ use super::*;
 use crate::indexer::extract::{GoDeferred, GoValue};
 use crate::indexer::go_build::{BUILD_HOST_MODIFIER, BUILD_TAG_MODIFIER};
 use crate::model::go_type_data;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 /// How deep embedded types are searched for a promoted member.
@@ -1790,7 +1791,7 @@ impl Db {
                 derived,
                 detail,
                 "structural",
-                wanted,
+                wanted.into_iter().map(DerivedRow::plain).collect(),
             )?;
         }
         tx.commit()?;
@@ -1812,9 +1813,17 @@ impl Db {
     pub fn rederive_go_dispatch_calls(&self, graph_version: i64) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        let modules: Option<BTreeMap<String, Vec<String>>> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![crate::db::GO_MODULES_META_KEY],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|json| serde_json::from_str(&json).ok());
         let wanted = {
             let mut resolver = Resolver::new(&tx, graph_version)?;
-            resolver.go_dispatch_calls()?
+            resolver.go_dispatch_calls(modules.as_ref())?
         };
         let changed = sync_derived_edges(
             &tx,
@@ -1832,6 +1841,7 @@ impl Db {
 
 /// One Go symbol the dispatch pass reasons about.
 struct RtaSymbol {
+    qualname: String,
     kind: String,
     name: String,
     signature: Option<String>,
@@ -1844,6 +1854,10 @@ struct RtaSymbol {
 struct RtaUniverse {
     /// Types put behind an interface somewhere that runs.
     converted: HashSet<i64>,
+    /// For each converted type, the function that converts it: of those that
+    /// run, the one whose qualname sorts first (so the choice does not
+    /// depend on row ids).
+    sites: HashMap<i64, i64>,
     /// The functions that run.
     reach: HashSet<i64>,
 }
@@ -2105,7 +2119,24 @@ impl Resolver<'_> {
                 break;
             }
         }
-        Ok(RtaUniverse { converted, reach })
+        let mut sites: HashMap<i64, i64> = HashMap::new();
+        for (&ty, decls) in &by_type {
+            let site = decls
+                .iter()
+                .filter(|&&(d, strong)| {
+                    reach.contains(&d) && (strong || production.unwrap_or(&reach).contains(&d))
+                })
+                .filter_map(|&(d, _)| symbols.get(&d).map(|s| (s.qualname.as_str(), d)))
+                .min();
+            if let Some((_, decl)) = site {
+                sites.insert(ty, decl);
+            }
+        }
+        Ok(RtaUniverse {
+            converted,
+            sites,
+            reach,
+        })
     }
 
     /// The stored call graph, see [`RtaInput`], with the `DISPATCH` edges
@@ -2137,7 +2168,7 @@ impl Resolver<'_> {
         {
             let mut stmt = self.conn.prepare(
                 "SELECT s.id, s.kind, s.name, s.signature, substr(f.path, -8) = '_test.go',
-                        (' ' || COALESCE(s.visibility, '') || ' ') LIKE ?2
+                        (' ' || COALESCE(s.visibility, '') || ' ') LIKE ?2, s.qualname
                  FROM symbols s JOIN files f ON f.id = s.file_id
                  WHERE s.graph_version = ?1 AND f.language = 'go' AND f.deleted_version IS NULL
                    AND s.kind IN ('function', 'method', 'module')",
@@ -2152,6 +2183,7 @@ impl Resolver<'_> {
                         signature: r.get(3)?,
                         in_test: r.get(4)?,
                         main_package: r.get(5)?,
+                        qualname: r.get(6)?,
                     },
                 ))
             })? {
@@ -2210,23 +2242,36 @@ impl Resolver<'_> {
         })
     }
 
-    /// `(caller, implementing method, file)` for every `DISPATCH` edge, see
-    /// [`Db::rederive_go_dispatch_calls`].
-    fn go_dispatch_calls(&mut self) -> Result<Vec<(i64, i64, i64)>> {
+    /// The derived `CALLS` edge of every `DISPATCH` edge to every implementer
+    /// it reaches, see [`Db::rederive_go_dispatch_calls`]. `modules` bounds
+    /// the implementers a caller can reach: those of its own Go module or of
+    /// a module it requires (`None`: no bound).
+    fn go_dispatch_calls(
+        &mut self,
+        modules: Option<&BTreeMap<String, Vec<String>>>,
+    ) -> Result<Vec<DerivedRow>> {
         let gv = self.graph_version;
-        let edges: Vec<(i64, i64, i64, Option<String>, bool)> = {
+        type Site = (String, Option<i64>, Option<i64>);
+        type Dispatch = (i64, i64, i64, Option<String>, bool);
+        let (edges, sites): (Vec<Dispatch>, Vec<Site>) = {
             let mut stmt = self.conn.prepare(
                 "SELECT e.file_id, e.source_symbol_id, e.target_symbol_id, e.receiver_scope,
-                        substr(f.path, -8) = '_test.go'
+                        substr(f.path, -8) = '_test.go', f.path,
+                        e.evidence_start_line, e.evidence_end_line
                  FROM edges e JOIN files f ON f.id = e.file_id
                  WHERE e.graph_version = ?1 AND e.kind = 'DISPATCH' AND e.derived = 0
                    AND e.source_symbol_id IS NOT NULL AND e.target_symbol_id IS NOT NULL
                    AND f.deleted_version IS NULL",
             )?;
             stmt.query_map(params![gv], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?),
+                    (r.get(5)?, r.get(6)?, r.get(7)?),
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .unzip()
         };
         if edges.is_empty() {
             return Ok(Vec::new());
@@ -2236,13 +2281,14 @@ impl Resolver<'_> {
         let prod = self.go_rta(false, None, &input, &mut memo)?;
         let all = self.go_rta(true, Some(&prod.reach), &input, &mut memo)?;
         let mut out = Vec::new();
-        for ((file_id, source, target, _, from_test), &(_, _, scope)) in
-            edges.into_iter().zip(&input.dispatch)
+        for (((file_id, source, target, _, from_test), &(_, _, scope)), (path, start, end)) in
+            edges.into_iter().zip(&input.dispatch).zip(sites)
         {
             let Some((spec, iface)) = self.go_interface_spec(target)? else {
                 continue;
             };
             let universe = if from_test { &all } else { &prod };
+            let caller_module = go_module_of(modules, &path);
             let types = input.implementers.get(&scope.unwrap_or(iface.id));
             for &ty in types.into_iter().flatten() {
                 if !universe.converted.contains(&ty) {
@@ -2254,22 +2300,112 @@ impl Resolver<'_> {
                 if row.kind == "interface" || (!from_test && row.path.ends_with("_test.go")) {
                     continue;
                 }
+                if let (Some((_, sees)), Some((owner, _))) =
+                    (caller_module, go_module_of(modules, &row.path))
+                    && !sees.iter().any(|dir| dir == owner)
+                {
+                    continue;
+                }
                 let Some(method) = self.go_dispatch_target(&row, &spec, &mut memo)? else {
                     continue;
                 };
-                if !from_test && input.symbols.get(&method).is_none_or(|s| s.in_test) {
+                let Some(target_symbol) = input.symbols.get(&method) else {
+                    continue;
+                };
+                if !from_test && target_symbol.in_test {
                     continue;
                 }
-                out.push((source, method, file_id));
+                let runs = universe.reach.contains(&source);
+                let site = universe
+                    .sites
+                    .get(&ty)
+                    .and_then(|d| input.symbols.get(d))
+                    .map_or("a function that runs", |s| s.qualname.as_str());
+                let evidence = format!(
+                    "go interface dispatch: the call of {} can run {}.{}; {} is converted to an interface in {}{}",
+                    spec.qualname,
+                    row.name,
+                    spec.name,
+                    row.qualname,
+                    site,
+                    if runs {
+                        ""
+                    } else {
+                        "; the caller is not reached from any root of the program"
+                    },
+                );
+                out.push(DerivedRow {
+                    source,
+                    target: method,
+                    file_id,
+                    confidence: if runs {
+                        DISPATCH_IMPL_CONFIDENCE
+                    } else {
+                        DISPATCH_IMPL_UNREACHED_CONFIDENCE
+                    },
+                    evidence: Some(evidence),
+                    lines: (start, end),
+                });
             }
         }
         Ok(out)
     }
 }
 
-/// Make the `kind` edges a pass owns (`derived`) exactly `wanted`
-/// (`(source, target, file_id)`): delete the rest, insert what is missing,
-/// leave the others untouched. Returns how many rows changed.
+/// Confidence of a derived dispatch edge whose caller the program reaches:
+/// inferred from the whole-program type fixpoint, not read off a call site.
+const DISPATCH_IMPL_CONFIDENCE: f64 = 0.8;
+/// Confidence of one whose caller no root reaches (the fixpoint cannot say the
+/// call ever runs).
+const DISPATCH_IMPL_UNREACHED_CONFIDENCE: f64 = 0.5;
+
+/// A derived edge a pass wants.
+struct DerivedRow {
+    source: i64,
+    target: i64,
+    file_id: i64,
+    confidence: f64,
+    evidence: Option<String>,
+    /// Start and end line of the call site the edge stands for.
+    lines: (Option<i64>, Option<i64>),
+}
+
+impl DerivedRow {
+    /// A structural edge: certain, nothing to quote.
+    fn plain((source, target, file_id): (i64, i64, i64)) -> Self {
+        Self {
+            source,
+            target,
+            file_id,
+            confidence: 1.0,
+            evidence: None,
+            lines: (None, None),
+        }
+    }
+}
+
+/// The Go module owning `path` (the longest module directory above it) and
+/// the directories of the modules it sees; `None` without a module map or
+/// when no module owns the file.
+fn go_module_of<'m>(
+    modules: Option<&'m BTreeMap<String, Vec<String>>>,
+    path: &str,
+) -> Option<(&'m str, &'m [String])> {
+    modules?
+        .iter()
+        .filter(|(dir, _)| {
+            dir.is_empty()
+                || path
+                    .strip_prefix(dir.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+        .max_by_key(|(dir, _)| dir.len())
+        .map(|(dir, sees)| (dir.as_str(), sees.as_slice()))
+}
+
+/// Make the `kind` edges a pass owns (`derived`) exactly `wanted`: delete the
+/// rest, insert what is missing, bring the confidence and evidence of the
+/// others up to date. Returns how many rows changed.
 fn sync_derived_edges(
     tx: &rusqlite::Transaction<'_>,
     graph_version: i64,
@@ -2277,11 +2413,13 @@ fn sync_derived_edges(
     derived: i64,
     detail: &str,
     resolution_kind: &str,
-    wanted: Vec<(i64, i64, i64)>,
+    wanted: Vec<DerivedRow>,
 ) -> Result<usize> {
-    let existing: Vec<(i64, i64, i64)> = {
+    type Stored = (i64, i64, i64, f64, Option<String>, Option<i64>, Option<i64>);
+    let existing: Vec<Stored> = {
         let mut stmt = tx.prepare(
-            "SELECT id, source_symbol_id, target_symbol_id FROM edges
+            "SELECT id, source_symbol_id, target_symbol_id, confidence, evidence_snippet,
+                    evidence_start_line, evidence_end_line FROM edges
              WHERE graph_version = ?1 AND derived = ?2 AND kind = ?3",
         )?;
         stmt.query_map(params![graph_version, derived, kind], |row| {
@@ -2289,15 +2427,35 @@ fn sync_derived_edges(
                 row.get(0)?,
                 row.get::<_, Option<i64>>(1)?.unwrap_or(0),
                 row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?
     };
-    let wanted_set: HashSet<(i64, i64)> = wanted.iter().map(|&(c, i, _)| (c, i)).collect();
+    let mut wanted_by_pair: HashMap<(i64, i64), &DerivedRow> = HashMap::new();
+    for row in &wanted {
+        wanted_by_pair
+            .entry((row.source, row.target))
+            .or_insert(row);
+    }
     let mut kept: HashSet<(i64, i64)> = HashSet::new();
     let mut changed = 0;
-    for (id, source, target) in existing {
-        if wanted_set.contains(&(source, target)) && kept.insert((source, target)) {
+    for (id, source, target, confidence, evidence, start, end) in existing {
+        if let Some(row) = wanted_by_pair.get(&(source, target))
+            && kept.insert((source, target))
+        {
+            if row.confidence != confidence || row.evidence != evidence || row.lines != (start, end)
+            {
+                tx.execute(
+                    "UPDATE edges SET confidence = ?2, evidence_snippet = ?3,
+                            evidence_start_line = ?4, evidence_end_line = ?5 WHERE id = ?1",
+                    params![id, row.confidence, row.evidence, row.lines.0, row.lines.1],
+                )?;
+                changed += 1;
+            }
             continue;
         }
         tx.execute("DELETE FROM edges WHERE id = ?1", params![id])?;
@@ -2306,24 +2464,30 @@ fn sync_derived_edges(
     let mut insert = tx.prepare(
         "INSERT INTO edges
          (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
-          confidence, graph_version, resolution_kind, derived)
+          confidence, graph_version, resolution_kind, derived,
+          evidence_snippet, evidence_start_line, evidence_end_line)
          VALUES (?1, ?2, ?3, ?4, (SELECT qualname FROM symbols WHERE id = ?3),
-                 ?5, 1.0, ?6, ?8, ?7)",
+                 ?5, ?9, ?6, ?8, ?7, ?10, ?11, ?12)",
     )?;
     let mut written: HashSet<(i64, i64)> = HashSet::new();
-    for (source, target, file_id) in wanted {
-        if kept.contains(&(source, target)) || !written.insert((source, target)) {
+    for row in wanted {
+        let pair = (row.source, row.target);
+        if kept.contains(&pair) || !written.insert(pair) {
             continue;
         }
         insert.execute(params![
-            file_id,
-            source,
-            target,
+            row.file_id,
+            row.source,
+            row.target,
             kind,
             detail,
             graph_version,
             derived,
-            resolution_kind
+            resolution_kind,
+            row.confidence,
+            row.evidence,
+            row.lines.0,
+            row.lines.1
         ])?;
         changed += 1;
     }
