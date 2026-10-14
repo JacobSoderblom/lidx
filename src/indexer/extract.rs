@@ -295,6 +295,12 @@ pub enum Step {
     Tuple(usize),
     /// Item of a sequence or iterator.
     Elem,
+    /// The result of calling the value, a function pointer (`fn(A) -> R`).
+    Call,
+    /// The value a combinator (`map`, `and_then`, `for_each`, ...) hands the
+    /// function it is given: `Some`'s, `Ok`'s (`Err`'s with `err`, for
+    /// `map_err`) or a sequence's item, whichever the type turns out to be.
+    Arg { err: bool },
     /// A std method whose result type follows from the receiver's.
     Method(String),
     /// `.await` of a future.

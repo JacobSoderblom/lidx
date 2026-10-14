@@ -690,6 +690,8 @@ pub enum DeclarationQuery<'a> {
     Module(&'a str),
     /// A type, trait or alias with exactly this qualname (Rust), not a module.
     Item(&'a str),
+    /// A Rust `type` alias named so, in any module.
+    RustAlias(&'a str),
 }
 
 /// The `using`s and namespaces in scope where a declaration is written.
@@ -703,6 +705,17 @@ pub trait DeclarationIndex {
     fn declarations(&self, query: DeclarationQuery<'_>) -> Result<Vec<Declaration>>;
     /// Whether a type named `name` is declared in the repo.
     fn is_repo_type(&self, name: &str) -> Result<bool>;
+    /// The error type (an absolute path: `docopt::Error`, `std::io::Error`)
+    /// the dependency `krate`'s function or method `owner::name` returns,
+    /// read from sources on disk; `None` when it cannot be told.
+    fn dependency_error(
+        &self,
+        _krate: &str,
+        _owner: Option<&str>,
+        _name: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
     /// Whether a module named `name` is declared in the repo.
     fn is_repo_module(&self, _name: &str) -> Result<bool> {
         Ok(false)
@@ -1265,6 +1278,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 String::new(),
                 String::new(),
             ),
+            DeclarationQuery::RustAlias(name) => (
+                "s.kind = 'type' AND s.name = ?1",
+                name.to_string(),
+                String::new(),
+                String::new(),
+            ),
             DeclarationQuery::Item(qualname) => (
                 "s.kind IN ('struct', 'enum', 'union', 'trait', 'type') AND s.qualname = ?1",
                 qualname.to_string(),
@@ -1296,6 +1315,24 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
 
     fn is_repo_type(&self, name: &str) -> Result<bool> {
         Ok(!self.declarations(DeclarationQuery::Type(name))?.is_empty())
+    }
+
+    fn dependency_error(
+        &self,
+        krate: &str,
+        owner: Option<&str>,
+        name: &str,
+    ) -> Result<Option<String>> {
+        let Some(root) = self.resolver.repo_root.as_deref() else {
+            return Ok(None);
+        };
+        let dirs = [
+            std::path::PathBuf::from(&self.resolver.ref_dir),
+            std::path::PathBuf::new(),
+        ];
+        Ok(crate::indexer::rust_deps::dependency_error(
+            root, &dirs, krate, owner, name,
+        ))
     }
 
     fn is_repo_module(&self, name: &str) -> Result<bool> {
@@ -1514,6 +1551,15 @@ pub(crate) struct Resolver<'c> {
     /// Which half of a TypeScript merged declaration the current reference
     /// means; see [`MergedHalf`].
     merged_half: MergedHalf,
+    /// The current value reference's source symbol, for a declaration nested
+    /// in it (see `nested_value_declaration`).
+    value_source: Option<i64>,
+    /// The current reference's argument-type hint (`RUST_ARG_HINT`), as stored.
+    arg_hint: Option<String>,
+    /// Root of the repository this database indexes, when an indexer said so.
+    repo_root: Option<std::path::PathBuf>,
+    /// Package directory (repo-relative) of the file the current reference is in.
+    ref_dir: String,
     /// Lookup scope of the current call's known receiver type (C#).
     call_scope: TypeScope,
     /// Lazily resolved `files.id` of the single synthetic external
@@ -1570,6 +1616,10 @@ impl<'c> Resolver<'c> {
             caller_build_tags: HashMap::new(),
             call_receiver: None,
             merged_half: MergedHalf::Value,
+            value_source: None,
+            arg_hint: None,
+            repo_root: repo_root_of(conn),
+            ref_dir: String::new(),
             call_scope: TypeScope::default(),
             external_file_id: None,
             go: resolver_go::GoCaches::default(),
@@ -1815,6 +1865,29 @@ impl<'c> Resolver<'c> {
             let Some((type_path, member)) = candidate.rsplit_once("::") else {
                 continue;
             };
+            // The name itself may be one the module only imports
+            // (`use super::*;` over a parent's `use a::f;`): follow it to
+            // where it is declared.
+            if member.starts_with(|c: char| c.is_ascii_lowercase()) {
+                let itself = {
+                    let index = LanguageIndex {
+                        resolver: self,
+                        lang: "rust",
+                    };
+                    crate::indexer::rust::follow_path(
+                        &index,
+                        package,
+                        Some(r.source_file_path),
+                        candidate,
+                    )?
+                };
+                if let crate::indexer::rust::Followed::Repo { path, .. } = itself
+                    && &path != candidate
+                    && let Some(id) = self.exact(&path, symbol_map, r.source_file_path, false)?
+                {
+                    return Ok(Some(id));
+                }
+            }
             let followed = {
                 let index = LanguageIndex {
                     resolver: self,
@@ -1840,6 +1913,52 @@ impl<'c> Resolver<'c> {
             }
         }
         Ok(None)
+    }
+
+    /// The one method named `name` that a trait declares in the Cargo package
+    /// of `file_path` (`T::name` for a generic `T` bounded by that trait); none
+    /// when no trait or several traits declare one.
+    fn rust_bound_item(&mut self, name: &str, file_path: &str) -> Result<Option<i64>> {
+        let package = rust_package_of(file_path);
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT s.id, s.qualname, f.path FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.name = ?1 AND s.kind = 'method' AND f.language = 'rust' AND {}
+             ORDER BY s.id",
+            live_symbols(2)
+        ))?;
+        let rows: Vec<(i64, String, String)> = stmt
+            .query_map(params![name, self.graph_version], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        let mut found: Option<(i64, String)> = None;
+        for (id, qualname, path) in rows {
+            if rust_package_of(&path) != package {
+                continue;
+            }
+            let Some(owner) = qualname_container(&qualname) else {
+                continue;
+            };
+            let is_trait = self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM symbols WHERE qualname = ?1 AND kind = 'trait' AND graph_version = ?2",
+                    params![owner, self.graph_version],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !is_trait {
+                continue;
+            }
+            match &found {
+                // A `cfg` twin of the same trait method.
+                Some((_, existing)) if *existing == qualname => {}
+                Some(_) => return Ok(None),
+                None => found = Some((id, qualname)),
+            }
+        }
+        Ok(found.map(|(id, _)| id))
     }
 
     /// The symbol of one of `kinds` whose qualname is exactly `qualname`,
@@ -2106,6 +2225,16 @@ impl<'c> Resolver<'c> {
             .map(|ty| simple_type_name(ty).to_string());
         self.call_scope = r.receiver_scope.cloned().unwrap_or_default();
         self.merged_half = self.merged_half_for(r)?;
+        self.ref_dir = rust_package_of(r.source_file_path).to_string();
+        self.arg_hint = r
+            .import_candidates
+            .iter()
+            .find(|c| c.starts_with(RUST_ARG_HINT))
+            .cloned();
+        self.value_source = r
+            .call_shape
+            .filter(|shape| shape.is_ref)
+            .and(r.source_symbol_id);
         let resolution = if name_only {
             self.resolve_name_only(r)?
         } else {
@@ -2342,6 +2471,30 @@ impl<'c> Resolver<'c> {
                     Ok(id) => return Ok(resolved(id, ResolutionKind::Import)),
                     Err(reason) => return Ok(Resolution::Unresolved(reason)),
                 }
+            } else if !types_only
+                && r.source_lang == "rust"
+                && let Some(expected) = r
+                    .import_candidates
+                    .iter()
+                    .find_map(|c| c.strip_prefix(RUST_EXPECT_ERR))
+            {
+                return Ok(
+                    match self.resolve_expected_from(expected, r.source_file_path)? {
+                        Some(id) => resolved(id, ResolutionKind::ReceiverType),
+                        None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+                    },
+                );
+            } else if !types_only
+                && r.source_lang == "rust"
+                && let Some(name) = r
+                    .import_candidates
+                    .iter()
+                    .find_map(|c| c.strip_prefix(RUST_BOUND_ITEM))
+            {
+                return Ok(match self.rust_bound_item(name, r.source_file_path)? {
+                    Some(id) => resolved(id, ResolutionKind::ReceiverType),
+                    None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+                });
             } else if !types_only
                 && let Some(id) = self.resolve_import(
                     r.import_candidates,
@@ -2643,13 +2796,205 @@ impl<'c> Resolver<'c> {
             }
             return Ok(exactly_one(admitted.into_iter()).map(|c| c.id));
         }
+        if candidates.len() > 1
+            && let Some(id) = self.select_by_argument(&candidates, caller_file)?
+        {
+            return Ok(Some(id));
+        }
         let resolved = collapse_exact_candidates(&candidates)
-            .or_else(|| merged_declaration(&candidates, self.merged_half));
+            .or_else(|| merged_declaration(&candidates, self.merged_half))
+            .or_else(|| self.nested_value_declaration(&candidates));
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
             self.saw_repo_ambiguous = true;
         }
         Ok(resolved)
+    }
+
+    /// The type the current reference's argument hint names, and whether the
+    /// value is a reference (`&`), owned (`=`) or not known (`?`).
+    fn hinted_type(&mut self, caller_file: &str) -> Result<Option<(String, char)>> {
+        let Some(hint) = self.arg_hint.clone() else {
+            return Ok(None);
+        };
+        let Some(rest) = hint.strip_prefix(RUST_ARG_HINT) else {
+            return Ok(None);
+        };
+        let mut chars = rest.chars();
+        let (Some(by_ref), Some(kind)) = (chars.next(), chars.next()) else {
+            return Ok(None);
+        };
+        // `A0:` / `A1:` carry an alias's name and whether the `Err` side is meant.
+        let alias_err = match kind {
+            'A' => match chars.next() {
+                Some('0') => Some(false),
+                Some('1') => Some(true),
+                _ => return Ok(None),
+            },
+            _ => None,
+        };
+        if chars.next() != Some(':') {
+            return Ok(None);
+        }
+        let payload = chars.as_str();
+        let wanted = match kind {
+            'A' => {
+                let index = LanguageIndex {
+                    resolver: self,
+                    lang: "rust",
+                };
+                match crate::indexer::rust::alias_argument_type(
+                    payload,
+                    alias_err.unwrap_or(false),
+                    rust_package_of(caller_file),
+                    &index,
+                )? {
+                    Some(name) => name,
+                    None => return Ok(None),
+                }
+            }
+            'T' => payload.to_string(),
+            'D' => {
+                let Ok(deferred) =
+                    serde_json::from_str::<crate::indexer::extract::RustDeferred>(payload)
+                else {
+                    return Ok(None);
+                };
+                let index = LanguageIndex {
+                    resolver: self,
+                    lang: "rust",
+                };
+                match crate::indexer::rust::resolve_type_name(&deferred, &index)? {
+                    Some(name) => name,
+                    None => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some((wanted, by_ref)))
+    }
+
+    /// Of several trait-impl methods sharing a qualname (`impl From<Symbol>
+    /// for T` and `impl From<&Symbol> for T`), the one whose first parameter
+    /// is the type the reference's combinator hands it (`RUST_ARG_HINT`).
+    /// `None` when there is no hint, it cannot be settled, or it does not
+    /// leave exactly one impl.
+    fn select_by_argument(
+        &mut self,
+        candidates: &[ExactCandidate],
+        caller_file: &str,
+    ) -> Result<Option<i64>> {
+        if self.arg_hint.is_none() || candidates.iter().any(|c| c.language != "rust") {
+            return Ok(None);
+        }
+        let Some((wanted, by_ref)) = self.hinted_type(caller_file)? else {
+            return Ok(None);
+        };
+        let methods: Vec<(i64, Option<&str>)> = candidates
+            .iter()
+            .map(|c| (c.id, c.signature.as_deref()))
+            .collect();
+        Ok(pick_by_parameter(&wanted, by_ref, &methods))
+    }
+
+    /// Bare `From::from` as the tail of a function returning `Result<_, E>`
+    /// (`RUST_EXPECT_ERR`): the `impl From<X> for E` whose `X` is the type the
+    /// combinator hands the function. `None` unless exactly one impl fits.
+    fn resolve_expected_from(&mut self, expected: &str, caller_file: &str) -> Result<Option<i64>> {
+        let Some((wanted, by_ref)) = self.hinted_type(caller_file)? else {
+            return Ok(None);
+        };
+        let target = {
+            let index = LanguageIndex {
+                resolver: self,
+                lang: "rust",
+            };
+            crate::indexer::rust::expected_error_type(
+                expected,
+                rust_package_of(caller_file),
+                &index,
+            )?
+        };
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let package = rust_package_of(caller_file);
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT s.id, s.signature, f.path FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.name = 'from' AND s.kind = 'method' AND f.language = 'rust'
+               AND s.qualname LIKE ?1 ESCAPE '\\' AND {}
+             ORDER BY s.id",
+            live_symbols(2)
+        ))?;
+        let rows: Vec<(i64, Option<String>, String)> = stmt
+            .query_map(
+                params![
+                    format!("%::{}::from", target.replace('_', "\\_")),
+                    self.graph_version
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?
+            .collect::<std::result::Result<_, _>>()?;
+        let methods: Vec<(i64, Option<&str>)> = rows
+            .iter()
+            .filter(|(_, sig, path)| {
+                rust_package_of(path) == package
+                    && sig
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with(crate::model::TRAIT_IMPL_MARKER))
+            })
+            .map(|(id, sig, _)| (*id, sig.as_deref()))
+            .collect();
+        Ok(pick_by_parameter(&wanted, by_ref, &methods))
+    }
+
+    /// `export const A = (() => { class A {} return A; })()`: the const and
+    /// the class declared in its initializer share a qualname, and a value
+    /// read inside the const means the inner declaration. Applies to a value
+    /// reference whose source symbol is one of two same-file value
+    /// declarations, the other nested in its span; any other pair stays
+    /// ambiguous.
+    fn nested_value_declaration(&self, candidates: &[ExactCandidate]) -> Option<i64> {
+        const VALUE_KINDS: [&str; 4] = ["const", "variable", "function", "class"];
+        const TYPE_KINDS: [&str; 2] = ["interface", "type"];
+        let source = self.value_source?;
+        // A merged type half (`type A` beside the values) is no competitor.
+        let values: Vec<&ExactCandidate> = candidates
+            .iter()
+            .filter(|c| !TYPE_KINDS.contains(&c.kind.as_str()))
+            .collect();
+        let [a, b] = values.as_slice() else {
+            return None;
+        };
+        if a.file_id != b.file_id
+            || !crate::indexer::javascript::is_js_ts_path(&a.path)
+            || ![a, b]
+                .iter()
+                .all(|c| VALUE_KINDS.contains(&c.kind.as_str()))
+            || ![a.id, b.id].contains(&source)
+        {
+            return None;
+        }
+        let span = |id: i64| -> Option<(i64, i64)> {
+            self.conn
+                .query_row(
+                    "SELECT start_byte, end_byte FROM symbols WHERE id = ?",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .ok()
+                .flatten()
+        };
+        let (sa, sb) = (span(a.id)?, span(b.id)?);
+        let inside = |inner: (i64, i64), outer: (i64, i64)| {
+            inner != outer && inner.0 >= outer.0 && inner.1 <= outer.1
+        };
+        match (inside(sb, sa), inside(sa, sb)) {
+            (true, false) => Some(b.id),
+            (false, true) => Some(a.id),
+            _ => None,
+        }
     }
 
     /// Ambiguity guard for every name-based lookup: bind only when exactly
@@ -4502,6 +4847,54 @@ pub(crate) fn parse_rust_crate_pin(candidate: &str) -> Option<(&str, &str)> {
 }
 pub(crate) const RUST_EXTERNAL_CRATE: &str = "~";
 
+/// The repository root of each database an indexer opened, by database path:
+/// the resolver reads a Rust dependency's sources from disk (relative to the
+/// repository's `Cargo.lock`), and a `Connection` knows only its file.
+fn repo_roots() -> &'static std::sync::Mutex<HashMap<String, std::path::PathBuf>> {
+    static ROOTS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::path::PathBuf>>> =
+        std::sync::OnceLock::new();
+    ROOTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Records that the database at `db_path` indexes the repository `repo_root`.
+pub(crate) fn register_repo_root(db_path: &std::path::Path, repo_root: &std::path::Path) {
+    if let Ok(mut roots) = repo_roots().lock() {
+        roots.insert(
+            db_path.to_string_lossy().into_owned(),
+            repo_root.to_path_buf(),
+        );
+        if let Ok(real) = db_path.canonicalize() {
+            roots.insert(real.to_string_lossy().into_owned(), repo_root.to_path_buf());
+        }
+    }
+}
+
+fn repo_root_of(conn: &Connection) -> Option<std::path::PathBuf> {
+    let path = conn.path()?;
+    repo_roots().lock().ok()?.get(path).cloned()
+}
+
+/// Rust: an `import_candidates` entry `%<name>` on a value path rooted at a
+/// generic parameter (`S::Error::error_message`, `T::build`): the item `name`
+/// the parameter's trait bounds supply. It binds only when exactly one trait
+/// of the referencing file's Cargo package declares a method of that name.
+pub(crate) const RUST_BOUND_ITEM: char = '%';
+
+/// Rust: an `import_candidates` entry `$<r><k>:<payload>` on a value path that
+/// is the argument of a combinator (`.map(T::from)`, `.map_err(Error::from)`):
+/// the type of the value the combinator hands that function, to tell apart
+/// the `impl From<X> for T` that share one qualname. `<r>` is `&` (a
+/// reference), `=` (an owned value) or `?` (not known); `<k>` is `T` (a type
+/// name follows) or `D` (a `RustDeferred` as JSON, finished from the
+/// declarations it names).
+pub(crate) const RUST_ARG_HINT: char = '$';
+
+/// Rust: an `import_candidates` entry `!<return type>` on a bare `From::from`
+/// passed to `map_err` as the tail of a function declared to return that
+/// type: the target is the `impl From<X> for E` of its error type `E`, `X`
+/// from the `RUST_ARG_HINT` beside it.
+pub(crate) const RUST_EXPECT_ERR: char = '!';
+
 /// Rust: a type-level `IMPLEMENTS` edge of an `impl` for a type the impl's
 /// module does not declare lists, as `^<absolute path>` entries of its
 /// `import_candidates`, the paths that type may be declared at (the module's
@@ -4537,6 +4930,9 @@ fn is_rust_crate_marker(candidate: &str) -> bool {
     candidate == RUST_EXTERNAL_CRATE
         || candidate.starts_with(RUST_CRATE_PIN)
         || candidate.starts_with(RUST_IMPL_SELF)
+        || candidate.starts_with(RUST_BOUND_ITEM)
+        || candidate.starts_with(RUST_ARG_HINT)
+        || candidate.starts_with(RUST_EXPECT_ERR)
 }
 
 /// The `ext:` marker every external stub qualname starts with.
@@ -5303,6 +5699,81 @@ fn extension_receiver_type(signature: &str) -> Option<&str> {
 }
 
 /// `Ns.List<int>?` -> `List`.
+/// Of the methods `(id, signature)`, the one whose first parameter is of type
+/// `wanted` (a path with a module compares its last two segments, a bare name
+/// its leaf), by `&` when two differ only in that.
+fn pick_by_parameter(wanted: &str, by_ref: char, methods: &[(i64, Option<&str>)]) -> Option<i64> {
+    let wanted_segments: Vec<&str> = bare_generic(wanted).split("::").collect();
+    let mut matching: Vec<(i64, bool)> = Vec::new();
+    for (id, signature) in methods {
+        let param = first_parameter_type(signature.as_deref()?)?;
+        let is_ref = param.starts_with('&');
+        let bare = param
+            .trim_start_matches('&')
+            .trim_start()
+            .trim_start_matches("mut ")
+            .trim();
+        let segments: Vec<&str> = bare_generic(bare).split("::").collect();
+        let same = if wanted_segments.len() > 1 {
+            // A type of a dependency: its module and name.
+            segments.len() > 1
+                && segments[segments.len() - 2..] == wanted_segments[wanted_segments.len() - 2..]
+        } else {
+            segments.last() == wanted_segments.last()
+        };
+        if same {
+            matching.push((*id, is_ref));
+        }
+    }
+    if matching.len() > 1 {
+        let by_ref = match by_ref {
+            '&' => true,
+            '=' => false,
+            _ => return None,
+        };
+        matching.retain(|(_, is_ref)| *is_ref == by_ref);
+    }
+    match matching.as_slice() {
+        [(id, _)] => Some(*id),
+        _ => None,
+    }
+}
+
+fn bare_generic(ty: &str) -> &str {
+    ty.split('<').next().unwrap_or(ty).trim()
+}
+
+/// The type of the first non-`self` parameter in an indexed callable
+/// signature (`(s: &Symbol) -> Self` gives `&Symbol`).
+fn first_parameter_type(signature: &str) -> Option<String> {
+    let mut rest = signature;
+    while rest.starts_with("#[") {
+        rest = rest.split_once('\n')?.1;
+    }
+    let open = rest.find('(')?;
+    let mut depth = 0i32;
+    let mut params: Vec<String> = vec![String::new()];
+    for ch in rest[open + 1..].chars() {
+        match ch {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' if depth == 0 && ch == ')' => break,
+            ')' | '>' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                params.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        params.last_mut()?.push(ch);
+    }
+    let first = params
+        .iter()
+        .map(|p| p.trim())
+        .find(|p| !p.is_empty() && !p.ends_with("self"))?;
+    let (_, ty) = first.split_once(':')?;
+    Some(ty.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 fn simple_type_name(ty: &str) -> &str {
     let ty = ty.trim().trim_end_matches('?');
     let ty = ty.split('<').next().unwrap_or(ty);

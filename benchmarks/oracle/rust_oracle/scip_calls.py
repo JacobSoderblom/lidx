@@ -402,6 +402,34 @@ def short_name(sym):
     return name.strip("`")
 
 
+def pick_definition(defs_here, fdefs, at, default):
+    """rust-analyzer gives two `fn foo` nested in different functions one SCIP symbol. A definition nested in a function is what an
+    occurrence inside that function (and no nearer one) means, the nearest above it first; any other occurrence means the definition
+    that is not nested in a function. `defs_here` are this file's definitions of the symbol, `fdefs` all of its function definitions
+    (start, end, target); `default` is the first definition of the symbol anywhere."""
+    def enclosing(start, own):
+        best = None
+        for s, e, fs in fdefs:
+            if fs is own or not (s < start <= e):
+                continue
+            if best is None or s >= best[0]:
+                best = (s, e)
+        return best
+
+    nested, plain = [], []
+    for s, e, dl in defs_here:
+        outer = enclosing(s, dl)
+        if outer is None:
+            plain.append(dl)
+        elif outer[0] <= at <= outer[1]:
+            nested.append((s, dl))
+    if nested:
+        return max(nested)[1]
+    if plain:
+        return plain[0]
+    return default
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -419,6 +447,7 @@ def main():
             docs.append(parse_document(v))
 
     defs = {}  # symbol -> (file, line, name)
+    redefs = {}  # symbol -> every definition: rust-analyzer gives two `fn get_field` nested in different functions one symbol
     ctors = {}  # tuple-struct / variant symbol -> same
     regions = {}  # path -> test regions (--no-tests)
     texts = {}
@@ -452,6 +481,7 @@ def main():
             if o["roles"] & 1 and is_fn(o["symbol"]) and o["range"]:
                 l, c, _, _ = rng(o)
                 defs.setdefault(o["symbol"], (d["path"], l + 1, short_name(o["symbol"])))
+                redefs.setdefault(o["symbol"], []).append((d["path"], l + 1, short_name(o["symbol"])))
             elif o["roles"] & 1 and is_ctor(o["symbol"]) and o["range"]:
                 l, c, _, _ = rng(o)
                 ctors.setdefault(o["symbol"], (d["path"], l + 1, ctor_name(o["symbol"])))
@@ -477,6 +507,7 @@ def main():
         except OSError:
             continue
         use_lines = use_item_lines("\n".join(lines))
+        fsyms = {}  # symbol -> its definitions in this file: (start, end, (file, line, name))
         fdefs = []  # (start, end, this occurrence's own (file, line, name)); a symbol such as `main().` can be defined in several files of one package
         for o in d["occ"]:
             if a.no_tests and o["range"] and in_test(path, rng(o)[0]):
@@ -488,6 +519,7 @@ def main():
                 l0 = rng(o)[0]
                 dl = (path, l0 + 1, short_name(o["symbol"]))
                 fdefs.append(((e[0], e[1]), (e[2], e[3]), dl))
+                fsyms.setdefault(o["symbol"], []).append(((e[0], e[1]), (e[2], e[3]), dl))
                 callers.add((dl[0], dl[1], dl[2]))
         for o in d["occ"]:
             sym = o["symbol"]
@@ -498,6 +530,8 @@ def main():
                 continue
             l, c, el, ec = rng(o)
             tgt = defs.get(sym) or ctors.get(sym)
+            if tgt is not None and len(redefs.get(sym, ())) > 1:
+                tgt = pick_definition(fsyms.get(sym, ()), fdefs, (l, c), tgt)
             if tgt is None:
                 out["dropped"]["callee_external"] += 1
                 ext.add("%s:%d" % (path, rng(o)[0] + 1))

@@ -83,11 +83,11 @@ crate::visibility_use::calls_shout CALLS crate::visibility_use::inner::shout imp
 # via bare_name.
 crate::reexport_use::calls_announce CALLS crate::reexport_use::real::announce bare_name
 
-# `use glob_source::*` at file scope binds no specific name (a glob binds
-# no single resolvable name), so `run`'s bare call to `build` must stay
-# unresolved — not fall through to `fixture_source::build` by way of the
-# unrelated `tests` module's own (differently scoped) `use`.
-crate::scoped_glob::run CALLS UNRESOLVED
+# `use glob_source::*` at file scope (a path starting at a module this file
+# declares) brings `build` in, so `run`'s bare call binds to
+# `glob_source::build` through the import tier -- not to `fixture_source::build`
+# by way of the unrelated `tests` module's own (differently scoped) `use`.
+crate::scoped_glob::run CALLS crate::scoped_glob::glob_source::build import
 
 # `tests`' own `use crate::scoped_glob::fixture_source::build`, scoped to
 # `tests` only — an import-tier match, isolated from `run`'s glob above.

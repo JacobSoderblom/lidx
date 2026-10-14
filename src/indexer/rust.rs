@@ -1,7 +1,8 @@
 use crate::db::resolver::{
-    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_CRATE_PIN,
-    RUST_CRATE_ROOT, RUST_EXTERNAL_CRATE, RUST_EXTERNAL_RECEIVER, RUST_IMPL_SELF,
-    RUST_STD_RECEIVER, SameFileTwins, TwinTraits, VisibilityRule, is_rust_std_root, rust_crate_pin,
+    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, RUST_ARG_HINT,
+    RUST_BOUND_ITEM, RUST_CRATE_PIN, RUST_CRATE_ROOT, RUST_EXPECT_ERR, RUST_EXTERNAL_CRATE,
+    RUST_EXTERNAL_RECEIVER, RUST_IMPL_SELF, RUST_STD_RECEIVER, SameFileTwins, TwinTraits,
+    VisibilityRule, is_rust_std_root, rust_crate_pin,
 };
 use crate::edge_views;
 use crate::indexer::channel;
@@ -105,6 +106,11 @@ fn normalize_import_target(raw: &str, module: &str) -> Option<String> {
         }
         return Some(format!("{module}::{rest}"));
     }
+    if let Some(rest) = raw.strip_prefix("crate::")
+        && let Some(root) = bin_crate_root(module)
+    {
+        return Some(format!("{root}::{rest}"));
+    }
     if raw.starts_with("super::") {
         let mut current = module;
         let mut rest = raw;
@@ -119,6 +125,19 @@ fn normalize_import_target(raw: &str, module: &str) -> Option<String> {
         return Some(format!("{current}::{rest}"));
     }
     None
+}
+
+/// The module of the binary crate a module of `src/bin/` belongs to
+/// (`crate::bin::tool::cli` -> `crate::bin::tool`): `crate::` in its files
+/// names that crate's root, which is `src/bin/<name>/main.rs` or
+/// `src/bin/<name>.rs`, not the package's library. Cargo reserves `src/bin/`
+/// for binaries, so a module path through `bin` is always one.
+fn bin_crate_root(module: &str) -> Option<String> {
+    let mut parts = module.splitn(4, "::");
+    match (parts.next()?, parts.next()?, parts.next()?) {
+        ("crate", "bin", name) => Some(format!("crate::bin::{name}")),
+        _ => None,
+    }
 }
 
 /// Where an item's first outer attribute begins (issue #348).
@@ -586,14 +605,14 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             if ctx.container_stack.is_empty() {
                 handle_named_item(node, ctx, source, output, "const");
             }
-            walk_value_references(node, ctx, source, output);
+            walk_item_value_references(node, ctx, source, output);
             return;
         }
         "static_item" => {
             if ctx.container_stack.is_empty() {
                 handle_named_item(node, ctx, source, output, "static");
             }
-            walk_value_references(node, ctx, source, output);
+            walk_item_value_references(node, ctx, source, output);
             return;
         }
         "function_item" => {
@@ -2119,6 +2138,27 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     });
 }
 
+/// [`walk_value_references`] for a `const` / `static` item, with the names its
+/// initializer binds itself (closure parameters, `let`s in a closure body)
+/// known: `LazyLock::new(|| { let short = ..; Info { short } })` names a
+/// local, never the module's `fn short`.
+fn walk_item_value_references(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut bound = HashSet::new();
+    collect_bound_names(node, source, &mut bound);
+    if bound.is_empty() {
+        walk_value_references(node, ctx, source, output);
+        return;
+    }
+    let mut item_ctx = ctx.clone();
+    item_ctx.bound_names = Rc::new(bound);
+    walk_value_references(node, &item_ctx, source, output);
+}
+
 /// Value references anywhere under `node` (a `const` / `static` item, whose
 /// initializer -- `Profile { hook: Some(f) }` -- holds functions as values).
 /// Sourced from the enclosing module symbol.
@@ -2139,7 +2179,30 @@ fn walk_value_references(node: Node<'_>, ctx: &Context, source: &str, output: &m
 /// approximate on purpose (a path or constructor inside a pattern is kept
 /// too): a missed reference is cheaper than one bound to a local's namesake.
 fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    collect_bound_names_in(node, source, out, true, None);
+}
+
+/// [`collect_bound_names`] without the nested `fn` items' names and without
+/// the pattern of the `let` whose node id is `skip_let`: the names that
+/// really are variables of `node`.
+fn collect_variable_names(
+    node: Node<'_>,
+    source: &str,
+    out: &mut HashSet<String>,
+    skip_let: Option<usize>,
+) {
+    collect_bound_names_in(node, source, out, false, skip_let);
+}
+
+fn collect_bound_names_in(
+    node: Node<'_>,
+    source: &str,
+    out: &mut HashSet<String>,
+    with_nested_fns: bool,
+    skip_let: Option<usize>,
+) {
     let pattern = match node.kind() {
+        "let_declaration" if skip_let == Some(node.id()) => None,
         "parameter" | "let_declaration" | "for_expression" | "let_condition" => {
             node.child_by_field_name("pattern")
         }
@@ -2152,12 +2215,13 @@ fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         // A nested `fn` item is a local name too.
-        if child.kind() == "function_item"
+        if with_nested_fns
+            && child.kind() == "function_item"
             && let Some(name) = child.child_by_field_name("name")
         {
             out.insert(node_text(name, source));
         }
-        collect_bound_names(child, source, out);
+        collect_bound_names_in(child, source, out, with_nested_fns, skip_let);
     }
 }
 
@@ -2174,12 +2238,27 @@ fn collect_nested_fn_names(node: Node<'_>, source: &str, out: &mut HashSet<Strin
     }
 }
 
+/// `f::<T>` for the name `f` it instantiates (`parse::<usize>`), else `node`:
+/// a turbofish does not change where a function name sits.
+fn through_turbofish(node: Node<'_>) -> Node<'_> {
+    match node.parent() {
+        Some(parent)
+            if parent.kind() == "generic_function"
+                && parent.child_by_field_name("function") == Some(node) =>
+        {
+            parent
+        }
+        _ => node,
+    }
+}
+
 /// Whether `node` is read as a value that can name a function: a call
 /// argument, a struct field's value (plain or shorthand), an array or tuple
 /// element (`alt((parse_a, parse_b))`), the value of a `let` or an
 /// assignment, a returned or borrowed value, a match arm's value, or the
 /// receiver of a method called on a function value (`f.parse_next(input)`).
 fn is_value_position(node: Node<'_>) -> bool {
+    let node = through_turbofish(node);
     let Some(parent) = node.parent() else {
         return false;
     };
@@ -2223,8 +2302,42 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     }
     let bare = node.kind() == "identifier";
     let (target, import_candidates) = if bare {
-        if ctx.bound_names.contains(&raw) || is_std_type_name(&raw) {
+        // A lowercase primitive name in value position can only be a `fn`
+        // of that name (`"bool" => Unary(bool)`); the capitalised std
+        // names are constructors and types.
+        let std_value =
+            is_std_type_name(&raw) && !raw.starts_with(|c: char| c.is_ascii_lowercase());
+        if std_value {
             return None;
+        }
+        // A bound name is a variable, except where it provably names the
+        // item: a nested `fn` nobody rebinds, or `let f = f;`.
+        let nested = if ctx.bound_names.contains(&raw) {
+            bound_name_is_item(node, &raw, source, ctx)?
+        } else {
+            false
+        };
+        if nested {
+            // A nested `fn` is symbolised under the enclosing impl, else in
+            // the module: beside a module-level `fn` of the name it shares
+            // that qualname, and the resolver refuses the two as ambiguous.
+            let container = ctx.container_stack.last().unwrap_or(&ctx.module);
+            let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+            return Some(EdgeInput {
+                kind: edge_views::REFERENCES.to_string(),
+                source_qualname: Some(ctx.current_scope.clone()),
+                target_qualname: Some(format!("{container}::{raw}")),
+                evidence_snippet: util::edge_evidence_snippet(
+                    source, start_byte, end_byte, start_line, end_line,
+                ),
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                // Symbolised as a method when the enclosing fn is one, which a
+                // bare name cannot otherwise name.
+                bare_call: false,
+                call_shape: Some(CallShape::value_reference()),
+                ..Default::default()
+            });
         }
         // `shadowed_names` holds every value use of a name, this one
         // included; only a glob `use` inside the body voids the import.
@@ -2242,6 +2355,15 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         }
         qualified_value_path(&raw, ctx)?
     };
+    let mut import_candidates = import_candidates;
+    if !bare && let Some(hint) = argument_type_hint(node, ctx, source) {
+        import_candidates.push(hint);
+        if matches!(raw.as_str(), "From::from" | "std::convert::From::from")
+            && let Some(expected) = tail_error_return(node, source)
+        {
+            import_candidates.push(format!("{RUST_EXPECT_ERR}{expected}"));
+        }
+    }
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
         kind: edge_views::REFERENCES.to_string(),
@@ -2256,6 +2378,382 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         bare_call: bare,
         call_shape: Some(CallShape::value_reference()),
         ..Default::default()
+    })
+}
+
+/// Combinators that hand the function they are given the value of their
+/// receiver (`Some`'s, `Ok`'s, `Err`'s or an iterator's item).
+const ARGUMENT_COMBINATORS: &[&str] = &[
+    "map",
+    "map_err",
+    "and_then",
+    "or_else",
+    "filter_map",
+    "flat_map",
+    "for_each",
+];
+
+/// The `RUST_ARG_HINT` for a path passed to a combinator
+/// (`seeds.into_iter().map(SymbolCompact::from)`): the type of the value the
+/// combinator hands it, when the receiver's type can be told, which is how
+/// `impl From<Symbol> for T` and `impl From<&Symbol> for T` (one qualname) are
+/// told apart. `None` when the path is no such argument or the type is unknown.
+fn argument_type_hint(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
+    let arguments = node.parent().filter(|p| p.kind() == "arguments")?;
+    if arguments.named_child(0) != Some(node) {
+        return None;
+    }
+    let call = arguments
+        .parent()
+        .filter(|c| c.kind() == "call_expression")?;
+    let function = unwrap_turbofish(call.child_by_field_name("function")?);
+    if function.kind() != "field_expression" {
+        return None;
+    }
+    let method = node_text(function.child_by_field_name("field")?, source);
+    if !ARGUMENT_COMBINATORS.contains(&method.as_str()) {
+        return None;
+    }
+    let receiver = function.child_by_field_name("value")?;
+    let env = TypeEnv {
+        source,
+        self_ty: ctx.fn_self_ty.as_deref(),
+        generics: Rc::clone(&ctx.fn_generics),
+        adts: &ctx.adts,
+        ctx: Some(ctx),
+        paths: None,
+        declared: None,
+    };
+    let err = matches!(method.as_str(), "map_err" | "or_else");
+    // `Type::build(..)` typed as `Type` by its name alone (`new`, `from_*`):
+    // for a hint the declared return type of that associated function is what
+    // counts.
+    if let Some(pending) = static_call_result(receiver, source, &env, ctx, err) {
+        let by_ref = item_reference_kind(receiver, source);
+        return serde_json::to_string(&pending)
+            .ok()
+            .map(|json| format!("{RUST_ARG_HINT}{by_ref}D:{json}"));
+    }
+    let item = project(env.expr_ty(receiver, &ctx.local_types), Step::Arg { err });
+    let by_ref = item_reference_kind(receiver, source);
+    // A named type the extractor cannot look inside may be a repo alias
+    // (`AppResult<T>`): the resolver reads its declaration.
+    if let (Ty::Named(name) | Ty::Local(_, name), Ty::Unknown) =
+        (env.expr_ty(receiver, &ctx.local_types), &item)
+    {
+        return Some(format!("{RUST_ARG_HINT}{by_ref}A{}:{name}", u8::from(err)));
+    }
+    match item {
+        Ty::Named(name) | Ty::Local(_, name) => Some(format!("{RUST_ARG_HINT}{by_ref}T:{name}")),
+        Ty::Pending(pending) => serde_json::to_string(&pending)
+            .ok()
+            .map(|json| format!("{RUST_ARG_HINT}{by_ref}D:{json}")),
+        _ => None,
+    }
+}
+
+/// `Type::build(args)` / `Type::build(args)?` read through the declared return
+/// type of the associated function `build`, then the combinator's argument.
+fn static_call_result(
+    receiver: Node<'_>,
+    source: &str,
+    env: &TypeEnv<'_>,
+    ctx: &Context,
+    err: bool,
+) -> Option<RustDeferred> {
+    let mut steps = Vec::new();
+    let mut call = receiver;
+    while call.kind() == "try_expression" || call.kind() == "parenthesized_expression" {
+        if call.kind() == "try_expression" {
+            steps.push(Step::Method("unwrap".into()));
+        }
+        call = call.named_child(0)?;
+    }
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let function = unwrap_turbofish(call.child_by_field_name("function")?);
+    if function.kind() != "scoped_identifier" {
+        return None;
+    }
+    let (Ty::Named(guess) | Ty::Local(_, guess)) = env.expr_ty(call, &ctx.local_types) else {
+        return None;
+    };
+    let owner_node = function.child_by_field_name("path")?;
+    let owner = node_text(owner_node, source);
+    let owner = owner.rsplit("::").next()?;
+    let name = node_text(function.child_by_field_name("name")?, source);
+    if owner != guess || owner == "Self" || !owner.starts_with(char::is_uppercase) {
+        return None;
+    }
+    steps.push(Step::Arg { err });
+    Some(RustDeferred {
+        source: DeferredSource::Method {
+            receiver_type: owner.to_string(),
+            method: name,
+        },
+        steps,
+        fallback: None,
+    })
+}
+
+/// The declared return type of the function whose last expression is the
+/// `map_err(..)` call `node` is the argument of (`..).map_err(From::from)` as a
+/// function's tail, or `return ..`): the type the converted error becomes.
+fn tail_error_return(node: Node<'_>, source: &str) -> Option<String> {
+    let call = node
+        .parent()
+        .filter(|p| p.kind() == "arguments")?
+        .parent()
+        .filter(|c| c.kind() == "call_expression")?;
+    let function = unwrap_turbofish(call.child_by_field_name("function")?);
+    let method = node_text(function.child_by_field_name("field")?, source);
+    if function.kind() != "field_expression" || method != "map_err" {
+        return None;
+    }
+    let holder = call.parent()?;
+    let function_item = match holder.kind() {
+        "return_expression" => {
+            let mut up = holder.parent();
+            while let Some(n) = up {
+                if n.kind() == "function_item" {
+                    break;
+                }
+                if n.kind() == "closure_expression" {
+                    return None;
+                }
+                up = n.parent();
+            }
+            up?
+        }
+        "block" => {
+            let last = holder.named_child(holder.named_child_count().checked_sub(1)?)?;
+            let owner = holder.parent().filter(|p| p.kind() == "function_item")?;
+            (last == call && owner.child_by_field_name("body") == Some(holder)).then_some(owner)?
+        }
+        _ => return None,
+    };
+    let ret = function_item.child_by_field_name("return_type")?;
+    Some(collapse_call_target_whitespace(&node_text(ret, source)))
+}
+
+/// Whether the value a combinator receives from `receiver` is a reference
+/// (`&`), an owned value (`=`) or not known (`?`), read from the chain:
+/// `.iter()` yields references, `.into_iter()` yields what its receiver owns,
+/// adapters that keep the item pass it through, any other method call is a
+/// source whose result is owned.
+fn item_reference_kind(receiver: Node<'_>, source: &str) -> char {
+    let mut current = receiver;
+    loop {
+        match current.kind() {
+            "parenthesized_expression" | "try_expression" => match current.named_child(0) {
+                Some(inner) => current = inner,
+                None => return '?',
+            },
+            "call_expression" => {
+                let Some(function) = current
+                    .child_by_field_name("function")
+                    .map(unwrap_turbofish)
+                else {
+                    return '?';
+                };
+                if function.kind() != "field_expression" {
+                    // `make()` / `Type::new()` give an owned value.
+                    return '=';
+                }
+                let Some(base) = function.child_by_field_name("value") else {
+                    return '?';
+                };
+                let method = function
+                    .child_by_field_name("field")
+                    .map(|f| node_text(f, source))
+                    .unwrap_or_default();
+                match method.as_str() {
+                    "iter" | "iter_mut" | "values" | "keys" | "as_ref" | "as_mut" | "as_deref" => {
+                        return '&';
+                    }
+                    "cloned" | "copied" => return '=',
+                    "into_iter" | "drain" | "into_values" => return ownership(base, source),
+                    "filter" | "rev" | "skip" | "take" | "skip_while" | "take_while"
+                    | "peekable" | "inspect" | "chain" | "fuse" => current = base,
+                    "map" | "map_err" | "and_then" | "or_else" | "filter_map" | "flat_map"
+                    | "enumerate" | "zip" | "flatten" | "fold" | "scan" | "unwrap_or_else"
+                    | "ok" | "err" | "ok_or" | "ok_or_else" => return '?',
+                    _ => return ownership(current, source),
+                }
+            }
+            "identifier" | "reference_expression" => return ownership(current, source),
+            _ => return '?',
+        }
+    }
+}
+
+/// Std methods that hand out references into their receiver: a value got
+/// from one of them is not an owned one.
+const REFERENCE_SOURCES: &[&str] = &[
+    "get",
+    "get_mut",
+    "first",
+    "last",
+    "find",
+    "next",
+    "peek",
+    "iter",
+    "iter_mut",
+    "as_ref",
+    "as_mut",
+    "as_deref",
+    "values",
+    "keys",
+    "entry",
+    "split_first",
+    "split_last",
+];
+
+/// Whether the value `base` is an owned one (`=`), a reference (`&`) or not
+/// known (`?`): `&x` is one, a call result is owned unless the method is one
+/// that hands out references, and a plain name is read from the parameter or
+/// `let` that binds it (a type with a `&` inside it, `Option<&T>`, is not
+/// known to be owned).
+fn ownership(base: Node<'_>, source: &str) -> char {
+    match base.kind() {
+        "reference_expression" => '&',
+        "try_expression" | "parenthesized_expression" => base
+            .named_child(0)
+            .map_or('?', |inner| ownership(inner, source)),
+        "call_expression" => {
+            let method = base
+                .child_by_field_name("function")
+                .map(unwrap_turbofish)
+                .filter(|f| f.kind() == "field_expression")
+                .and_then(|f| f.child_by_field_name("field"))
+                .map(|f| node_text(f, source));
+            match method {
+                Some(m) if REFERENCE_SOURCES.contains(&m.as_str()) => '?',
+                _ => '=',
+            }
+        }
+        "identifier" => {
+            let name = node_text(base, source);
+            let mut function = base.parent();
+            while let Some(parent) = function {
+                if parent.kind() == "function_item" {
+                    break;
+                }
+                function = parent.parent();
+            }
+            let Some(function) = function else {
+                return '?';
+            };
+            let of_type = |t: Node<'_>| {
+                let text = node_text(t, source);
+                if text.starts_with('&') {
+                    '&'
+                } else if text.contains('&') {
+                    '?'
+                } else {
+                    '='
+                }
+            };
+            let mut found = '?';
+            let mut stack = vec![function];
+            while let Some(node) = stack.pop() {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    match child.kind() {
+                        "parameter" => {
+                            let pattern = child.child_by_field_name("pattern");
+                            if pattern.is_some_and(|p| node_text(p, source) == name) {
+                                found = child.child_by_field_name("type").map_or('?', of_type);
+                            }
+                        }
+                        "let_declaration" => {
+                            let pattern = child.child_by_field_name("pattern");
+                            if pattern.is_some_and(|p| node_text(p, source) == name) {
+                                found = match child.child_by_field_name("type") {
+                                    Some(t) => of_type(t),
+                                    None => child
+                                        .child_by_field_name("value")
+                                        .map_or('?', |v| ownership(v, source)),
+                                };
+                            }
+                        }
+                        _ => {}
+                    }
+                    stack.push(child);
+                }
+            }
+            found
+        }
+        _ => '?',
+    }
+}
+
+/// Whether the bound name `raw` at `node` still names an item: `Some(true)`
+/// for a nested `fn` that no pattern of the function binds, `Some(false)` for
+/// the right-hand side of `let raw = raw;` (a coercion such as
+/// `let f: fn(&T) -> U = f;`) when no other pattern binds `raw` either (the
+/// right-hand side is read before the new binding exists, so it is the item),
+/// `None` for a variable.
+fn bound_name_is_item(node: Node<'_>, raw: &str, source: &str, ctx: &Context) -> Option<bool> {
+    let mut function = node.parent();
+    while let Some(parent) = function {
+        if parent.kind() == "function_item" {
+            break;
+        }
+        function = parent.parent();
+    }
+    let function = function?;
+    let rebinding = node.parent().filter(|p| {
+        p.kind() == "let_declaration"
+            && p.child_by_field_name("value") == Some(node)
+            && p.child_by_field_name("pattern").is_some_and(|pattern| {
+                pattern.kind() == "identifier" && node_text(pattern, source) == raw
+            })
+    });
+    // Only these two shapes can name an item; any other bound name is a
+    // variable (the common case, so decided before the scan below).
+    if rebinding.is_none() && !ctx.nested_fns.contains(raw) {
+        return None;
+    }
+    let mut variables = HashSet::new();
+    collect_variable_names(function, source, &mut variables, rebinding.map(|p| p.id()));
+    if variables.contains(raw) {
+        return None;
+    }
+    let nested = ctx.nested_fns.contains(raw);
+    // Without an enclosing impl the nested `fn` is symbolised in the module,
+    // beside a module-level `fn` of the same name: which one is meant is
+    // not for a bare qualname to say.
+    if nested && ctx.container_stack.is_empty() && module_declares_fn(function, raw, source) {
+        return None;
+    }
+    if rebinding.is_some() {
+        Some(nested)
+    } else {
+        nested.then_some(true)
+    }
+}
+
+/// Whether the module (`mod` body or file) holding the `function_item`
+/// `function` declares a `fn` named `name` directly.
+fn module_declares_fn(function: Node<'_>, name: &str, source: &str) -> bool {
+    let mut scope = function.parent();
+    while let Some(node) = scope {
+        if matches!(node.kind(), "source_file" | "declaration_list") {
+            break;
+        }
+        scope = node.parent();
+    }
+    let Some(scope) = scope else {
+        return false;
+    };
+    let mut cursor = scope.walk();
+    scope.named_children(&mut cursor).any(|child| {
+        child.kind() == "function_item"
+            && child
+                .child_by_field_name("name")
+                .is_some_and(|n| node_text(n, source) == name)
     })
 }
 
@@ -2289,6 +2787,21 @@ fn is_value_path_reference(node: Node<'_>, source: &str, ctx: &Context) -> bool 
 /// the call resolver reads it; otherwise its first segment through the
 /// scope's `use` bindings, else relative to the current module.
 fn qualified_value_path(raw: &str, ctx: &Context) -> Option<(String, Vec<String>)> {
+    // `T::build` / `S::Error::error_message` for a generic `T` / `S`: what
+    // the parameter's bounds supply, found by the trait that declares the
+    // item (std traits' own items are no repo trait's).
+    if let Some((first, rest)) = raw.split_once("::")
+        && ctx.fn_generics.contains(first)
+    {
+        let item = rest.rsplit("::").next().unwrap_or(rest);
+        if item.is_empty() || STD_TRAIT_ITEMS.contains(&item) || is_std_method_name(item) {
+            return None;
+        }
+        return Some((
+            format!("{}::{raw}", ctx.module),
+            vec![format!("{RUST_BOUND_ITEM}{item}")],
+        ));
+    }
     if matches!(
         raw.split("::").next(),
         Some("crate" | "self" | "super" | "Self")
@@ -2325,6 +2838,29 @@ fn qualified_value_path(raw: &str, ctx: &Context) -> Option<(String, Vec<String>
     add_crate_markers(raw, &mut expanded, ctx);
     Some((format!("{}::{raw}", ctx.module), expanded))
 }
+
+/// Associated items of std's traits (`Default::default`, `FromStr::from_str`,
+/// ...): `T::default` for a generic `T` names std's, whatever a repo trait of
+/// the same name declares.
+const STD_TRAIT_ITEMS: &[&str] = &[
+    "default",
+    "from",
+    "try_from",
+    "from_str",
+    "from_iter",
+    "into",
+    "try_into",
+    "clone",
+    "fmt",
+    "eq",
+    "cmp",
+    "partial_cmp",
+    "hash",
+    "deref",
+    "drop",
+    "next",
+    "new",
+];
 
 /// `recv.method()` where `recv`'s type is provable: a local/param with a
 /// locally-inferred type, a field chain (`self.core`, `a.b.c`), or a call
@@ -2379,7 +2915,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         | Ty::Seq(_)
         | Ty::Iter(_)
         | Ty::Future(_) => ReceiverType::Known(RUST_STD_RECEIVER.to_string()),
-        Ty::Unknown => ReceiverType::NotTracked,
+        Ty::Unknown | Ty::FnPtr(_) | Ty::Ext(_) => ReceiverType::NotTracked,
     }
 }
 
@@ -2424,9 +2960,29 @@ enum Ty {
     Iter(Box<Ty>),
     /// Output of an `async fn`, awaited via `.await`.
     Future(Box<Ty>),
+    /// A function pointer (`fn(A) -> R`), by what calling it returns.
+    FnPtr(Box<Ty>),
+    /// A type of a dependency, by the path it is written with
+    /// (`csv::Writer`, `docopt::Error`); only made while an argument hint is
+    /// being settled (`with_external_paths`).
+    Ext(String),
     /// Type known only from a declaration in another file; the resolver
     /// finishes it.
     Pending(RustDeferred),
+}
+
+thread_local! {
+    /// Set while an argument hint is settled: a type of a dependency written
+    /// with its crate (`csv::Writer<..>`) is then a [`Ty::Ext`] carrying the
+    /// path, not the anonymous external receiver.
+    static EXTERNAL_PATHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn with_external_paths<T>(f: impl FnOnce() -> T) -> T {
+    let before = EXTERNAL_PATHS.with(|c| c.replace(true));
+    let out = f();
+    EXTERNAL_PATHS.with(|c| c.set(before));
+    out
 }
 
 /// Std methods that give a `Named` receiver back as it is (`method_ty`), so the
@@ -2460,6 +3016,10 @@ fn project(ty: Ty, step: Step) -> Ty {
         | (Ty::Seq(t) | Ty::Iter(t), Step::Elem)
         | (Ty::Future(t), Step::Await) => *t,
         (Ty::Tuple(ts), Step::Tuple(i)) => ts.into_iter().nth(i).unwrap_or(Ty::Unknown),
+        (Ty::FnPtr(t), Step::Call) => *t,
+        (Ty::Option(t) | Ty::Seq(t) | Ty::Iter(t), Step::Arg { .. })
+        | (Ty::Result(t, _), Step::Arg { err: false }) => *t,
+        (Ty::Result(_, t), Step::Arg { err: true }) => *t,
         (ty, Step::Method(m)) => method_ty(ty, &m),
         _ => Ty::Unknown,
     }
@@ -2726,16 +3286,16 @@ impl PathScope<'_> {
         }
     }
 
-    /// What the module's `use`s bind, as `#[rust_uses(..)]` entries: a bare
+    /// What the module's `use`s bind, as `#[rust_uses(..)]` entries (types,
+    /// functions and modules alike: `use super::*` makes a parent's imported
+    /// `fn` nameable in a child): a bare
     /// name imported from outside the repo, `name=<crate:: path>` for one
     /// imported from another module of it (which may itself re-export).
     fn uses_entries(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .imports
             .iter()
-            .filter(|(name, targets)| {
-                name.starts_with(char::is_uppercase) && !targets.is_empty() && name.as_str() != "*"
-            })
+            .filter(|(name, targets)| !targets.is_empty() && name.as_str() != "*")
             .filter_map(|(name, targets)| {
                 let targets: Vec<String> = targets.iter().map(|t| self.absolute(t)).collect();
                 if targets.iter().all(|t| self.is_external(t)) {
@@ -2870,9 +3430,37 @@ impl TypeEnv<'_> {
                 Some(module) => Ty::Local(module, name),
                 None => Ty::Named(name),
             },
-            Some((_, TypeOrigin::External)) => Ty::Named(RUST_EXTERNAL_RECEIVER.to_string()),
+            Some((_, TypeOrigin::External)) => {
+                match EXTERNAL_PATHS
+                    .with(std::cell::Cell::get)
+                    .then(|| self.external_path(node))
+                    .flatten()
+                {
+                    Some(path) => Ty::Ext(path),
+                    None => Ty::Named(RUST_EXTERNAL_RECEIVER.to_string()),
+                }
+            }
             Some((name, TypeOrigin::Via(abs))) => self.via_ty(name, abs),
         }
+    }
+
+    /// `crate::Type` of a type written with its dependency's name as the first
+    /// path segment (generics and references peeled); `None` for a bare name.
+    fn external_path(&self, node: Node<'_>) -> Option<String> {
+        let mut current = node;
+        while matches!(current.kind(), "reference_type" | "generic_type") {
+            current = current.child_by_field_name("type")?;
+        }
+        if current.kind() != "scoped_type_identifier" {
+            return None;
+        }
+        let text = node_text(current, self.source);
+        let first = text.split("::").next()?;
+        (first
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            && text.contains("::"))
+        .then_some(text)
     }
 
     /// The module a type written bare as `node` is read in, when that is a
@@ -2968,6 +3556,11 @@ impl TypeEnv<'_> {
             "reference_type" => node
                 .child_by_field_name("type")
                 .map_or(Ty::Unknown, |t| self.ty(t)),
+            "function_type" => node
+                .child_by_field_name("return_type")
+                .map_or(Ty::FnPtr(Box::new(Ty::Tuple(Vec::new()))), |r| {
+                    Ty::FnPtr(Box::new(self.ty(r)))
+                }),
             "tuple_type" => {
                 let mut cursor = node.walk();
                 Ty::Tuple(
@@ -3140,6 +3733,15 @@ impl TypeEnv<'_> {
                         Some(self.method_call_ty(recv, &method))
                     }
                     "identifier" | "scoped_identifier" => {
+                        if function.kind() == "identifier"
+                            && let local @ (Ty::FnPtr(_) | Ty::Pending(_)) = lookup_local(
+                                locals,
+                                &node_text(function, source),
+                                function.start_byte(),
+                            )
+                        {
+                            return Some(project(local, Step::Call));
+                        }
                         self.path_call_ty(value, function, locals)
                     }
                     _ => None,
@@ -3813,11 +4415,58 @@ fn resolve_deferred(
     let DeferredMarker::Rust(deferred) = marker else {
         return Ok(None);
     };
+    resolve_deferred_with(deferred, index, true)
+}
+
+/// The name of the type `deferred` reaches, whoever declares it (a `String`
+/// or a dependency's error type included), with a type alias on the way
+/// (`type CliResult<T> = Result<T, CliError>`) expanded. `None` when it cannot
+/// be told.
+pub(crate) fn resolve_type_name(
+    deferred: &RustDeferred,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<String>> {
+    with_external_paths(|| Ok(resolve_deferred_with(deferred, index, false)?.flatten()))
+}
+
+/// `Result<_, E>` for the call of `owner::name` of the dependency `krate`
+/// when its sources give `E`; `Unknown` otherwise.
+fn dependency_result(
+    index: &dyn DeclarationIndex,
+    krate: &str,
+    owner: Option<&str>,
+    name: &str,
+) -> anyhow::Result<Ty> {
+    Ok(match index.dependency_error(krate, owner, name)? {
+        Some(err) => Ty::Result(Box::new(Ty::Unknown), Box::new(Ty::Ext(err))),
+        None => Ty::Unknown,
+    })
+}
+
+/// [`resolve_deferred`]; `repo_only` keeps the answer to types the repo
+/// declares (what a receiver needs). Without it the type is named as it is.
+fn resolve_deferred_with(
+    deferred: &RustDeferred,
+    index: &dyn DeclarationIndex,
+    repo_only: bool,
+) -> anyhow::Result<Option<Option<String>>> {
     let declarations = match &deferred.source {
         DeferredSource::Call { candidates } => {
             let mut all = Vec::new();
             for candidate in candidates {
                 all.extend(index.declarations(DeclarationQuery::Callable(candidate))?);
+                // `use util;` in an edition-2015 crate names the root's
+                // `util`, written without `crate::`.
+                if !repo_only
+                    && let Some((first, _)) = candidate.split_once("::")
+                    && !matches!(first, "crate" | "self" | "super" | "std" | "core" | "alloc")
+                    && !candidate.starts_with(RUST_CRATE_PIN)
+                    && index.is_repo_module(first)?
+                {
+                    all.extend(index.declarations(DeclarationQuery::Callable(&format!(
+                        "crate::{candidate}"
+                    )))?);
+                }
             }
             all
         }
@@ -3829,7 +4478,7 @@ fn resolve_deferred(
         )))?,
         DeferredSource::Field { owner, .. } => index.declarations(DeclarationQuery::Type(owner))?,
         DeferredSource::Path { package, path } => {
-            return resolve_path_deferred(deferred, package, path, index);
+            return resolve_path_deferred(deferred, package, path, index, repo_only);
         }
     };
     if declarations.is_empty()
@@ -3847,7 +4496,7 @@ fn resolve_deferred(
         else {
             return Ok(Some(None));
         };
-        return repo_receiver(ty, &dir, index);
+        return finish_receiver(ty, &dir, index, repo_only);
     }
     if declarations.is_empty() {
         // A callee imported from a crate outside the repository (`use
@@ -3869,6 +4518,26 @@ fn resolve_deferred(
                 local |= index.is_repo_module(candidate.split("::").next().unwrap_or(candidate))?;
             }
             if !local {
+                if !repo_only {
+                    // `Docopt::new(..)` of a dependency: its sources give the
+                    // error type of the call.
+                    for candidate in candidates {
+                        let mut segs: Vec<&str> = candidate.split("::").collect();
+                        let Some(name) = segs.pop() else { continue };
+                        let owner = segs
+                            .last()
+                            .copied()
+                            .filter(|o| o.starts_with(char::is_uppercase));
+                        let Some(krate) = segs.first().copied().filter(|c| *c != name) else {
+                            continue;
+                        };
+                        let ty = dependency_result(index, krate, owner, name)?;
+                        if ty != Ty::Unknown {
+                            return Ok(receiver_after_steps(ty, &deferred.steps, "", index)?
+                                .map(|(t, _)| Some(t)));
+                        }
+                    }
+                }
                 return Ok(Some(Some(String::new())));
             }
         }
@@ -3898,7 +4567,20 @@ fn resolve_deferred(
     let Some((ty, dir)) = found else {
         return Ok(Some(None));
     };
-    repo_receiver(ty, &dir, index)
+    finish_receiver(ty, &dir, index, repo_only)
+}
+
+fn finish_receiver(
+    ty: String,
+    dir: &str,
+    index: &dyn DeclarationIndex,
+    repo_only: bool,
+) -> anyhow::Result<Option<Option<String>>> {
+    if repo_only {
+        repo_receiver(ty, dir, index)
+    } else {
+        Ok(Some(Some(ty)))
+    }
 }
 
 /// The receiver type `ty` (reached through the declaration of `dir`'s package)
@@ -4218,6 +4900,7 @@ fn resolve_path_deferred(
     package: &str,
     path: &str,
     index: &dyn DeclarationIndex,
+    repo_only: bool,
 ) -> anyhow::Result<Option<Option<String>>> {
     let start = resolve_path_type(index, package, path)?.receiver();
     if deferred.steps.is_empty() {
@@ -4227,7 +4910,7 @@ fn resolve_path_deferred(
     else {
         return Ok(Some(None));
     };
-    repo_receiver(ty, &dir, index)
+    finish_receiver(ty, &dir, index, repo_only)
 }
 
 /// `ty` with every `crate::` path in it (`DeferredSource::Path`) settled: the
@@ -4285,12 +4968,132 @@ fn declared_receiver_type(
     let Some(ty) = declared_source_ty(&deferred.source, qualname, signature, declared_in) else {
         return Ok(None);
     };
-    receiver_after_steps(
-        settle_paths(ty, index)?,
-        &deferred.steps,
-        declared_in,
-        index,
-    )
+    let mut ty = settle_paths(ty, index)?;
+    if deferred
+        .steps
+        .iter()
+        .any(|step| matches!(step, Step::Arg { .. }))
+    {
+        ty = expand_aliases(ty, declared_in, index, 3)?;
+    }
+    receiver_after_steps(ty, &deferred.steps, declared_in, index)
+}
+
+/// `ty` with every repo type alias in it expanded (`depth` levels deep).
+fn expand_aliases(
+    ty: Ty,
+    package: &str,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+) -> anyhow::Result<Ty> {
+    if depth == 0 {
+        return Ok(ty);
+    }
+    let next = |t: Box<Ty>| -> anyhow::Result<Box<Ty>> {
+        Ok(Box::new(expand_aliases(*t, package, index, depth - 1)?))
+    };
+    Ok(match ty {
+        Ty::Named(_) => {
+            let expanded = expand_alias(ty.clone(), package, index)?;
+            if expanded == ty {
+                ty
+            } else {
+                expand_aliases(expanded, package, index, depth - 1)?
+            }
+        }
+        Ty::FnPtr(t) => Ty::FnPtr(next(t)?),
+        Ty::Option(t) => Ty::Option(next(t)?),
+        Ty::Seq(t) => Ty::Seq(next(t)?),
+        Ty::Iter(t) => Ty::Iter(next(t)?),
+        Ty::Future(t) => Ty::Future(next(t)?),
+        Ty::Result(t, e) => Ty::Result(next(t)?, next(e)?),
+        other => other,
+    })
+}
+
+/// The error type `E` of the return type `ret` as written (`CliResult<T>`,
+/// `Result<T, E>`), with repo type aliases expanded; a plain type name.
+pub(crate) fn expected_error_type(
+    ret: &str,
+    package: &str,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<String>> {
+    let Some(ty) = callable_return_ty("__f", &format!("() -> {ret}"), package) else {
+        return Ok(None);
+    };
+    Ok(match expand_aliases(ty, package, index, 3)? {
+        Ty::Result(_, e) => match *e {
+            Ty::Named(n) | Ty::Local(_, n) => Some(n),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// The type `name`, a repo type alias, hands a combinator: its `Ok`/`Some`/item
+/// type, or with `err` its `Err` type.
+pub(crate) fn alias_argument_type(
+    name: &str,
+    err: bool,
+    package: &str,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<String>> {
+    let expanded = expand_alias(Ty::Named(name.to_string()), package, index)?;
+    Ok(match project(expanded, Step::Arg { err }) {
+        Ty::Named(n) => Some(n),
+        _ => None,
+    })
+}
+
+/// `ty`, when it is a type alias of the repo (`type CliResult<T> = Result<T,
+/// CliError>`), as the type it stands for. The alias's own generics are not
+/// kept in its signature, so a one-letter name inside it reads as unknown.
+fn expand_alias(ty: Ty, package: &str, index: &dyn DeclarationIndex) -> anyhow::Result<Ty> {
+    let Ty::Named(name) = &ty else {
+        return Ok(ty);
+    };
+    let mut declarations = index.declarations(DeclarationQuery::RustAlias(name))?;
+    if declarations
+        .iter()
+        .any(|d| cargo_package_dir(&d.path) == package)
+    {
+        declarations.retain(|d| cargo_package_dir(&d.path) == package);
+    }
+    let [alias] = declarations.as_slice() else {
+        return Ok(ty);
+    };
+    let Some(signature) = &alias.signature else {
+        return Ok(ty);
+    };
+    let Some(rhs) = signature
+        .lines()
+        .find(|line| line.starts_with("type "))
+        .and_then(|line| line.split_once('='))
+        .map(|(_, rhs)| rhs.trim().trim_end_matches(';').to_string())
+    else {
+        return Ok(ty);
+    };
+    let attributes: Vec<&str> = signature
+        .lines()
+        .filter(|line| line.starts_with("#["))
+        .collect();
+    let as_signature = format!("{}\n() -> {rhs}", attributes.join("\n"));
+    let Some(expanded) = callable_return_ty(&alias.qualname, &as_signature, package) else {
+        return Ok(ty);
+    };
+    fn unknown_generics(ty: Ty) -> Ty {
+        let boxed = |t: Box<Ty>| Box::new(unknown_generics(*t));
+        match ty {
+            Ty::Named(n) if n.len() == 1 && n.starts_with(char::is_uppercase) => Ty::Unknown,
+            Ty::Option(t) => Ty::Option(boxed(t)),
+            Ty::Result(t, e) => Ty::Result(boxed(t), boxed(e)),
+            Ty::Seq(t) => Ty::Seq(boxed(t)),
+            Ty::Iter(t) => Ty::Iter(boxed(t)),
+            Ty::Tuple(ts) => Ty::Tuple(ts.into_iter().map(unknown_generics).collect()),
+            other => other,
+        }
+    }
+    Ok(unknown_generics(settle_paths(expanded, index)?))
 }
 
 /// `ty` after `steps`, as a type name, with the package of the declaration that
@@ -4303,6 +5106,15 @@ fn receiver_after_steps(
 ) -> anyhow::Result<Option<(String, String)>> {
     let package = RefCell::new(declared_in.to_string());
     let ty = receiver_through_steps(ty, steps, |owner, step| {
+        // A path is a dependency's type (`csv::Writer`).
+        if owner.contains("::") {
+            let Step::Method(method) = step else {
+                return Ok(Ty::Unknown);
+            };
+            let (krate, ty_name) = owner.split_once("::").unwrap_or((owner, ""));
+            let leaf = ty_name.rsplit("::").next().unwrap_or(ty_name);
+            return dependency_result(index, krate, Some(leaf), method);
+        }
         let (ty, dir) = match step {
             Step::Field(field) => user_field_ty(owner, field, index, &package.borrow())?,
             Step::Method(method) => user_method_ty(owner, method, index, &package.borrow())?,
@@ -4347,11 +5159,23 @@ fn receiver_through_steps(
                 }
             }
             (Ty::Named(owner), Step::Field(_) | Step::Elem) => user_step(owner, step)?,
+            // A method of a dependency's type: read from its sources.
+            (Ty::Ext(path), Step::Method(m)) if !STD_PASSTHROUGH_METHODS.contains(&m.as_str()) => {
+                user_step(path, step)?
+            }
+            // These keep the `Err` type of a `Result` (`and_then`'s function
+            // must return the same one).
+            (Ty::Result(_, e), Step::Method(m))
+                if matches!(**e, Ty::Ext(_))
+                    && matches!(m.as_str(), "and_then" | "map" | "inspect" | "or") =>
+            {
+                ty.clone()
+            }
             _ => project(ty, step.clone()),
         };
     }
     Ok(match ty {
-        Ty::Named(n) => Some(n),
+        Ty::Named(n) | Ty::Ext(n) => Some(n),
         _ => None,
     })
 }
@@ -5857,8 +6681,20 @@ fn add_crate_markers(path: &str, candidates: &mut Vec<String>, ctx: &Context) {
     }
     if path.contains("::") {
         for full in expanded {
+            // `impl Trait for io::Error` names its method `io::Error::m`, as
+            // the type is written: the path read through `use std::io;`
+            // without its root is the same method.
+            let as_written = full
+                .split_once("::")
+                .filter(|(root, rest)| is_rust_std_root(root) && rest.contains("::"))
+                .map(|(_, rest)| rest.to_string());
             if !candidates.contains(&full) {
                 candidates.push(full);
+            }
+            if let Some(written) = as_written
+                && !candidates.contains(&written)
+            {
+                candidates.push(written);
             }
         }
     }
@@ -5924,6 +6760,7 @@ fn collect_shadowed_names(node: Node<'_>, source: &str, out: &mut HashSet<String
 /// `call_expression` — a bare `helper` in `helper()`, but not in
 /// `helper(x)`'s arguments, `let helper = ...`, `Some(helper)`, etc.
 fn is_call_callee(node: Node<'_>) -> bool {
+    let node = through_turbofish(node);
     node.parent().is_some_and(|parent| {
         parent.kind() == "call_expression" && parent.child_by_field_name("function") == Some(node)
     })
@@ -6584,6 +7421,9 @@ fn collect_use_bindings(
     module: &str,
 ) -> HashMap<String, Vec<String>> {
     let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    // `mod utils; use utils::f;`: a path that starts with a module this
+    // scope declares is relative to it (uniform paths, edition 2018).
+    let local_mods = collect_mod_names(scope, source);
     let mut cursor = scope.walk();
     for child in scope.named_children(&mut cursor) {
         if !matches!(child.kind(), "use_declaration" | "use_item") {
@@ -6591,6 +7431,10 @@ fn collect_use_bindings(
         }
         let text = node_text(child, source);
         for (bound, raw_target) in parse_use_bindings(&text) {
+            let raw_target = match raw_target.split_once("::") {
+                Some((first, _)) if local_mods.contains(first) => format!("{module}::{raw_target}"),
+                _ => raw_target,
+            };
             let target = normalized_import_target(raw_target, module);
             let entry = out.entry(bound).or_default();
             if !entry.contains(&target) {

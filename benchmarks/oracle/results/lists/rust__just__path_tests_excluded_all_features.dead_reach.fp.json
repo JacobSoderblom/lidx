@@ -1,6 +1,5 @@
 [
 {"category":"reachable_function","confidence":"high","exported":false,"file":"src/config.rs","key":"src/config.rs:458","kind":"function","lidx_kind":"function","line":458,"name":"test","policy":false,"qualname":"crate::config::tests::test","subkind":"fn"},
-{"category":"reachable_function","confidence":"high","exported":false,"file":"src/function.rs","key":"src/function.rs:165","kind":"function","lidx_kind":"function","line":165,"name":"bool","policy":false,"qualname":"crate::function::bool","subkind":"fn"},
 {"category":"reachable_function","confidence":"high","exported":false,"file":"src/keyed.rs","key":"src/keyed.rs:22","kind":"function","lidx_kind":"function","line":22,"name":"serialize_option","policy":false,"qualname":"crate::keyed::serialize_option","subkind":"fn"},
 {"category":"reachable_function","confidence":"high","exported":false,"file":"src/lexer.rs","key":"src/lexer.rs:1007","kind":"function","lidx_kind":"function","line":1007,"name":"default_lexeme","policy":false,"qualname":"crate::lexer::tests::default_lexeme","subkind":"fn"},
 {"category":"reachable_function","confidence":"high","exported":false,"file":"src/lexer.rs","key":"src/lexer.rs:955","kind":"function","lidx_kind":"function","line":955,"name":"test","policy":false,"qualname":"crate::lexer::tests::test","subkind":"fn"},

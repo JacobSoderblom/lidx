@@ -1,8 +1,3 @@
 [
-{"callee":{"file":"src/h3.ts","line":147,"name":"H3"},"caller":{"file":"src/h3.ts","line":0,"name":"<module>"},"category":"no_edge","ctxs":["return"],"detail":null,"forms":["ident"],"module_level":true,"sites":["src/h3.ts:301"]},
-{"callee":{"file":"src/h3.ts","line":41,"name":"H3Core"},"caller":{"file":"src/h3.ts","line":119,"name":"createDispatcher"},"category":"no_edge","ctxs":["other"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/h3.ts:120"]},
-{"callee":{"file":"src/h3.ts","line":64,"name":"handler"},"caller":{"file":"src/handler.ts","line":170,"name":"toEventHandler"},"category":"no_edge","ctxs":["other","return"],"detail":null,"forms":["property_access"],"module_level":false,"sites":["src/handler.ts:176","src/handler.ts:177"]},
-{"callee":{"file":"src/h3.ts","line":64,"name":"handler"},"caller":{"file":"src/middleware.ts","line":162,"name":"toMiddleware"},"category":"no_edge","ctxs":["other"],"detail":null,"forms":["property_access"],"module_level":false,"sites":["src/middleware.ts:163"]},
-{"callee":{"file":"src/response.ts","line":96,"name":"HTTPResponse"},"caller":{"file":"src/response.ts","line":0,"name":"<module>"},"category":"no_edge","ctxs":["other"],"detail":null,"forms":["ident"],"module_level":true,"sites":["src/response.ts:127"]},
-{"callee":{"file":"src/rules/match.ts","line":257,"name":"canOverrideRouteShape"},"caller":{"file":"src/rules/match.ts","line":311,"name":"createMatcherFromFind"},"category":"no_edge","ctxs":["other"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/rules/match.ts:313"]}
+
 ]

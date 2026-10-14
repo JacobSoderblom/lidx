@@ -1,5 +1,3 @@
 [
-{"callee":{"file":"src/error.rs","line":492,"name":"[`From<ConfigError>`]from"},"caller":{"file":"src/run.rs","line":5,"name":"run"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/run.rs:14"]},
-{"callee":{"file":"src/function.rs","line":165,"name":"bool"},"caller":{"file":"src/function.rs","line":59,"name":"get"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/function.rs:74"]},
-{"callee":{"file":"src/value.rs","line":126,"name":"[`From<String>`]from"},"caller":{"file":"src/evaluator.rs","line":333,"name":"evaluate_builtin_function"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["path"],"module_level":false,"sites":["src/evaluator.rs:341","src/evaluator.rs:344","src/evaluator.rs:363"]}
+
 ]

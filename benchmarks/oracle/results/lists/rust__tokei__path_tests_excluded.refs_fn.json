@@ -1,3 +1,3 @@
 [
-{"callee":{"file":"src/cli_utils.rs","line":51,"name":"parse_or_exit"},"caller":{"file":"src/cli.rs","line":29,"name":"from_args"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/cli.rs:103","src/cli.rs:122","src/cli.rs:135"]}
+
 ]
