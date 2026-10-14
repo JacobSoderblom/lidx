@@ -1137,6 +1137,11 @@ struct FallbackGuard {
     /// Refuse a cross-file candidate the language's `VisibilityRule`
     /// deems not visible.
     enforce_visibility: bool,
+    /// A receiver of a known Rust type: of several visible methods of
+    /// same-named types, the one whose type is declared in the module the
+    /// call is written in (or the innermost enclosing one) is the one a bare
+    /// type name means there. Never for a bare-name guess.
+    home_module: bool,
 }
 
 impl FallbackGuard {
@@ -1146,6 +1151,7 @@ impl FallbackGuard {
         exclude_method: false,
         exclude_free_fn: false,
         enforce_visibility: false,
+        home_module: false,
     };
 }
 
@@ -2798,7 +2804,7 @@ impl<'c> Resolver<'c> {
             caller.qualname,
         );
         let kind_eligible = found.len();
-        let visible: Vec<i64> = found
+        let mut visible: Vec<i64> = found
             .iter()
             .filter(|r| {
                 !guard.enforce_visibility
@@ -2813,6 +2819,31 @@ impl<'c> Resolver<'c> {
             })
             .map(|r| r.id)
             .collect();
+        // Rust: a type declared in the module the call is written in (or one
+        // enclosing it) is what a bare type name there means, whatever a
+        // same-named type of another module declares.
+        if guard.home_module
+            && visible.len() >= 2
+            && let Some(caller_qualname) = caller.qualname
+        {
+            let mut home: Vec<(usize, i64)> = found
+                .iter()
+                .filter(|r| visible.contains(&r.id) && r.kind == "method")
+                .filter_map(|r| {
+                    let module = r.qualname.rsplitn(3, "::").nth(2)?;
+                    caller_qualname
+                        .starts_with(&format!("{module}::"))
+                        .then_some((module.len(), r.id))
+                })
+                .collect();
+            // The innermost module wins.
+            home.sort_unstable_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+            match home.as_slice() {
+                [(_, only)] => visible = vec![*only],
+                [(a, only), (b, _), ..] if a > b => visible = vec![*only],
+                _ => {}
+            }
+        }
         let is_ambiguous = visible.len() >= 2;
         if is_ambiguous {
             self.saw_ambiguous = true;
@@ -2941,6 +2972,7 @@ impl<'c> Resolver<'c> {
                     exclude_method: false,
                     exclude_free_fn: false,
                     enforce_visibility: source_lang == "rust",
+                    home_module: source_lang == "rust",
                 };
                 if let Some(id) = self.unique_by_pattern(
                     &seg,
@@ -3012,6 +3044,7 @@ impl<'c> Resolver<'c> {
                         && !bare_call
                         && !target_qualname.contains("::"),
                     enforce_visibility: true,
+                    home_module: false,
                 };
                 if profile_for(source_lang).two_segment
                     && let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
@@ -3351,6 +3384,7 @@ impl<'c> Resolver<'c> {
             exclude_method: false,
             exclude_free_fn: false,
             enforce_visibility: true,
+            home_module: false,
         };
         let Some(id) =
             self.unique_by_pattern(name, (&dot, &colons), "rust", edge_kind, guard, caller)?

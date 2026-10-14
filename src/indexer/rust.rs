@@ -3088,7 +3088,11 @@ impl TypeEnv<'_> {
                 Some(Ty::Named(name))
             }
             "call_expression" => {
-                let function = unwrap_turbofish(value.child_by_field_name("function")?);
+                let written = value.child_by_field_name("function")?;
+                if let Some(channel) = self.channel_ty(written) {
+                    return Some(channel);
+                }
+                let function = unwrap_turbofish(written);
                 match function.kind() {
                     "field_expression" => {
                         let recv =
@@ -3104,6 +3108,41 @@ impl TypeEnv<'_> {
             }
             _ => None,
         }
+    }
+
+    /// `bounded::<T>(n)` / `mpsc::channel::<T>()`: `(sender, receiver)`, the
+    /// receiver iterating `T`. Only a constructor of a known channel crate
+    /// (std, crossbeam, flume) written with its message type.
+    fn channel_ty(&self, written: Node<'_>) -> Option<Ty> {
+        if written.kind() != "generic_function" {
+            return None;
+        }
+        let ctx = self.ctx?;
+        let function = written.child_by_field_name("function")?;
+        let args = written.child_by_field_name("type_arguments")?;
+        let mut cursor = args.walk();
+        let mut types = args.named_children(&mut cursor);
+        let message = types.next()?;
+        if types.next().is_some() {
+            return None;
+        }
+        let raw = collapse_call_target_whitespace(&node_text(function, self.source));
+        let segs: Vec<&str> = raw.split("::").collect();
+        let last = *segs.last()?;
+        if !CHANNEL_CONSTRUCTORS.contains(&last) || ctx.local_mods.contains(segs[0]) {
+            return None;
+        }
+        let in_crate = |path: &str| {
+            CHANNEL_CRATES.iter().any(|c| {
+                path.strip_prefix(c)
+                    .is_some_and(|rest| rest.starts_with("::"))
+            })
+        };
+        let external = match ctx.imports.get(segs[0]) {
+            Some(targets) => !targets.is_empty() && targets.iter().all(|t| in_crate(t)),
+            None => segs.len() > 1 && in_crate(&raw),
+        };
+        external.then(|| Ty::Tuple(vec![Ty::Unknown, Ty::Iter(Box::new(self.ty(message)))]))
     }
 
     /// `recv.method(..)`: this file's `Type::method` return type, else the
@@ -3463,7 +3502,18 @@ impl TypeEnv<'_> {
         };
         match path.kind() {
             "identifier" | "type_identifier" => {
-                (resolve(node_text(path, self.source))? == *n).then(|| (n.clone(), None))
+                let written = resolve(node_text(path, self.source))?;
+                if written == *n {
+                    return Some((n.clone(), None));
+                }
+                // A variant written bare (`Raw(ref x)` after `use Enum::*;`):
+                // the scrutinee is a value of `n`, so a pattern that names
+                // neither `n` nor a std variant can only be one of its
+                // variants. An enum declared here must declare it.
+                let declared_here = self.adts.contains_key(n);
+                let known = self.adts.contains_key(&format!("{n}::{written}"));
+                (written.starts_with(char::is_uppercase) && (known || !declared_here))
+                    .then(|| (n.clone(), Some(written)))
             }
             "scoped_identifier" | "scoped_type_identifier" => {
                 let head = path.child_by_field_name("path")?;
@@ -3482,6 +3532,35 @@ impl TypeEnv<'_> {
     }
 }
 
+/// Whether `method` is a std iterator method that gives an iterator over the
+/// same items back.
+fn is_iterator_adapter(method: &str) -> bool {
+    ITEM_PRESERVING_ADAPTERS.contains(&method) || matches!(method, "into_iter" | "by_ref")
+}
+
+/// Iterator adapters whose items are the receiver's items.
+const ITEM_PRESERVING_ADAPTERS: &[&str] = &[
+    "filter",
+    "skip",
+    "skip_while",
+    "take",
+    "take_while",
+    "rev",
+    "peekable",
+    "fuse",
+    "step_by",
+    "inspect",
+    "cycle",
+    "chain",
+    "cloned",
+    "copied",
+];
+
+/// Constructors of a channel (`let (tx, rx) = bounded::<T>(n)`): the crates
+/// whose receiver iterates its messages and `recv`s a `Result`.
+const CHANNEL_CONSTRUCTORS: &[&str] = &["bounded", "unbounded", "channel", "sync_channel"];
+const CHANNEL_CRATES: &[&str] = &["std", "crossbeam_channel", "crossbeam", "flume"];
+
 /// Result type of `recv.method()` for the few std methods whose result type
 /// follows from the receiver type; everything else is `Unknown`.
 fn method_ty(recv: Ty, method: &str) -> Ty {
@@ -3496,7 +3575,13 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         (t @ Ty::Option(_), "take" | "cloned" | "copied") => t,
         (Ty::Seq(t), "iter" | "into_iter" | "iter_mut" | "drain") => Ty::Iter(t),
         (t @ Ty::Iter(_), "into_iter" | "by_ref") => t,
-        (Ty::Iter(t), "next" | "next_back" | "last") => Ty::Option(t),
+        (t @ Ty::Iter(_), m) if ITEM_PRESERVING_ADAPTERS.contains(&m) => t,
+        (Ty::Iter(t), "next" | "next_back" | "last" | "nth" | "find" | "max" | "min") => {
+            Ty::Option(t)
+        }
+        // A channel's receiver (`channel_ty`) iterates its messages.
+        (Ty::Iter(t), "iter" | "try_iter") => Ty::Iter(t),
+        (Ty::Iter(t), "recv" | "try_recv" | "recv_timeout") => Ty::Result(t, Box::new(Ty::Unknown)),
         (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last") => Ty::Option(t),
         (Ty::Seq(t), "values" | "values_mut" | "into_values") => match *t {
             Ty::Tuple(mut kv) if kv.len() == 2 => Ty::Iter(Box::new(kv.remove(1))),
@@ -3551,7 +3636,15 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
                 };
                 let mut ty = node
                     .child_by_field_name("return_type")
-                    .map_or(Ty::Unknown, |t| env.ty(t));
+                    .map_or(Ty::Unknown, |t| {
+                        // `-> Option<Self::Item>`: read with the impl's `type Item`.
+                        let assoc = impl_assoc_types(node, source);
+                        let text = node_text(t, source);
+                        match substitute_assoc_types(&text, &assoc, source) {
+                            Some(text) => return_ty_of_text(&env, &text).unwrap_or(Ty::Unknown),
+                            None => env.ty(t),
+                        }
+                    });
                 let mut cursor = node.walk();
                 let is_async = node.children(&mut cursor).any(|c| {
                     c.kind() == "function_modifiers" && node_text(c, source).contains("async")
@@ -3580,6 +3673,25 @@ fn collect_returns(root: Node<'_>, source: &str, paths: PathScope<'_>) -> Return
     let mut out = Returns::new();
     walk(root, source, paths, &mut out);
     out
+}
+
+/// The type written as `text` (a return type), read in `env`'s scope: parsed
+/// on its own, so the file's source is not the one its nodes index.
+fn return_ty_of_text(env: &TypeEnv<'_>, text: &str) -> Option<Ty> {
+    let src = format!("fn __f() -> {text} {{}}");
+    let tree = parse_declaration(&src)?;
+    let func = tree.root_node().named_child(0)?;
+    let ret = func.child_by_field_name("return_type")?;
+    let inner = TypeEnv {
+        source: &src,
+        self_ty: env.self_ty,
+        generics: Rc::clone(&env.generics),
+        adts: env.adts,
+        ctx: env.ctx,
+        paths: env.paths,
+        declared: env.declared,
+    };
+    Some(inner.ty(ret))
 }
 
 thread_local! {
@@ -3632,6 +3744,23 @@ fn resolve_deferred(
             return resolve_path_deferred(deferred, package, path, index);
         }
     };
+    if declarations.is_empty()
+        && let DeferredSource::Method {
+            receiver_type,
+            method,
+        } = &deferred.source
+        && is_iterator_adapter(method)
+    {
+        // `walk.take_while(..)` on a repo iterator: the adapter is std's.
+        let mut steps = vec![Step::Method(method.clone())];
+        steps.extend(deferred.steps.iter().cloned());
+        let Some((ty, dir)) =
+            receiver_after_steps(Ty::Named(receiver_type.clone()), &steps, "", index)?
+        else {
+            return Ok(Some(None));
+        };
+        return repo_receiver(ty, &dir, index);
+    }
     if declarations.is_empty() {
         // A callee imported from a crate outside the repository (`use
         // ignore::WalkBuilder;`) has no declaration here: the receiver is
@@ -4089,6 +4218,12 @@ fn receiver_after_steps(
         let (ty, dir) = match step {
             Step::Field(field) => user_field_ty(owner, field, index, &package.borrow())?,
             Step::Method(method) => user_method_ty(owner, method, index, &package.borrow())?,
+            // The item of a repo type that implements `Iterator`: what its
+            // `next` returns inside the `Option`.
+            Step::Elem => match user_method_ty(owner, "next", index, &package.borrow())? {
+                (Ty::Option(item), dir) => (*item, dir),
+                _ => (Ty::Unknown, None),
+            },
             _ => (Ty::Unknown, None),
         };
         if let Some(dir) = dir {
@@ -4112,9 +4247,18 @@ fn receiver_through_steps(
             (Ty::Named(owner), Step::Method(m))
                 if !STD_PASSTHROUGH_METHODS.contains(&m.as_str()) =>
             {
-                user_step(owner, step)?
+                match user_step(owner, step)? {
+                    // An adapter the type does not declare itself: it is an
+                    // iterator (it declares `next`) and the adapter keeps
+                    // its items.
+                    Ty::Unknown if is_iterator_adapter(m) => match user_step(owner, &Step::Elem)? {
+                        Ty::Unknown => Ty::Unknown,
+                        item => Ty::Iter(Box::new(item)),
+                    },
+                    declared => declared,
+                }
             }
-            (Ty::Named(owner), Step::Field(_)) => user_step(owner, step)?,
+            (Ty::Named(owner), Step::Field(_) | Step::Elem) => user_step(owner, step)?,
             _ => project(ty, step.clone()),
         };
     }
@@ -4549,7 +4693,14 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
                     child.child_by_field_name("value"),
                     child.child_by_field_name("body"),
                 ) {
-                    let ty = project(env.expr_ty(value, out), Step::Elem);
+                    let ty = match env.expr_ty(value, out) {
+                        // A type of the repo is iterated through its
+                        // `Iterator::next`.
+                        iterated @ Ty::Named(_) => {
+                            project(env.method_call_ty(iterated, "next"), Step::OptionSome)
+                        }
+                        iterated => project(iterated, Step::Elem),
+                    };
                     env.bind(pat, &ty, (value.end_byte(), body.end_byte()), out);
                 }
             }
@@ -6158,6 +6309,51 @@ fn collect_uses(
     }
 }
 
+/// The `type Name = T;` items of the impl a method is written in, as
+/// (name, type node).
+fn impl_assoc_types<'a>(method: Node<'a>, source: &str) -> Vec<(String, Node<'a>)> {
+    let Some(list) = method.parent() else {
+        return Vec::new();
+    };
+    if list.parent().map(|p| p.kind()) != Some("impl_item") {
+        return Vec::new();
+    }
+    let mut cursor = list.walk();
+    list.named_children(&mut cursor)
+        .filter(|c| c.kind() == "type_item")
+        .filter_map(|c| {
+            Some((
+                node_text(c.child_by_field_name("name")?, source),
+                c.child_by_field_name("type")?,
+            ))
+        })
+        .collect()
+}
+
+/// `text` with each `Self::Name` the impl declares replaced by the type it is
+/// set to, so a signature read away from its impl (`-> Option<Self::Item>`)
+/// still names the item type. `None` when `text` names no such type.
+fn substitute_assoc_types(
+    text: &str,
+    assoc: &[(String, Node<'_>)],
+    source: &str,
+) -> Option<String> {
+    let mut out = text.to_string();
+    let mut changed = false;
+    for (name, ty) in assoc {
+        let needle = format!("Self::{name}");
+        if out.contains(&needle) {
+            let value = node_text(*ty, source)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            out = out.replace(&needle, &value);
+            changed = true;
+        }
+    }
+    changed.then_some(out)
+}
+
 fn extract_signature(
     node: Node<'_>,
     source: &str,
@@ -6167,9 +6363,11 @@ fn extract_signature(
     let params = node
         .child_by_field_name("parameters")
         .map(|n| node_text(n, source));
+    let assoc = impl_assoc_types(node, source);
     let return_type = node
         .child_by_field_name("return_type")
-        .map(|n| node_text(n, source));
+        .map(|n| node_text(n, source))
+        .map(|r| substitute_assoc_types(&r, &assoc, source).unwrap_or(r));
     // The fn's and its impl's generic parameters, so `project_deferred`-style
     // readers can tell `-> Item` (a parameter) from a type named `Item`.
     let generics = signature_generics(node, source);
@@ -6204,7 +6402,9 @@ fn extract_signature(
     // Where the types in the return type point, read here with this file's
     // `use`s so a caller in another file need not.
     if let Some(return_node) = node.child_by_field_name("return_type") {
-        prefix.extend(type_origins_marker(&[return_node], node, source, ctx));
+        let mut nodes = vec![return_node];
+        nodes.extend(assoc.iter().map(|(_, ty)| *ty));
+        prefix.extend(type_origins_marker(&nodes, node, source, ctx));
     }
     match (prefix.is_empty(), base) {
         (true, base) => base,
