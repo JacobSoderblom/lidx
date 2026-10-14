@@ -3995,6 +3995,74 @@ fn value_root_is_shadowed(node: Node<'_>, name: &str, source: &str) -> bool {
     enclosing_function_binds(node, name, source)
 }
 
+/// Whether `name` at `node` is a class declared in an arrow or function
+/// expression (an IIFE: `const A = (() => { class A {} return A; })()`) and
+/// bound by nothing else on the way up. Outside any named function such a
+/// class is a symbol of the module (`mod.A`), so the read is not shadowed.
+fn is_lambda_scoped_class(node: Node<'_>, name: &str, source: &str, ctx: &Context) -> bool {
+    if ctx.fn_depth != 0 {
+        return false;
+    }
+    fn binds_other(node: Node<'_>, name: &str, source: &str) -> bool {
+        let mut cursor = node.walk();
+        for c in node.named_children(&mut cursor) {
+            let mut names = Vec::new();
+            match c.kind() {
+                "variable_declarator" => {
+                    if let Some(n) = c.child_by_field_name("name") {
+                        collect_binding_names(n, source, &mut names);
+                    }
+                }
+                "catch_clause" => {
+                    if let Some(n) = c.child_by_field_name("parameter") {
+                        collect_binding_names(n, source, &mut names);
+                    }
+                }
+                "function_declaration" | "generator_function_declaration" => {
+                    if let Some(n) = c.child_by_field_name("name") {
+                        names.push(node_text(n, source));
+                    }
+                }
+                _ => {}
+            }
+            if names.iter().any(|n| n == name) {
+                return true;
+            }
+            if !is_function_like(c.kind()) && binds_other(c, name, source) {
+                return true;
+            }
+        }
+        false
+    }
+    let mut found = false;
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if is_function_like(n.kind()) {
+            if !matches!(
+                n.kind(),
+                "arrow_function" | "function_expression" | "function"
+            ) {
+                return false;
+            }
+            let mut params = Vec::new();
+            collect_lambda_parameter_bindings(n, source, &mut params);
+            if params.iter().any(|(p, _)| p == name) {
+                return false;
+            }
+            if let Some(body) = n.child_by_field_name("body")
+                && body_bound_names(body, source).contains(name)
+            {
+                if binds_other(body, name, source) {
+                    return false;
+                }
+                found = true;
+            }
+        }
+        cur = n.parent();
+    }
+    found
+}
+
 /// `CALLS` edge for an identifier used as a value (`options.getPath ?? getPath`,
 /// `register(handler)`): an import, or a declaration of this file, that no
 /// local shadows. Resolved like a bare call to the name; see
@@ -4036,7 +4104,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     } else {
         value_root_is_shadowed(node, &name, source)
     };
-    if shadowed {
+    if shadowed && !(local_fn.is_none() && is_lambda_scoped_class(node, &name, source, ctx)) {
         return None;
     }
     let import_candidates: Vec<String> = match (
@@ -4089,6 +4157,11 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         ) && p
             .child_by_field_name("object")
             .is_some_and(|o| o.id() == outer.id())
+            // `Cls.prototype` reads the class itself as a value (`Cls.prototype.m`,
+            // `Object.assign(Cls.prototype, ..)`), not one of its properties.
+            && !(p.kind() == "member_expression"
+                && p.child_by_field_name("property")
+                    .is_some_and(|prop| node_text(prop, source) == "prototype"))
     });
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
@@ -4150,7 +4223,18 @@ fn member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
     let (root, hops) = member_chain_root(node);
     let root_name = (root.kind() == "identifier").then(|| node_text(root, source));
     let on_this = root.kind() == "this";
-    if on_this {
+    // `(h as Cls).run`: the cast names the owner when the file declares or
+    // imports `Cls`.
+    let cast_owner = if hops == 1 && root_name.is_none() && !on_this {
+        node.child_by_field_name("object")
+            .and_then(|object| expression_type(object, ctx, source, 0))
+            .filter(|ty| ctx.declared_types.contains(ty) || ctx.import_bindings.contains_key(ty))
+    } else {
+        None
+    };
+    if cast_owner.is_some() {
+        // Typed by the cast below.
+    } else if on_this {
         if ctx.this_rebound || ctx.class_stack.len() <= ctx.ns_depth {
             return None;
         }
@@ -4167,8 +4251,14 @@ fn member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
     } else {
         return None;
     }
-    let raw = node_text(node, source);
-    let receiver_type = pin_receiver_type(infer_receiver_type(node, source, ctx), ctx);
+    let raw = match &cast_owner {
+        Some(owner) => format!("{owner}.{}", node_text(property, source)),
+        None => node_text(node, source),
+    };
+    let receiver_type = match &cast_owner {
+        Some(owner) => pin_receiver_type(ReceiverType::Known(owner.clone()), ctx),
+        None => pin_receiver_type(infer_receiver_type(node, source, ctx), ctx),
+    };
     let known = matches!(
         receiver_type,
         ReceiverType::Known(_) | ReceiverType::Pinned(_) | ReceiverType::Scoped { .. }
@@ -8233,7 +8323,29 @@ fn handle_function_named(
         enter_scope(&mut next_ctx);
         set_function_scope(&mut next_ctx, infer_local_types(node, source));
         enter_local_functions(&mut next_ctx, node, source);
+        walk_parameter_defaults(node, &next_ctx, source, output);
         walk_node(body, &next_ctx, source, output);
+    }
+}
+
+/// The default values of `function`'s parameters (`pred = canOverride`), which
+/// read names in the function's own scope.
+fn walk_parameter_defaults(
+    function: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let Some(params) = function.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if matches!(param.kind(), "required_parameter" | "optional_parameter")
+            && let Some(value) = param.child_by_field_name("value")
+        {
+            walk_node(value, ctx, source, output);
+        }
     }
 }
 
@@ -8321,6 +8433,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         enter_scope(&mut next_ctx);
         set_function_scope(&mut next_ctx, infer_local_types(node, source));
         enter_local_functions(&mut next_ctx, node, source);
+        walk_parameter_defaults(node, &next_ctx, source, output);
         walk_node(body, &next_ctx, source, output);
     }
 }

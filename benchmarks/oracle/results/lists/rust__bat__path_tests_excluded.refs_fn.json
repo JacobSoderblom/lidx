@@ -1,3 +1,3 @@
 [
-{"callee":{"file":"src/bin/bat/config.rs","line":105,"name":"get_args_from_config_file"},"caller":{"file":"src/bin/bat/app.rs","line":58,"name":"matches"},"category":"no_edge","ctxs":["argument_or_element"],"detail":null,"forms":["ident"],"module_level":false,"sites":["src/bin/bat/app.rs:81"]}
+
 ]

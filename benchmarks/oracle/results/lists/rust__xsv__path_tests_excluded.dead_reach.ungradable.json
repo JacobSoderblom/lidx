@@ -1,5 +1,4 @@
 [
-{"confidence":"high","file":"src/select.rs","key":"src/select.rs:419","lidx_kind":"method","name":"get_field","qualname":"crate::select::NormalSelection::get_field","reason":"not_a_judged_declaration"},
 {"confidence":"high","file":"tests/test_cat.rs","key":"tests/test_cat.rs:28","lidx_kind":"function","name":"p","qualname":"crate::tests::test_cat::p","reason":"test_file_outside_cell"},
 {"confidence":"high","file":"tests/test_cat.rs","key":"tests/test_cat.rs:75","lidx_kind":"function","name":"p","qualname":"crate::tests::test_cat::p","reason":"test_file_outside_cell"},
 {"confidence":"high","file":"tests/test_count.rs","key":"tests/test_count.rs:34","lidx_kind":"function","name":"p","qualname":"crate::tests::test_count::p","reason":"test_file_outside_cell"},

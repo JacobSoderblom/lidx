@@ -1,5 +1,4 @@
 [
-{"category":"referenced_function","confidence":"high","exported":false,"file":"src/function.rs","key":"src/function.rs:165","kind":"function","lidx_kind":"function","line":165,"name":"bool","policy":false,"qualname":"crate::function::bool","subkind":"fn"},
 {"category":"referenced_method","confidence":"medium","exported":false,"file":"src/attribute_set.rs","key":"src/attribute_set.rs:7","kind":"method","lidx_kind":"method","line":7,"name":"len","policy":false,"qualname":"crate::attribute_set::AttributeSet::len","subkind":"inherent"},
 {"category":"referenced_method","confidence":"medium","exported":false,"file":"src/modulepath.rs","key":"src/modulepath.rs:22","kind":"method","lidx_kind":"method","line":22,"name":"starts_with","policy":false,"qualname":"crate::modulepath::Modulepath::starts_with","subkind":"inherent"},
 {"category":"referenced_method","confidence":"medium","exported":false,"file":"src/namepath.rs","key":"src/namepath.rs:7","kind":"method","lidx_kind":"method","line":7,"name":"join","policy":false,"qualname":"crate::namepath::Namepath::join","subkind":"inherent"},

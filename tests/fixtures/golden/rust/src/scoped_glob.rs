@@ -16,10 +16,10 @@ pub mod fixture_source {
 
 use glob_source::*;
 
-/// `use glob_source::*` at file scope binds no specific name (a glob binds
-/// no single resolvable name), so this bare call must stay unresolved —
-/// not fall through to `fixture_source::build` by way of the unrelated
-/// `tests` module's own (differently scoped) `use`.
+/// `use glob_source::*` at file scope brings `build` in (the glob's module is
+/// one this file declares), so this bare call is `glob_source::build` -- not
+/// `fixture_source::build` by way of the unrelated `tests` module's own
+/// (differently scoped) `use`.
 pub fn run() -> &'static str {
     build()
 }

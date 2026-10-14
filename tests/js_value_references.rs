@@ -229,3 +229,105 @@ fn classes_passed_as_values_are_references() {
     // An interface is a type, never a value.
     assert!(ref_targets(CLASSES, "src/di.typeOnly").is_empty());
 }
+
+const PARAMS_AND_PROTOTYPES: &[(&str, &str)] = &[(
+    "src/a.ts",
+    r#"export function canOverride(a: string): boolean { return !!a; }
+export type Pred = (a: string) => boolean;
+
+export function createMatcher(find: string, pred: Pred = canOverride): () => boolean {
+  return () => pred(find);
+}
+
+export class Core {
+  handler(e: string): unknown { return e; }
+  other() { return 1; }
+}
+
+export function dispatcher(app: Core) {
+  return app.other !== Core.prototype.other;
+}
+
+export function toHandler(h: unknown) {
+  if (typeof (h as Core)?.handler === "function") {
+    return (h as Core).handler as unknown;
+  }
+  return h;
+}
+
+export class Resp { x = 1; }
+(Resp.prototype as any)["k"] = true;
+"#,
+)];
+
+#[test]
+fn a_parameter_default_reads_a_function() {
+    assert_eq!(
+        ref_targets(PARAMS_AND_PROTOTYPES, "src/a.createMatcher"),
+        ["src/a.canOverride"]
+    );
+}
+
+#[test]
+fn a_class_prototype_reads_the_class() {
+    assert_eq!(
+        ref_targets(PARAMS_AND_PROTOTYPES, "src/a.dispatcher"),
+        ["src/a.Core"]
+    );
+    assert_eq!(ref_targets(PARAMS_AND_PROTOTYPES, "src/a"), ["src/a.Resp"]);
+}
+
+#[test]
+fn a_member_read_through_a_cast_is_typed_by_the_cast() {
+    assert_eq!(
+        ref_targets(PARAMS_AND_PROTOTYPES, "src/a.toHandler"),
+        ["src/a.Core.handler", "src/a.Core.handler"]
+    );
+}
+
+const IIFE_CLASS: &[(&str, &str)] = &[(
+    "src/a.ts",
+    r#"export class Core {}
+
+export const Named = (() => {
+  class Inner extends Core {}
+  return Inner;
+})() as unknown as { new (): Core };
+
+export const Same = (() => {
+  class Same extends Core {}
+  return Same;
+})() as unknown as { new (): Core };
+export type Same = Core;
+
+export function shadowed() {
+  const Core = 1;
+  return Core;
+}
+"#,
+)];
+
+#[test]
+fn a_class_declared_in_an_iife_and_returned_is_a_reference() {
+    assert_eq!(ref_targets(IIFE_CLASS, "src/a.Named"), ["src/a.Inner"]);
+    // The const and the class share a qualname; the read inside the const
+    // means the class.
+    let (_tmp, root, db_path) = common::index_repo("lidx-iife-class-", IIFE_CLASS);
+    let indexer = lidx::indexer::Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let kinds: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT s.kind, t.kind FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = 'REFERENCES' AND s.qualname = 'src/a.Same'",
+        )
+        .unwrap()
+        .query_map([gv], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(kinds, [("const".to_string(), "class".to_string())]);
+    // A local of the same name still hides the class.
+    assert!(ref_targets(IIFE_CLASS, "src/a.shadowed").is_empty());
+}

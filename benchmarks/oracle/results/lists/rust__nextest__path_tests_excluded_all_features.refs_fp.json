@@ -1,4 +1,3 @@
 [
-{"callee":{"file":"cargo-nextest/src/version.rs","line":10,"name":"long","qualname":"crate::version::long"},"callee_kind":"function","caller":{"file":"cargo-nextest/src/version.rs","line":0,"name":"version","qualname":"crate::version"},"caller_kind":"module","category":"no_reference_at_site","detail":null,"edge_kinds":["REFERENCES"],"evidence_file":"cargo-nextest/src/version.rs","evidence_lines":[19],"resolution_kind":"exact"},
-{"callee":{"file":"cargo-nextest/src/version.rs","line":6,"name":"short","qualname":"crate::version::short"},"callee_kind":"function","caller":{"file":"cargo-nextest/src/version.rs","line":0,"name":"version","qualname":"crate::version"},"caller_kind":"module","category":"no_reference_at_site","detail":null,"edge_kinds":["REFERENCES"],"evidence_file":"cargo-nextest/src/version.rs","evidence_lines":[19],"resolution_kind":"exact"}
+
 ]

@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 46;
+pub const EXTRACTOR_VERSION: i64 = 48;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 /// `meta` key of the Cargo manifest view (`rust_workspace`) the Rust files
 /// were last extracted against.
@@ -71,6 +71,7 @@ pub mod proto;
 mod py_layout;
 pub mod python;
 pub mod rust;
+pub(crate) mod rust_deps;
 mod rust_workspace;
 pub mod scan;
 pub mod sql_extractor;
@@ -156,6 +157,7 @@ impl Indexer {
     ) -> Result<Self> {
         let repo_root = validate_repo_root(&repo_root)?;
         let db = Db::new(&db_path)?;
+        crate::db::resolver::register_repo_root(&db_path, &repo_root);
         let graph_version = db.current_graph_version()?;
         let commit_sha = db.graph_version_commit(graph_version)?;
 
@@ -420,7 +422,7 @@ impl Indexer {
         let mut rust_fingerprint = None;
         if batch_rels
             .iter()
-            .any(|p| p.ends_with(".rs") || p.ends_with("Cargo.toml"))
+            .any(|p| p.ends_with(".rs") || p.ends_with("Cargo.toml") || p.ends_with("Cargo.lock"))
         {
             let live_rust: Vec<String> = self
                 .db

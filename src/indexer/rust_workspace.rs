@@ -73,6 +73,10 @@ pub(crate) struct RustWorkspace {
     packages: BTreeMap<String, Package>,
     /// Workspace root directory -> its `[workspace.dependencies]`.
     workspace_deps: BTreeMap<String, BTreeMap<String, Dep>>,
+    /// Hash of every `Cargo.lock` (directory and content): the versions a
+    /// dependency's sources are read at, so a lock-only change (`cargo
+    /// update`) makes the Rust files stale like a manifest edit does.
+    locks: String,
 }
 
 /// A parsed manifest and the directory it sits in.
@@ -84,10 +88,23 @@ struct Manifest {
 impl RustWorkspace {
     pub(crate) fn scan(repo_root: &Path) -> Self {
         let mut manifests = Vec::new();
+        let mut locks: Vec<(String, String)> = Vec::new();
         // The indexer's own file walk, so ignore files and excluded
         // directories mean here what they mean for every other file.
         let walk = scan::walker_from(repo_root, ScanOptions::default(), None);
         for entry in walk.flatten() {
+            if entry.file_name() == "Cargo.lock" && entry.file_type().is_some_and(|t| t.is_file()) {
+                if let (Ok(text), Some(dir)) = (
+                    std::fs::read_to_string(entry.path()),
+                    entry
+                        .path()
+                        .parent()
+                        .and_then(|p| p.strip_prefix(repo_root).ok()),
+                ) {
+                    locks.push((dir.to_string_lossy().replace('\\', "/"), text));
+                }
+                continue;
+            }
             if entry.file_name() != "Cargo.toml" || !entry.file_type().is_some_and(|t| t.is_file())
             {
                 continue;
@@ -109,7 +126,12 @@ impl RustWorkspace {
             manifests.push(Manifest { dir, table });
         }
         manifests.sort_by(|a, b| a.dir.cmp(&b.dir));
-        Self::from_manifests(repo_root, &manifests)
+        locks.sort();
+        let mut workspace = Self::from_manifests(repo_root, &manifests);
+        workspace.locks = blake3::hash(format!("{locks:?}").as_bytes())
+            .to_hex()
+            .to_string();
+        workspace
     }
 
     fn from_manifests(repo_root: &Path, manifests: &[Manifest]) -> Self {
@@ -294,7 +316,10 @@ impl RustWorkspace {
     /// previous index recorded, files extracted against the old view are
     /// stale.
     pub(crate) fn fingerprint(&self) -> String {
-        let text = format!("{:?}|{:?}", self.packages, self.workspace_deps);
+        let text = format!(
+            "{:?}|{:?}|{}",
+            self.packages, self.workspace_deps, self.locks
+        );
         blake3::hash(text.as_bytes()).to_hex().to_string()
     }
 }

@@ -951,3 +951,52 @@ class RustValueReferenceOracle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RustSameSymbolDefinitions(unittest.TestCase):
+    """rust-analyzer gives a `fn foo` nested in `bar` and a top-level `fn foo` one SCIP symbol: an occurrence inside `bar` means the
+    nested one, any other (inside `qux`) the top-level one."""
+
+    SRC = ("pub fn foo() {}\n"            # 0
+           "pub fn bar() {\n"             # 1
+           "    fn foo() {}\n"            # 2
+           "    foo();\n"                 # 3
+           "}\n"                          # 4
+           "pub fn qux() {\n"             # 5
+           "    foo();\n"                 # 6
+           "}\n")                         # 7
+
+    def run_oracle(self):
+        P = "rust-analyzer cargo demo 0.1.0 "
+        foo, bar, qux = P + "foo().", P + "bar().", P + "qux()."
+
+        def occ(sym, line, c0, c1, role, encl=None):
+            rng = b"".join(_varint(x) for x in (line, c0, c1))
+            o = _field(1, 2, rng) + _field(2, 2, sym.encode()) + (_field(3, 0, _varint(role)) if role else b"")
+            if encl:
+                o += _field(7, 2, b"".join(_varint(x) for x in encl))
+            return _field(2, 2, o)
+        doc = _field(1, 2, b"src/lib.rs")
+        doc += occ(foo, 0, 7, 10, 1, (0, 0, 0, 15))
+        doc += occ(bar, 1, 7, 10, 1, (1, 0, 4, 1))
+        doc += occ(foo, 2, 7, 10, 1, (2, 4, 2, 15))
+        doc += occ(foo, 3, 4, 7, 0)
+        doc += occ(qux, 5, 7, 10, 1, (5, 0, 7, 1))
+        doc += occ(foo, 6, 4, 7, 0)
+        idx = _field(2, 2, doc)
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, "src"))
+            with open(os.path.join(td, "src", "lib.rs"), "w") as f:
+                f.write(self.SRC)
+            scip = os.path.join(td, "x.scip")
+            with open(scip, "wb") as f:
+                f.write(idx)
+            here = os.path.dirname(os.path.abspath(__file__))
+            out = subprocess.run([sys.executable, "-I", os.path.join(here, "rust_oracle", "scip_calls.py"), "--repo", td, "--scip", scip],
+                                 capture_output=True, text=True, check=True).stdout
+        return json.loads(out)
+
+    def test_an_occurrence_means_the_definition_visible_where_it_is(self):
+        d = self.run_oracle()
+        got = sorted((e["caller"]["name"], e["callee"]["line"]) for e in d["edges"])
+        self.assertEqual(got, [("bar", 3), ("qux", 1)])

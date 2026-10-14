@@ -169,8 +169,15 @@ fn a_path_through_a_generic_parameter_records_no_function_use() {
     let rows = lineless_function_uses(&indexer);
     assert!(rows.is_empty(), "{rows:#?}");
     let got = references(&indexer);
+    // The parameter's bound supplies the item: the trait's declaration, never
+    // the one impl the index happens to hold.
     assert!(
-        !got.iter().any(|(s, ..)| s == "crate::open"),
+        has(&got, "crate::open", "crate::SinkError::from_io").is_some(),
+        "{got:#?}"
+    );
+    assert!(
+        !got.iter()
+            .any(|(s, t, ..)| s == "crate::open" && t.contains("Mine")),
         "a guess at `Mine::from_io` would be wrong: {got:#?}"
     );
 }
