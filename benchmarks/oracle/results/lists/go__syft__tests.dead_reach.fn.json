@@ -9,5 +9,7 @@
 {"category":"no_incoming_edge_but_filtered","exported":true,"file":"syft/internal/fileresolver/deferred.go","incoming":[],"key":"syft/internal/fileresolver/deferred.go:68","kind":"method","line":68,"name":"FilesByMIMEType","subkind":""},
 {"category":"no_incoming_edge_but_filtered","exported":true,"file":"syft/internal/fileresolver/deferred.go","incoming":[],"key":"syft/internal/fileresolver/deferred.go:76","kind":"method","line":76,"name":"RelativeFileByPath","subkind":""},
 {"category":"no_incoming_edge_but_filtered","exported":true,"file":"syft/internal/fileresolver/deferred.go","incoming":[],"key":"syft/internal/fileresolver/deferred.go:84","kind":"method","line":84,"name":"AllLocations","subkind":""},
-{"category":"no_incoming_edge_but_filtered","exported":true,"file":"syft/internal/fileresolver/deferred.go","incoming":[],"key":"syft/internal/fileresolver/deferred.go:93","kind":"method","line":93,"name":"FileMetadataByLocation","subkind":""}
+{"category":"no_incoming_edge_but_filtered","exported":true,"file":"syft/internal/fileresolver/deferred.go","incoming":[],"key":"syft/internal/fileresolver/deferred.go:93","kind":"method","line":93,"name":"FileMetadataByLocation","subkind":""},
+{"category":"no_incoming_edge_but_filtered","exported":true,"file":"syft/pkg/cataloger/golang/internal/xcoff/file.go","incoming":[],"key":"syft/pkg/cataloger/golang/internal/xcoff/file.go:105","kind":"method","line":105,"name":"Close","subkind":""},
+{"category":"no_incoming_edge_but_filtered","exported":true,"file":"syft/pkg/cataloger/golang/internal/xcoff/file.go","incoming":[],"key":"syft/pkg/cataloger/golang/internal/xcoff/file.go:457","kind":"method","line":457,"name":"Data","subkind":""}
 ]
