@@ -148,7 +148,6 @@
 {"k":"3","member":"crates/core/main.rs:77 run","node":"crates/core/main.rs|crate::run","seed":"crates/core/flags/defs.rs:7028","seed_name":"[Flag]is_switch"},
 {"k":"3","member":"crates/core/main.rs:77 run","node":"crates/core/main.rs|crate::run","seed":"crates/core/flags/defs.rs:7297","seed_name":"[Flag]is_switch"},
 {"k":"3","member":"crates/core/main.rs:77 run","node":"crates/core/main.rs|crate::run","seed":"crates/core/flags/mod.rs:89","seed_name":"name_long"},
-{"k":"3","member":"crates/core/main.rs:77 run","node":"crates/core/main.rs|crate::run","seed":"crates/ignore/src/walk.rs:37","seed_name":"path"},
 {"k":"3","member":"crates/core/search.rs:416 search_reader","node":"crates/core/search.rs|crate::search::search_reader","seed":"crates/searcher/src/sink.rs:27","seed_name":"error_io"},
 {"k":"3","member":"crates/ignore/src/walk.rs:1136 [Iterator]next","node":"crates/ignore/src/walk.rs|crate::walk::Walk::next","seed":"crates/ignore/src/walk.rs:1234","seed_name":"[Iterator]next"},
 {"k":"3","member":"crates/ignore/src/walk.rs:1393 visit","node":"crates/ignore/src/walk.rs|crate::walk::WalkParallel::visit","seed":"crates/ignore/src/walk.rs:37","seed_name":"path"},

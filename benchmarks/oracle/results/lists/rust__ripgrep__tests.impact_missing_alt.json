@@ -242,6 +242,7 @@
 {"k":"3","member":"crates/searcher/src/searcher/core.rs:99 matched","node":"crates/searcher/src/searcher/core.rs|crate::searcher::core::Core::matched","seed":"crates/searcher/src/sink.rs:379","seed_name":"bytes"},
 {"k":"3","member":"crates/searcher/src/searcher/core.rs:99 matched","node":"crates/searcher/src/searcher/core.rs|crate::searcher::core::Core::matched","seed":"crates/searcher/src/sink.rs:550","seed_name":"[Sink]matched"},
 {"k":"3","member":"crates/searcher/src/searcher/glue.rs:117 run","node":"crates/searcher/src/searcher/glue.rs|crate::searcher::glue::SliceByLine::run","seed":"crates/printer/src/standard.rs:841","seed_name":"[Sink]begin"},
+{"k":"3","member":"crates/searcher/src/searcher/glue.rs:1525 regression_2260","node":"crates/searcher/src/searcher/glue.rs|crate::searcher::glue::tests::regression_2260","seed":"crates/searcher/src/line_buffer.rs:182","seed_name":"buffer_alloc"},
 {"k":"3","member":"crates/searcher/src/searcher/glue.rs:166 run","node":"crates/searcher/src/searcher/glue.rs|crate::searcher::glue::MultiLine::run","seed":"crates/printer/src/standard.rs:841","seed_name":"[Sink]begin"},
 {"k":"3","member":"crates/searcher/src/searcher/glue.rs:166 run","node":"crates/searcher/src/searcher/glue.rs|crate::searcher::glue::MultiLine::run","seed":"crates/searcher/src/sink.rs:550","seed_name":"[Sink]matched"},
 {"k":"3","member":"crates/searcher/src/searcher/glue.rs:299 sink_matched","node":"crates/searcher/src/searcher/glue.rs|crate::searcher::glue::MultiLine::sink_matched","seed":"crates/searcher/src/sink.rs:550","seed_name":"[Sink]matched"},
@@ -571,5 +572,6 @@
 {"k":"inf","member":"crates/searcher/src/searcher/core.rs:585 sink_after_context","node":"crates/searcher/src/searcher/core.rs|crate::searcher::core::Core::sink_after_context","seed":"crates/matcher/src/lib.rs:100","seed_name":"end"},
 {"k":"inf","member":"crates/searcher/src/searcher/core.rs:617 sink_other_context","node":"crates/searcher/src/searcher/core.rs|crate::searcher::core::Core::sink_other_context","seed":"crates/matcher/src/lib.rs:100","seed_name":"end"},
 {"k":"inf","member":"crates/searcher/src/searcher/core.rs:99 matched","node":"crates/searcher/src/searcher/core.rs|crate::searcher::core::Core::matched","seed":"crates/matcher/src/lib.rs:100","seed_name":"end"},
+{"k":"inf","member":"crates/searcher/src/searcher/glue.rs:1525 regression_2260","node":"crates/searcher/src/searcher/glue.rs|crate::searcher::glue::tests::regression_2260","seed":"crates/searcher/src/line_buffer.rs:182","seed_name":"buffer_alloc"},
 {"k":"inf","member":"crates/searcher/src/searcher/glue.rs:337 advance","node":"crates/searcher/src/searcher/glue.rs|crate::searcher::glue::MultiLine::advance","seed":"crates/matcher/src/lib.rs:100","seed_name":"end"}
 ]

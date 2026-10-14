@@ -40,4 +40,13 @@ fn a_route_literal_binds_no_symbol_by_its_tail() {
         )
         .unwrap();
     assert_eq!(into_html, 0, "nothing depends on `html` through the route");
+    let pending: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references
+             WHERE edge_kind = 'ROUTE' AND reference_name = '/index.html' AND graph_version = ?",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 1, "the route stays recorded as an unresolved row");
 }

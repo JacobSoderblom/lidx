@@ -182,6 +182,10 @@ struct Context {
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
+    /// Names the top of the current function body imports with a `use`: a
+    /// call or value use of one is that import, never the module's own item
+    /// of the same name.
+    body_use_names: Rc<HashSet<String>>,
     /// Names the current function binds itself (parameters and every
     /// pattern: `let`, `for`, `match` arms, closures), so a value use of one
     /// is a variable and never a reference to a same-named item
@@ -452,6 +456,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             local_types_declared: Rc::new(collect_declared_type_names(root, source)),
             shadowed_names: Rc::new(HashSet::new()),
+            body_use_names: Rc::new(HashSet::new()),
             bound_names: Rc::new(HashSet::new()),
             nested_fns: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
@@ -1074,6 +1079,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
+    next_ctx.body_use_names = Rc::new(HashSet::new());
     next_ctx.bound_names = Rc::new(HashSet::new());
     next_ctx.nested_fns = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
@@ -1254,9 +1260,35 @@ fn handle_function(
         // Recomputed per function, never inherited.
         let mut shadowed = HashSet::new();
         collect_shadowed_names(node, source, &mut shadowed);
-        next_ctx.shadowed_names = Rc::new(shadowed);
         let mut bound = HashSet::new();
         collect_bound_names(node, source, &mut bound);
+        // A `use` at the top of the body binds its names over the module's:
+        // `use dep::{color_scheme};` makes `color_scheme(..)` here that
+        // import, not the module's own function of the same name. A name the
+        // body also binds as a variable stays suppressed.
+        let body_uses = collect_use_bindings(body, source, &ctx.module);
+        next_ctx.body_use_names = Rc::new(
+            body_uses
+                .keys()
+                .filter(|n| n.as_str() != "*" && !bound.contains(*n))
+                .cloned()
+                .collect(),
+        );
+        if !body_uses.is_empty() {
+            let mut imports = (*ctx.imports).clone();
+            for (name, targets) in body_uses {
+                if name != "*" && !bound.contains(&name) {
+                    shadowed.remove(&name);
+                }
+                if name == "*" {
+                    imports.entry(name).or_default().extend(targets);
+                } else {
+                    imports.insert(name, targets);
+                }
+            }
+            next_ctx.imports = Rc::new(imports);
+        }
+        next_ctx.shadowed_names = Rc::new(shadowed);
         next_ctx.bound_names = Rc::new(bound);
         let mut nested: HashSet<String> = (*ctx.nested_fns).clone();
         collect_nested_fn_names(body, source, &mut nested);
@@ -2102,6 +2134,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             .map(|parts| parts.name)
             .filter(|name| !name.is_empty())
     });
+    // A bare call of a name the body imports is that import's item.
+    let target = match import_candidates.first() {
+        Some(import)
+            if function_node.kind() == "identifier" && ctx.body_use_names.contains(&collapsed) =>
+        {
+            Some(import.clone())
+        }
+        _ => target,
+    };
     let detail = if target.is_some() {
         None
     } else {
@@ -2367,7 +2408,10 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
             named_import_candidates(&raw, ctx)
         };
         add_crate_markers(&raw, &mut imported, ctx);
-        (format!("{}::{raw}", ctx.module), imported)
+        match imported.first() {
+            Some(import) if ctx.body_use_names.contains(&raw) => (import.clone(), imported.clone()),
+            _ => (format!("{}::{raw}", ctx.module), imported),
+        }
     } else {
         let first = raw.split("::").next().unwrap_or_default();
         if ctx.bound_names.contains(first) {

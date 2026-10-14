@@ -57,3 +57,35 @@ fn modules_of_a_bin_outside_src_hang_off_the_roots_directory() {
         .collect();
     assert_eq!(targets, ["crate::flags::defs::make"]);
 }
+
+/// Declaring the root outside `src/` after the files were indexed renames
+/// their modules: an incremental sync of the manifest ends equal to a fresh
+/// index.
+#[test]
+fn declaring_the_bin_path_later_equals_a_fresh_index() {
+    use common::golden;
+    const PLAIN: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+    const DECLARED: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"t\"\npath = \"app/main.rs\"\n";
+    let rest = [
+        ("app/main.rs", "mod flags;\nfn main() { flags::run(); }\n"),
+        (
+            "app/flags/mod.rs",
+            "pub mod defs;\nuse crate::flags::defs::make;\npub fn run() { make(); }\n",
+        ),
+        ("app/flags/defs.rs", "pub fn make() {}\n"),
+    ];
+    let with = |manifest: &'static str| {
+        let mut files = vec![("Cargo.toml", manifest)];
+        files.extend(rest);
+        files
+    };
+    let (_tmp, root, db_path) = common::index_repo("lidx-rust-bin-path-inc-", &with(PLAIN));
+    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
+    common::write_files(&root, &[("Cargo.toml", DECLARED)]);
+    indexer.sync_rel_paths(&["Cargo.toml".to_string()]).unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&with(DECLARED));
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

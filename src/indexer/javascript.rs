@@ -3130,7 +3130,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         return;
     }
-    if is_dynamic_this_function_node(node.kind()) {
+    // An object-literal method (`{ message(peer) { .. } }`) is no symbol of
+    // its own here either: its parameters are its own locals, not names of
+    // an outer scope. (Class members never reach this arm.)
+    if is_dynamic_this_function_node(node.kind()) || node.kind() == "method_definition" {
         // Not a symbol: its calls belong to the enclosing one, with their
         // own locals and a rebound `this`.
         let next_ctx = rebind_this_scope(node, ctx, source);
