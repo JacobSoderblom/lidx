@@ -1,3 +1,5 @@
 [
-{"category":"reachable_method","confidence":"medium","exported":true,"file":"viper_test.go","key":"viper_test.go:166","kind":"method","lidx_kind":"method","line":166,"name":"Type","policy":false,"qualname":"viper_test.stringValue.Type","subkind":""}
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"viper_test.go","key":"viper_test.go:161","kind":"method","lidx_kind":"method","line":161,"name":"Set","policy":false,"qualname":"viper_test.stringValue.Set","subkind":""},
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"viper_test.go","key":"viper_test.go:166","kind":"method","lidx_kind":"method","line":166,"name":"Type","policy":false,"qualname":"viper_test.stringValue.Type","subkind":""},
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"viper_test.go","key":"viper_test.go:170","kind":"method","lidx_kind":"method","line":170,"name":"String","policy":false,"qualname":"viper_test.stringValue.String","subkind":""}
 ]

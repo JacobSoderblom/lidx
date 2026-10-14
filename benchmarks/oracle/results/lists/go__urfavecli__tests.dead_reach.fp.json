@@ -1,6 +1,8 @@
 [
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"app_test.go","key":"app_test.go:2477","kind":"method","lidx_kind":"method","line":2477,"name":"String","policy":false,"qualname":"app_test.customBoolFlag.String","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"app_test.go","key":"app_test.go:2485","kind":"method","lidx_kind":"method","line":2485,"name":"TakesValue","policy":false,"qualname":"app_test.customBoolFlag.TakesValue","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"app_test.go","key":"app_test.go:2489","kind":"method","lidx_kind":"method","line":2489,"name":"GetValue","policy":false,"qualname":"app_test.customBoolFlag.GetValue","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"app_test.go","key":"app_test.go:2493","kind":"method","lidx_kind":"method","line":2493,"name":"GetUsage","policy":false,"qualname":"app_test.customBoolFlag.GetUsage","subkind":""},
+{"category":"reachable_method","confidence":"medium","exported":true,"file":"errors_test.go","key":"errors_test.go:118","kind":"method","lidx_kind":"method","line":118,"name":"Format","policy":false,"qualname":"errors_test.ErrorWithFormat.Format","subkind":""},
 {"category":"reachable_method","confidence":"medium","exported":true,"file":"flag_test.go","key":"flag_test.go:2974","kind":"method","lidx_kind":"method","line":2974,"name":"Get","policy":false,"qualname":"flag_test.Parser.Get","subkind":""}
 ]

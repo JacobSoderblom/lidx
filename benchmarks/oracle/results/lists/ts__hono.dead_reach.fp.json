@@ -1,4 +1,3 @@
 [
-{"category":"public_api","confidence":"medium","exported":true,"file":"src/helper/factory/index.ts","key":"src/helper/factory/index.ts:363","kind":"function","lidx_kind":"function","line":363,"name":"createFactory","policy":true,"qualname":"src/helper/factory.createFactory","subkind":"arrow"},
-{"category":"public_api","confidence":"medium","exported":true,"file":"src/helper/factory/index.ts","key":"src/helper/factory/index.ts:368","kind":"function","lidx_kind":"function","line":368,"name":"createMiddleware","policy":true,"qualname":"src/helper/factory.createMiddleware","subkind":"arrow"}
+
 ]

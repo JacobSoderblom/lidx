@@ -1,3 +1,3 @@
 [
-
+{"category":"incoming_from_tests_only","exported":false,"file":"nil_renderer.go","incoming":["CALLS:test"],"key":"nil_renderer.go:9","kind":"method","line":9,"name":"repaint","subkind":""}
 ]
