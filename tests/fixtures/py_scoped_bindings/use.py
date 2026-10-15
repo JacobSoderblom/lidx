@@ -1,6 +1,8 @@
 from pkg.dp import table
 from pkg.ds import table as ds_table
 
+import pkg.dp
+
 
 def build(rows):
     first = table("a")
@@ -14,3 +16,11 @@ def with_callback(handlers):
 
 def shadowed(callbacks):
     return [table(1) for table in callbacks]
+
+
+def lambda_default(handlers):
+    return lambda table=table(): table
+
+
+def reexported_through_the_package():
+    return pkg.dp.table("c")

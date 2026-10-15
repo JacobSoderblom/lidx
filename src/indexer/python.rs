@@ -185,6 +185,10 @@ enum LocalType {
     /// type, but iterating it (a `for` loop or a comprehension) binds the
     /// target to the element class -- see `Container`.
     Container(Container),
+    /// `xs = sorted(xs)`, `xs = [x for x in xs if ...]`: a reassignment that
+    /// keeps whatever container `xs` already is. Only meaningful beside a
+    /// declared container of the same name (see `declared_container`).
+    Preserves,
     /// Builtin type, reassigned, unannotated parameter, comprehension
     /// result, function return value, with/except target, or anything
     /// else not explicitly recognized. A name landing here (rather than
@@ -618,8 +622,20 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             if ctx.fn_depth > 0 {
                 // Not indexed, but its body is still walked (attributed to
                 // the enclosing symbol) so deeper decorated defs are seen.
+                // It has a scope of its own: its parameters, loop variables
+                // and assignments shadow the enclosing function's, whose other
+                // names it still reads.
+                let mut next_ctx = ctx.clone();
+                let mut locals = (*ctx.local_types).clone();
+                locals.extend(infer_local_types(
+                    node,
+                    source,
+                    &ctx.factories,
+                    &ctx.class_attr_types,
+                ));
+                next_ctx.local_types = Rc::new(locals);
                 if let Some(body) = node.child_by_field_name("body") {
-                    walk_block(body, ctx, source, output);
+                    walk_block(body, &next_ctx, source, output);
                 }
                 return;
             }
@@ -966,15 +982,22 @@ fn lookup_binding_at(
             | "set_comprehension"
             | "dictionary_comprehension"
             | "generator_expression" => {
+                // A clause's target is visible to the later clauses and to the
+                // body, never to its own iterable or an earlier one: the
+                // first iterable is evaluated outside the comprehension.
                 let mut cursor = ancestor.walk();
-                let clauses: Vec<Node<'_>> = ancestor
-                    .named_children(&mut cursor)
-                    .filter(|c| c.kind() == "for_in_clause")
-                    .collect();
-                // The first iterable is evaluated outside the comprehension.
-                let outside = clauses.first().is_some_and(|c| c.id() == child.id());
+                let in_clause = matches!(child.kind(), "for_in_clause" | "if_clause");
+                let mut visible = Vec::new();
+                for clause in ancestor.named_children(&mut cursor) {
+                    if in_clause && clause.start_byte() >= child.start_byte() {
+                        break;
+                    }
+                    if clause.kind() == "for_in_clause" {
+                        visible.push(clause);
+                    }
+                }
                 let mut found: Option<LocalType> = None;
-                for clause in clauses.into_iter().filter(|_| !outside) {
+                for clause in visible {
                     let Some(left) = clause.child_by_field_name("left") else {
                         continue;
                     };
@@ -1005,7 +1028,10 @@ fn lookup_binding_at(
                 }
             }
             "lambda" => {
-                if let Some(params) = ancestor.child_by_field_name("parameters") {
+                // Defaults are evaluated outside the lambda.
+                if let Some(params) = ancestor.child_by_field_name("parameters")
+                    && params.id() != child.id()
+                {
                     let mut bound = Vec::new();
                     collect_lambda_parameter_bindings(params, source, &mut bound);
                     if bound.iter().any(|(n, _)| n == name) {
@@ -1901,7 +1927,10 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
         .into_iter()
         .map(|(name, mut types)| {
             let ty = if types.len() == 1 {
-                types.remove(0)
+                match types.remove(0) {
+                    LocalType::Preserves => LocalType::Other,
+                    ty => ty,
+                }
             } else {
                 declared_container(&types).map_or(LocalType::Other, LocalType::Container)
             };
@@ -1911,7 +1940,8 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 }
 
 /// The container a name is declared as when every other binding of it is
-/// that same container or something unknown.
+/// the same declaration or a reassignment that keeps the container
+/// (`LocalType::Preserves`). Any other reassignment makes the name unknown.
 fn declared_container(types: &[LocalType]) -> Option<Container> {
     let declared = types.iter().find_map(|t| match t {
         LocalType::Container(c) if c.declared => Some(c.clone()),
@@ -1920,9 +1950,9 @@ fn declared_container(types: &[LocalType]) -> Option<Container> {
     types
         .iter()
         .all(|t| match t {
-            LocalType::Container(c) => c.same_shape(&declared),
-            LocalType::Other => true,
-            LocalType::Known(_) => false,
+            LocalType::Container(c) => c.declared && c.same_shape(&declared),
+            LocalType::Preserves => true,
+            LocalType::Other | LocalType::Known(_) => false,
         })
         .then_some(declared)
 }
@@ -1952,7 +1982,11 @@ fn collect_statement_bindings(
                     let ty = if let Some(type_node) = node.child_by_field_name("type") {
                         classify_declared(&annotation_text(type_node, source))
                     } else if let Some(right) = node.child_by_field_name("right") {
-                        classify_assignment_value(right, source, factories)
+                        if preserves_container(right, &name, source) {
+                            LocalType::Preserves
+                        } else {
+                            classify_assignment_value(right, source, factories)
+                        }
                     } else {
                         LocalType::Other
                     };
@@ -2007,6 +2041,55 @@ fn collect_statement_bindings(
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         collect_statement_bindings(child, source, factories, class_attrs, bindings);
+    }
+}
+
+/// Whether `value` is the container `name` already holds, filtered, sorted or
+/// copied: `sorted(xs)`, `list(xs)`, `[x for x in xs if ...]`.
+fn preserves_container(value: Node<'_>, name: &str, source: &str) -> bool {
+    let value = unwrap_parens(value);
+    match value.kind() {
+        "identifier" => node_text(value, source) == name,
+        "call" => {
+            let Some(func) = value.child_by_field_name("function") else {
+                return false;
+            };
+            func.kind() == "identifier"
+                && matches!(
+                    node_text(func, source).as_str(),
+                    "sorted" | "list" | "tuple" | "set" | "frozenset" | "reversed"
+                )
+                && parse_call_arguments(value, source)
+                    .positional
+                    .first()
+                    .is_some_and(|arg| preserves_container(*arg, name, source))
+        }
+        "list_comprehension" | "set_comprehension" | "generator_expression" => {
+            let mut cursor = value.walk();
+            let clauses: Vec<Node<'_>> = value
+                .named_children(&mut cursor)
+                .filter(|c| matches!(c.kind(), "for_in_clause" | "if_clause"))
+                .collect();
+            let [first, rest @ ..] = clauses.as_slice() else {
+                return false;
+            };
+            let target = first
+                .child_by_field_name("left")
+                .filter(|l| l.kind() == "identifier")
+                .map(|l| node_text(l, source));
+            let body = value
+                .child_by_field_name("body")
+                .filter(|b| b.kind() == "identifier")
+                .map(|b| node_text(b, source));
+            first.kind() == "for_in_clause"
+                && target.is_some()
+                && target == body
+                && rest.iter().all(|c| c.kind() == "if_clause")
+                && first
+                    .child_by_field_name("right")
+                    .is_some_and(|right| preserves_container(right, name, source))
+        }
+        _ => false,
     }
 }
 
@@ -2126,7 +2209,13 @@ fn classify_call_value(
         return LocalType::Other;
     }
     let name = node_text(func, source);
-    if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+    // `_Builder()` is as much a constructor as `Builder()`.
+    if name
+        .trim_start_matches('_')
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_uppercase())
+    {
         return if awaited {
             LocalType::Other
         } else {

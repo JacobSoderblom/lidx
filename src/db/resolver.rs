@@ -2579,6 +2579,7 @@ impl<'c> Resolver<'c> {
             if let Some(qn) = r.target_qualname
                 && !go_foreign_import_call(r)
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
+                && let Some(id) = self.python_member_of_module(id, r, symbol_map)?
             {
                 return Ok(resolved(id, ResolutionKind::Exact));
             }
@@ -2641,6 +2642,7 @@ impl<'c> Resolver<'c> {
                     r.source_lang,
                     r.source_file_path,
                 )?
+                && let Some(id) = self.python_member_of_module(id, r, symbol_map)?
             {
                 return Ok(resolved(id, ResolutionKind::Import));
             } else if !types_only
@@ -2893,6 +2895,76 @@ impl<'c> Resolver<'c> {
     /// names a type, so a same-named file `module`/`namespace` (C#
     /// `IPublisher.cs` -> module `IPublisher`) must not win (issue #122).
     /// The in-batch map carries no kind, so it is skipped for those edges.
+    /// A Python call or value reference never targets a module. A package
+    /// whose `__init__` re-exports a member named like its submodule
+    /// (`from .table import table`) makes the import candidate `pkg.table`
+    /// the module symbol, but the name it binds is the member
+    /// `pkg.table.table`: take that. Without such a member the import found
+    /// nothing a call can name (`None`). Any other target is returned as is.
+    fn python_member_of_module(
+        &mut self,
+        id: i64,
+        r: &Reference<'_>,
+        symbol_map: &HashMap<String, i64>,
+    ) -> Result<Option<i64>> {
+        if r.source_lang != "python" || !matches!(r.edge_kind, "CALLS" | "REFERENCES") {
+            return Ok(Some(id));
+        }
+        let mut current = id;
+        // A re-export may itself be re-exported (`pkg/__init__` imports from
+        // `pkg.sub`, whose `__init__` imports it again).
+        for _ in 0..4 {
+            let row: Option<(String, String, String)> = self
+                .conn
+                .prepare_cached(
+                    "SELECT s.kind, s.qualname, f.path FROM symbols s
+                     JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
+                )?
+                .query_row(params![current], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .optional()?;
+            let Some((kind, qualname, path)) = row else {
+                return Ok(Some(current));
+            };
+            if kind != "module" {
+                return Ok(Some(current));
+            }
+            let name = qualname_trailing_name(&qualname).to_string();
+            let member = format!("{qualname}.{name}");
+            let mut next = self.exact(&member, symbol_map, r.source_file_path, false)?;
+            if next.is_none() {
+                // The module imports a name like itself from elsewhere.
+                let imported: Option<String> = self
+                    .conn
+                    .prepare_cached(
+                        "SELECT e.target_qualname FROM edges e
+                         WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPORTS'
+                           AND e.graph_version = ?2
+                           AND json_extract(e.detail, '$.bound_name') = ?3
+                         LIMIT 1",
+                    )?
+                    .query_row(params![current, self.graph_version, name], |row| row.get(0))
+                    .optional()?
+                    .flatten();
+                if let Some(target) = imported {
+                    let package = if path.ends_with("__init__.py") {
+                        qualname.as_str()
+                    } else {
+                        qualname.rsplit_once('.').map_or("", |(parent, _)| parent)
+                    };
+                    let absolute = python_absolute_import(package, &target);
+                    next = self.exact(&absolute, symbol_map, r.source_file_path, false)?;
+                }
+            }
+            match next {
+                Some(found) if found != current => current = found,
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
     fn exact(
         &mut self,
         qualname: &str,
@@ -5229,6 +5301,25 @@ fn external_stub_qualname(
         target_qualname.or_else(first_candidate)
     }?;
     Some(format!("{EXTERNAL_STUB_PREFIX}{text}"))
+}
+
+/// `target` of a Python IMPORTS edge written in the module whose package is
+/// `package`: a leading dot is that package, each further dot its parent.
+fn python_absolute_import(package: &str, target: &str) -> String {
+    let dots = target.chars().take_while(|c| *c == '.').count();
+    if dots == 0 {
+        return target.to_string();
+    }
+    let mut base = package;
+    for _ in 1..dots {
+        base = base.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    let rest = &target[dots..];
+    if base.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{base}.{rest}")
+    }
 }
 
 fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {

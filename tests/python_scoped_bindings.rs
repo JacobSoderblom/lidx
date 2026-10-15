@@ -88,10 +88,72 @@ fn comprehension_and_loop_over_an_annotated_parameter_bind_the_element_class() {
 }
 
 #[test]
-fn a_declared_container_survives_reassignment() {
+fn a_declared_container_survives_reassignment_that_keeps_it() {
     let calls = resolved_calls();
     assert!(has(&calls, "cols.reassigned", "cols.Col.to_def"));
     assert!(has(&calls, "cols.reassigned", "cols.Col.with_nullable"));
+}
+
+#[test]
+fn any_other_reassignment_of_a_declared_container_makes_it_unknown() {
+    let calls = resolved_calls();
+    assert!(calls_from(&calls, "cols.reassigned_to_other").is_empty());
+    assert!(
+        calls_from(&calls, "cols.reassigned_to_new_list")
+            .iter()
+            .all(|t| *t != "cols.Col.with_nullable")
+    );
+    assert!(
+        calls_from(&calls, "cols.reassigned_by_mapping")
+            .iter()
+            .all(|t| *t != "cols.Col.to_def")
+    );
+}
+
+#[test]
+fn a_nested_def_has_its_own_scope() {
+    let calls = resolved_calls();
+    assert!(calls_from(&calls, "cols.nested_def_has_its_own_scope").is_empty());
+}
+
+#[test]
+fn a_nested_def_types_its_own_locals_from_a_private_class() {
+    let calls = resolved_calls();
+    assert!(has(
+        &calls,
+        "cols.private_class_in_nested_def",
+        "cols._Builder.build"
+    ));
+}
+
+#[test]
+fn a_comprehension_target_is_not_visible_to_its_own_iterable() {
+    let calls = resolved_calls();
+    assert!(calls_from(&calls, "cols.clause_targets").is_empty());
+}
+
+#[test]
+fn a_lambda_default_is_evaluated_outside_the_lambda() {
+    let calls = resolved_calls();
+    assert!(has(&calls, "use.lambda_default", "pkg.dp.table.table"));
+}
+
+#[test]
+fn a_name_re_exported_by_a_package_binds_the_member_not_the_module() {
+    let calls = resolved_calls();
+    assert!(has(&calls, "use.build", "pkg.dp.table.table"));
+    assert!(has(&calls, "use.build", "pkg.ds.table.table"));
+    assert!(has(
+        &calls,
+        "use.reexported_through_the_package",
+        "pkg.dp.table.table"
+    ));
+    assert!(
+        calls
+            .iter()
+            .all(|(_, target)| target != "pkg.dp.table" && target != "pkg.ds.table"),
+        "a call never targets a module: {calls:?}"
+    );
 }
 
 #[test]
@@ -105,14 +167,13 @@ fn untyped_or_builtin_elements_stay_unbound() {
 #[test]
 fn a_comprehension_variable_does_not_hide_an_import_called_outside_it() {
     let calls = resolved_calls();
-    assert!(has(&calls, "use.build", "pkg.dp.table"));
-    assert!(has(&calls, "use.build", "pkg.ds.table"));
+    assert!(has(&calls, "use.build", "pkg.dp.table.table"));
 }
 
 #[test]
 fn a_lambda_parameter_does_not_hide_an_import_called_outside_it() {
     let calls = resolved_calls();
-    assert!(has(&calls, "use.with_callback", "pkg.ds.table"));
+    assert!(has(&calls, "use.with_callback", "pkg.ds.table.table"));
 }
 
 #[test]
