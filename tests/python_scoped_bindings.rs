@@ -26,6 +26,10 @@ fn copy_dir(src: &Path, dst: &Path) {
 
 /// `(source qualname, resolved target qualname)` of every resolved CALLS edge.
 fn resolved_calls() -> Vec<(String, String)> {
+    resolved_calls_of("py_scoped_bindings")
+}
+
+fn resolved_calls_of(fixture: &str) -> Vec<(String, String)> {
     let mut repo = std::env::temp_dir();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -35,8 +39,9 @@ fn resolved_calls() -> Vec<(String, String)> {
         "lidx-py-scoped-{nanos}-{}",
         TEMP_COUNTER.fetch_add(1, Ordering::SeqCst)
     ));
-    let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/py_scoped_bindings");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(fixture);
     copy_dir(&fixture, &repo);
     let db_path = repo.join(".lidx").join(".lidx.sqlite");
     let mut indexer = Indexer::new(repo.clone(), db_path).unwrap();
@@ -211,4 +216,96 @@ fn a_lambda_parameter_does_not_hide_an_import_called_outside_it() {
 fn a_comprehension_variable_still_shadows_the_import_inside_it() {
     let calls = resolved_calls();
     assert!(calls_from(&calls, "use.shadowed").is_empty());
+}
+
+/// `from pkg import table as t; t()` where `pkg/table.py` exists: the name
+/// `table` is whatever the package `__init__` binds, if anything.
+mod reexports {
+    use super::*;
+
+    fn run_calls() -> Vec<(String, String)> {
+        resolved_calls_of("py_reexports")
+    }
+
+    fn has_target(calls: &[(String, String)], target: &str) -> bool {
+        calls
+            .iter()
+            .any(|(s, t)| s.starts_with("use.") && t == target)
+    }
+
+    #[test]
+    fn an_imported_name_binds_where_the_init_imports_it_from() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pa.other.table"));
+        assert!(!has_target(&calls, "pa.table.table"));
+    }
+
+    #[test]
+    fn a_star_import_binds_the_module_that_holds_the_name() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pb.other.table"));
+        assert!(!has_target(&calls, "pb.table.table"));
+    }
+
+    #[test]
+    fn an_aliased_import_binds_the_original_name() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pi.other.make"));
+        assert!(!has_target(&calls, "pi.table.table"));
+    }
+
+    #[test]
+    fn an_empty_init_gives_no_evidence() {
+        let calls = run_calls();
+        assert!(!has_target(&calls, "pf.table.table"));
+        assert!(
+            calls
+                .iter()
+                .all(|(s, t)| !(s == "use.through_the_package" && t.starts_with("pf.")))
+        );
+    }
+
+    #[test]
+    fn a_function_defined_in_the_init_is_the_name() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pd.table"));
+        assert!(!has_target(&calls, "pd.table.table"));
+    }
+
+    #[test]
+    fn a_re_export_chain_binds_the_final_function() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pe.sub.table.table"));
+        assert!(
+            calls
+                .iter()
+                .any(|(s, t)| s == "use.through_the_package" && t == "pe.sub.table.table")
+        );
+    }
+
+    #[test]
+    fn an_import_from_a_module_the_submodule_does_not_shadow_binds_it() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pg.other.table"));
+    }
+
+    #[test]
+    fn a_lambda_in_the_init_and_import_cycles_bind_nothing() {
+        let calls = run_calls();
+        assert!(
+            calls
+                .iter()
+                .all(|(_, t)| !t.starts_with("pc.") && !t.starts_with("pj."))
+        );
+    }
+
+    #[test]
+    fn a_package_attribute_call_follows_the_same_evidence() {
+        let calls = run_calls();
+        assert!(
+            calls
+                .iter()
+                .any(|(s, t)| s == "use.through_the_package" && t == "pa.other.table")
+        );
+    }
 }

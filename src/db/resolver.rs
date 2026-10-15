@@ -1651,6 +1651,10 @@ pub(crate) struct Resolver<'c> {
     /// Whether the exact tier drops `module` symbols for the current
     /// reference (a Rust call).
     exact_skips_modules: bool,
+    /// A Python call: beside a module of the same qualname only a function or
+    /// class is a candidate (`table = lambda ...` in a package `__init__` is
+    /// no member of the submodule `table`).
+    exact_python_call: bool,
 }
 
 impl<'c> Resolver<'c> {
@@ -1691,6 +1695,7 @@ impl<'c> Resolver<'c> {
             repo_entity_memo: HashMap::new(),
             exact_language: None,
             exact_skips_modules: false,
+            exact_python_call: false,
         })
     }
 
@@ -1715,7 +1720,14 @@ impl<'c> Resolver<'c> {
         // qualname of a SQL table or a Python function is no candidate.
         self.exact_language =
             (r.source_lang == "rust" && !is_bridge_edge_kind(r.edge_kind)).then_some("rust");
-        self.exact_skips_modules = r.source_lang == "rust" && r.edge_kind == "CALLS";
+        self.exact_python_call =
+            r.source_lang == "python" && matches!(r.edge_kind, "CALLS" | "REFERENCES");
+        // A Rust or Python call names an item, never a module.
+        self.exact_skips_modules = match r.source_lang {
+            "rust" => r.edge_kind == "CALLS",
+            "python" => matches!(r.edge_kind, "CALLS" | "REFERENCES"),
+            _ => false,
+        };
         // A heritage name the module never binds is a global: only a symbol
         // recorded `global` (a script / `declare global` declaration) is it.
         if r.receiver_type == Some(crate::indexer::extract::GLOBAL_HERITAGE) {
@@ -2579,7 +2591,13 @@ impl<'c> Resolver<'c> {
             if let Some(qn) = r.target_qualname
                 && !go_foreign_import_call(r)
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
-                && let Some(id) = self.python_member_of_module(id, r, symbol_map)?
+            {
+                return Ok(resolved(id, ResolutionKind::Exact));
+            }
+            if let Some(qn) = r.target_qualname
+                && r.source_lang == "python"
+                && matches!(r.edge_kind, "CALLS" | "REFERENCES")
+                && let Some(id) = self.python_reexported_member(&[qn.to_string()])?
             {
                 return Ok(resolved(id, ResolutionKind::Exact));
             }
@@ -2642,7 +2660,12 @@ impl<'c> Resolver<'c> {
                     r.source_lang,
                     r.source_file_path,
                 )?
-                && let Some(id) = self.python_member_of_module(id, r, symbol_map)?
+            {
+                return Ok(resolved(id, ResolutionKind::Import));
+            } else if !types_only
+                && r.source_lang == "python"
+                && matches!(r.edge_kind, "CALLS" | "REFERENCES")
+                && let Some(id) = self.python_reexported_member(r.import_candidates)?
             {
                 return Ok(resolved(id, ResolutionKind::Import));
             } else if !types_only
@@ -2895,74 +2918,136 @@ impl<'c> Resolver<'c> {
     /// names a type, so a same-named file `module`/`namespace` (C#
     /// `IPublisher.cs` -> module `IPublisher`) must not win (issue #122).
     /// The in-batch map carries no kind, so it is skipped for those edges.
-    /// A Python call or value reference never targets a module. A package
-    /// whose `__init__` re-exports a member named like its submodule
-    /// (`from .table import table`) makes the import candidate `pkg.table`
-    /// the module symbol, but the name it binds is the member
-    /// `pkg.table.table`: take that. Without such a member the import found
-    /// nothing a call can name (`None`). Any other target is returned as is.
-    fn python_member_of_module(
+    /// A Python call or value reference never targets a module, so a
+    /// candidate `pkg.name` that only names a submodule `name` of the package
+    /// `pkg` (`pkg/name.py`) is read the way Python reads it: as the attribute
+    /// `name` of `pkg`, which its `__init__` binds. The binding is found from
+    /// the `__init__` itself and nowhere else -- a definition in it, an
+    /// import of the name (aliased or not), or a star import whose module
+    /// holds it -- and followed through further re-exports. No such evidence:
+    /// `None`, however likely `pkg.name.name` looks.
+    fn python_reexported_member(&mut self, candidates: &[String]) -> Result<Option<i64>> {
+        let mut found: Option<i64> = None;
+        for candidate in candidates {
+            let Some((package, name)) = candidate.rsplit_once('.') else {
+                continue;
+            };
+            let mut visited = Vec::new();
+            match (
+                self.python_package_member(package, name, &mut visited)?,
+                found,
+            ) {
+                (Some(id), None) => found = Some(id),
+                (Some(id), Some(existing)) if id != existing => return Ok(None),
+                _ => {}
+            }
+        }
+        Ok(found)
+    }
+
+    /// The one function or class with this qualname (a name repeated by
+    /// copies of a package collapses the way an exact lookup does).
+    fn python_item(&mut self, qualname: &str) -> Result<Option<i64>> {
+        let caller = self.caller_file.clone();
+        let Some(id) = self.exact(qualname, &HashMap::new(), &caller, false)? else {
+            return Ok(None);
+        };
+        let kind: Option<String> = self
+            .conn
+            .prepare_cached("SELECT kind FROM symbols WHERE id = ?1")?
+            .query_row(params![id], |row| row.get(0))
+            .optional()?;
+        Ok(kind
+            .filter(|k| matches!(k.as_str(), "function" | "class"))
+            .map(|_| id))
+    }
+
+    /// The function or class named `name` that the `__init__` of the package
+    /// `package` binds.
+    fn python_package_member(
         &mut self,
-        id: i64,
-        r: &Reference<'_>,
-        symbol_map: &HashMap<String, i64>,
+        package: &str,
+        name: &str,
+        visited: &mut Vec<(String, String)>,
     ) -> Result<Option<i64>> {
-        if r.source_lang != "python" || !matches!(r.edge_kind, "CALLS" | "REFERENCES") {
+        let key = (package.to_string(), name.to_string());
+        if visited.len() >= 6 || visited.contains(&key) {
+            return Ok(None);
+        }
+        visited.push(key);
+        let gv = self.graph_version;
+        let init: Option<i64> = self
+            .conn
+            .prepare_cached(
+                "SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.qualname = ?1 AND s.kind = 'module' AND s.graph_version = ?2
+                   AND f.language = 'python'
+                   AND (f.path = '__init__.py' OR f.path LIKE '%/__init__.py')
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?2)
+                 LIMIT 1",
+            )?
+            .query_row(params![package, gv], |row| row.get(0))
+            .optional()?;
+        let Some(init_id) = init else {
+            return Ok(None);
+        };
+        // Defined in the `__init__` itself.
+        if let Some(id) = self.python_item(&format!("{package}.{name}"))? {
             return Ok(Some(id));
         }
-        let mut current = id;
-        // A re-export may itself be re-exported (`pkg/__init__` imports from
-        // `pkg.sub`, whose `__init__` imports it again).
-        for _ in 0..4 {
-            let row: Option<(String, String, String)> = self
+        // The `__init__`'s own import statements, resolved or not.
+        let mut imports: Vec<(String, Option<String>)> = Vec::new();
+        for sql in [
+            "SELECT e.target_qualname, json_extract(e.detail, '$.bound_name') FROM edges e
+             WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPORTS' AND e.graph_version = ?2",
+            "SELECT u.reference_name, json_extract(u.detail, '$.bound_name')
+             FROM unresolved_references u
+             WHERE u.source_symbol_id = ?1 AND u.edge_kind = 'IMPORTS' AND u.graph_version = ?2",
+        ] {
+            let rows: Vec<(Option<String>, Option<String>)> = self
                 .conn
-                .prepare_cached(
-                    "SELECT s.kind, s.qualname, f.path FROM symbols s
-                     JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
-                )?
-                .query_row(params![current], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                })
-                .optional()?;
-            let Some((kind, qualname, path)) = row else {
-                return Ok(Some(current));
-            };
-            if kind != "module" {
-                return Ok(Some(current));
-            }
-            let name = qualname_trailing_name(&qualname).to_string();
-            let member = format!("{qualname}.{name}");
-            let mut next = self.exact(&member, symbol_map, r.source_file_path, false)?;
-            if next.is_none() {
-                // The module imports a name like itself from elsewhere.
-                let imported: Option<String> = self
-                    .conn
-                    .prepare_cached(
-                        "SELECT e.target_qualname FROM edges e
-                         WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPORTS'
-                           AND e.graph_version = ?2
-                           AND json_extract(e.detail, '$.bound_name') = ?3
-                         LIMIT 1",
-                    )?
-                    .query_row(params![current, self.graph_version, name], |row| row.get(0))
-                    .optional()?
-                    .flatten();
-                if let Some(target) = imported {
-                    let package = if path.ends_with("__init__.py") {
-                        qualname.as_str()
-                    } else {
-                        qualname.rsplit_once('.').map_or("", |(parent, _)| parent)
-                    };
-                    let absolute = python_absolute_import(package, &target);
-                    next = self.exact(&absolute, symbol_map, r.source_file_path, false)?;
-                }
-            }
-            match next {
-                Some(found) if found != current => current = found,
-                _ => return Ok(None),
+                .prepare_cached(sql)?
+                .query_map(params![init_id, gv], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            imports.extend(rows.into_iter().filter_map(|(t, b)| Some((t?, b))));
+        }
+        imports.sort();
+        imports.dedup();
+        let bound: Vec<&str> = imports
+            .iter()
+            .filter(|(_, bound)| bound.as_deref() == Some(name))
+            .map(|(target, _)| target.as_str())
+            .collect();
+        let stars: Vec<&str> = imports
+            .iter()
+            .filter_map(|(target, _)| target.strip_suffix(".*"))
+            .collect();
+        let mut sources: Vec<(String, String)> = Vec::new();
+        for target in bound {
+            let absolute = python_absolute_import(package, target);
+            if let Some((module, member)) = absolute.rsplit_once('.') {
+                sources.push((module.to_string(), member.to_string()));
             }
         }
-        Ok(None)
+        if sources.is_empty() {
+            for star in stars {
+                let module = python_absolute_import(package, star);
+                sources.push((module, name.to_string()));
+            }
+        }
+        let mut found: Option<i64> = None;
+        for (module, member) in sources {
+            let id = match self.python_item(&format!("{module}.{member}"))? {
+                Some(id) => Some(id),
+                None => self.python_package_member(&module, &member, visited)?,
+            };
+            match (id, found) {
+                (Some(id), None) => found = Some(id),
+                (Some(id), Some(existing)) if id != existing => return Ok(None),
+                _ => {}
+            }
+        }
+        Ok(found)
     }
 
     fn exact(
@@ -2993,7 +3078,11 @@ impl<'c> Resolver<'c> {
         // A Rust call never targets a module: `exec::job(..)` with `mod job;
         // pub use job::job;` names the function, not the module `exec::job`.
         if self.exact_skips_modules {
+            let beside_module = candidates.iter().any(|c| c.kind == "module");
             candidates.retain(|c| c.kind != "module");
+            if beside_module && self.exact_python_call {
+                candidates.retain(|c| matches!(c.kind.as_str(), "function" | "class"));
+            }
         }
         // Issue #123: an overload set is told apart by the call's arity, and
         // never collapsed to "the lowest id" -- 2+ admitted overloads refuse.
@@ -6621,6 +6710,8 @@ impl Db {
                         OR (f.language = 'go' AND ur.edge_kind = 'CALLS'
                             AND ur.import_candidates IS NOT NULL)
                         OR (f.language = 'rust' AND ur.edge_kind IN ('IMPLEMENTS', 'EXTENDS')
+                            AND ur.import_candidates IS NOT NULL)
+                        OR (f.language = 'python' AND ur.edge_kind IN ('CALLS', 'REFERENCES')
                             AND ur.import_candidates IS NOT NULL)
                         OR (?3 AND ur.reason IN ('ambiguous', 'private'))
                         OR ur.id IN ({alias_ids}))"
