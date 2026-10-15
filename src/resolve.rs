@@ -466,10 +466,75 @@ fn cap_query_tokens(tokens: &mut Vec<String>) {
     tokens.drain(..excess);
 }
 
-/// Typo / retired-name suggestions: prefilter symbols by SQL LIKE on the
-/// query's tokens (bounded by `FUZZY_SCAN_CAP`), then rank in Rust by token
-/// overlap and Levenshtein distance on the last name segment.
+/// Final non-empty segment of a qualname/path query, split on `.`, `/`, `:`.
+fn last_segment(query: &str) -> &str {
+    query
+        .rsplit(['.', '/', ':'])
+        .find(|seg| !seg.is_empty())
+        .unwrap_or(query)
+}
+
+/// Max last-segment edit distance for a same-parent sibling: 2 for ordinary
+/// names, less for very short ones so `Foo.x` does not match `Foo.id`.
+fn sibling_max_dist(last_len: usize) -> usize {
+    2.min((last_len / 3).max(1))
+}
+
+/// Children of the query's parent qualname whose last segment is within
+/// `sibling_max_dist` edits of the query's, nearest first. Independent of the
+/// token prefilter, and length-prefiltered in SQL rather than row-capped, so
+/// neither unrelated symbols nor a large parent can hide the match (#364).
+fn sibling_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
+    let last = last_segment(query);
+    if !query.ends_with(last) || last.len() == query.len() {
+        return Vec::new();
+    }
+    let prefix = &query[..query.len() - last.len()];
+    let last = last.to_lowercase();
+    let n = last.chars().count();
+    let max_dist = sibling_max_dist(n);
+    let mut hits: Vec<(usize, Symbol)> = db
+        .child_symbols_of_qualname(
+            prefix,
+            n.saturating_sub(max_dist),
+            n + max_dist,
+            graph_version,
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|sym| {
+            let d = levenshtein(&last, &sym.name.to_lowercase());
+            (d <= max_dist).then_some((d, sym))
+        })
+        .collect();
+    hits.sort_by_key(|(d, sym)| (*d, sym.id));
+    hits.into_iter().map(|(_, sym)| sym).collect()
+}
+
+/// Typo / retired-name suggestions: same-parent siblings one or two edits from
+/// the query's last segment come first, then the token-prefilter candidates,
+/// de-duplicated and capped at `FUZZY_RESULTS`.
 fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
+    let mut ranked = sibling_candidates(db, query, graph_version);
+    if ranked.is_empty() {
+        return fuzzy_token_candidates(db, query, graph_version);
+    }
+    ranked.truncate(FUZZY_RESULTS);
+    for sym in fuzzy_token_candidates(db, query, graph_version) {
+        if ranked.len() >= FUZZY_RESULTS {
+            break;
+        }
+        if !ranked.iter().any(|x| x.id == sym.id) {
+            ranked.push(sym);
+        }
+    }
+    ranked
+}
+
+/// Token-based suggestions: prefilter symbols by SQL LIKE on the query's
+/// tokens (bounded by `FUZZY_SCAN_CAP`), then rank in Rust by token overlap
+/// and Levenshtein distance on the last name segment.
+fn fuzzy_token_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
     let mut query_tokens = name_tokens(query);
     cap_query_tokens(&mut query_tokens);
     if query_tokens.is_empty() {
@@ -489,11 +554,7 @@ fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
     let rows = db
         .fuzzy_symbol_rows(&patterns, FUZZY_SCAN_CAP, graph_version)
         .unwrap_or_default();
-    let query_last = query
-        .rsplit(['.', '/', ':'])
-        .find(|seg| !seg.is_empty())
-        .unwrap_or(query)
-        .to_lowercase();
+    let query_last = last_segment(query).to_lowercase();
     let mut scored: Vec<(f64, Symbol)> = rows
         .into_iter()
         .filter_map(|sym| fuzzy_score(&query_tokens, &query_last, &sym).map(|score| (score, sym)))
