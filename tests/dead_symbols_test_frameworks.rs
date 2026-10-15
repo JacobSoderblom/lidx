@@ -142,6 +142,17 @@ const CSHARP: &[(&str, &str)] = &[
         "using Xunit;\nnamespace App.Tests;\npublic class SimpleTests\n{\n    public SimpleTests() { }\n    [Fact]\n    public void Simple() { }\n}\n",
     ),
     (
+        "tests/App.Tests/DataTests.cs",
+        "using System.Collections.Generic;\nusing Xunit;\nnamespace App.Tests;\n\
+         public class DataTests\n{\n\
+         \x20   public static IEnumerable<object[]> Rows() { yield break; }\n\
+         \x20   public static IEnumerable<object[]> Named() { yield break; }\n\
+         \x20   public static IEnumerable<object[]> NeverUsedRows() { yield break; }\n\
+         \x20   [Theory]\n    [MemberData(nameof(Rows))]\n    [MemberData(\"Named\")]\n    [MemberData(nameof(Shared.Other), MemberType = typeof(Shared))]\n    [ClassData(typeof(RowSource))]\n    public void Runs(int x) { }\n}\n\
+         public class Shared\n{\n    public static IEnumerable<object[]> Other() { yield break; }\n}\n\
+         public class RowSource : IEnumerable<object[]>\n{\n    public RowSource() { }\n    public IEnumerator<object[]> GetEnumerator() { yield break; }\n}\n",
+    ),
+    (
         "tests/App.Tests/Plain.cs",
         "namespace App.Tests;\npublic class PlainHelper\n{\n    public PlainHelper() { }\n    public void Forgotten() { }\n}\n",
     ),
@@ -159,6 +170,12 @@ fn csharp_test_entry_points_are_roots() {
         "App.Tests.WidgetTests.InitializeAsync",
         "App.Tests.WidgetTests.DisposeAsync",
         "App.Tests.WidgetTests.Dispose",
+        "App.Tests.DataTests.Rows",
+        "App.Tests.DataTests.Named",
+        "App.Tests.Shared.Other",
+        "App.Tests.RowSource",
+        "App.Tests.RowSource..ctor",
+        "App.Tests.RowSource.GetEnumerator",
         "App.Tests.SimpleTests",
         "App.Tests.SimpleTests..ctor",
         "App.Tests.SimpleTests.Simple",
@@ -176,6 +193,7 @@ fn csharp_test_entry_points_are_roots() {
     for dead in [
         "App.Lib.Orphan",
         "App.Tests.WidgetTests.UnusedHelper",
+        "App.Tests.DataTests.NeverUsedRows",
         "App.Tests.PlainHelper.Forgotten",
     ] {
         assert!(claimed(&default, dead), "{dead} not claimed: {default}");

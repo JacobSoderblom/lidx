@@ -56,7 +56,7 @@ fn csharp_test_root(f: &crate::db::resolver::TestRootFacts<'_>) -> bool {
         && f.parent_is_test_entry()
         && matches!(
             f.name,
-            ".ctor" | "Dispose" | "DisposeAsync" | "InitializeAsync"
+            ".ctor" | "Dispose" | "DisposeAsync" | "InitializeAsync" | "GetEnumerator"
         )
 }
 
@@ -89,6 +89,68 @@ const TEST_METHOD_ATTRIBUTES: &[&str] = &[
 
 /// Attributes that mark a class as a test fixture whatever it contains.
 const TEST_CLASS_ATTRIBUTES: &[&str] = &["TestFixture", "TestClass", "SetUpFixture"];
+
+/// Qualnames of what a test method's data attributes name, which the runner
+/// reads: `[MemberData(nameof(X))]` / `[MemberData("X")]` (a member of this
+/// type, or of `MemberType = typeof(T)`) and `[ClassData(typeof(T))]`.
+fn test_data_sources(node: Node<'_>, ctx: &Context, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let namespace = base_qualname(ctx);
+    let in_namespace = |ty: &str| {
+        let ty = strip_type_args(ty);
+        if namespace.is_empty() {
+            ty
+        } else {
+            format!("{namespace}.{ty}")
+        }
+    };
+    let typeof_arg = |arg: Node<'_>| {
+        let text = node_text(arg, source);
+        let inner = text.trim().strip_prefix("typeof(")?.strip_suffix(')')?;
+        Some(inner.trim().to_string())
+    };
+    for attr in attributes_for_node(node, source) {
+        match normalize_attribute_name(&attr.name).as_str() {
+            "MemberData" => {
+                let member = attr.args.iter().find_map(|a| {
+                    let text = node_text(*a, source);
+                    let text = text.trim();
+                    if let Some(inner) = text
+                        .strip_prefix("nameof(")
+                        .and_then(|t| t.strip_suffix(')'))
+                    {
+                        return inner.rsplit('.').next().map(|n| n.trim().to_string());
+                    }
+                    extract_string_literal(*a, source)
+                });
+                let Some(member) = member else { continue };
+                let owner = attr
+                    .args
+                    .iter()
+                    .find_map(|a| {
+                        typeof_arg(*a).or_else(|| {
+                            let text = node_text(*a, source);
+                            text.split_once('=').and_then(|(_, rhs)| {
+                                rhs.trim()
+                                    .strip_prefix("typeof(")?
+                                    .strip_suffix(')')
+                                    .map(|t| t.trim().to_string())
+                            })
+                        })
+                    })
+                    .map_or_else(|| container_qualname(ctx), |ty| in_namespace(&ty));
+                out.push(format!("{owner}.{member}"));
+            }
+            "ClassData" => {
+                if let Some(ty) = attr.args.iter().find_map(|a| typeof_arg(*a)) {
+                    out.push(in_namespace(&ty));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
 
 fn has_attribute_in(node: Node<'_>, source: &str, names: &[&str]) -> bool {
     attributes_for_node(node, source)
@@ -1142,6 +1204,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if has_attribute_in(node, source, TEST_METHOD_ATTRIBUTES) {
         output.test_entry_qualnames.push(qualname.clone());
     }
+    output
+        .test_entry_qualnames
+        .extend(test_data_sources(node, ctx, source));
     let first_edge = output.edges.len();
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
