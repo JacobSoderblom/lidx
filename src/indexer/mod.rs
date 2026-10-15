@@ -414,6 +414,11 @@ impl Indexer {
         let changed_rels = self.changed_batch_paths(&batch_rels)?;
         let stale_cs = self.stale_csharp_files(&changed_rels, graph_version, live_csharp)?;
         stale_files.extend(stale_cs);
+        stale_files.extend(
+            self.stale_python_importers(&changed_rels, graph_version)?
+                .into_iter()
+                .filter(|p| !batch_rels.contains(p)),
+        );
         if batch_rels.iter().any(|p| py_layout::is_layout_marker(p)) {
             let stale_py = self.stale_python_files(graph_version)?;
             stale_files.extend(stale_py.into_iter().filter(|p| !batch_rels.contains(p)));
@@ -697,6 +702,8 @@ impl Indexer {
 
         // ... and Python files whose package root a layout marker moved.
         stale_files.extend(self.stale_python_files(previous_graph_version)?);
+        // ... and Python files resolved through a package `__init__` that changed.
+        stale_files.extend(self.stale_python_importers(&changed_paths, previous_graph_version)?);
         // ... and Rust files when the Cargo manifests changed what a
         // crate-named path means.
         let scanned_rust: Vec<String> = scanned
@@ -1253,6 +1260,30 @@ impl Indexer {
     /// (`__init__.py`, `pyproject.toml`, `setup.py`, `setup.cfg`) was added,
     /// removed or edited since they were extracted, so a hash skip would keep
     /// a stale qualname. Only files still on disk.
+    /// The Python files whose calls were resolved through a package
+    /// `__init__` when `changed` holds one: what the package exports (a
+    /// definition, an import, a star import, a chain of them) decides where
+    /// a name imported from it points, so every file with a reference that
+    /// carries import candidates is extracted again. Empty when no
+    /// `__init__.py` changed.
+    fn stale_python_importers(
+        &self,
+        changed: &[String],
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
+        let init_changed = changed
+            .iter()
+            .any(|p| p.rsplit('/').next() == Some("__init__.py"));
+        if !init_changed {
+            return Ok(HashSet::new());
+        }
+        Ok(self
+            .db
+            .python_files_with_import_candidates(graph_version)?
+            .into_iter()
+            .collect())
+    }
+
     fn stale_python_files(&mut self, graph_version: i64) -> Result<HashSet<String>> {
         let Some(extractor) = self.extractors.get_mut("python") else {
             return Ok(HashSet::new());

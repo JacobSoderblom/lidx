@@ -2125,6 +2125,30 @@ impl Db {
     /// A vector of all symbols in the file for the specified graph version
     /// `(path, module qualname)` of every Python file's module symbol in
     /// `graph_version`.
+    /// Live Python files holding a call or value reference that carries
+    /// import candidates, resolved or not: the references whose target can
+    /// depend on what a package `__init__` binds.
+    pub fn python_files_with_import_candidates(&self, graph_version: i64) -> Result<Vec<String>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path FROM files f
+             WHERE f.language = 'python'
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?1)
+               AND (EXISTS (SELECT 1 FROM edges e
+                            WHERE e.file_id = f.id AND e.graph_version = ?1
+                              AND e.kind IN ('CALLS', 'REFERENCES')
+                              AND e.import_candidates IS NOT NULL
+                              AND e.import_candidates != '[]')
+                    OR EXISTS (SELECT 1 FROM unresolved_references u
+                               WHERE u.file_id = f.id AND u.graph_version = ?1
+                                 AND u.edge_kind IN ('CALLS', 'REFERENCES')
+                                 AND u.import_candidates IS NOT NULL
+                                 AND u.import_candidates != '[]'))",
+        )?;
+        let rows = stmt.query_map(params![graph_version], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn python_module_names(&self, graph_version: i64) -> Result<Vec<(String, String)>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
