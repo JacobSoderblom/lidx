@@ -95,18 +95,49 @@ fn a_declared_container_survives_reassignment_that_keeps_it() {
 }
 
 #[test]
-fn any_other_reassignment_of_a_declared_container_makes_it_unknown() {
+fn a_declared_variable_keeps_its_declared_type_across_every_reassignment() {
     let calls = resolved_calls();
-    assert!(calls_from(&calls, "cols.reassigned_to_other").is_empty());
+    assert!(has(&calls, "cols.reassigned_to_other", "cols.Col.to_def"));
+    assert!(has(
+        &calls,
+        "cols.reassigned_to_new_list",
+        "cols.Col.with_nullable"
+    ));
+    assert!(has(&calls, "cols.reassigned_by_mapping", "cols.Col.to_def"));
+    assert!(has(
+        &calls,
+        "cols.declared_class_survives_reassignment",
+        "cols.Col.to_def"
+    ));
+}
+
+#[test]
+fn an_undeclared_variable_assigned_twice_is_unknown() {
+    let calls = resolved_calls();
     assert!(
-        calls_from(&calls, "cols.reassigned_to_new_list")
-            .iter()
-            .all(|t| *t != "cols.Col.with_nullable")
-    );
-    assert!(
-        calls_from(&calls, "cols.reassigned_by_mapping")
+        calls_from(&calls, "cols.undeclared_class_collapses")
             .iter()
             .all(|t| *t != "cols.Col.to_def")
+    );
+}
+
+#[test]
+fn a_comprehension_takes_its_element_class_from_its_body() {
+    let calls = resolved_calls();
+    let from = calls_from(&calls, "cols.comprehension_body_type");
+    // a conditional of the loop variable and a `-> "Col"` method, a `-> Self`
+    // method, and a function annotated `-> Col`
+    assert!(
+        from.iter()
+            .filter(|t| **t == "cols.Col.with_nullable")
+            .count()
+            >= 2
+    );
+    assert!(from.contains(&"cols.Col.copy"));
+    assert!(
+        calls_from(&calls, "cols.comprehension_body_unknown")
+            .iter()
+            .all(|t| *t != "cols.Col.with_nullable")
     );
 }
 

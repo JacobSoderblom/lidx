@@ -185,10 +185,11 @@ enum LocalType {
     /// type, but iterating it (a `for` loop or a comprehension) binds the
     /// target to the element class -- see `Container`.
     Container(Container),
-    /// `xs = sorted(xs)`, `xs = [x for x in xs if ...]`: a reassignment that
-    /// keeps whatever container `xs` already is. Only meaningful beside a
-    /// declared container of the same name (see `declared_container`).
-    Preserves,
+    /// The annotation of a parameter or variable, as it appears among a
+    /// scope's raw bindings. A declared name keeps its declared type across
+    /// every reassignment in the scope (as type checkers read it), so
+    /// `bindings_to_local_types` folds the others away.
+    Declared(Box<LocalType>),
     /// Builtin type, reassigned, unannotated parameter, comprehension
     /// result, function return value, with/except target, or anything
     /// else not explicitly recognized. A name landing here (rather than
@@ -206,16 +207,6 @@ struct Container {
     /// The class a mapping's `.values()` yields.
     value: Option<String>,
     mapping: bool,
-    /// Written as the annotation of a parameter or variable, not inferred
-    /// from a call's return annotation: a declaration holds across
-    /// reassignments, so reassigning the name does not make it unknown.
-    declared: bool,
-}
-
-impl Container {
-    fn same_shape(&self, other: &Container) -> bool {
-        (&self.item, &self.value, self.mapping) == (&other.item, &other.value, other.mapping)
-    }
 }
 
 pub struct PythonExtractor {
@@ -1649,13 +1640,7 @@ fn classify_annotation(ann: &str) -> LocalType {
 
 /// `classify_annotation` for the annotation of a parameter or variable.
 fn classify_declared(ann: &str) -> LocalType {
-    match classify_annotation(ann) {
-        LocalType::Container(c) => LocalType::Container(Container {
-            declared: true,
-            ..c
-        }),
-        other => other,
-    }
+    LocalType::Declared(Box::new(classify_annotation(ann)))
 }
 
 const SEQUENCE_ANNOTATIONS: &[&str] = &[
@@ -1710,14 +1695,12 @@ fn parse_container(ann: &str) -> Option<Container> {
             item: element(args[0]),
             value: None,
             mapping: false,
-            declared: false,
         }
     } else if MAPPING_ANNOTATIONS.contains(&head) && args.len() == 2 {
         Container {
             item: element(args[0]),
             value: element(args[1]),
             mapping: true,
-            declared: false,
         }
     } else {
         return None;
@@ -1926,35 +1909,19 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
     grouped
         .into_iter()
         .map(|(name, mut types)| {
-            let ty = if types.len() == 1 {
-                match types.remove(0) {
-                    LocalType::Preserves => LocalType::Other,
-                    ty => ty,
-                }
-            } else {
-                declared_container(&types).map_or(LocalType::Other, LocalType::Container)
+            let mut declared = types.iter().filter_map(|t| match t {
+                LocalType::Declared(inner) => Some(&**inner),
+                _ => None,
+            });
+            let ty = match declared.next() {
+                Some(first) if declared.all(|other| other == first) => first.clone(),
+                Some(_) => LocalType::Other,
+                None if types.len() == 1 => types.remove(0),
+                None => LocalType::Other,
             };
             (name, ty)
         })
         .collect()
-}
-
-/// The container a name is declared as when every other binding of it is
-/// the same declaration or a reassignment that keeps the container
-/// (`LocalType::Preserves`). Any other reassignment makes the name unknown.
-fn declared_container(types: &[LocalType]) -> Option<Container> {
-    let declared = types.iter().find_map(|t| match t {
-        LocalType::Container(c) if c.declared => Some(c.clone()),
-        _ => None,
-    })?;
-    types
-        .iter()
-        .all(|t| match t {
-            LocalType::Container(c) => c.declared && c.same_shape(&declared),
-            LocalType::Preserves => true,
-            LocalType::Other | LocalType::Known(_) => false,
-        })
-        .then_some(declared)
 }
 
 /// Recursively collect local-variable bindings from statements within a
@@ -1982,11 +1949,8 @@ fn collect_statement_bindings(
                     let ty = if let Some(type_node) = node.child_by_field_name("type") {
                         classify_declared(&annotation_text(type_node, source))
                     } else if let Some(right) = node.child_by_field_name("right") {
-                        if preserves_container(right, &name, source) {
-                            LocalType::Preserves
-                        } else {
-                            classify_assignment_value(right, source, factories)
-                        }
+                        comprehension_container(right, source, factories, bindings, class_attrs)
+                            .unwrap_or_else(|| classify_assignment_value(right, source, factories))
                     } else {
                         LocalType::Other
                     };
@@ -2044,52 +2008,110 @@ fn collect_statement_bindings(
     }
 }
 
-/// Whether `value` is the container `name` already holds, filtered, sorted or
-/// copied: `sorted(xs)`, `list(xs)`, `[x for x in xs if ...]`.
-fn preserves_container(value: Node<'_>, name: &str, source: &str) -> bool {
+/// `[expr for ...]` (also as the argument of `sorted`, `list`, `tuple`, `set`,
+/// `frozenset` or `reversed`) as a container of the class `expr` is known to
+/// be: the loop variable, or a call whose return annotation names a class.
+fn comprehension_container(
+    value: Node<'_>,
+    source: &str,
+    factories: &FactoryReturns,
+    bindings: &[(String, LocalType)],
+    class_attrs: &HashMap<String, LocalType>,
+) -> Option<LocalType> {
     let value = unwrap_parens(value);
     match value.kind() {
-        "identifier" => node_text(value, source) == name,
         "call" => {
-            let Some(func) = value.child_by_field_name("function") else {
-                return false;
-            };
-            func.kind() == "identifier"
-                && matches!(
+            let func = value.child_by_field_name("function")?;
+            if func.kind() != "identifier"
+                || !matches!(
                     node_text(func, source).as_str(),
                     "sorted" | "list" | "tuple" | "set" | "frozenset" | "reversed"
                 )
-                && parse_call_arguments(value, source)
-                    .positional
-                    .first()
-                    .is_some_and(|arg| preserves_container(*arg, name, source))
+            {
+                return None;
+            }
+            let arguments = value.child_by_field_name("arguments")?;
+            // `tuple(x for x in xs)`: the generator is the argument list.
+            let arg = if arguments.kind() == "generator_expression" {
+                arguments
+            } else {
+                *parse_call_arguments(value, source).positional.first()?
+            };
+            comprehension_container(arg, source, factories, bindings, class_attrs)
         }
         "list_comprehension" | "set_comprehension" | "generator_expression" => {
-            let mut cursor = value.walk();
-            let clauses: Vec<Node<'_>> = value
-                .named_children(&mut cursor)
-                .filter(|c| matches!(c.kind(), "for_in_clause" | "if_clause"))
-                .collect();
-            let [first, rest @ ..] = clauses.as_slice() else {
-                return false;
-            };
-            let target = first
-                .child_by_field_name("left")
-                .filter(|l| l.kind() == "identifier")
-                .map(|l| node_text(l, source));
-            let body = value
-                .child_by_field_name("body")
-                .filter(|b| b.kind() == "identifier")
-                .map(|b| node_text(b, source));
-            first.kind() == "for_in_clause"
-                && target.is_some()
-                && target == body
-                && rest.iter().all(|c| c.kind() == "if_clause")
-                && first
-                    .child_by_field_name("right")
-                    .is_some_and(|right| preserves_container(right, name, source))
+            let body = value.child_by_field_name("body")?;
+            let locals = bindings_to_local_types(bindings.to_vec());
+            let item = expression_class(body, source, factories, &locals, class_attrs)?;
+            Some(LocalType::Container(Container {
+                item: Some(item),
+                value: None,
+                mapping: false,
+            }))
         }
-        _ => false,
+        _ => None,
+    }
+}
+
+/// The class an expression is known to evaluate to: a typed name, a
+/// constructor, a call of a function or of a method of a typed receiver with
+/// a return annotation (`-> Self` is the receiver's class), or a conditional
+/// whose two branches agree.
+fn expression_class(
+    expr: Node<'_>,
+    source: &str,
+    factories: &FactoryReturns,
+    locals: &HashMap<String, LocalType>,
+    class_attrs: &HashMap<String, LocalType>,
+) -> Option<String> {
+    let expr = unwrap_parens(expr);
+    let lookup =
+        |node: Node<'_>, name: &str| lookup_binding(node, name, source, locals, class_attrs);
+    let known = |ty: LocalType| match ty {
+        LocalType::Known(class) => Some(class),
+        _ => None,
+    };
+    match expr.kind() {
+        "identifier" => known(lookup(expr, &node_text(expr, source))?),
+        "conditional_expression" => {
+            let first =
+                expression_class(expr.named_child(0)?, source, factories, locals, class_attrs)?;
+            let last = expression_class(
+                expr.named_child(expr.named_child_count().checked_sub(1)?)?,
+                source,
+                factories,
+                locals,
+                class_attrs,
+            )?;
+            (first == last).then_some(first)
+        }
+        "call" => {
+            let func = expr.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => {
+                    let name = node_text(func, source);
+                    if lookup(func, &name).is_some() {
+                        return None;
+                    }
+                    known(classify_call_value(expr, source, factories, false))
+                }
+                "attribute" => {
+                    let object = func.child_by_field_name("object")?;
+                    let method = node_text(func.child_by_field_name("attribute")?, source);
+                    if object.kind() != "identifier" {
+                        return None;
+                    }
+                    let receiver = known(lookup(object, &node_text(object, source))?)?;
+                    let declared = factories.get(&format!("{receiver}.{method}"))?;
+                    if declared.ret.trim().trim_matches(['"', '\'']) == "Self" {
+                        return (!declared.is_async).then_some(receiver);
+                    }
+                    known(factory_return_type(&declared.ret, declared.is_async, false))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2320,7 +2342,65 @@ fn collect_factory_returns(root: Node<'_>, source: &str) -> FactoryReturns {
             },
         );
     }
+    collect_method_returns(root, source, &mut found, &mut seen);
     found
+}
+
+/// Return annotations of the methods of this file's classes, keyed
+/// `Class.method` (a key no function name can take). A method defined twice
+/// in classes of one name is dropped, like a function.
+fn collect_method_returns(
+    node: Node<'_>,
+    source: &str,
+    found: &mut FactoryReturns,
+    seen: &mut Vec<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "class_definition" {
+            collect_method_returns(child, source, found, seen);
+            continue;
+        }
+        let (Some(name), Some(body)) = (
+            child.child_by_field_name("name"),
+            child.child_by_field_name("body"),
+        ) else {
+            continue;
+        };
+        let class = node_text(name, source);
+        let mut inner = body.walk();
+        for stmt in body.named_children(&mut inner) {
+            let def = if stmt.kind() == "decorated_definition" {
+                stmt.child_by_field_name("definition")
+            } else {
+                Some(stmt)
+            };
+            let Some(def) = def.filter(|d| d.kind() == "function_definition") else {
+                continue;
+            };
+            let Some(method) = def.child_by_field_name("name") else {
+                continue;
+            };
+            let key = format!("{class}.{}", node_text(method, source));
+            if seen.contains(&key) {
+                found.remove(&key);
+                continue;
+            }
+            seen.push(key.clone());
+            if let Some(ret) = def.child_by_field_name("return_type") {
+                let is_async = (0..def.child_count())
+                    .any(|i| def.child(i).is_some_and(|c| c.kind() == "async"));
+                found.insert(
+                    key,
+                    FactoryReturn {
+                        ret: annotation_text(ret, source),
+                        is_async,
+                    },
+                );
+            }
+        }
+        collect_method_returns(body, source, found, seen);
+    }
 }
 
 /// Annotated attributes of a class: class-level (PEP 526) `name: Type` /
@@ -2356,7 +2436,7 @@ fn collect_class_level_annotations(
             continue;
         };
         let name = node_text(left, source);
-        let ty = classify_declared(&annotation_text(type_node, source));
+        let ty = classify_annotation(&annotation_text(type_node, source));
         result.insert(name, ty);
     }
     let mut cursor = class_body.walk();
@@ -2386,7 +2466,7 @@ fn collect_self_annotations(node: Node<'_>, source: &str, result: &mut HashMap<S
         && node_text(object, source) == "self"
     {
         let name = node_text(attr, source);
-        let ty = classify_declared(&annotation_text(type_node, source));
+        let ty = classify_annotation(&annotation_text(type_node, source));
         match result.get(&name) {
             Some(existing) if *existing != ty => {
                 result.insert(name, LocalType::Other);

@@ -1,6 +1,11 @@
+from typing import Self
+
+
 class Col:
     def to_def(self): ...
     def with_nullable(self, v): ...
+    def copy(self) -> "Col": ...
+    def same(self) -> Self: ...
 
 
 class Table:
@@ -50,8 +55,40 @@ def reassigned_to_new_list(xs: list[Col]):
 
 
 def reassigned_by_mapping(xs: list[Col]):
-    xs = [x.with_nullable(True) for x in xs]
+    xs = [x.copy() for x in xs]
     return [x.to_def() for x in xs]
+
+
+def declared_class_survives_reassignment(item: Col, other):
+    item = other
+    item.to_def()
+
+
+def undeclared_class_collapses():
+    thing = Col()
+    thing = Table()
+    thing.to_def()
+
+
+def make(c) -> Col: ...
+
+
+def comprehension_body_type(columns: list[Col]):
+    kept = [c if c.to_def() else c.copy() for c in columns]
+    for k in kept:
+        k.with_nullable(1)
+    chained = tuple(c.same() for c in columns)
+    for ch in chained:
+        ch.with_nullable(2)
+    built = [make(c) for c in columns]
+    for b in built:
+        b.copy()
+
+
+def comprehension_body_unknown(columns: list[Col]):
+    mixed = [c if c.to_def() else Table() for c in columns]
+    for m in mixed:
+        m.with_nullable(3)
 
 
 def nested_def_has_its_own_scope(text):
