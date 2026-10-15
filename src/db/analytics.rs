@@ -1,6 +1,6 @@
 use super::overview::module_prefix;
 use super::public_api::{Candidate, Exposure, PublicApi};
-use super::resolver::{ImplicitRootFacts, profile_for, qualname_trailing_name};
+use super::resolver::{ImplicitRootFacts, TestRootFacts, profile_for, qualname_trailing_name};
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::edge_views;
 use crate::model::{
@@ -971,6 +971,22 @@ impl Db {
                 })
             {
                 continue;
+            }
+            if tests_are_roots && let Some(is_test_root) = profile.test_root {
+                let (parent_name, parent_visibility) = match parent_id {
+                    Some(id) => parent_name_and_modifiers(&conn, id)?,
+                    None => (None, None),
+                };
+                if is_test_root(&TestRootFacts {
+                    kind: &symbol.kind,
+                    name: &symbol.name,
+                    path: &symbol.file_path,
+                    visibility: visibility.as_deref(),
+                    parent_name: parent_name.as_deref(),
+                    parent_visibility: parent_visibility.as_deref(),
+                }) {
+                    continue;
+                }
             }
             // A reference the symbol makes to itself does not count.
             let mut unresolved = unresolved_names
@@ -2000,6 +2016,17 @@ struct Judged {
 
 /// The `visibility` modifiers of the symbol(s) a method's qualname hangs
 /// under (`Type::method` or `pkg.Type.method`), joined by spaces.
+/// The name and modifier list of declaration `id` (a candidate's container).
+fn parent_name_and_modifiers(
+    conn: &rusqlite::Connection,
+    id: i64,
+) -> Result<(Option<String>, Option<String>)> {
+    let mut stmt = conn.prepare_cached("SELECT name, visibility FROM symbols WHERE id = ?1")?;
+    Ok(stmt
+        .query_row([id], |r| Ok((Some(r.get(0)?), r.get(1)?)))
+        .unwrap_or((None, None)))
+}
+
 fn parent_visibility_of(
     conn: &rusqlite::Connection,
     method: &Symbol,

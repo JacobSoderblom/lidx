@@ -40,8 +40,77 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     deferred_receiver: Some(resolve_deferred),
     deferred_rpc: Some(deferred_rpc_calls),
     untyped_receiver_is_external: false,
+    test_root: Some(csharp_test_root),
     ..LanguageProfile::DEFAULT
 };
+
+/// `LanguageProfile::test_root` for C#: a method with a test attribute and a
+/// class that holds one carry the `test_entry` modifier from the extractor;
+/// the test runner also constructs the class and disposes it, so its
+/// constructors and `IDisposable` / `IAsyncLifetime` members run too.
+fn csharp_test_root(f: &crate::db::resolver::TestRootFacts<'_>) -> bool {
+    if f.is_test_entry() {
+        return true;
+    }
+    f.kind == "method"
+        && f.parent_is_test_entry()
+        && matches!(
+            f.name,
+            ".ctor" | "Dispose" | "DisposeAsync" | "InitializeAsync"
+        )
+}
+
+/// Attributes (without the `Attribute` suffix) with which xUnit, NUnit and
+/// MSTest mark a method the runner executes: tests, data-driven tests and the
+/// setup / teardown hooks around them.
+const TEST_METHOD_ATTRIBUTES: &[&str] = &[
+    "Fact",
+    "Theory",
+    "SkippableFact",
+    "SkippableTheory",
+    "Test",
+    "TestCase",
+    "TestCaseSource",
+    "SetUp",
+    "TearDown",
+    "OneTimeSetUp",
+    "OneTimeTearDown",
+    "TestFixtureSetUp",
+    "TestFixtureTearDown",
+    "TestMethod",
+    "DataTestMethod",
+    "TestInitialize",
+    "TestCleanup",
+    "ClassInitialize",
+    "ClassCleanup",
+    "AssemblyInitialize",
+    "AssemblyCleanup",
+];
+
+/// Attributes that mark a class as a test fixture whatever it contains.
+const TEST_CLASS_ATTRIBUTES: &[&str] = &["TestFixture", "TestClass", "SetUpFixture"];
+
+fn has_attribute_in(node: Node<'_>, source: &str, names: &[&str]) -> bool {
+    attributes_for_node(node, source)
+        .iter()
+        .any(|a| names.contains(&normalize_attribute_name(&a.name).as_str()))
+}
+
+/// Whether a type declaration is a test class: a fixture attribute on it, or a
+/// test-attributed method among its direct members.
+fn is_test_type(node: Node<'_>, source: &str) -> bool {
+    if has_attribute_in(node, source, TEST_CLASS_ATTRIBUTES) {
+        return true;
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    body.named_children(&mut cursor).any(|member| {
+        member.kind() == "method_declaration"
+            && has_attribute_in(member, source, TEST_METHOD_ATTRIBUTES)
+    })
+}
 
 #[derive(Clone)]
 struct Context {
@@ -944,6 +1013,9 @@ fn handle_type(
         ..Default::default()
     });
 
+    if matches!(type_kind, TypeKind::Class | TypeKind::Record) && is_test_type(node, source) {
+        output.test_entry_qualnames.push(qualname.clone());
+    }
     if type_kind != TypeKind::Enum {
         handle_base_list(node, &qualname, source, output, type_kind, ctx);
     }
@@ -1066,6 +1138,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     }
     if has_modifier(node, source, "override") {
         output.override_symbols.push((qualname.clone(), start_line));
+    }
+    if has_attribute_in(node, source, TEST_METHOD_ATTRIBUTES) {
+        output.test_entry_qualnames.push(qualname.clone());
     }
     let first_edge = output.edges.len();
     output.symbols.push(SymbolInput {

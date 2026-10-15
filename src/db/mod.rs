@@ -1849,11 +1849,13 @@ impl Db {
             file_wide,
             public,
             example_output,
+            test_entry,
             globals,
         } = modifiers;
         if private.is_empty()
             && public.is_empty()
             && example_output.is_empty()
+            && test_entry.is_empty()
             && globals.is_empty()
             && statics.is_empty()
             && local.is_empty()
@@ -1878,6 +1880,7 @@ impl Db {
         let local_ph = placeholders(local.len());
         let public_ph = placeholders(public.len());
         let example_ph = placeholders(example_output.len());
+        let test_entry_ph = placeholders(test_entry.len());
         let global_ph = placeholders(globals.len());
         // Overloads share a qualname, so an override is keyed by its line too.
         let line_test = |pairs: &[(String, i64)]| {
@@ -1902,6 +1905,7 @@ impl Db {
                     || CASE WHEN qualname IN ({local_ph}) THEN ' {local_modifier}' ELSE '' END
                     || CASE WHEN qualname IN ({public_ph}) THEN ' public' ELSE '' END
                     || CASE WHEN qualname IN ({example_ph}) THEN ' example_output' ELSE '' END
+                    || CASE WHEN qualname IN ({test_entry_ph}) THEN ' {test_entry_modifier}' ELSE '' END
                     || CASE WHEN qualname IN ({global_ph}) THEN ' {global_modifier}' ELSE '' END
                     || CASE WHEN {override_test} THEN ' override' ELSE '' END
                     || CASE WHEN {decl_test} THEN ' {decl_modifier}' ELSE '' END
@@ -1911,7 +1915,8 @@ impl Db {
             local_modifier = graph_query::LOCAL_MODIFIER,
             decl_modifier = graph_query::DECL_MODIFIER,
             accessor_modifier = graph_query::ACCESSOR_MODIFIER,
-            global_modifier = graph_query::GLOBAL_MODIFIER
+            global_modifier = graph_query::GLOBAL_MODIFIER,
+            test_entry_modifier = graph_query::TEST_ENTRY_MODIFIER
         );
         // In the order the placeholders appear in the statement.
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private
@@ -1936,6 +1941,7 @@ impl Db {
                 .iter()
                 .chain(public)
                 .chain(example_output)
+                .chain(test_entry)
                 .chain(globals)
                 .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>),
         );
