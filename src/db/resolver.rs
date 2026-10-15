@@ -5147,10 +5147,11 @@ pub(crate) const RUST_STD_RECEIVER: &str = "<std>";
 pub(crate) const RUST_EXTERNAL_RECEIVER: &str = "<ext>";
 
 /// Whether an import candidate is one of the Rust markers above rather than a
-/// qualname.
+/// qualname. A pin needs its `|` separator: a scoped npm package
+/// (`@scope/pkg:name`, a JS/TS candidate) also starts with `@`.
 fn is_rust_crate_marker(candidate: &str) -> bool {
     candidate == RUST_EXTERNAL_CRATE
-        || candidate.starts_with(RUST_CRATE_PIN)
+        || parse_rust_crate_pin(candidate).is_some()
         || candidate.starts_with(RUST_IMPL_SELF)
         || candidate.starts_with(RUST_BOUND_ITEM)
         || candidate.starts_with(RUST_ARG_HINT)

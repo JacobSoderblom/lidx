@@ -300,10 +300,29 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     && e.source_symbol_id == Some(symbol.id)
                     && e.target_symbol_id.is_some()
             }));
+    // A `new T()` site binds to `T`'s explicit constructor, so the tests of a
+    // class are the tests of the class and of its constructor.
+    let constructor_edges: Vec<(i64, Vec<crate::model::Edge>)> = if wants_tests {
+        let mut out = Vec::new();
+        for id in constructor_ids(indexer.db(), &symbol, ctx.graph_version)? {
+            let ctor_edges =
+                indexer
+                    .db()
+                    .edges_for_symbol(id, ctx.languages.as_deref(), ctx.graph_version)?;
+            out.push((id, ctor_edges));
+        }
+        out
+    } else {
+        Vec::new()
+    };
     let has_tests = wants_tests
         && (!incoming_cross.is_empty()
             || edges.iter().any(|e| {
                 edge_views::is_call_like(&e.kind) && e.target_symbol_id == Some(symbol.id)
+            })
+            || constructor_edges.iter().any(|(id, es)| {
+                es.iter()
+                    .any(|e| edge_views::is_call_like(&e.kind) && e.target_symbol_id == Some(*id))
             }));
     let has_direct_implements = edges.iter().any(|e| {
         edge_views::contains(edge_views::TYPE_HIERARCHY, &e.kind)
@@ -760,14 +779,18 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             ctx.languages.as_deref(),
             ctx.graph_version,
         )?;
-        for (edge, via_interface) in edges
+        let own_edges = edges.iter().map(|e| (e, symbol.id));
+        let ctor_edges = constructor_edges
             .iter()
-            .filter(|e| !e.is_synthetic())
-            .map(|e| (e, false))
-            .chain(interface_edges.iter().map(|e| (e, true)))
+            .flat_map(|(id, es)| es.iter().map(move |e| (e, *id)));
+        for (edge, via_interface, target_id) in own_edges
+            .chain(ctor_edges)
+            .filter(|(e, _)| !e.is_synthetic())
+            .map(|(e, id)| (e, false, id))
+            .chain(interface_edges.iter().map(|e| (e, true, symbol.id)))
         {
             if edge_views::is_call_like(&edge.kind)
-                && (via_interface || edge.target_symbol_id == Some(symbol.id))
+                && (via_interface || edge.target_symbol_id == Some(target_id))
                 && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
@@ -2366,6 +2389,26 @@ fn config_uri_not_found_payload(
         )
     };
     json!({"resolved": false, "message": message, "next_hops": next_hops})
+}
+
+/// Ids of the explicit constructor of a class symbol: `T.constructor` (JS/TS)
+/// or `T..ctor` (C#). Empty for anything else.
+fn constructor_ids(
+    db: &crate::db::Db,
+    symbol: &crate::model::Symbol,
+    graph_version: i64,
+) -> Result<Vec<i64>> {
+    if !crate::resolve::is_type_container_kind(&symbol.kind) {
+        return Ok(Vec::new());
+    }
+    let js = format!("{}.constructor", symbol.qualname);
+    let cs = format!("{}..ctor", symbol.qualname);
+    Ok(db
+        .get_symbols_for_file(&symbol.file_path, graph_version)?
+        .into_iter()
+        .filter(|s| s.kind == "method" && (s.qualname == js || s.qualname == cs))
+        .map(|s| s.id)
+        .collect())
 }
 
 /// Widens `ids` with the members of a container symbol (issue #249): nothing
