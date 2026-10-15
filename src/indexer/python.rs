@@ -180,12 +180,38 @@ type FactoryReturns = HashMap<String, FactoryReturn>;
 enum LocalType {
     /// Inferred (or annotated) to be this non-builtin type name.
     Known(String),
+    /// A builtin container annotated with the repo class it holds
+    /// (`list[Col]`, `dict[str, Col]`): the name itself is no usable receiver
+    /// type, but iterating it (a `for` loop or a comprehension) binds the
+    /// target to the element class -- see `Container`.
+    Container(Container),
     /// Builtin type, reassigned, unannotated parameter, comprehension
-    /// result, function return value, loop/with/except target, or anything
+    /// result, function return value, with/except target, or anything
     /// else not explicitly recognized. A name landing here (rather than
     /// simply absent from the map) still gates resolution: it means "we
     /// looked, and it's not a usable type" as opposed to "we never looked".
     Other,
+}
+
+/// What a builtin container annotation says about the classes it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Container {
+    /// The class iterating the container yields: the element of a sequence,
+    /// the key of a mapping.
+    item: Option<String>,
+    /// The class a mapping's `.values()` yields.
+    value: Option<String>,
+    mapping: bool,
+    /// Written as the annotation of a parameter or variable, not inferred
+    /// from a call's return annotation: a declaration holds across
+    /// reassignments, so reassigning the name does not make it unknown.
+    declared: bool,
+}
+
+impl Container {
+    fn same_shape(&self, other: &Container) -> bool {
+        (&self.item, &self.value, self.mapping) == (&other.item, &other.value, other.mapping)
+    }
 }
 
 pub struct PythonExtractor {
@@ -644,7 +670,12 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let mut next_ctx = ctx.clone();
                 next_ctx.fn_depth += 1;
                 next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
-                next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.factories));
+                next_ctx.local_types = Rc::new(infer_local_types(
+                    node,
+                    source,
+                    &ctx.factories,
+                    &ctx.class_attr_types,
+                ));
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_block(body, &next_ctx, source, output);
                 }
@@ -899,29 +930,78 @@ fn in_value_position(node: Node<'_>) -> bool {
     }
 }
 
-/// A comprehension variable or lambda parameter of `name` encloses `node`.
-/// Function bodies fold these into `local_types`; this also covers module-
-/// and class-level expressions, which have no such map.
-fn bound_by_enclosing_expression(node: Node<'_>, name: &str, source: &str) -> bool {
+/// The binding of `name` visible at `node`. A comprehension variable and a
+/// lambda parameter are scoped to their own expression (Python 3), so they
+/// shadow `name` only inside it: they are looked up here by walking out from
+/// `node`, never folded into the enclosing function's `local_types`, where
+/// they would also hide a same-named import or function used outside. The
+/// innermost expression wins; then the function's (or module's) own scope.
+fn lookup_binding(
+    node: Node<'_>,
+    name: &str,
+    source: &str,
+    locals: &HashMap<String, LocalType>,
+    class_attrs: &HashMap<String, LocalType>,
+) -> Option<LocalType> {
+    lookup_binding_at(node, name, source, locals, class_attrs, 0)
+}
+
+/// How deep an iterable may itself be typed by another comprehension variable.
+const MAX_BINDING_DEPTH: usize = 4;
+
+fn lookup_binding_at(
+    node: Node<'_>,
+    name: &str,
+    source: &str,
+    locals: &HashMap<String, LocalType>,
+    class_attrs: &HashMap<String, LocalType>,
+    depth: usize,
+) -> Option<LocalType> {
+    let mut child = node;
     let mut current = node.parent();
     while let Some(ancestor) = current {
         match ancestor.kind() {
+            "function_definition" | "async_function_definition" | "class_definition" => break,
             "list_comprehension"
             | "set_comprehension"
             | "dictionary_comprehension"
             | "generator_expression" => {
                 let mut cursor = ancestor.walk();
-                for clause in ancestor.named_children(&mut cursor) {
-                    if clause.kind() != "for_in_clause" {
+                let clauses: Vec<Node<'_>> = ancestor
+                    .named_children(&mut cursor)
+                    .filter(|c| c.kind() == "for_in_clause")
+                    .collect();
+                // The first iterable is evaluated outside the comprehension.
+                let outside = clauses.first().is_some_and(|c| c.id() == child.id());
+                let mut found: Option<LocalType> = None;
+                for clause in clauses.into_iter().filter(|_| !outside) {
+                    let Some(left) = clause.child_by_field_name("left") else {
                         continue;
-                    }
+                    };
                     let mut bound = Vec::new();
-                    if let Some(left) = clause.child_by_field_name("left") {
-                        collect_pattern_identifiers(left, source, &mut bound);
+                    let shape = match clause.child_by_field_name("right") {
+                        Some(right) if depth < MAX_BINDING_DEPTH => {
+                            let env = |n: &str| {
+                                lookup_binding_at(right, n, source, locals, class_attrs, depth + 1)
+                                    .or_else(|| locals.get(n).cloned())
+                            };
+                            iteration_shape(right, source, &env, class_attrs)
+                        }
+                        _ => Shape::One(None),
+                    };
+                    bind_loop_target(left, shape, source, &mut bound);
+                    let mut hits = bound.into_iter().filter(|(n, _)| n == name);
+                    if let Some((_, ty)) = hits.next() {
+                        // A name bound twice in one comprehension is unknown.
+                        found = Some(if found.is_some() || hits.next().is_some() {
+                            LocalType::Other
+                        } else {
+                            ty
+                        });
                     }
-                    if bound.iter().any(|(n, _)| n == name) {
-                        return true;
-                    }
+                }
+                if found.is_some() {
+                    return found;
                 }
             }
             "lambda" => {
@@ -929,15 +1009,161 @@ fn bound_by_enclosing_expression(node: Node<'_>, name: &str, source: &str) -> bo
                     let mut bound = Vec::new();
                     collect_lambda_parameter_bindings(params, source, &mut bound);
                     if bound.iter().any(|(n, _)| n == name) {
-                        return true;
+                        return Some(LocalType::Other);
                     }
                 }
             }
             _ => {}
         }
+        child = ancestor;
         current = ancestor.parent();
     }
-    false
+    locals.get(name).cloned()
+}
+
+/// What iterating an expression yields.
+enum Shape {
+    /// One value per step; its class when known.
+    One(Option<String>),
+    /// A tuple per step (`d.items()`, `enumerate(xs)`, `zip(a, b)`).
+    Many(Vec<Option<String>>),
+}
+
+impl Shape {
+    fn element(&self) -> Option<String> {
+        match self {
+            Shape::One(ty) => ty.clone(),
+            Shape::Many(_) => None,
+        }
+    }
+}
+
+/// The container `expr` names: a bound name or a `self.attr` annotated as one.
+fn container_of(
+    expr: Node<'_>,
+    source: &str,
+    env: &dyn Fn(&str) -> Option<LocalType>,
+    class_attrs: &HashMap<String, LocalType>,
+) -> Option<Container> {
+    let ty = match unwrap_parens(expr).kind() {
+        "identifier" => env(&node_text(unwrap_parens(expr), source)),
+        "attribute" => {
+            let expr = unwrap_parens(expr);
+            let object = expr.child_by_field_name("object")?;
+            let attr = expr.child_by_field_name("attribute")?;
+            let is_self = object.kind() == "identifier"
+                && matches!(node_text(object, source).as_str(), "self" | "cls");
+            if !is_self {
+                return None;
+            }
+            class_attrs.get(&node_text(attr, source)).cloned()
+        }
+        _ => None,
+    };
+    match ty {
+        Some(LocalType::Container(c)) => Some(c),
+        _ => None,
+    }
+}
+
+/// What a `for` loop or comprehension over `expr` yields per step.
+fn iteration_shape(
+    expr: Node<'_>,
+    source: &str,
+    env: &dyn Fn(&str) -> Option<LocalType>,
+    class_attrs: &HashMap<String, LocalType>,
+) -> Shape {
+    let expr = unwrap_parens(expr);
+    if let Some(c) = container_of(expr, source, env, class_attrs) {
+        return Shape::One(c.item);
+    }
+    if expr.kind() != "call" {
+        return Shape::One(None);
+    }
+    let Some(func) = expr.child_by_field_name("function") else {
+        return Shape::One(None);
+    };
+    let args = parse_call_arguments(expr, source);
+    match func.kind() {
+        "identifier" => {
+            let name = node_text(func, source);
+            // A name the scope rebinds is no builtin.
+            if env(&name).is_some() {
+                return Shape::One(None);
+            }
+            let elem = |i: usize| {
+                args.positional
+                    .get(i)
+                    .and_then(|a| iteration_shape(*a, source, env, class_attrs).element())
+            };
+            match name.as_str() {
+                "sorted" | "list" | "tuple" | "set" | "frozenset" | "reversed" | "iter" => {
+                    match args.positional.first() {
+                        Some(arg) => iteration_shape(*arg, source, env, class_attrs),
+                        None => Shape::One(None),
+                    }
+                }
+                "enumerate" if !args.positional.is_empty() => Shape::Many(vec![None, elem(0)]),
+                "zip" if !args.positional.is_empty() => {
+                    Shape::Many((0..args.positional.len()).map(elem).collect())
+                }
+                _ => Shape::One(None),
+            }
+        }
+        "attribute" => {
+            let (Some(object), Some(attr)) = (
+                func.child_by_field_name("object"),
+                func.child_by_field_name("attribute"),
+            ) else {
+                return Shape::One(None);
+            };
+            if !args.positional.is_empty() || !args.keywords.is_empty() {
+                return Shape::One(None);
+            }
+            match (
+                container_of(object, source, env, class_attrs),
+                node_text(attr, source).as_str(),
+            ) {
+                (Some(c), "values") if c.mapping => Shape::One(c.value),
+                (Some(c), "keys") if c.mapping => Shape::One(c.item),
+                (Some(c), "items") if c.mapping => Shape::Many(vec![c.item, c.value]),
+                _ => Shape::One(None),
+            }
+        }
+        _ => Shape::One(None),
+    }
+}
+
+/// Push the names a `for` target binds, typed by what the loop yields: a
+/// single name takes the element class, a tuple pattern takes one class per
+/// position when the loop yields tuples of that length, and any other
+/// pattern binds `Other`.
+fn bind_loop_target(
+    left: Node<'_>,
+    shape: Shape,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    let typed = |ty: Option<String>| ty.map_or(LocalType::Other, LocalType::Known);
+    match (left.kind(), shape) {
+        ("identifier", shape) => bindings.push((node_text(left, source), typed(shape.element()))),
+        ("pattern_list" | "tuple_pattern", Shape::Many(types)) => {
+            let mut cursor = left.walk();
+            let targets: Vec<Node<'_>> = left.named_children(&mut cursor).collect();
+            if targets.len() == types.len() {
+                for (target, ty) in targets.into_iter().zip(types) {
+                    if target.kind() == "identifier" {
+                        bindings.push((node_text(target, source), typed(ty)));
+                    } else {
+                        collect_pattern_identifiers(target, source, bindings);
+                    }
+                }
+            } else {
+                collect_pattern_identifiers(left, source, bindings);
+            }
+        }
+        _ => collect_pattern_identifiers(left, source, bindings),
+    }
 }
 
 /// `REFERENCES` edge for a function (or class) used as a value rather than
@@ -955,8 +1181,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         return None;
     }
     let bare = node.kind() == "identifier";
-    if bare
-        && (ctx.local_types.contains_key(&raw) || bound_by_enclosing_expression(node, &raw, source))
+    if bare && lookup_binding(node, &raw, source, &ctx.local_types, &ctx.class_attr_types).is_some()
     {
         return None;
     }
@@ -1020,11 +1245,16 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
 ///   reference" pass; only a *direct* `ClassName.static_method()` (hops ==
 ///   0, see above) gets that.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
-    if function_node.kind() == "identifier"
-        && ctx
-            .local_types
-            .contains_key(&node_text(function_node, source))
-    {
+    let lookup = |name: &str| {
+        lookup_binding(
+            function_node,
+            name,
+            source,
+            &ctx.local_types,
+            &ctx.class_attr_types,
+        )
+    };
+    if function_node.kind() == "identifier" && lookup(&node_text(function_node, source)).is_some() {
         // Bare `name()` where `name` is bound in this scope: Python calls
         // that local, which is never an indexed symbol. `Unresolved` stops
         // it binding by name-uniqueness to an unrelated same-named symbol.
@@ -1051,9 +1281,9 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
             // extra to gate.
             return ReceiverType::NotTracked;
         }
-        return match ctx.local_types.get(&root_name) {
-            Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
-            Some(LocalType::Other) => ReceiverType::Unresolved,
+        return match lookup(&root_name) {
+            Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
+            Some(_) => ReceiverType::Unresolved,
             None => ReceiverType::NotTracked,
         };
     }
@@ -1157,13 +1387,15 @@ fn call_value(call: Node<'_>, source: &str, ctx: &Context) -> Chain {
     match func.kind() {
         "identifier" => {
             let name = node_text(func, source);
-            if ctx.local_types.contains_key(&name) {
+            if lookup_binding(func, &name, source, &ctx.local_types, &ctx.class_attr_types)
+                .is_some()
+            {
                 return Chain::Unknown;
             }
             if let Some(f) = ctx.factories.get(&name) {
                 return match factory_return_type(&f.ret, f.is_async, false) {
                     LocalType::Known(ty) => Chain::Known(ty),
-                    LocalType::Other => Chain::Unknown,
+                    _ => Chain::Unknown,
                 };
             }
             let mut candidates = vec![format!("{}.{name}", ctx.module)];
@@ -1194,11 +1426,17 @@ fn call_value(call: Node<'_>, source: &str, ctx: &Context) -> Chain {
                 };
             }
             if hops == 0 {
-                match ctx.local_types.get(&root_name) {
+                match lookup_binding(
+                    root,
+                    &root_name,
+                    source,
+                    &ctx.local_types,
+                    &ctx.class_attr_types,
+                ) {
                     Some(LocalType::Known(ty)) => {
-                        return Chain::Known(ty.clone()).call_method(&attr);
+                        return Chain::Known(ty).call_method(&attr);
                     }
-                    Some(LocalType::Other) => return Chain::Unknown,
+                    Some(_) => return Chain::Unknown,
                     None => {}
                 }
             }
@@ -1305,7 +1543,7 @@ fn signature_return_class(signature: Option<&str>) -> Option<String> {
     let (_, ret) = signature?.rsplit_once(" -> ")?;
     match factory_return_type(ret, false, false) {
         LocalType::Known(ty) => Some(ty),
-        LocalType::Other => None,
+        _ => None,
     }
 }
 
@@ -1374,13 +1612,111 @@ const BUILTIN_ANNOTATIONS: &[&str] = &[
 fn classify_annotation(ann: &str) -> LocalType {
     let ann = ann.trim();
     if ann.contains('[') {
-        return LocalType::Other;
+        return parse_container(ann).map_or(LocalType::Other, LocalType::Container);
     }
     let bare = ann.rsplit('.').next().unwrap_or(ann).trim();
     if bare.is_empty() || BUILTIN_ANNOTATIONS.contains(&bare) {
         return LocalType::Other;
     }
     LocalType::Known(bare.to_string())
+}
+
+/// `classify_annotation` for the annotation of a parameter or variable.
+fn classify_declared(ann: &str) -> LocalType {
+    match classify_annotation(ann) {
+        LocalType::Container(c) => LocalType::Container(Container {
+            declared: true,
+            ..c
+        }),
+        other => other,
+    }
+}
+
+const SEQUENCE_ANNOTATIONS: &[&str] = &[
+    "list",
+    "List",
+    "set",
+    "Set",
+    "frozenset",
+    "FrozenSet",
+    "MutableSet",
+    "AbstractSet",
+    "Sequence",
+    "MutableSequence",
+    "Collection",
+    "Iterable",
+    "Iterator",
+    "AsyncIterable",
+    "AsyncIterator",
+    "deque",
+    "Deque",
+];
+
+const MAPPING_ANNOTATIONS: &[&str] = &[
+    "dict",
+    "Dict",
+    "Mapping",
+    "MutableMapping",
+    "defaultdict",
+    "DefaultDict",
+    "OrderedDict",
+];
+
+/// `list[Col]`, `dict[str, Col]`, `tuple[Col, ...]`: a builtin container
+/// whose element (or mapping key or value) is a non-builtin class. `None`
+/// for any other subscripted annotation, or when no element is a class.
+fn parse_container(ann: &str) -> Option<Container> {
+    let ann = ann.trim();
+    let open = ann.find('[')?;
+    let inner = ann[open + 1..].strip_suffix(']')?;
+    let head = ann[..open].trim();
+    let head = head.rsplit('.').next().unwrap_or(head);
+    let args = split_type_args(inner);
+    let element = |arg: &str| match classify_annotation(arg.trim().trim_matches(['"', '\''])) {
+        LocalType::Known(ty) => Some(ty),
+        _ => None,
+    };
+    let sequence = (SEQUENCE_ANNOTATIONS.contains(&head) && args.len() == 1)
+        || (matches!(head, "tuple" | "Tuple") && args.len() == 2 && args[1].trim() == "...")
+        || (matches!(head, "Generator" | "AsyncGenerator") && !args.is_empty());
+    let container = if sequence {
+        Container {
+            item: element(args[0]),
+            value: None,
+            mapping: false,
+            declared: false,
+        }
+    } else if MAPPING_ANNOTATIONS.contains(&head) && args.len() == 2 {
+        Container {
+            item: element(args[0]),
+            value: element(args[1]),
+            mapping: true,
+            declared: false,
+        }
+    } else {
+        return None;
+    };
+    (container.item.is_some() || container.value.is_some()).then_some(container)
+}
+
+/// The top-level comma-separated parts of a subscript's contents.
+fn split_type_args(inner: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts
 }
 
 /// Extract a type annotation's text from its wrapping `type` node, handling
@@ -1408,12 +1744,16 @@ fn infer_local_types(
     function_node: Node<'_>,
     source: &str,
     factories: &FactoryReturns,
+    class_attrs: &HashMap<String, LocalType>,
 ) -> HashMap<String, LocalType> {
-    let bindings = function_bindings(function_node, source, factories);
+    let bindings = function_bindings(function_node, source, factories, class_attrs);
     match without_shadowed(factories, &bindings) {
-        Some(unshadowed) => {
-            bindings_to_local_types(function_bindings(function_node, source, &unshadowed))
-        }
+        Some(unshadowed) => bindings_to_local_types(function_bindings(
+            function_node,
+            source,
+            &unshadowed,
+            class_attrs,
+        )),
         None => bindings_to_local_types(bindings),
     }
 }
@@ -1449,6 +1789,7 @@ fn function_bindings(
     function_node: Node<'_>,
     source: &str,
     factories: &FactoryReturns,
+    class_attrs: &HashMap<String, LocalType>,
 ) -> Vec<(String, LocalType)> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
 
@@ -1467,7 +1808,7 @@ fn function_bindings(
                         let name = node_text(name_node, source);
                         let ty = param
                             .child_by_field_name("type")
-                            .map(|t| classify_annotation(&annotation_text(t, source)))
+                            .map(|t| classify_declared(&annotation_text(t, source)))
                             .unwrap_or(LocalType::Other);
                         bindings.push((name, ty));
                     }
@@ -1482,7 +1823,7 @@ fn function_bindings(
                         let name = node_text(name_node, source);
                         let ty = param
                             .child_by_field_name("type")
-                            .map(|t| classify_annotation(&annotation_text(t, source)))
+                            .map(|t| classify_declared(&annotation_text(t, source)))
                             .unwrap_or(LocalType::Other);
                         bindings.push((name, ty));
                     }
@@ -1498,7 +1839,7 @@ fn function_bindings(
     }
 
     if let Some(body) = function_node.child_by_field_name("body") {
-        collect_statement_bindings(body, source, factories, &mut bindings);
+        collect_statement_bindings(body, source, factories, class_attrs, &mut bindings);
         collect_nested_def_names(body, source, &mut bindings);
     }
 
@@ -1539,10 +1880,11 @@ fn infer_module_level_types(
     factories: &FactoryReturns,
 ) -> HashMap<String, LocalType> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
-    collect_statement_bindings(root, source, factories, &mut bindings);
+    let no_attrs = HashMap::new();
+    collect_statement_bindings(root, source, factories, &no_attrs, &mut bindings);
     if let Some(unshadowed) = without_shadowed(factories, &bindings) {
         bindings.clear();
-        collect_statement_bindings(root, source, &unshadowed, &mut bindings);
+        collect_statement_bindings(root, source, &unshadowed, &no_attrs, &mut bindings);
     }
     bindings_to_local_types(bindings)
 }
@@ -1551,57 +1893,64 @@ fn infer_module_level_types(
 /// a name bound more than once anywhere in the scope collapsing to `Other`
 /// (see `infer_local_types`'s doc comment on "reassignment → unknown").
 fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for (name, _) in &bindings {
-        *counts.entry(name.clone()).or_default() += 1;
-    }
-
-    let mut result = HashMap::new();
+    let mut grouped: HashMap<String, Vec<LocalType>> = HashMap::new();
     for (name, ty) in bindings {
-        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
-        result.insert(name, if reassigned { LocalType::Other } else { ty });
+        grouped.entry(name).or_default().push(ty);
     }
-    result
+    grouped
+        .into_iter()
+        .map(|(name, mut types)| {
+            let ty = if types.len() == 1 {
+                types.remove(0)
+            } else {
+                declared_container(&types).map_or(LocalType::Other, LocalType::Container)
+            };
+            (name, ty)
+        })
+        .collect()
+}
+
+/// The container a name is declared as when every other binding of it is
+/// that same container or something unknown.
+fn declared_container(types: &[LocalType]) -> Option<Container> {
+    let declared = types.iter().find_map(|t| match t {
+        LocalType::Container(c) if c.declared => Some(c.clone()),
+        _ => None,
+    })?;
+    types
+        .iter()
+        .all(|t| match t {
+            LocalType::Container(c) => c.same_shape(&declared),
+            LocalType::Other => true,
+            LocalType::Known(_) => false,
+        })
+        .then_some(declared)
 }
 
 /// Recursively collect local-variable bindings from statements within a
 /// single function body, stopping at nested function/class boundaries
 /// (their own locals are a different scope entirely — see
-/// `Context::local_types`'s doc comment). A `lambda` is *not* a boundary
-/// here: unlike `def`, a lambda never gets its own `Context`/`local_types`
-/// in `walk_node` (there's no case for it), so a call inside a lambda body
-/// is walked with the *enclosing* function's `local_types`. If the
-/// lambda's own parameters (e.g. `acc` in `lambda n, acc=funcs:
-/// acc.append(n)`) weren't folded into that same map, a reference to one
-/// inside the lambda body would look like an untracked name and fall
-/// through to the "presumably a class/module reference" bare-name
-/// fallback — exactly the leak this closes. Lambda parameters can't carry
-/// annotations, so they're always bound `Other`.
+/// `Context::local_types`'s doc comment). A `lambda`'s parameters and a
+/// comprehension's variables are not collected here: they are scoped to their
+/// own expression and found by `lookup_binding` instead, so they cannot hide
+/// a same-named import or function used elsewhere in the function.
 fn collect_statement_bindings(
     node: Node<'_>,
     source: &str,
     factories: &FactoryReturns,
+    class_attrs: &HashMap<String, LocalType>,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
     match node.kind() {
         "function_definition" | "async_function_definition" | "class_definition" => {
             return;
         }
-        "lambda" => {
-            if let Some(params) = node.child_by_field_name("parameters") {
-                collect_lambda_parameter_bindings(params, source, bindings);
-            }
-            // No `return`: still recurse into children below (the default
-            // expression of a parameter, and the lambda's body, may
-            // contain a nested lambda whose own parameters also need
-            // folding in).
-        }
         "assignment" => {
             if let Some(left) = node.child_by_field_name("left") {
                 if left.kind() == "identifier" {
                     let name = node_text(left, source);
                     let ty = if let Some(type_node) = node.child_by_field_name("type") {
-                        classify_annotation(&annotation_text(type_node, source))
+                        classify_declared(&annotation_text(type_node, source))
                     } else if let Some(right) = node.child_by_field_name("right") {
                         classify_assignment_value(right, source, factories)
                     } else {
@@ -1624,14 +1973,17 @@ fn collect_statement_bindings(
                 }
             }
         }
-        // `for x in xs:` and the `for x in xs` of a comprehension.
-        "for_statement" | "for_in_clause" => {
+        // `for x in xs:`. A comprehension's `for` binds in the comprehension's
+        // own scope instead (see `lookup_binding`).
+        "for_statement" => {
             if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
-                    bindings.push((node_text(left, source), LocalType::Other));
-                } else {
-                    collect_pattern_identifiers(left, source, bindings);
-                }
+                let so_far = bindings_to_local_types(bindings.clone());
+                let env = |name: &str| so_far.get(name).cloned();
+                let shape = match node.child_by_field_name("right") {
+                    Some(right) => iteration_shape(right, source, &env, class_attrs),
+                    None => Shape::One(None),
+                };
+                bind_loop_target(left, shape, source, bindings);
             }
         }
         // `(name := value)`
@@ -1654,7 +2006,7 @@ fn collect_statement_bindings(
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_statement_bindings(child, source, factories, bindings);
+        collect_statement_bindings(child, source, factories, class_attrs, bindings);
     }
 }
 
@@ -1882,10 +2234,11 @@ fn collect_factory_returns(root: Node<'_>, source: &str) -> FactoryReturns {
     found
 }
 
-/// Class-level (PEP 526) annotated attributes declared directly in a class
-/// body (`name: Type` / `name: Type = value`) — not inside any method.
-/// Used only to resolve a single-hop `self.attr.method()` receiver; see
-/// `infer_receiver_type`.
+/// Annotated attributes of a class: class-level (PEP 526) `name: Type` /
+/// `name: Type = value`, and `self.name: Type` in its methods. An attribute
+/// annotated more than once with different types is unknown. Used to resolve
+/// a single-hop `self.attr.method()` receiver and to type the loops over a
+/// container attribute; see `infer_receiver_type`.
 fn collect_class_level_annotations(
     class_body: Node<'_>,
     source: &str,
@@ -1914,10 +2267,50 @@ fn collect_class_level_annotations(
             continue;
         };
         let name = node_text(left, source);
-        let ty = classify_annotation(&annotation_text(type_node, source));
+        let ty = classify_declared(&annotation_text(type_node, source));
         result.insert(name, ty);
     }
+    let mut cursor = class_body.walk();
+    for stmt in class_body.named_children(&mut cursor) {
+        collect_self_annotations(stmt, source, &mut result);
+    }
     result
+}
+
+/// `self.name: Type` annotated assignments in the methods under `node`
+/// (nested classes have their own `self`).
+fn collect_self_annotations(node: Node<'_>, source: &str, result: &mut HashMap<String, LocalType>) {
+    if node.kind() == "class_definition" {
+        return;
+    }
+    if node.kind() == "assignment"
+        && let (Some(left), Some(type_node)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("type"),
+        )
+        && left.kind() == "attribute"
+        && let (Some(object), Some(attr)) = (
+            left.child_by_field_name("object"),
+            left.child_by_field_name("attribute"),
+        )
+        && object.kind() == "identifier"
+        && node_text(object, source) == "self"
+    {
+        let name = node_text(attr, source);
+        let ty = classify_declared(&annotation_text(type_node, source));
+        match result.get(&name) {
+            Some(existing) if *existing != ty => {
+                result.insert(name, LocalType::Other);
+            }
+            _ => {
+                result.insert(name, ty);
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_self_annotations(child, source, result);
+    }
 }
 
 /// Detect os.getenv("KEY"), os.environ.get("KEY") → CONFIG_READ
