@@ -49,9 +49,71 @@ impl JsStale<'_> {
         graph_version: i64,
     ) -> Result<HashSet<String>> {
         let mut stale = self.config_stale(changed)?;
+        stale.extend(self.workspace_stale(changed, graph_version)?);
         stale.extend(self.import_stale(changed, graph_version)?);
         for path in changed {
             stale.remove(path);
+        }
+        Ok(stale)
+    }
+
+    /// Files whose bare imports a workspace change can re-map: every JS/TS
+    /// file when a manifest or workspace declaration changed, and the
+    /// importers of a workspace package that gained or lost a source file.
+    fn workspace_stale(&self, changed: &[String], graph_version: i64) -> Result<HashSet<String>> {
+        let is_declaration = |p: &String| {
+            matches!(
+                Path::new(p).file_name().and_then(|n| n.to_str()),
+                Some("package.json" | "lerna.json" | "pnpm-workspace.yaml")
+            )
+        };
+        if changed.iter().any(is_declaration) {
+            return Ok(self.js_ts_file_paths()?.into_iter().collect());
+        }
+        let candidates: Vec<&String> = changed
+            .iter()
+            .filter(|p| javascript::is_js_ts_path(p))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(HashSet::new());
+        }
+        // Only an added or deleted file moves what a package name resolves to.
+        let known: HashSet<String> = self.js_ts_file_paths()?.into_iter().collect();
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for path in candidates {
+            let exists = self.repo_root.join(path).is_file();
+            if exists != known.contains(path.as_str()) {
+                names.extend(javascript::owning_workspace_packages(self.repo_root, path));
+            }
+        }
+        let mut stale = HashSet::new();
+        if names.is_empty() {
+            return Ok(stale);
+        }
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN files f ON f.id = s.file_id
+             WHERE e.graph_version = ?1 AND e.kind = 'IMPORTS'
+               AND (e.target_qualname = ?2 OR e.target_qualname LIKE ?2 || '/%')
+             UNION
+             SELECT f.path FROM unresolved_references u
+             JOIN files f ON f.id = u.file_id
+             WHERE u.graph_version = ?1 AND u.edge_kind = 'IMPORTS'
+               AND (u.reference_name = ?2 OR u.reference_name LIKE ?2 || '/%')",
+        )?;
+        for name in &names {
+            let importers = stmt
+                .query_map(rusqlite::params![graph_version, name], |r| {
+                    r.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            stale.extend(
+                importers
+                    .into_iter()
+                    .filter(|p| javascript::is_js_ts_path(p)),
+            );
         }
         Ok(stale)
     }
@@ -69,15 +131,6 @@ impl JsStale<'_> {
             return Ok(stale);
         }
         let files = self.js_ts_file_paths()?;
-        // A changed package manifest can add, drop or move a workspace
-        // package, which re-maps bare imports anywhere in the repository.
-        if changed_json.iter().any(|p| {
-            Path::new(p)
-                .file_name()
-                .is_some_and(|n| n == "package.json")
-        }) {
-            stale.extend(files.iter().cloned());
-        }
         // A changed config itself (also when deleted, so no longer an
         // owner) re-maps every import under its directory.
         for cfg in changed_json
@@ -211,6 +264,8 @@ impl JsStale<'_> {
         };
         for dir in &dirs {
             push_file(&dir.join("package.json").to_string_lossy());
+            push_file(&dir.join("lerna.json").to_string_lossy());
+            push_file(&dir.join("pnpm-workspace.yaml").to_string_lossy());
             for name in ["tsconfig.json", "jsconfig.json"] {
                 push_file(&dir.join(name).to_string_lossy());
             }
