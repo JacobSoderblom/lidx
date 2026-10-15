@@ -86,11 +86,11 @@ fn class_callers_include_new_sites_bound_to_the_constructor() {
 const WITH_TESTS: &[(&str, &str)] = &[
     (
         "src/errors.ts",
-        "export class PermanentError extends Error {\n  constructor(message: string) {\n    super(message);\n  }\n}\nexport class Bare {\n  run() {}\n}\n",
+        "export class FatalError extends Error {\n  constructor(message: string) {\n    super(message);\n  }\n}\nexport class Bare {\n  run() {}\n}\n",
     ),
     (
         "src/errors.test.ts",
-        "import { PermanentError, Bare } from './errors';\nimport { it } from 'vitest';\nit('builds the error', () => {\n  new PermanentError('x');\n});\nit('builds bare', () => {\n  new Bare();\n});\n",
+        "import { FatalError, Bare } from './errors';\nimport { it } from 'vitest';\nit('builds the error', () => {\n  new FatalError('x');\n});\nit('builds bare', () => {\n  new Bare();\n});\n",
     ),
 ];
 
@@ -115,7 +115,7 @@ fn names_of(v: &serde_json::Value) -> Vec<String> {
 #[test]
 fn class_tests_count_new_sites_bound_to_the_constructor() {
     let (_tmp, mut indexer) = indexed_with_tests();
-    for class in ["src/errors.PermanentError", "src/errors.Bare"] {
+    for class in ["src/errors.FatalError", "src/errors.Bare"] {
         let result = rpc::handle_method(
             &mut indexer,
             "explain_symbol",
@@ -133,7 +133,7 @@ fn impact_test_layer_reaches_tests_that_construct_the_class() {
     let result = rpc::handle_method(
         &mut indexer,
         "analyze_impact",
-        serde_json::json!({"qualname": "src/errors.PermanentError", "direction": "upstream"}),
+        serde_json::json!({"qualname": "src/errors.FatalError", "direction": "upstream"}),
     )
     .unwrap();
     let tests: Vec<&serde_json::Value> = result["affected"]

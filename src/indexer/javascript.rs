@@ -965,6 +965,7 @@ thread_local! {
 /// end of every sync/reindex so no stale barrel survives a file edit.
 pub fn clear_export_cache() {
     EXPORT_CACHE.with(|c| c.borrow_mut().clear());
+    crate::indexer::js_workspace::clear_cache();
 }
 
 /// Whether `rel_path` is a JS/TS source file (by extension).
@@ -1607,13 +1608,28 @@ fn resolve_import_target(
     is_relative: bool,
 ) -> Option<(String, bool)> {
     if !is_relative {
-        return resolve_tsconfig_alias(repo_root, file_rel_path, target);
+        return resolve_tsconfig_alias(repo_root, file_rel_path, target)
+            .or_else(|| resolve_workspace_package(repo_root, target));
     }
     let rel = relative_import_target(file_rel_path, target)?;
     match probe_module_candidates(repo_root, &rel) {
         Some(found) => Some((found, true)),
         None => Some((util::normalize_path(&rel), false)),
     }
+}
+
+/// A bare specifier naming a workspace package of the repository
+/// (`@scope/pkg/sub`, see `js_workspace`), resolved to a real source file.
+fn resolve_workspace_package(repo_root: &Path, target: &str) -> Option<(String, bool)> {
+    crate::indexer::js_workspace::module_stems(repo_root, target)
+        .iter()
+        .find_map(|stem| probe_module_candidates(repo_root, stem))
+        .map(|found| (found, true))
+}
+
+/// The parts of a `package.json` that decide which imports resolve to it.
+pub fn workspace_manifest_summary(repo_root: &Path, rel: &Path) -> Option<String> {
+    crate::indexer::js_workspace::manifest_summary(&repo_root.join(rel))
 }
 
 /// Checks whether `rel` (extension-less or not, relative to `repo_root`)

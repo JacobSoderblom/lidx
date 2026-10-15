@@ -69,6 +69,15 @@ impl JsStale<'_> {
             return Ok(stale);
         }
         let files = self.js_ts_file_paths()?;
+        // A changed package manifest can add, drop or move a workspace
+        // package, which re-maps bare imports anywhere in the repository.
+        if changed_json.iter().any(|p| {
+            Path::new(p)
+                .file_name()
+                .is_some_and(|n| n == "package.json")
+        }) {
+            stale.extend(files.iter().cloned());
+        }
         // A changed config itself (also when deleted, so no longer an
         // owner) re-maps every import under its directory.
         for cfg in changed_json
@@ -186,12 +195,22 @@ impl JsStale<'_> {
         let mut push_file = |rel: &str| {
             data.extend_from_slice(rel.as_bytes());
             data.push(0);
-            if let Ok(bytes) = std::fs::read(self.repo_root.join(rel)) {
+            // Only the fields workspace-package resolution reads of a
+            // manifest, so an edit to dependencies or scripts does not
+            // re-extract every file.
+            let bytes = if rel.ends_with("package.json") {
+                javascript::workspace_manifest_summary(self.repo_root, Path::new(rel))
+                    .map(String::into_bytes)
+            } else {
+                std::fs::read(self.repo_root.join(rel)).ok()
+            };
+            if let Some(bytes) = bytes {
                 data.extend_from_slice(&bytes);
             }
             data.push(0);
         };
         for dir in &dirs {
+            push_file(&dir.join("package.json").to_string_lossy());
             for name in ["tsconfig.json", "jsconfig.json"] {
                 push_file(&dir.join(name).to_string_lossy());
             }

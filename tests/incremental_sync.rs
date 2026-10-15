@@ -3010,3 +3010,47 @@ fn incremental_add_same_named_function_unbinds_a_bare_name_guess() {
         common::index_files(&[("a.py", a_py), ("caller.py", caller_py), ("b.py", b_py)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+const WS_CALLER: &str =
+    "import { foo } from '@acme/lib';\nexport function go() {\n  return foo();\n}\n";
+const WS_SRC: (&str, &str) = ("pkgs/lib/src/index.ts", "export function foo() {}\n");
+const WS_MANIFEST: (&str, &str) = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+
+#[test]
+fn incremental_package_manifest_added_reextracts_workspace_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-ws-added",
+        &[WS_SRC, ("use.ts", WS_CALLER)],
+        |root| common::write_files(root, &[WS_MANIFEST]),
+        &["pkgs/lib/package.json"],
+        &[WS_MANIFEST, WS_SRC, ("use.ts", WS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src.foo"));
+}
+
+#[test]
+fn incremental_package_manifest_deleted_reextracts_workspace_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-ws-deleted",
+        &[WS_MANIFEST, WS_SRC, ("use.ts", WS_CALLER)],
+        |root| std::fs::remove_file(root.join("pkgs/lib/package.json")).unwrap(),
+        &["pkgs/lib/package.json"],
+        &[WS_SRC, ("use.ts", WS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_workspace_importer_after_manifest_edit() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-ws-reindex",
+        &[WS_MANIFEST, WS_SRC, ("use.ts", WS_CALLER)],
+    );
+    assert_eq!(target_of(&indexer).as_deref(), Some("pkgs/lib/src.foo"));
+    common::write_files(
+        &root,
+        &[("pkgs/lib/package.json", "{\"name\":\"@acme/other\"}")],
+    );
+    indexer.reindex().unwrap();
+    assert_ne!(target_of(&indexer).as_deref(), Some("pkgs/lib/src.foo"));
+}

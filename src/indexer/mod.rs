@@ -65,6 +65,7 @@ mod go_types;
 pub mod http;
 pub mod javascript;
 mod js_stale;
+mod js_workspace;
 pub mod markdown;
 pub mod postgres;
 pub mod proto;
