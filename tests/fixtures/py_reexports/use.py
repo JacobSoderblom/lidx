@@ -28,3 +28,18 @@ def through_the_package():
     pa.table(1)
     pe.table(1)
     pf.table(1)
+
+
+from pk import table as tk
+from pl import make as tmake
+from pl import table as tl
+from pm import _hidden as th
+from pm import shown as ts
+
+
+def scoped_and_star_rules():
+    tk(1)
+    tmake(1)
+    tl(1)
+    th(1)
+    ts(1)

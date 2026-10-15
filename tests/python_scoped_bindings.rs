@@ -308,4 +308,33 @@ mod reexports {
                 .any(|(s, t)| s == "use.through_the_package" && t == "pa.other.table")
         );
     }
+
+    #[test]
+    fn an_import_inside_a_function_is_no_package_binding() {
+        let calls = run_calls();
+        assert!(
+            calls
+                .iter()
+                .all(|(s, t)| !(s == "use.scoped_and_star_rules" && t.starts_with("pk.")))
+        );
+    }
+
+    #[test]
+    fn a_star_import_follows_the_all_of_its_module() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pl.other.make"));
+        assert!(!has_target(&calls, "pl.other.table"));
+        assert!(!has_target(&calls, "pl.table.table"));
+    }
+
+    #[test]
+    fn a_star_import_without_all_skips_underscore_names() {
+        let calls = run_calls();
+        assert!(has_target(&calls, "pm.other.shown"));
+        assert!(
+            calls
+                .iter()
+                .all(|(s, t)| !(s == "use.scoped_and_star_rules" && t.contains("_hidden")))
+        );
+    }
 }

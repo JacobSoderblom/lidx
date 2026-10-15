@@ -2945,6 +2945,35 @@ impl<'c> Resolver<'c> {
         Ok(found)
     }
 
+    /// Whether `from <module> import *` brings in `name`: the names the
+    /// module's `__all__` lists when it has one, else every name that does
+    /// not start with an underscore.
+    fn python_star_exports(&mut self, module: &str, name: &str) -> Result<bool> {
+        let gv = self.graph_version;
+        let has_all: bool = self
+            .conn
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.qualname = ?1 AND s.graph_version = ?2 AND f.language = 'python')",
+            )?
+            .query_row(params![format!("{module}.__all__"), gv], |row| row.get(0))?;
+        if !has_all {
+            return Ok(!name.starts_with('_'));
+        }
+        Ok(self
+            .conn
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM unresolved_references u
+                 JOIN symbols m ON m.id = u.source_symbol_id
+                 WHERE m.qualname = ?1 AND m.kind = 'module' AND m.graph_version = ?2
+                   AND u.edge_kind = ?3 AND u.reference_name = ?4 AND u.graph_version = ?2)",
+            )?
+            .query_row(
+                params![module, gv, crate::indexer::python::MODULE_EXPORT_KIND, name],
+                |row| row.get(0),
+            )?)
+    }
+
     /// The one function or class with this qualname (a name repeated by
     /// copies of a package collapses the way an exact lookup does).
     fn python_item(&mut self, qualname: &str) -> Result<Option<i64>> {
@@ -2999,10 +3028,12 @@ impl<'c> Resolver<'c> {
         let mut imports: Vec<(String, Option<String>)> = Vec::new();
         for sql in [
             "SELECT e.target_qualname, json_extract(e.detail, '$.bound_name') FROM edges e
-             WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPORTS' AND e.graph_version = ?2",
+             WHERE e.source_symbol_id = ?1 AND e.kind = 'IMPORTS' AND e.graph_version = ?2
+               AND json_extract(e.detail, '$.scoped') IS NULL",
             "SELECT u.reference_name, json_extract(u.detail, '$.bound_name')
              FROM unresolved_references u
-             WHERE u.source_symbol_id = ?1 AND u.edge_kind = 'IMPORTS' AND u.graph_version = ?2",
+             WHERE u.source_symbol_id = ?1 AND u.edge_kind = 'IMPORTS' AND u.graph_version = ?2
+               AND json_extract(u.detail, '$.scoped') IS NULL",
         ] {
             let rows: Vec<(Option<String>, Option<String>)> = self
                 .conn
@@ -3032,7 +3063,9 @@ impl<'c> Resolver<'c> {
         if sources.is_empty() {
             for star in stars {
                 let module = python_absolute_import(package, star);
-                sources.push((module, name.to_string()));
+                if self.python_star_exports(&module, name)? {
+                    sources.push((module, name.to_string()));
+                }
             }
         }
         let mut found: Option<i64> = None;
@@ -5394,7 +5427,7 @@ fn external_stub_qualname(
 
 /// `target` of a Python IMPORTS edge written in the module whose package is
 /// `package`: a leading dot is that package, each further dot its parent.
-fn python_absolute_import(package: &str, target: &str) -> String {
+pub(crate) fn python_absolute_import(package: &str, target: &str) -> String {
     let dots = target.chars().take_while(|c| *c == '.').count();
     if dots == 0 {
         return target.to_string();

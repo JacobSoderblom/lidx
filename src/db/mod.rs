@@ -2149,6 +2149,35 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// `(package, import text)` of every import statement in a package
+    /// `__init__.py`, resolved or not: what the packages re-export.
+    pub fn python_init_imports(&self, graph_version: i64) -> Result<Vec<(String, String)>> {
+        let conn = self.read_conn()?;
+        let mut out = Vec::new();
+        for sql in [
+            "SELECT s.qualname, e.target_qualname FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN files f ON f.id = s.file_id
+             WHERE e.kind = 'IMPORTS' AND e.graph_version = ?1 AND s.kind = 'module'
+               AND f.language = 'python'
+               AND (f.path = '__init__.py' OR f.path LIKE '%/__init__.py')
+               AND e.target_qualname IS NOT NULL",
+            "SELECT s.qualname, u.reference_name FROM unresolved_references u
+             JOIN symbols s ON s.id = u.source_symbol_id
+             JOIN files f ON f.id = s.file_id
+             WHERE u.edge_kind = 'IMPORTS' AND u.graph_version = ?1 AND s.kind = 'module'
+               AND f.language = 'python'
+               AND (f.path = '__init__.py' OR f.path LIKE '%/__init__.py')",
+        ] {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(params![graph_version], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn python_module_names(&self, graph_version: i64) -> Result<Vec<(String, String)>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(

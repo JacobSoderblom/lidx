@@ -135,3 +135,66 @@ fn a_reindex_after_the_init_changed_matches_fresh_too() {
         && e.source_qualname == "use.run"
         && e.target_qualname.as_deref() == Some("pkg.other.table")));
 }
+
+/// Edit `edited` (one file of a star-import package) and check the sync
+/// against a fresh index; returns the target of `use.run`.
+fn sync_star_source(before: &str, after: &str) -> Option<String> {
+    const INIT: &str = "from .other import *\n";
+    const USE_STAR: &str = "from pl import table as t\n\n\ndef run():\n    return t(1)\n";
+    let make = |other: &'static str| -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("pl/__init__.py", INIT),
+            ("pl/other.py", other),
+            ("use.py", USE_STAR),
+        ]
+    };
+    let before: &'static str = Box::leak(before.to_string().into_boxed_str());
+    let after: &'static str = Box::leak(after.to_string().into_boxed_str());
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-py-star-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(&root, &make(before));
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+
+    common::write_files(&root, &[("pl/other.py", after)]);
+    indexer
+        .sync_rel_paths(&["pl/other.py".to_string()])
+        .unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&make(after));
+    common::assert_matches_fresh(&snapshot, &fresh);
+    snapshot
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.source_qualname == "use.run")
+        .and_then(|e| e.target_qualname.clone())
+}
+
+#[test]
+fn an_all_added_to_a_star_source_unbinds_the_call() {
+    let target = sync_star_source(
+        "def table(x): ...\n\n\ndef make(x): ...\n",
+        "__all__ = [\"make\"]\n\n\ndef table(x): ...\n\n\ndef make(x): ...\n",
+    );
+    assert_eq!(target, None);
+}
+
+#[test]
+fn a_name_added_to_a_star_source_binds_the_call() {
+    let target = sync_star_source(
+        "def make(x): ...\n",
+        "def make(x): ...\n\n\ndef table(x): ...\n",
+    );
+    assert_eq!(target.as_deref(), Some("pl.other.table"));
+}
+
+#[test]
+fn a_star_source_name_made_private_unbinds_the_call() {
+    let target = sync_star_source("def table(x): ...\n", "def _table(x): ...\n");
+    assert_eq!(target, None);
+}

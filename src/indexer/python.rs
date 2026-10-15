@@ -707,10 +707,24 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 // Issue #116: persist the name this import binds (`np`
                 // for `import numpy as np`) so `unused_imports` can look
                 // for it; the target text alone can't say.
-                let detail = bindings
+                // An import inside a function or class binds there, not in the
+                // module (`scoped`): a package `__init__` exports only the
+                // names its own top level binds.
+                let scoped = ctx.fn_depth > 0 || !ctx.class_stack.is_empty();
+                let bound = bindings
                     .iter()
                     .find(|(_, bound_target)| *bound_target == target)
-                    .map(|(bound, _)| serde_json::json!({ "bound_name": bound }).to_string());
+                    .map(|(bound, _)| bound.clone());
+                let detail = match (bound, scoped) {
+                    (Some(bound), true) => {
+                        Some(serde_json::json!({ "bound_name": bound, "scoped": true }).to_string())
+                    }
+                    (Some(bound), false) => {
+                        Some(serde_json::json!({ "bound_name": bound }).to_string())
+                    }
+                    (None, true) => Some(serde_json::json!({ "scoped": true }).to_string()),
+                    (None, false) => None,
+                };
                 output.edges.push(EdgeInput {
                     kind: "IMPORTS".to_string(),
                     source_qualname: Some(module.clone()),

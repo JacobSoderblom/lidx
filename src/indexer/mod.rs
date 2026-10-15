@@ -1261,21 +1261,53 @@ impl Indexer {
     /// removed or edited since they were extracted, so a hash skip would keep
     /// a stale qualname. Only files still on disk.
     /// The Python files whose calls were resolved through a package
-    /// `__init__` when `changed` holds one: what the package exports (a
-    /// definition, an import, a star import, a chain of them) decides where
+    /// `__init__` when `changed` holds one, or a module a package `__init__`
+    /// imports from: what the package exports (a definition, an import, a
+    /// star import and the `__all__` it reads, a chain of them) decides where
     /// a name imported from it points, so every file with a reference that
-    /// carries import candidates is extracted again. Empty when no
-    /// `__init__.py` changed.
+    /// carries import candidates is extracted again. Empty when neither
+    /// changed.
     fn stale_python_importers(
-        &self,
+        &mut self,
         changed: &[String],
         graph_version: i64,
     ) -> Result<HashSet<String>> {
-        let init_changed = changed
+        let python: Vec<&String> = changed.iter().filter(|p| p.ends_with(".py")).collect();
+        if python.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let init_changed = python
             .iter()
             .any(|p| p.rsplit('/').next() == Some("__init__.py"));
         if !init_changed {
-            return Ok(HashSet::new());
+            let imports = self.db.python_init_imports(graph_version)?;
+            if imports.is_empty() {
+                return Ok(HashSet::new());
+            }
+            let stored: HashMap<String, String> = self
+                .db
+                .python_module_names(graph_version)?
+                .into_iter()
+                .collect();
+            let mut modules: Vec<String> = Vec::new();
+            for path in &python {
+                modules.extend(stored.get(path.as_str()).cloned());
+                if let Some(extractor) = self.extractors.get_mut("python") {
+                    extractor.begin_run();
+                    modules.push(extractor.module_name_from_rel_path(path));
+                }
+            }
+            let feeds_an_init = imports.iter().any(|(package, text)| {
+                let absolute = crate::db::resolver::python_absolute_import(package, text);
+                modules.iter().any(|module| {
+                    absolute
+                        .strip_prefix(module.as_str())
+                        .is_some_and(|rest| rest.starts_with('.'))
+                })
+            });
+            if !feeds_an_init {
+                return Ok(HashSet::new());
+            }
         }
         Ok(self
             .db
