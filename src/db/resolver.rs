@@ -65,8 +65,8 @@ pub(crate) use resolver_go::{
 
 use super::Db;
 use super::graph_query::{
-    ACCESSOR_MODIFIER, DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, has_modifier,
-    has_modifier_sql,
+    ACCESSOR_MODIFIER, DECL_MODIFIER, GLOBAL_MODIFIER, LOCAL_MODIFIER, TEST_ENTRY_MODIFIER,
+    has_modifier, has_modifier_sql,
 };
 use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
@@ -600,6 +600,10 @@ pub(crate) struct LanguageProfile {
     /// Declarations the toolchain or runtime calls by convention (test
     /// entry points, `init`): never dead. `None`: no such convention here.
     pub implicit_root: Option<fn(&ImplicitRootFacts<'_>) -> bool>,
+    /// Declarations a test framework runs or collects by convention (pytest
+    /// `test_*`, xUnit `[Fact]`): roots of `dead_symbols` only while
+    /// `tests_are_roots` is on. `None`: no such convention is modelled here.
+    pub test_root: Option<fn(&TestRootFacts<'_>) -> bool>,
 }
 
 /// See `LanguageProfile::public_api`.
@@ -628,6 +632,30 @@ pub(crate) struct ImplicitRootFacts<'a> {
     pub path: &'a str,
     pub signature: &'a str,
     pub visibility: Option<&'a str>,
+}
+
+/// What `LanguageProfile::test_root` sees of a declaration and its container.
+pub(crate) struct TestRootFacts<'a> {
+    pub kind: &'a str,
+    pub name: &'a str,
+    pub path: &'a str,
+    /// The declaration's own modifier list (`symbols.visibility`).
+    pub visibility: Option<&'a str>,
+    /// Name and modifier list of the declaration that contains it, if any.
+    pub parent_name: Option<&'a str>,
+    pub parent_visibility: Option<&'a str>,
+}
+
+impl TestRootFacts<'_> {
+    /// The declaration itself carries the `test_entry` modifier.
+    pub fn is_test_entry(&self) -> bool {
+        has_modifier(self.visibility, TEST_ENTRY_MODIFIER)
+    }
+
+    /// Its container carries the `test_entry` modifier.
+    pub fn parent_is_test_entry(&self) -> bool {
+        has_modifier(self.parent_visibility, TEST_ENTRY_MODIFIER)
+    }
 }
 
 /// See `LanguageProfile::same_file_twins`.
@@ -787,6 +815,7 @@ impl LanguageProfile {
         call_refused_kinds: &[],
         public_api: PublicApiRule::None,
         implicit_root: None,
+        test_root: None,
     };
 }
 

@@ -899,6 +899,12 @@ pub struct ExtractedFile {
     /// Go `Example*` functions whose body ends in an `// Output:` comment:
     /// the only examples `go test` runs. Recorded as `example_output`.
     pub example_output_qualnames: Vec<String>,
+    /// Qualnames of declarations a test framework runs or collects by
+    /// convention (Python `@pytest.fixture` functions and `unittest.TestCase`
+    /// subclasses; C# methods with a test attribute and the classes that hold
+    /// them). Recorded as the `test_entry` modifier, which `dead_symbols`
+    /// treats as a root while `tests_are_roots` is on.
+    pub test_entry_qualnames: Vec<String>,
     /// Qualnames of JS/TS symbols visible as globals to every other file: a
     /// top-level declaration of a script file (no import/export, `.d.ts`
     /// ambient declarations included) and a member of `declare global { }`.
@@ -928,6 +934,8 @@ pub struct SymbolModifiers<'a> {
     pub public: &'a [String],
     /// Go examples with an `// Output:` comment.
     pub example_output: &'a [String],
+    /// Declarations a test framework runs by convention.
+    pub test_entry: &'a [String],
     /// Qualnames of global declarations.
     pub globals: &'a [String],
 }
@@ -946,6 +954,7 @@ impl ExtractedFile {
             file_wide: &self.file_modifiers,
             public: &self.public_qualnames,
             example_output: &self.example_output_qualnames,
+            test_entry: &self.test_entry_qualnames,
             globals: &self.global_qualnames,
         }
     }

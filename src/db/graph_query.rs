@@ -197,6 +197,12 @@ pub(crate) const DECL_MODIFIER: &str = "decl";
 /// bound only to an accessor; `dead_symbols` judges an accessor by it.
 pub(crate) const ACCESSOR_MODIFIER: &str = "accessor";
 
+/// The `symbols.visibility` modifier of a declaration a test framework runs
+/// or collects by convention (a pytest fixture, a `TestCase` subclass, a C#
+/// method with a test attribute and the class that holds it): a root of
+/// `dead_symbols` while `tests_are_roots` is on.
+pub(crate) const TEST_ENTRY_MODIFIER: &str = "test_entry";
+
 /// The `symbols.visibility` modifier of a JS/TS declaration every file sees
 /// as a global (a script file's top level, `declare global { }`).
 pub(crate) const GLOBAL_MODIFIER: &str = "global";

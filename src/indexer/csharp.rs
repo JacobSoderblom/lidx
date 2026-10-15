@@ -40,8 +40,184 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     deferred_receiver: Some(resolve_deferred),
     deferred_rpc: Some(deferred_rpc_calls),
     untyped_receiver_is_external: false,
+    test_root: Some(csharp_test_root),
     ..LanguageProfile::DEFAULT
 };
+
+/// `LanguageProfile::test_root` for C#: a method with a test attribute and a
+/// class that holds one carry the `test_entry` modifier from the extractor;
+/// the test runner also constructs the class and disposes it, so its
+/// constructors and `IDisposable` / `IAsyncLifetime` members run too.
+fn csharp_test_root(f: &crate::db::resolver::TestRootFacts<'_>) -> bool {
+    if f.is_test_entry() {
+        return true;
+    }
+    f.kind == "method"
+        && f.parent_is_test_entry()
+        && matches!(
+            f.name,
+            ".ctor" | "Dispose" | "DisposeAsync" | "InitializeAsync" | "GetEnumerator"
+        )
+}
+
+/// Attributes (without the `Attribute` suffix) with which xUnit, NUnit and
+/// MSTest mark a method the runner executes: tests, data-driven tests and the
+/// setup / teardown hooks around them.
+const TEST_METHOD_ATTRIBUTES: &[&str] = &[
+    "Fact",
+    "Theory",
+    "SkippableFact",
+    "SkippableTheory",
+    "Test",
+    "TestCase",
+    "TestCaseSource",
+    "SetUp",
+    "TearDown",
+    "OneTimeSetUp",
+    "OneTimeTearDown",
+    "TestFixtureSetUp",
+    "TestFixtureTearDown",
+    "TestMethod",
+    "DataTestMethod",
+    "TestInitialize",
+    "TestCleanup",
+    "ClassInitialize",
+    "ClassCleanup",
+    "AssemblyInitialize",
+    "AssemblyCleanup",
+];
+
+/// Attributes that mark a class as a test fixture whatever it contains.
+const TEST_CLASS_ATTRIBUTES: &[&str] = &[
+    "TestFixture",
+    "TestClass",
+    "SetUpFixture",
+    "CollectionDefinition",
+];
+
+/// `ty` as a qualname: a type written in the declaring namespace.
+fn type_qualname_in(ctx: &Context, ty: &str) -> String {
+    let ty = strip_type_args(ty);
+    let namespace = base_qualname(ctx);
+    if namespace.is_empty() {
+        ty
+    } else {
+        format!("{namespace}.{ty}")
+    }
+}
+
+/// The `T` of a `typeof(T)` expression.
+fn typeof_inner(text: &str) -> Option<String> {
+    let inner = text.trim().strip_prefix("typeof(")?.strip_suffix(')')?;
+    Some(inner.trim().to_string())
+}
+
+/// Data attributes whose argument names the member (or type) the runner reads:
+/// xUnit `MemberData` / `ClassData`, NUnit `TestCaseSource` / `ValueSource`
+/// (also on parameters) and MSTest `DynamicData`.
+const TEST_DATA_ATTRIBUTES: &[&str] = &[
+    "MemberData",
+    "ClassData",
+    "TestCaseSource",
+    "ValueSource",
+    "DynamicData",
+];
+
+/// Qualnames of what a test method's (or its parameters') data attributes
+/// name, which the runner reads: `nameof(X)` or `"X"` for a member of this
+/// type, of the type in `typeof(T)` (`MemberType = typeof(T)`, a leading
+/// `typeof(T), "X"`, a trailing declaring type) or of `nameof(T.X)`; a lone
+/// `typeof(T)` (`ClassData`, `TestCaseSource`) names the class itself.
+fn test_data_sources(node: Node<'_>, ctx: &Context, source: &str) -> Vec<String> {
+    let mut attrs = attributes_for_node(node, source);
+    if let Some(params) = node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            attrs.extend(attributes_for_node(param, source));
+        }
+    }
+    let mut out = Vec::new();
+    for attr in attrs {
+        if !TEST_DATA_ATTRIBUTES.contains(&normalize_attribute_name(&attr.name).as_str()) {
+            continue;
+        }
+        let mut member: Option<String> = None;
+        let mut nameof_owner: Option<String> = None;
+        let mut owner: Option<String> = None;
+        for arg in &attr.args {
+            let text = node_text(*arg, source);
+            let text = text.trim();
+            let value = text.split_once('=').map_or(text, |(_, rhs)| rhs.trim());
+            if let Some(ty) = typeof_inner(value) {
+                owner.get_or_insert(ty);
+            } else if member.is_none() {
+                if let Some(inner) = text
+                    .strip_prefix("nameof(")
+                    .and_then(|t| t.strip_suffix(')'))
+                {
+                    let (prefix, name) = inner.rsplit_once('.').unwrap_or(("", inner));
+                    if !prefix.is_empty() {
+                        nameof_owner = Some(prefix.trim().to_string());
+                    }
+                    member = Some(name.trim().to_string());
+                } else if let Some(lit) = extract_string_literal(*arg, source) {
+                    member = Some(lit);
+                }
+            }
+        }
+        let owner_type = owner.or(nameof_owner);
+        match (member, owner_type) {
+            (Some(m), Some(ty)) => out.push(format!("{}.{m}", type_qualname_in(ctx, &ty))),
+            (Some(m), None) => out.push(format!("{}.{m}", container_qualname(ctx))),
+            (None, Some(ty)) => out.push(type_qualname_in(ctx, &ty)),
+            (None, None) => {}
+        }
+    }
+    out
+}
+
+/// The types an xUnit test or collection class takes as fixtures:
+/// `IClassFixture<T>` / `ICollectionFixture<T>` in its base list.
+fn fixture_types(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for list in node.named_children(&mut cursor) {
+        if list.kind() != "base_list" {
+            continue;
+        }
+        for base in base_list_types(list, source) {
+            let base = base.rsplit('.').next().unwrap_or(&base).to_string();
+            for iface in ["IClassFixture<", "ICollectionFixture<"] {
+                if let Some(inner) = base.strip_prefix(iface).and_then(|t| t.strip_suffix('>')) {
+                    out.push(inner.trim().to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn has_attribute_in(node: Node<'_>, source: &str, names: &[&str]) -> bool {
+    attributes_for_node(node, source)
+        .iter()
+        .any(|a| names.contains(&normalize_attribute_name(&a.name).as_str()))
+}
+
+/// Whether a type declaration is a test class: a fixture attribute on it, or a
+/// test-attributed method among its direct members.
+fn is_test_type(node: Node<'_>, source: &str) -> bool {
+    if has_attribute_in(node, source, TEST_CLASS_ATTRIBUTES) {
+        return true;
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    body.named_children(&mut cursor).any(|member| {
+        member.kind() == "method_declaration"
+            && has_attribute_in(member, source, TEST_METHOD_ATTRIBUTES)
+    })
+}
 
 #[derive(Clone)]
 struct Context {
@@ -944,6 +1120,14 @@ fn handle_type(
         ..Default::default()
     });
 
+    if matches!(type_kind, TypeKind::Class | TypeKind::Record) && is_test_type(node, source) {
+        output.test_entry_qualnames.push(qualname.clone());
+    }
+    if matches!(type_kind, TypeKind::Class | TypeKind::Record) {
+        for ty in fixture_types(node, source) {
+            output.test_entry_qualnames.push(type_qualname_in(ctx, &ty));
+        }
+    }
     if type_kind != TypeKind::Enum {
         handle_base_list(node, &qualname, source, output, type_kind, ctx);
     }
@@ -1067,6 +1251,12 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if has_modifier(node, source, "override") {
         output.override_symbols.push((qualname.clone(), start_line));
     }
+    if has_attribute_in(node, source, TEST_METHOD_ATTRIBUTES) {
+        output.test_entry_qualnames.push(qualname.clone());
+    }
+    output
+        .test_entry_qualnames
+        .extend(test_data_sources(node, ctx, source));
     let first_edge = output.edges.len();
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),

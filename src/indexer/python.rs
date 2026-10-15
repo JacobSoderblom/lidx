@@ -35,8 +35,95 @@ use tree_sitter::{Node, Parser};
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_miss: ImportMissPolicy::PythonRepoHeuristic,
     deferred_receiver: Some(resolve_deferred),
+    test_root: Some(python_test_root),
     ..LanguageProfile::DEFAULT
 };
+
+/// `LanguageProfile::test_root` for Python. pytest collects `test*`
+/// functions of a test file (or `conftest.py`) and the `test*` methods of its
+/// `Test*` classes, calls `conftest.py` hooks (`pytest_*`) and the xunit-style
+/// `setup_*` / `teardown_*` functions, and runs fixtures; `unittest` runs the
+/// `test*` and `setUp` / `tearDown` family of a `TestCase` subclass. Fixtures
+/// and `TestCase` subclasses carry the `test_entry` modifier from the
+/// extractor.
+fn python_test_root(f: &crate::db::resolver::TestRootFacts<'_>) -> bool {
+    if f.is_test_entry() {
+        return true;
+    }
+    let file = f.path.rsplit('/').next().unwrap_or(f.path);
+    let conftest = file == "conftest.py";
+    // pytest collects `test_*.py` / `*_test.py` (and runs `conftest.py`), not
+    // every module under a tests directory.
+    let in_test_file = conftest
+        || (file.ends_with(".py") && (file.starts_with("test_") || file.ends_with("_test.py")));
+    match f.kind {
+        "class" => in_test_file && f.name.starts_with("Test"),
+        "function" => {
+            in_test_file
+                && (f.name.starts_with("test")
+                    || (conftest && f.name.starts_with("pytest_"))
+                    || matches!(
+                        f.name,
+                        "setup_module"
+                            | "teardown_module"
+                            | "setup_function"
+                            | "teardown_function"
+                            | "setUpModule"
+                            | "tearDownModule"
+                    ))
+        }
+        "method" => {
+            const UNITTEST: &[&str] = &[
+                "setUp",
+                "tearDown",
+                "setUpClass",
+                "tearDownClass",
+                "asyncSetUp",
+                "asyncTearDown",
+                "setUpTestData",
+            ];
+            const XUNIT_STYLE: &[&str] = &[
+                "setup_method",
+                "teardown_method",
+                "setup_class",
+                "teardown_class",
+                "setup_function",
+                "teardown_function",
+            ];
+            if f.parent_is_test_entry()
+                && (f.name.starts_with("test") || UNITTEST.contains(&f.name))
+            {
+                return true;
+            }
+            in_test_file
+                && f.parent_name.is_some_and(|p| p.starts_with("Test"))
+                && (f.name.starts_with("test") || XUNIT_STYLE.contains(&f.name))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a Python decorator expression (`@pytest.fixture(scope="module")`)
+/// registers a pytest fixture or plugin hook: the framework calls the function.
+fn is_pytest_entry_decorator(text: &str) -> bool {
+    let name = text.trim_start_matches('@').trim();
+    let name = name.split('(').next().unwrap_or(name).trim();
+    matches!(
+        name.rsplit('.').next().unwrap_or(name),
+        "fixture" | "yield_fixture" | "hookimpl" | "hookspec"
+    )
+}
+
+/// Whether a base-class expression names a `unittest`-family test case
+/// (`TestCase`, `unittest.TestCase`, `IsolatedAsyncioTestCase`, a framework's
+/// `APITestCase`).
+fn is_test_case_base(base: &str) -> bool {
+    let name = base.split('[').next().unwrap_or(base);
+    name.rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .ends_with("TestCase")
+}
 
 #[derive(Clone)]
 struct Context {
@@ -471,6 +558,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                             }
                             if is_pydantic_settings_base(&base) {
                                 is_settings_class = true;
+                            }
+                            if is_test_case_base(&base) {
+                                output.test_entry_qualnames.push(qualname.clone());
                             }
                             output.edges.push(EdgeInput {
                                 kind: "EXTENDS".to_string(),
@@ -1992,6 +2082,18 @@ fn handle_decorated_definition(
         }
     }
     if let Some(definition) = definition {
+        if definition.kind() != "class_definition"
+            && ctx.fn_depth == 0
+            && decorators
+                .iter()
+                .any(|d| is_pytest_entry_decorator(&node_text(*d, source)))
+            && let Some(name_node) = definition.child_by_field_name("name")
+        {
+            let name = node_text(name_node, source);
+            output
+                .test_entry_qualnames
+                .push(build_qualname(&ctx.module, &ctx.class_stack, &name));
+        }
         if let Some(handler) = handler_qualname(definition, ctx, source) {
             let edges = route_edges_from_decorators(&decorators, &handler, source);
             output.edges.extend(edges);
