@@ -52,7 +52,10 @@ fn python_test_root(f: &crate::db::resolver::TestRootFacts<'_>) -> bool {
     }
     let file = f.path.rsplit('/').next().unwrap_or(f.path);
     let conftest = file == "conftest.py";
-    let in_test_file = conftest || crate::indexer::test_detection::is_test_file(f.path);
+    // pytest collects `test_*.py` / `*_test.py` (and runs `conftest.py`), not
+    // every module under a tests directory.
+    let in_test_file = conftest
+        || (file.ends_with(".py") && (file.starts_with("test_") || file.ends_with("_test.py")));
     match f.kind {
         "class" => in_test_file && f.name.starts_with("Test"),
         "function" => {

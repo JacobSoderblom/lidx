@@ -51,6 +51,18 @@ const PYTHON: &[(&str, &str)] = &[
          class CaseBase(unittest.TestCase):\n    def setUp(self):\n        pass\n\n    def tearDown(self):\n        pass\n\n    def test_x(self):\n        pass\n\n    def _unused_helper(self):\n        pass\n",
     ),
     (
+        "tests/helpers.py",
+        "def test_helper_not_collected():\n    pass\n\n\nclass TestHelper:\n    def test_m(self):\n        pass\n",
+    ),
+    (
+        "tests/widgets_test.py",
+        "def test_suffix_file():\n    pass\n",
+    ),
+    (
+        "tests/support.py",
+        "import unittest\n\n\nclass SupportCase(unittest.TestCase):\n    def test_support(self):\n        pass\n",
+    ),
+    (
         "app/helpers_test_data.py",
         "class TestLooking:\n    def test_m(self):\n        pass\n",
     ),
@@ -69,6 +81,9 @@ fn python_test_entry_points_are_roots() {
         "tests.test_widgets.TestWidget.test_a",
         "tests.test_widgets.TestWidget.setup_method",
         "tests.conftest.pytest_configure",
+        "tests.widgets_test.test_suffix_file",
+        "tests.support.SupportCase",
+        "tests.support.SupportCase.test_support",
         "tests.test_cases.CaseBase",
         "tests.test_cases.CaseBase.setUp",
         "tests.test_cases.CaseBase.tearDown",
@@ -85,6 +100,9 @@ fn python_test_entry_points_are_roots() {
         "tests.test_widgets.Plain.test_not_collected",
         "tests.test_cases.CaseBase._unused_helper",
         "app.helpers_test_data.TestLooking.test_m",
+        "tests.helpers.test_helper_not_collected",
+        "tests.helpers.TestHelper",
+        "tests.helpers.TestHelper.test_m",
     ] {
         assert!(claimed(&default, dead), "{dead} not claimed: {default}");
     }
@@ -99,6 +117,8 @@ fn python_tests_are_judged_like_any_declaration_when_the_option_is_off() {
         "tests.test_widgets.client",
         "tests.test_widgets.TestWidget.test_a",
         "tests.test_cases.CaseBase.test_x",
+        "tests.widgets_test.test_suffix_file",
+        "tests.support.SupportCase.test_support",
     ] {
         assert!(claimed(&strict, name), "{name} not claimed: {strict}");
     }
@@ -153,6 +173,30 @@ const CSHARP: &[(&str, &str)] = &[
          public class RowSource : IEnumerable<object[]>\n{\n    public RowSource() { }\n    public IEnumerator<object[]> GetEnumerator() { yield break; }\n}\n",
     ),
     (
+        "tests/App.Tests/Sources.cs",
+        "using System.Collections.Generic;\nusing NUnit.Framework;\nusing Microsoft.VisualStudio.TestTools.UnitTesting;\nusing Xunit;\nnamespace App.Tests;\n\
+         [TestFixture]\npublic class SourceTests\n{\n\
+         \x20   static object[] Cases() { return null; }\n\
+         \x20   static object[] Named2() { return null; }\n\
+         \x20   static int[] Values() { return null; }\n\
+         \x20   static object[] UnusedCases() { return null; }\n\
+         \x20   [TestCaseSource(nameof(Cases))]\n    [TestCaseSource(\"Named2\")]\n    [TestCaseSource(typeof(Provider), \"Rows\")]\n    [TestCaseSource(typeof(CaseList))]\n\
+         \x20   public void Nunit([ValueSource(nameof(Values))] int v) { }\n}\n\
+         public class Provider\n{\n    public static object[] Rows() { return null; }\n    public static object[] UnusedRows() { return null; }\n}\n\
+         public class CaseList : IEnumerable<object[]>\n{\n    public CaseList() { }\n    public IEnumerator<object[]> GetEnumerator() { return null; }\n}\n\
+         [TestClass]\npublic class MsSourceTests\n{\n\
+         \x20   static IEnumerable<object[]> Dyn() { return null; }\n\
+         \x20   static IEnumerable<object[]> Dyn2() { return null; }\n\
+         \x20   static IEnumerable<object[]> UnusedDyn() { return null; }\n\
+         \x20   [DataTestMethod]\n    [DynamicData(nameof(Dyn))]\n    [DynamicData(nameof(Dyn2), DynamicDataSourceType.Method)]\n    [DynamicData(\"Ext\", typeof(Ext))]\n    public void Dynamic(int x) { }\n}\n\
+         public class Ext\n{\n    public static IEnumerable<object[]> Ext() { return null; }\n}\n\
+         public class DbFixture : IAsyncLifetime, System.IDisposable\n{\n    public DbFixture() { }\n    public Task InitializeAsync() { return Task.CompletedTask; }\n    public Task DisposeAsync() { return Task.CompletedTask; }\n    public void Dispose() { }\n}\n\
+         public class ColFixture\n{\n    public ColFixture() { }\n}\n\
+         public class NotAFixture\n{\n    public NotAFixture() { }\n}\n\
+         public class UsesFixture : IClassFixture<DbFixture>\n{\n    [Fact]\n    public void Uses() { }\n}\n\
+         [CollectionDefinition(\"col\")]\npublic class ColDef : ICollectionFixture<ColFixture>\n{\n    public ColDef() { }\n}\n",
+    ),
+    (
         "tests/App.Tests/Plain.cs",
         "namespace App.Tests;\npublic class PlainHelper\n{\n    public PlainHelper() { }\n    public void Forgotten() { }\n}\n",
     ),
@@ -173,6 +217,25 @@ fn csharp_test_entry_points_are_roots() {
         "App.Tests.DataTests.Rows",
         "App.Tests.DataTests.Named",
         "App.Tests.Shared.Other",
+        "App.Tests.SourceTests.Cases",
+        "App.Tests.SourceTests.Named2",
+        "App.Tests.SourceTests.Values",
+        "App.Tests.Provider.Rows",
+        "App.Tests.CaseList",
+        "App.Tests.CaseList..ctor",
+        "App.Tests.CaseList.GetEnumerator",
+        "App.Tests.MsSourceTests.Dyn",
+        "App.Tests.MsSourceTests.Dyn2",
+        "App.Tests.Ext.Ext",
+        "App.Tests.DbFixture",
+        "App.Tests.DbFixture..ctor",
+        "App.Tests.DbFixture.InitializeAsync",
+        "App.Tests.DbFixture.DisposeAsync",
+        "App.Tests.DbFixture.Dispose",
+        "App.Tests.ColFixture",
+        "App.Tests.ColFixture..ctor",
+        "App.Tests.ColDef",
+        "App.Tests.ColDef..ctor",
         "App.Tests.RowSource",
         "App.Tests.RowSource..ctor",
         "App.Tests.RowSource.GetEnumerator",
@@ -194,6 +257,10 @@ fn csharp_test_entry_points_are_roots() {
         "App.Lib.Orphan",
         "App.Tests.WidgetTests.UnusedHelper",
         "App.Tests.DataTests.NeverUsedRows",
+        "App.Tests.SourceTests.UnusedCases",
+        "App.Tests.Provider.UnusedRows",
+        "App.Tests.MsSourceTests.UnusedDyn",
+        "App.Tests.NotAFixture..ctor",
         "App.Tests.PlainHelper.Forgotten",
     ] {
         assert!(claimed(&default, dead), "{dead} not claimed: {default}");
@@ -207,6 +274,10 @@ fn csharp_tests_are_judged_like_any_declaration_when_the_option_is_off() {
     for name in [
         "App.Tests.SimpleTests..ctor",
         "App.Tests.SimpleTests.Simple",
+        "App.Tests.SourceTests.Cases",
+        "App.Tests.MsSourceTests.Dyn",
+        "App.Tests.DataTests.Rows",
+        "App.Tests.ColFixture..ctor",
         "App.Tests.NUnitTests.Runs",
         "App.Tests.MsTests.Checks",
     ] {
