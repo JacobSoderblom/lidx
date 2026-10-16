@@ -429,11 +429,9 @@ impl Indexer {
         let changed_rels = self.changed_batch_paths(&batch_rels)?;
         let stale_cs = self.stale_csharp_files(&changed_rels, graph_version, live_csharp)?;
         stale_files.extend(stale_cs);
-        stale_files.extend(
-            self.stale_python_importers(&changed_rels, graph_version)?
-                .into_iter()
-                .filter(|p| !batch_rels.contains(p)),
-        );
+        // A stale importer that is also in the batch stays in `stale_files`: its
+        // hash may be unchanged, and it must still be resolved again.
+        stale_files.extend(self.stale_python_importers(&changed_rels, graph_version)?);
         if batch_rels.iter().any(|p| py_layout::is_layout_marker(p)) {
             let stale_py = self.stale_python_files(graph_version)?;
             stale_files.extend(stale_py.into_iter().filter(|p| !batch_rels.contains(p)));
@@ -458,7 +456,12 @@ impl Indexer {
         }
         self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
-        all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
+        all_paths.extend(
+            stale_files
+                .iter()
+                .filter(|rel| !batch_rels.contains(rel))
+                .map(|rel| self.repo_root.join(rel)),
+        );
         let stale_callers = self.prescan_files(all_paths.iter().cloned(), graph_version)?;
         all_paths.extend(stale_callers.iter().map(|rel| self.repo_root.join(rel)));
         stale_files.extend(stale_callers);

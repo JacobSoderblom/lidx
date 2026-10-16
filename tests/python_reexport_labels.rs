@@ -194,3 +194,23 @@ fn a_re_exported_call_is_labelled_import_on_a_fresh_index() {
     let (_tmp, fresh) = common::index_files(&base());
     import(&fresh, "other.impl.fc");
 }
+
+#[test]
+fn an_unchanged_importer_in_the_same_batch_is_resolved_again() {
+    let before: Files = vec![
+        ("pzz/__init__.py", "from .sub import g\n"),
+        ("pzz/sub.py", "def g():\n    return 1\n"),
+        ("pzz/mod.py", "def f0():\n    return 2\n"),
+        (
+            "a_user.py",
+            "from pzz import g\n\n\ndef run():\n    return g()\n",
+        ),
+    ];
+    // The importer is listed in the batch but its content is unchanged.
+    let edits: Files = vec![
+        ("pzz/__init__.py", "from .mod import f0\n"),
+        ("a_user.py", before[3].1),
+    ];
+    check(&before, &edits, false);
+    check(&before, &edits, true);
+}
