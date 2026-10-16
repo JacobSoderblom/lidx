@@ -164,6 +164,7 @@ pub fn to_json(graph: &Graph, meta: &Meta) -> Value {
                 "scope_out": build::FLAG_SCOPE_OUT,
                 "edge_reversed": build::EDGE_REVERSED,
                 "edge_halo": build::EDGE_HALO,
+                "edge_derived": build::EDGE_DERIVED,
             },
         },
         "s": s.list,

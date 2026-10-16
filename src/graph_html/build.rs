@@ -17,7 +17,7 @@ use crate::indexer::test_detection::is_test_symbol;
 use crate::model::{Edge, Symbol, xref_is_traversable};
 use crate::search::{SearchScope, scope_allows};
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const FLAG_SEED: u32 = 1;
 pub const FLAG_HALO: u32 = 2;
@@ -31,6 +31,9 @@ pub const FLAG_SCOPE_OUT: u32 = 64;
 
 pub const EDGE_REVERSED: u32 = 1;
 pub const EDGE_HALO: u32 = 2;
+/// A folder -> folder bridge edge derived from a shared endpoint (one side
+/// publishes, calls, or sources a key the other side receives).
+pub const EDGE_DERIVED: u32 = 4;
 
 pub const GROUP_EXTERNAL: &str = "(external)";
 pub const GROUP_BRIDGES: &str = "(bridges)";
@@ -831,7 +834,8 @@ enum Leaf {
     File(String),
     Module(String),
     Endpoint(String),
-    /// External stubs, grouped by their package (first path segment).
+    /// External stubs: in a whole-repo view, one chip per consumer folder
+    /// (so no central hub forms); in a seeded view, one per package.
     External(String),
 }
 
@@ -869,6 +873,8 @@ struct LeafInfo {
     in_scope: bool,
     seed: bool,
     endpoint_kind: Option<String>,
+    /// External packages a consumer-folder chip stands for, with call counts.
+    ext_packages: BTreeMap<String, i64>,
 }
 
 /// Group edges into leaf -> leaf weighted edges, one per kind, keeping the
@@ -933,6 +939,38 @@ fn aggregate(
                 n.flags |= flags;
                 n
             }
+            Leaf::External(key) if !info.ext_packages.is_empty() => {
+                // A consumer folder's chip: it lives inside that folder.
+                let mut pkgs: Vec<(&String, &i64)> = info.ext_packages.iter().collect();
+                pkgs.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+                let listed: Vec<String> = pkgs
+                    .iter()
+                    .take(12)
+                    .map(|(p, n)| format!("{p} ×{n}"))
+                    .collect();
+                let more = pkgs.len().saturating_sub(12);
+                GNode {
+                    name: count(pkgs.len(), "external package", "external packages"),
+                    qual: format!("ext:{key}"),
+                    kind: "external".to_string(),
+                    lang: Some("external".to_string()),
+                    file: None,
+                    module: key.clone(),
+                    line: 0,
+                    flags: flags | FLAG_EXTERNAL,
+                    sig: Some(format!(
+                        "{}{}",
+                        listed.join(", "),
+                        if more > 0 {
+                            format!(", +{more} more")
+                        } else {
+                            String::new()
+                        }
+                    )),
+                    doc: None,
+                    size: info.symbols,
+                }
+            }
             Leaf::External(pkg) => GNode {
                 name: pkg.clone(),
                 qual: format!("ext:{pkg}"),
@@ -976,8 +1014,90 @@ fn aggregate(
             });
     }
     graph.edges = agg.into_values().collect();
+    let derived = derive_bridges(&graph);
+    graph.edges.extend(derived);
     propagate_scope(&mut graph);
     graph
+}
+
+/// Transport name of a bridge endpoint node kind.
+fn transport(endpoint_kind: &str) -> &'static str {
+    match endpoint_kind {
+        "message_bus" => "BUS",
+        "grpc" => "RPC",
+        "http" => "HTTP",
+        "config" => "CONFIG",
+        _ => "BRIDGE",
+    }
+}
+
+/// Folder -> folder bridge edges (`VIA_BUS`, `VIA_RPC`, `VIA_HTTP`,
+/// `VIA_CONFIG`): for every endpoint, each leaf that sends to it is joined
+/// to each leaf that receives from it, weighted by the number of endpoints
+/// (keys) the two share, with up to four key names as the sample. This is
+/// how a service map draws a cross-process call: between the owners, not
+/// through a central hub. The endpoint nodes stay in the data.
+fn derive_bridges(graph: &Graph) -> Vec<GEdge> {
+    let is_endpoint = |i: usize| graph.nodes[i].flags & FLAG_ENDPOINT != 0;
+    let mut ins: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut outs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for e in &graph.edges {
+        if is_endpoint(e.to) && !is_endpoint(e.from) {
+            ins.entry(e.to).or_default().push(e.from);
+        }
+        if is_endpoint(e.from) && !is_endpoint(e.to) {
+            outs.entry(e.from).or_default().push(e.to);
+        }
+    }
+    let mut joined: BTreeMap<(usize, usize, &'static str), Vec<usize>> = BTreeMap::new();
+    for (&p, senders) in &ins {
+        let Some(receivers) = outs.get(&p) else {
+            continue;
+        };
+        let t = transport(&graph.nodes[p].kind);
+        let mut pairs: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for &a in senders {
+            for &b in receivers {
+                if a != b {
+                    pairs.insert((a, b));
+                }
+            }
+        }
+        for (a, b) in pairs {
+            joined.entry((a, b, t)).or_default().push(p);
+        }
+    }
+    joined
+        .into_iter()
+        .map(|((from, to, t), mut keys)| {
+            keys.sort_by(|a, b| graph.nodes[*a].qual.cmp(&graph.nodes[*b].qual));
+            let names: Vec<&str> = keys
+                .iter()
+                .take(4)
+                .map(|&k| graph.nodes[k].qual.as_str())
+                .collect();
+            let more = keys.len().saturating_sub(4);
+            GEdge {
+                from,
+                to,
+                kind: format!("VIA_{t}"),
+                weight: keys.len() as u32,
+                flags: EDGE_DERIVED,
+                ev_line: 0,
+                ev: Some(format!(
+                    "{}{}",
+                    names.join(", "),
+                    if more > 0 {
+                        format!(" (+{more})")
+                    } else {
+                        String::new()
+                    }
+                )),
+                ev_file: None,
+                res: None,
+            }
+        })
+        .collect()
 }
 
 /// Aggregate a symbol graph into files (or modules).
@@ -1169,7 +1289,19 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
         }
         let to = match (tgt, tgt_lang) {
             (Some(_), Some(lang)) if lang == "external" => {
-                Leaf::External(external_package(tgt_qual.as_deref().unwrap_or("?")))
+                // One chip per consumer folder, not a repo-wide hub.
+                let consumer = match &from {
+                    Leaf::Module(m) => m.clone(),
+                    _ => ctx.module_of(&src),
+                };
+                let pkg = external_package(tgt_qual.as_deref().unwrap_or("?"));
+                *leaves
+                    .entry(Leaf::External(consumer.clone()))
+                    .or_default()
+                    .ext_packages
+                    .entry(pkg)
+                    .or_default() += 1;
+                Leaf::External(consumer)
             }
             (Some(path), _) => {
                 let leaf = leaf_for_file(&path);

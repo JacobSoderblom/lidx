@@ -817,3 +817,94 @@ fn seeds_over_the_cap_raise_it_and_say_so() {
         "{notes}"
     );
 }
+
+/// A bus publisher in one folder and its subscriber in another: the
+/// overview joins the two folders with one derived `VIA_BUS` edge naming the
+/// key, instead of routing both through a central endpoint hub.
+#[test]
+fn bridges_are_drawn_between_the_folders_that_own_them() {
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-bridges-",
+        &[
+            (
+                "sender/send.py",
+                "def send(msg):\n    _bus.publish(\"order-created\", msg)\n",
+            ),
+            (
+                "worker/handle.py",
+                "@router.subscribe('order-created')\ndef handle(msg):\n    pass\n",
+            ),
+        ],
+    );
+    let (_, doc) = graph(&root, &db, &["--level", "file"]);
+    let d = Doc::new(&doc);
+    let derived = doc["meta"]["flags"]["edge_derived"].as_u64().unwrap();
+    let via: Vec<(String, String, String, u64, u64, String)> = d
+        .edges
+        .iter()
+        .filter(|e| d.s(&e[2]).starts_with("VIA_"))
+        .map(|e| {
+            (
+                d.qual(e[0].as_u64().unwrap() as usize).to_string(),
+                d.qual(e[1].as_u64().unwrap() as usize).to_string(),
+                d.s(&e[2]).to_string(),
+                e[3].as_u64().unwrap(),
+                e[4].as_u64().unwrap() & derived,
+                d.s(&e[6]).to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        via,
+        vec![(
+            "sender/send.py".to_string(),
+            "worker/handle.py".to_string(),
+            "VIA_BUS".to_string(),
+            1,
+            derived,
+            "channel://ordercreated".to_string(),
+        )],
+        "{via:?}"
+    );
+    // The endpoint itself is still in the data, for the viewer to show on
+    // request; nothing joins a folder to itself.
+    let endpoint = doc["meta"]["flags"]["endpoint"].as_u64().unwrap();
+    assert_eq!(
+        (0..d.nodes.len())
+            .filter(|&i| d.flags(i) & endpoint != 0)
+            .count(),
+        1
+    );
+}
+
+/// Externals become one chip per consumer folder, listing its packages,
+/// rather than a repo-wide `(external)` hub.
+#[test]
+fn externals_are_chips_inside_their_consumer_folder() {
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-extchips-",
+        &[
+            (
+                "a/one.rs",
+                "pub fn one() -> Vec<u8> { let v = Vec::new(); std::mem::drop(1); v }\n",
+            ),
+            ("b/two.rs", "pub fn two() -> String { String::new() }\n"),
+        ],
+    );
+    let (_, doc) = graph(&root, &db, &["--level", "file"]);
+    let d = Doc::new(&doc);
+    let external = doc["meta"]["flags"]["external"].as_u64().unwrap();
+    let chips: BTreeSet<(String, String)> = (0..d.nodes.len())
+        .filter(|&i| d.flags(i) & external != 0)
+        .map(|i| (d.qual(i).to_string(), d.s(&d.nodes[i][5]).to_string()))
+        .collect();
+    assert!(!chips.is_empty());
+    for (qual, module) in &chips {
+        assert_eq!(
+            qual,
+            &format!("ext:{module}"),
+            "a chip lives in its consumer folder"
+        );
+        assert!(module == "a/" || module == "b/", "{module}");
+    }
+}
