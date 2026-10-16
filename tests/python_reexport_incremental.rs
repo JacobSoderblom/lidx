@@ -198,3 +198,187 @@ fn a_star_source_name_made_private_unbinds_the_call() {
     let target = sync_star_source("def table(x): ...\n", "def _table(x): ...\n");
     assert_eq!(target, None);
 }
+
+type Files = Vec<(&'static str, &'static str)>;
+
+/// Index `base`, rewrite `edits`, sync those paths, and check the edges
+/// against a fresh index of the edited tree. Returns how many files the sync
+/// extracted again and the target of each call in `use.run`.
+fn sync_edit(base: &Files, edits: &Files) -> (usize, Vec<String>) {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-py-surface-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(&root, base);
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+
+    common::write_files(&root, edits);
+    let paths: Vec<String> = edits.iter().map(|(p, _)| p.to_string()).collect();
+    let stats = indexer.sync_rel_paths(&paths).unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let mut after = base.clone();
+    for (path, content) in edits {
+        match after.iter_mut().find(|(p, _)| p == path) {
+            Some(entry) => entry.1 = content,
+            None => after.push((path, content)),
+        }
+    }
+    let (_fresh_tmp, fresh) = common::index_files(&after);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    let targets = snapshot
+        .iter()
+        .filter(|e| e.kind == "CALLS" && e.source_qualname == "use.run")
+        .filter_map(|e| e.target_qualname.clone())
+        .collect();
+    (stats.indexed, targets)
+}
+
+const NOISE: &str = "from json import dumps\n\n\ndef noisy():\n    return dumps(1)\n";
+const USE_TWO: &str =
+    "from pkg import table as t, extra as ex\n\n\ndef run():\n    t(1)\n    ex(2)\n";
+const EXTRA: &str = "def extra(x):\n    return 'extra'\n";
+
+fn one_level() -> Files {
+    vec![
+        ("pkg/__init__.py", "from .table import table\n"),
+        ("pkg/table.py", TABLE),
+        ("pkg/other.py", EXTRA),
+        ("use.py", USE_TWO),
+        ("noise.py", NOISE),
+    ]
+}
+
+#[test]
+fn a_body_only_edit_to_a_re_exported_module_extracts_nothing_else() {
+    let (indexed, targets) = sync_edit(
+        &one_level(),
+        &vec![("pkg/table.py", "def table(x):\n    return 'changed body'\n")],
+    );
+    assert_eq!(indexed, 1);
+    assert_eq!(targets, vec!["pkg.table.table".to_string()]);
+}
+
+#[test]
+fn a_leaf_module_edit_extracts_nothing_else() {
+    let (indexed, _) = sync_edit(&one_level(), &vec![("noise.py", "x = 1\n")]);
+    assert_eq!(indexed, 1);
+}
+
+#[test]
+fn a_def_added_to_a_re_exported_module_that_no_import_names_extracts_nothing_else() {
+    let (indexed, targets) = sync_edit(
+        &one_level(),
+        &vec![(
+            "pkg/table.py",
+            "def table(x):\n    return 'table'\n\n\ndef more(x): ...\n",
+        )],
+    );
+    // `more` is not a name the package imports, so no importer can change
+    assert_eq!(indexed, 1);
+    assert_eq!(targets, vec!["pkg.table.table".to_string()]);
+}
+
+#[test]
+fn a_re_exported_def_removed_unbinds_its_importers() {
+    let (_, targets) = sync_edit(&one_level(), &vec![("pkg/table.py", "x = 1\n")]);
+    assert!(targets.is_empty(), "{targets:?}");
+}
+
+#[test]
+fn a_re_exported_def_renamed_unbinds_its_importers() {
+    let (indexed, targets) = sync_edit(
+        &one_level(),
+        &vec![("pkg/table.py", "def table_two(x):\n    return 'table'\n")],
+    );
+    assert_eq!(indexed, 2);
+    assert!(targets.is_empty(), "{targets:?}");
+}
+
+#[test]
+fn a_name_added_to_an_init_import_binds_its_importers() {
+    let (indexed, targets) = sync_edit(
+        &one_level(),
+        &vec![(
+            "pkg/__init__.py",
+            "from .table import table\nfrom .other import extra\n",
+        )],
+    );
+    assert_eq!(indexed, 2);
+    assert!(
+        targets.contains(&"pkg.other.extra".to_string()),
+        "{targets:?}"
+    );
+}
+
+#[test]
+fn a_body_only_edit_to_an_init_extracts_nothing_else() {
+    let (indexed, _) = sync_edit(
+        &one_level(),
+        &vec![(
+            "pkg/__init__.py",
+            "from .table import table\n\n\ndef helper():\n    return 1\n",
+        )],
+    );
+    // a new def nothing imports is a surface change no importer depends on
+    assert_eq!(indexed, 1);
+    let base: Files = vec![
+        (
+            "pkg/__init__.py",
+            "from .table import table\n\n\ndef helper():\n    return 1\n",
+        ),
+        ("pkg/table.py", TABLE),
+        ("pkg/other.py", EXTRA),
+        ("use.py", USE_TWO),
+        ("noise.py", NOISE),
+    ];
+    let (indexed, _) = sync_edit(
+        &base,
+        &vec![(
+            "pkg/__init__.py",
+            "from .table import table\n\n\ndef helper():\n    return 2\n",
+        )],
+    );
+    assert_eq!(indexed, 1);
+}
+
+fn two_level() -> Files {
+    vec![
+        ("pkg/__init__.py", "from .sub import table\n"),
+        ("pkg/sub/__init__.py", "from .mod import table\n"),
+        ("pkg/sub/mod.py", TABLE),
+        ("pkg/sub/other.py", OTHER),
+        ("use.py", USE),
+        ("noise.py", NOISE),
+    ]
+}
+
+#[test]
+fn a_two_level_re_export_follows_a_change_in_the_innermost_module() {
+    let (indexed, targets) = sync_edit(
+        &two_level(),
+        &vec![("pkg/sub/mod.py", "def table_two(x): ...\n")],
+    );
+    assert_eq!(indexed, 2);
+    assert!(targets.is_empty(), "{targets:?}");
+    let (indexed, targets) = sync_edit(
+        &two_level(),
+        &vec![("pkg/sub/mod.py", "def table(x):\n    return 'body'\n")],
+    );
+    assert_eq!(indexed, 1);
+    assert_eq!(targets, vec!["pkg.sub.mod.table".to_string()]);
+}
+
+#[test]
+fn a_two_level_re_export_follows_a_change_in_the_inner_init() {
+    let (indexed, targets) = sync_edit(
+        &two_level(),
+        &vec![("pkg/sub/__init__.py", "from .other import table\n")],
+    );
+    assert_eq!(indexed, 2);
+    assert_eq!(targets, vec!["pkg.sub.other.table".to_string()]);
+}

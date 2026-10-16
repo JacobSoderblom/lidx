@@ -6676,6 +6676,17 @@ impl Db {
             return Ok(0);
         }
 
+        // A Python name imported from a package resolves through what the
+        // package `__init__` binds, whose import rows may be stored after the
+        // importer's references: retry those once a package `__init__` is new.
+        let python_init_added: bool = self.read_conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM symbols m JOIN files mf ON mf.id = m.file_id
+                 WHERE m.graph_version = ?1 AND m.id > ?2 AND m.kind = 'module'
+                   AND mf.language = 'python'
+                   AND (mf.path = '__init__.py' OR mf.path LIKE '%/__init__.py'))",
+            params![graph_version, watermark],
+            |row| row.get(0),
+        )?;
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut total_resolved = 0;
@@ -6744,7 +6755,7 @@ impl Db {
                             AND ur.import_candidates IS NOT NULL)
                         OR (f.language = 'rust' AND ur.edge_kind IN ('IMPLEMENTS', 'EXTENDS')
                             AND ur.import_candidates IS NOT NULL)
-                        OR (f.language = 'python' AND ur.edge_kind IN ('CALLS', 'REFERENCES')
+                        OR (?5 AND f.language = 'python' AND ur.edge_kind IN ('CALLS', 'REFERENCES')
                             AND ur.import_candidates IS NOT NULL)
                         OR (?3 AND ur.reason IN ('ambiguous', 'private'))
                         OR ur.id IN ({alias_ids}))"
@@ -6754,7 +6765,8 @@ impl Db {
                     graph_version,
                     watermark,
                     symbols_deleted_this_batch,
-                    inheritance_changed
+                    inheritance_changed,
+                    python_init_added
                 ],
                 |row| {
                     Ok(StoreRetryRow {

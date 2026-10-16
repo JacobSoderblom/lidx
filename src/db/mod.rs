@@ -134,6 +134,85 @@ impl std::fmt::Display for ReindexBusy {
 
 impl std::error::Error for ReindexBusy {}
 
+/// What a Python module offers the modules that import from it (see
+/// [`Db::python_export_surface`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PythonSurface {
+    pub defs: std::collections::BTreeSet<(String, String)>,
+    pub exports: std::collections::BTreeSet<String>,
+    pub imports: std::collections::BTreeSet<(String, Option<String>)>,
+}
+
+impl PythonSurface {
+    /// Every name the module offers: defined, imported (its bound name) or
+    /// listed in `__all__`.
+    pub fn names(&self) -> std::collections::BTreeSet<String> {
+        let mut names: std::collections::BTreeSet<String> =
+            self.defs.iter().map(|(name, _)| name.clone()).collect();
+        names.extend(self.exports.iter().cloned());
+        for (text, bound) in &self.imports {
+            match bound {
+                Some(bound) => {
+                    names.insert(bound.clone());
+                }
+                None => {
+                    names.insert("*".to_string());
+                    names.insert(text.clone());
+                }
+            }
+        }
+        names
+    }
+
+    /// The names whose meaning differs between the two surfaces: those on
+    /// one side only, a name whose kind changed, and every name when a star
+    /// import changed or `__all__` appeared or disappeared (`*`).
+    pub fn names_that_differ(&self, other: &PythonSurface) -> std::collections::BTreeSet<String> {
+        let mut names: std::collections::BTreeSet<String> = self
+            .defs
+            .symmetric_difference(&other.defs)
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.extend(self.exports.symmetric_difference(&other.exports).cloned());
+        for (text, bound) in self.imports.symmetric_difference(&other.imports) {
+            match bound {
+                Some(bound) => {
+                    names.insert(bound.clone());
+                }
+                None => {
+                    names.insert("*".to_string());
+                    names.insert(text.clone());
+                }
+            }
+        }
+        if self.exports.is_empty() != other.exports.is_empty() {
+            names.insert("*".to_string());
+            names.extend(self.names());
+            names.extend(other.names());
+        }
+        if names.contains("*") {
+            names.extend(self.names());
+            names.extend(other.names());
+        }
+        names
+    }
+
+    /// `(text, bound name)` of a module-level import row; `None` for an
+    /// import made inside a function or class.
+    pub fn import_of(text: &str, detail: Option<&str>) -> Option<(String, Option<String>)> {
+        let detail: Option<serde_json::Value> = detail.and_then(|d| serde_json::from_str(d).ok());
+        if detail.as_ref().and_then(|d| d.get("scoped")).is_some() {
+            return None;
+        }
+        let bound = detail
+            .as_ref()
+            .and_then(|d| d.get("bound_name"))
+            .and_then(|b| b.as_str())
+            .map(str::to_string);
+        Some((text.to_string(), bound))
+    }
+}
+
 pub struct Db {
     db_path: PathBuf,
     write_conn: Arc<Mutex<Connection>>,
@@ -2125,44 +2204,148 @@ impl Db {
     /// A vector of all symbols in the file for the specified graph version
     /// `(path, module qualname)` of every Python file's module symbol in
     /// `graph_version`.
-    /// Live Python files holding a call or value reference that carries
-    /// import candidates, resolved or not: the references whose target can
-    /// depend on what a package `__init__` binds.
-    pub fn python_files_with_import_candidates(&self, graph_version: i64) -> Result<Vec<String>> {
+    /// Live Python files holding a call or value reference that names one of
+    /// `names` (`(package, name)` pairs, written `package.name`), through its
+    /// import candidates or its own text, resolved or not: the references
+    /// whose target can depend on what that package binds for that name.
+    pub fn python_files_naming(
+        &self,
+        names: &[(String, String)],
+        graph_version: i64,
+    ) -> Result<Vec<String>> {
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT f.path FROM files f
-             WHERE f.language = 'python'
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?1)
-               AND (EXISTS (SELECT 1 FROM edges e
-                            WHERE e.file_id = f.id AND e.graph_version = ?1
-                              AND e.kind IN ('CALLS', 'REFERENCES')
-                              AND e.import_candidates IS NOT NULL
-                              AND e.import_candidates != '[]')
-                    OR EXISTS (SELECT 1 FROM unresolved_references u
-                               WHERE u.file_id = f.id AND u.graph_version = ?1
-                                 AND u.edge_kind IN ('CALLS', 'REFERENCES')
-                                 AND u.import_candidates IS NOT NULL
-                                 AND u.import_candidates != '[]'))",
-        )?;
-        let rows = stmt.query_map(params![graph_version], |r| r.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut out = std::collections::BTreeSet::new();
+        let escape = |text: &str| {
+            text.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        };
+        for (package, name) in names {
+            let dotted = escape(&format!("{package}.{name}"));
+            let exact = dotted.clone();
+            let below = format!("{dotted}.%");
+            let candidate_exact = format!("%\"{dotted}\"%");
+            let candidate_below = format!("%\"{dotted}.%");
+            let mut stmt = conn.prepare(
+                "SELECT f.path FROM files f
+                 WHERE f.language = 'python'
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?1)
+                   AND (EXISTS (SELECT 1 FROM edges e
+                                WHERE e.file_id = f.id AND e.graph_version = ?1
+                                  AND e.kind IN ('CALLS', 'REFERENCES')
+                                  AND (e.target_qualname LIKE ?2 ESCAPE '\\'
+                                       OR e.target_qualname LIKE ?3 ESCAPE '\\'
+                                       OR e.import_candidates LIKE ?4 ESCAPE '\\'
+                                       OR e.import_candidates LIKE ?5 ESCAPE '\\'))
+                        OR EXISTS (SELECT 1 FROM unresolved_references u
+                                   WHERE u.file_id = f.id AND u.graph_version = ?1
+                                     AND u.edge_kind IN ('CALLS', 'REFERENCES')
+                                     AND (u.reference_name LIKE ?2 ESCAPE '\\'
+                                          OR u.reference_name LIKE ?3 ESCAPE '\\'
+                                          OR u.import_candidates LIKE ?4 ESCAPE '\\'
+                                          OR u.import_candidates LIKE ?5 ESCAPE '\\')))",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    graph_version,
+                    exact,
+                    below,
+                    candidate_exact,
+                    candidate_below
+                ],
+                |r| r.get::<_, String>(0),
+            )?;
+            for row in rows {
+                out.insert(row?);
+            }
+        }
+        Ok(out.into_iter().collect())
     }
 
-    /// `(package, import text)` of every import statement in a package
-    /// `__init__.py`, resolved or not: what the packages re-export.
-    pub fn python_init_imports(&self, graph_version: i64) -> Result<Vec<(String, String)>> {
+    /// What the Python file at `path` offers the modules that import from
+    /// it, as stored: its module-level `(name, kind)` pairs, the names its
+    /// `__all__` lists, and its own top-level import statements as
+    /// `(text, bound name)`. `None` when the file has no stored module.
+    pub fn python_export_surface(
+        &self,
+        path: &str,
+        graph_version: i64,
+    ) -> Result<Option<PythonSurface>> {
+        let conn = self.read_conn()?;
+        let module: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT s.id, s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE f.path = ?1 AND s.kind = 'module' AND s.graph_version = ?2",
+                params![path, graph_version],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((module_id, module)) = module else {
+            return Ok(None);
+        };
+        let mut surface = PythonSurface::default();
+        let prefix = format!("{module}.");
+        let mut stmt = conn.prepare(
+            "SELECT s.qualname, s.kind FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE f.path = ?1 AND s.graph_version = ?2 AND s.kind != 'module'",
+        )?;
+        let rows = stmt.query_map(params![path, graph_version], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (qualname, kind) = row?;
+            if let Some(name) = qualname.strip_prefix(&prefix)
+                && !name.contains('.')
+            {
+                surface.defs.insert((name.to_string(), kind));
+            }
+        }
+        let mut stmt = conn.prepare(
+            "SELECT reference_name FROM unresolved_references
+             WHERE source_symbol_id = ?1 AND edge_kind = 'MODULE_EXPORT' AND graph_version = ?2",
+        )?;
+        for row in stmt.query_map(params![module_id, graph_version], |r| r.get::<_, String>(0))? {
+            surface.exports.insert(row?);
+        }
+        for sql in [
+            "SELECT target_qualname, detail FROM edges
+             WHERE source_symbol_id = ?1 AND kind = 'IMPORTS' AND graph_version = ?2
+               AND target_qualname IS NOT NULL",
+            "SELECT reference_name, detail FROM unresolved_references
+             WHERE source_symbol_id = ?1 AND edge_kind = 'IMPORTS' AND graph_version = ?2",
+        ] {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(params![module_id, graph_version], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?;
+            for row in rows {
+                let (text, detail) = row?;
+                if let Some(import) = PythonSurface::import_of(&text, detail.as_deref()) {
+                    surface.imports.insert(import);
+                }
+            }
+        }
+        Ok(Some(surface))
+    }
+
+    /// `(package, import text, bound name)` of every module-level import
+    /// statement in a package `__init__.py`, resolved or not: what the
+    /// packages re-export.
+    pub fn python_init_imports(
+        &self,
+        graph_version: i64,
+    ) -> Result<Vec<(String, String, Option<String>)>> {
         let conn = self.read_conn()?;
         let mut out = Vec::new();
         for sql in [
-            "SELECT s.qualname, e.target_qualname FROM edges e
+            "SELECT s.qualname, e.target_qualname, e.detail FROM edges e
              JOIN symbols s ON s.id = e.source_symbol_id
              JOIN files f ON f.id = s.file_id
              WHERE e.kind = 'IMPORTS' AND e.graph_version = ?1 AND s.kind = 'module'
                AND f.language = 'python'
                AND (f.path = '__init__.py' OR f.path LIKE '%/__init__.py')
                AND e.target_qualname IS NOT NULL",
-            "SELECT s.qualname, u.reference_name FROM unresolved_references u
+            "SELECT s.qualname, u.reference_name, u.detail FROM unresolved_references u
              JOIN symbols s ON s.id = u.source_symbol_id
              JOIN files f ON f.id = s.file_id
              WHERE u.edge_kind = 'IMPORTS' AND u.graph_version = ?1 AND s.kind = 'module'
@@ -2170,11 +2353,22 @@ impl Db {
                AND (f.path = '__init__.py' OR f.path LIKE '%/__init__.py')",
         ] {
             let mut stmt = conn.prepare(sql)?;
-            let rows = stmt.query_map(params![graph_version], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let rows = stmt.query_map(params![graph_version], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?;
             for row in rows {
-                out.push(row?);
+                let (package, text, detail) = row?;
+                if let Some((text, bound)) = PythonSurface::import_of(&text, detail.as_deref()) {
+                    out.push((package, text, bound));
+                }
             }
         }
+        out.sort();
+        out.dedup();
         Ok(out)
     }
 

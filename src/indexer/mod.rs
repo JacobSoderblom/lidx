@@ -1260,13 +1260,17 @@ impl Indexer {
     /// (`__init__.py`, `pyproject.toml`, `setup.py`, `setup.cfg`) was added,
     /// removed or edited since they were extracted, so a hash skip would keep
     /// a stale qualname. Only files still on disk.
-    /// The Python files whose calls were resolved through a package
-    /// `__init__` when `changed` holds one, or a module a package `__init__`
-    /// imports from: what the package exports (a definition, an import, a
-    /// star import and the `__all__` it reads, a chain of them) decides where
-    /// a name imported from it points, so every file with a reference that
-    /// carries import candidates is extracted again. Empty when neither
-    /// changed.
+    /// The Python files whose calls were resolved through a name a changed
+    /// file made a package bind differently. What a package binds for a name
+    /// (a definition, an import, a star import and the `__all__` it reads, a
+    /// chain of them) decides where a name imported from it points. So when
+    /// a changed module -- or an `__init__` itself -- offers something
+    /// different (its module-level names and kinds, its `__all__`, its own
+    /// top-level imports), the names that differ are followed to the packages
+    /// that import them from it (explicitly, or by `*`), and on to the
+    /// packages that re-export those; the files whose references name one of
+    /// those `package.name` pairs are extracted again. A body-only edit, and
+    /// a module nothing imports from, seed nothing.
     fn stale_python_importers(
         &mut self,
         changed: &[String],
@@ -1276,44 +1280,168 @@ impl Indexer {
         if python.is_empty() {
             return Ok(HashSet::new());
         }
-        let init_changed = python
-            .iter()
-            .any(|p| p.rsplit('/').next() == Some("__init__.py"));
-        if !init_changed {
-            let imports = self.db.python_init_imports(graph_version)?;
-            if imports.is_empty() {
+        let stored: HashMap<String, String> = self
+            .db
+            .python_module_names(graph_version)?
+            .into_iter()
+            .collect();
+        // Nothing indexed yet: every file is extracted anyway.
+        if stored.is_empty() {
+            return Ok(HashSet::new());
+        }
+        // (package, absolute import target, bound name) of every `__init__` import.
+        let inits: Vec<(String, String, Option<String>)> = self
+            .db
+            .python_init_imports(graph_version)?
+            .into_iter()
+            .map(|(package, text, bound)| {
+                let target = crate::db::resolver::python_absolute_import(&package, &text);
+                (package, target, bound)
+            })
+            .collect();
+        // `(package, name)` pairs whose binding may now differ.
+        let mut fed: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
+        for path in python {
+            let is_init = path.rsplit('/').next() == Some("__init__.py");
+            let Some(extractor) = self.extractors.get_mut("python") else {
                 return Ok(HashSet::new());
+            };
+            extractor.begin_run();
+            let new_module = extractor.module_name_from_rel_path(path);
+            let mut modules = vec![new_module.clone()];
+            if let Some(old) = stored.get(path.as_str())
+                && *old != new_module
+            {
+                modules.push(old.clone());
             }
-            let stored: HashMap<String, String> = self
-                .db
-                .python_module_names(graph_version)?
-                .into_iter()
-                .collect();
-            let mut modules: Vec<String> = Vec::new();
-            for path in &python {
-                modules.extend(stored.get(path.as_str()).cloned());
-                if let Some(extractor) = self.extractors.get_mut("python") {
-                    extractor.begin_run();
-                    modules.push(extractor.module_name_from_rel_path(path));
+            // Cheap exit: nothing imports from this module, and it is no package.
+            let imported = is_init
+                || modules.iter().any(|m| {
+                    inits.iter().any(|(_, target, _)| {
+                        target == m
+                            || target
+                                .strip_prefix(m.as_str())
+                                .is_some_and(|rest| rest.starts_with('.'))
+                    })
+                });
+            if !imported {
+                continue;
+            }
+            let old = self.db.python_export_surface(path, graph_version)?;
+            let new = self.python_surface_of(path, &new_module);
+            let changed_names: Option<std::collections::BTreeSet<String>> = match (&old, &new) {
+                (old, Some(new)) => {
+                    let empty = crate::db::PythonSurface::default();
+                    let old = old.as_ref().unwrap_or(&empty);
+                    (old != new).then(|| old.names_that_differ(new))
+                }
+                // Unreadable: every name may differ.
+                (_, None) => Some(
+                    std::iter::once("*".to_string())
+                        .chain(old.iter().flat_map(|o| o.names()))
+                        .collect(),
+                ),
+            };
+            let Some(names) = changed_names else {
+                continue;
+            };
+            for module in &modules {
+                if is_init {
+                    fed.extend(names.iter().map(|n| (module.clone(), n.clone())));
+                    continue;
+                }
+                for (package, target, bound) in &inits {
+                    let Some(rest) = target.strip_prefix(module.as_str()) else {
+                        continue;
+                    };
+                    match rest.strip_prefix('.') {
+                        // `from .mod import *`: every name that differs
+                        Some("*") => {
+                            fed.extend(names.iter().map(|n| (package.clone(), n.clone())));
+                        }
+                        // `from .mod import name [as alias]`
+                        Some(name) if !name.contains('.') => {
+                            if names.contains(name) || names.contains("*") {
+                                let bound = bound.clone().unwrap_or_else(|| name.to_string());
+                                fed.insert((package.clone(), bound));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
-            let feeds_an_init = imports.iter().any(|(package, text)| {
-                let absolute = crate::db::resolver::python_absolute_import(package, text);
-                modules.iter().any(|module| {
-                    absolute
-                        .strip_prefix(module.as_str())
-                        .is_some_and(|rest| rest.starts_with('.'))
-                })
-            });
-            if !feeds_an_init {
-                return Ok(HashSet::new());
+        }
+        if fed.is_empty() {
+            return Ok(HashSet::new());
+        }
+        // A package that re-exports a fed name is fed too.
+        loop {
+            let before = fed.len();
+            for (package, target, bound) in &inits {
+                for (fed_package, name) in fed.clone() {
+                    let Some(rest) = target
+                        .strip_prefix(fed_package.as_str())
+                        .and_then(|r| r.strip_prefix('.'))
+                    else {
+                        continue;
+                    };
+                    if rest == "*" {
+                        fed.insert((package.clone(), name.clone()));
+                    } else if rest == name {
+                        fed.insert((package.clone(), bound.clone().unwrap_or(name)));
+                    }
+                }
+            }
+            if fed.len() == before {
+                break;
             }
         }
+        let names: Vec<(String, String)> = fed.into_iter().collect();
         Ok(self
             .db
-            .python_files_with_import_candidates(graph_version)?
+            .python_files_naming(&names, graph_version)?
             .into_iter()
             .collect())
+    }
+
+    /// The export surface of the Python file at `rel` as it is now: empty
+    /// for a deleted file, `None` when it cannot be read or extracted.
+    fn python_surface_of(&mut self, rel: &str, module: &str) -> Option<crate::db::PythonSurface> {
+        let path = self.repo_root.join(rel);
+        if !path.exists() {
+            return Some(crate::db::PythonSurface::default());
+        }
+        let source = crate::util::read_to_string(&path).ok()?;
+        let extracted = self
+            .extractors
+            .get_mut("python")?
+            .extract(&source, module)
+            .ok()?;
+        let mut surface = crate::db::PythonSurface::default();
+        let prefix = format!("{module}.");
+        for symbol in &extracted.symbols {
+            if symbol.kind != "module"
+                && let Some(name) = symbol.qualname.strip_prefix(&prefix)
+                && !name.contains('.')
+            {
+                surface.defs.insert((name.to_string(), symbol.kind.clone()));
+            }
+        }
+        for edge in &extracted.edges {
+            let Some(target) = edge.target_qualname.as_deref() else {
+                continue;
+            };
+            if edge.kind == crate::indexer::python::MODULE_EXPORT_KIND {
+                surface.exports.insert(target.to_string());
+            } else if edge.kind == "IMPORTS"
+                && let Some(import) =
+                    crate::db::PythonSurface::import_of(target, edge.detail.as_deref())
+            {
+                surface.imports.insert(import);
+            }
+        }
+        Some(surface)
     }
 
     fn stale_python_files(&mut self, graph_version: i64) -> Result<HashSet<String>> {
