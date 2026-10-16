@@ -9,74 +9,90 @@
 <style>/*__CSS__*/</style>
 </head>
 <body>
-<header class="top">
-  <div class="brand"><span class="logo" aria-hidden="true">◇</span><strong>lidx graph</strong><span id="repo-name" class="repo"></span></div>
-  <p id="meta" class="meta"></p>
-</header>
-<div class="toolbar" role="toolbar" aria-label="Graph controls">
+<header class="bar">
+  <div class="title">
+    <span class="mark" aria-hidden="true"></span>
+    <h1><span class="tool">lidx graph</span> <span id="repo-name" class="repo"></span></h1>
+  </div>
+  <nav id="crumbs" class="crumbs" aria-label="Folder path"></nav>
   <div class="search">
     <label for="search" class="sr-only">Search nodes</label>
-    <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search symbols  /" role="combobox" aria-expanded="false" aria-controls="search-list" aria-autocomplete="list">
+    <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a symbol, file or folder" role="combobox" aria-expanded="false" aria-controls="search-list" aria-autocomplete="list">
+    <kbd class="search-key" aria-hidden="true">/</kbd>
     <ul id="search-list" role="listbox" aria-label="Matching nodes" hidden></ul>
   </div>
-  <div class="seg" role="group" aria-label="Layout">
-    <button type="button" id="lay-force" aria-pressed="true" title="Force-directed layout (L)">Force</button>
-    <button type="button" id="lay-layer" aria-pressed="false" title="Layered left-to-right layout (L)">Layered</button>
+  <div class="tools" role="toolbar" aria-label="View">
+    <div class="seg" role="group" aria-label="View">
+      <button type="button" id="view-graph" aria-pressed="true">Graph</button>
+      <button type="button" id="view-matrix" aria-pressed="false" title="Folder-by-folder matrix (M)">Matrix</button>
+    </div>
+    <div class="seg" role="group" aria-label="Layout">
+      <button type="button" id="lay-force" aria-pressed="true" title="Force layout (L)">Force</button>
+      <button type="button" id="lay-layer" aria-pressed="false" title="Layered layout (L)">Layered</button>
+    </div>
+    <div class="seg depth" role="group" aria-label="Folder depth">
+      <button type="button" id="depth-less" aria-label="Fewer folder levels" title="Fewer folder levels">−</button>
+      <span id="depth-label" class="depth-label" aria-live="polite">folders</span>
+      <button type="button" id="depth-more" aria-label="More folder levels" title="More folder levels">+</button>
+    </div>
+    <div class="seg" role="group" aria-label="History">
+      <button type="button" id="hist-back" aria-label="Back" title="Back (Alt+←)" disabled>‹</button>
+      <button type="button" id="hist-fwd" aria-label="Forward" title="Forward (Alt+→)" disabled>›</button>
+    </div>
+    <button type="button" id="fit" class="ghost" title="Fit to view (F)">Fit</button>
+    <div class="menu-wrap">
+      <button type="button" id="more" class="ghost" aria-haspopup="true" aria-expanded="false" aria-controls="more-menu">More</button>
+      <div id="more-menu" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" id="legend-toggle" aria-expanded="true" aria-controls="legend">Legend and filters</button>
+        <button type="button" role="menuitem" id="collapse-all">Collapse to top folders</button>
+        <button type="button" role="menuitem" id="expand-all">Open every folder</button>
+        <hr>
+        <button type="button" role="menuitem" id="export-png">Export PNG</button>
+        <button type="button" role="menuitem" id="export-svg">Export SVG</button>
+        <button type="button" role="menuitem" id="export-json">Export visible subgraph (JSON)</button>
+        <hr>
+        <button type="button" role="menuitem" id="theme">Dark theme</button>
+        <button type="button" role="menuitem" id="help">Keyboard and mouse</button>
+      </div>
+    </div>
   </div>
-  <label class="field">Group
-    <select id="group">
-      <option value="tree">Folders</option>
-      <option value="none">None</option>
-    </select>
-  </label>
-  <div class="seg" role="group" aria-label="Folder depth">
-    <button type="button" id="collapse-all" title="Collapse to top-level folders">Top</button>
-    <button type="button" id="depth-less" aria-label="One folder level up" title="Fewer folder levels">−</button>
-    <span id="depth-label" class="depth-label" aria-live="polite">depth 1</span>
-    <button type="button" id="depth-more" aria-label="One folder level down" title="More folder levels">+</button>
-    <button type="button" id="expand-all" title="Expand every folder">All</button>
-  </div>
-  <button type="button" id="fit" title="Fit to view (F)">Fit</button>
-  <button type="button" id="legend-toggle" aria-expanded="true" aria-controls="legend">Legend</button>
-  <div class="seg" role="group" aria-label="Export">
-    <button type="button" id="export-png" title="Export the current view as PNG">PNG</button>
-    <button type="button" id="export-svg" title="Export the visible graph as SVG">SVG</button>
-  </div>
-  <button type="button" id="theme" title="Toggle dark or light theme">Theme</button>
-  <button type="button" id="help" aria-haspopup="dialog" title="Keyboard shortcuts (?)">?</button>
-</div>
+</header>
+<p id="meta" class="meta"></p>
 <main class="main">
   <aside id="legend" class="legend" aria-label="Legend and filters"></aside>
   <div class="stage" id="stage">
-    <canvas id="canvas" tabindex="0" role="application" aria-roledescription="graph" aria-label="Code graph. Use search to find a node, arrow keys to pan, plus and minus to zoom, F to fit." aria-describedby="status"></canvas>
+    <canvas id="canvas" tabindex="0" role="application" aria-roledescription="graph" aria-label="Code graph. Search to find a node; arrow keys move between neighbours of the selection or pan; plus and minus zoom; F fits." aria-describedby="status"></canvas>
+    <canvas id="overlay" aria-hidden="true"></canvas>
+    <canvas id="minimap" aria-label="Minimap: click to move the view" role="img"></canvas>
+    <div id="matrix" class="matrix" hidden></div>
     <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
     <div id="status" class="status" aria-live="off"></div>
+    <div id="banner" class="banner" hidden></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <div id="empty" class="empty" hidden>
-      <p><strong>Nothing to show.</strong> Every node is hidden by the current filters.</p>
+      <p id="empty-text"><strong>Nothing to show.</strong> Every node is hidden by the current filters.</p>
       <button type="button" id="empty-reset">Reset filters</button>
     </div>
   </div>
-  <aside id="panel" class="panel" aria-label="Node details" hidden></aside>
+  <aside id="panel" class="panel" aria-label="Details" hidden></aside>
 </main>
 <div id="live" class="sr-only" aria-live="polite"></div>
 <dialog id="help-dialog" aria-labelledby="help-title">
   <h2 id="help-title">Keyboard and mouse</h2>
   <dl class="keys">
-    <dt><kbd>/</kbd></dt><dd>Search; <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>Enter</kbd> go</dd>
-    <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Pan (canvas focused)</dd>
-    <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Zoom; wheel or pinch also zoom</dd>
-    <dt><kbd>F</kbd></dt><dd>Fit to view</dd>
-    <dt><kbd>L</kbd></dt><dd>Toggle force / layered layout</dd>
-    <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous / next neighbour of the selection</dd>
-    <dt><kbd>Enter</kbd> or double-click</dt><dd>Expand: reveal hidden neighbours, or open a cluster</dd>
-    <dt><kbd>C</kbd></dt><dd>Collapse the folder the selection is in</dd>
-    <dt>Top / − / + / All</dt><dd>Show folders one level at a time; double-click a folder to open it</dd>
+    <dt><kbd>/</kbd></dt><dd>Find; <kbd>↑</kbd> <kbd>↓</kbd> to pick, <kbd>Enter</kbd> to go</dd>
+    <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move to the neighbour in that direction; pan when nothing is selected (<kbd>Shift</kbd> always pans)</dd>
+    <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Step through callers / callees of the selection</dd>
+    <dt><kbd>Enter</kbd>, double-click</dt><dd>Open a folder, or reveal hidden neighbours</dd>
+    <dt><kbd>C</kbd></dt><dd>Close the folder the selection is in</dd>
     <dt><kbd>1</kbd>–<kbd>4</kbd></dt><dd>Highlight 1–4 hops around the selection</dd>
-    <dt><kbd>Esc</kbd></dt><dd>Clear selection</dd>
-    <dt>Drag</dt><dd>Pan the canvas or move a node</dd>
-    <dt>Hover an edge</dt><dd>Its kinds, weight and call-site line</dd>
-    <dt>Legend</dt><dd>Toggle edge kinds, languages, external nodes and files outside the scope</dd>
+    <dt><kbd>U</kbd> / <kbd>D</kbd></dt><dd>Highlight everything upstream (callers) / downstream (callees)</dd>
+    <dt><kbd>I</kbd></dt><dd>Isolate the highlighted neighbourhood</dd>
+    <dt><kbd>P</kbd></dt><dd>Pin or unpin the selection (dragging a node pins it)</dd>
+    <dt><kbd>L</kbd> / <kbd>M</kbd></dt><dd>Force or layered layout / graph or matrix</dd>
+    <dt><kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd></dt><dd>Back / forward through view history</dd>
+    <dt><kbd>F</kbd>, <kbd>+</kbd> <kbd>−</kbd></dt><dd>Fit, zoom; wheel and pinch also zoom</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Clear the selection or the current mode</dd>
   </dl>
   <form method="dialog"><button type="submit">Close</button></form>
 </dialog>

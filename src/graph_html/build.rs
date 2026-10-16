@@ -17,7 +17,7 @@ use crate::indexer::test_detection::is_test_symbol;
 use crate::model::{Edge, Symbol, xref_is_traversable};
 use crate::search::{SearchScope, scope_allows};
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const FLAG_SEED: u32 = 1;
 pub const FLAG_HALO: u32 = 2;
@@ -31,6 +31,9 @@ pub const FLAG_SCOPE_OUT: u32 = 64;
 
 pub const EDGE_REVERSED: u32 = 1;
 pub const EDGE_HALO: u32 = 2;
+/// A folder -> folder bridge edge derived from a shared endpoint (one side
+/// publishes, calls, or sources a key the other side receives).
+pub const EDGE_DERIVED: u32 = 4;
 
 pub const GROUP_EXTERNAL: &str = "(external)";
 pub const GROUP_BRIDGES: &str = "(bridges)";
@@ -122,6 +125,9 @@ pub struct GEdge {
     pub ev: Option<String>,
     pub ev_file: Option<String>,
     pub res: Option<String>,
+    /// For a derived bridge edge, the endpoint keys it stands for; its
+    /// weight is their count.
+    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -686,6 +692,7 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
             ev: f.edge.evidence_snippet.clone(),
             ev_file: Some(f.edge.file_path.clone()),
             res: f.edge.resolution_kind.clone(),
+            keys: Vec::new(),
         });
     }
     propagate_scope(&mut graph);
@@ -831,7 +838,8 @@ enum Leaf {
     File(String),
     Module(String),
     Endpoint(String),
-    /// External stubs, grouped by their package (first path segment).
+    /// External stubs: in a whole-repo view, one chip per consumer folder
+    /// (so no central hub forms); in a seeded view, one per package.
     External(String),
 }
 
@@ -858,6 +866,8 @@ struct AggInput {
     ev_line: i64,
     ev: Option<String>,
     ev_file: String,
+    /// Endpoint keys a derived bridge edge goes through.
+    keys: Vec<String>,
 }
 
 #[derive(Default)]
@@ -869,6 +879,8 @@ struct LeafInfo {
     in_scope: bool,
     seed: bool,
     endpoint_kind: Option<String>,
+    /// External packages a consumer-folder chip stands for, with call counts.
+    ext_packages: BTreeMap<String, i64>,
 }
 
 /// Group edges into leaf -> leaf weighted edges, one per kind, keeping the
@@ -933,6 +945,38 @@ fn aggregate(
                 n.flags |= flags;
                 n
             }
+            Leaf::External(key) if !info.ext_packages.is_empty() => {
+                // A consumer folder's chip: it lives inside that folder.
+                let mut pkgs: Vec<(&String, &i64)> = info.ext_packages.iter().collect();
+                pkgs.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+                let listed: Vec<String> = pkgs
+                    .iter()
+                    .take(12)
+                    .map(|(p, n)| format!("{p} ×{n}"))
+                    .collect();
+                let more = pkgs.len().saturating_sub(12);
+                GNode {
+                    name: count(pkgs.len(), "external package", "external packages"),
+                    qual: format!("ext:{key}"),
+                    kind: "external".to_string(),
+                    lang: Some("external".to_string()),
+                    file: None,
+                    module: key.clone(),
+                    line: 0,
+                    flags: flags | FLAG_EXTERNAL,
+                    sig: Some(format!(
+                        "{}{}",
+                        listed.join(", "),
+                        if more > 0 {
+                            format!(", +{more} more")
+                        } else {
+                            String::new()
+                        }
+                    )),
+                    doc: None,
+                    size: info.symbols,
+                }
+            }
             Leaf::External(pkg) => GNode {
                 name: pkg.clone(),
                 qual: format!("ext:{pkg}"),
@@ -951,6 +995,7 @@ fn aggregate(
         graph.nodes.push(node);
     }
     let mut agg: BTreeMap<(usize, usize, String), GEdge> = BTreeMap::new();
+    let mut keys: BTreeMap<(usize, usize, String), BTreeSet<String>> = BTreeMap::new();
     for input in inputs {
         let (Some(&from), Some(&to)) = (index.get(&input.from), index.get(&input.to)) else {
             continue;
@@ -958,7 +1003,13 @@ fn aggregate(
         if from == to {
             continue;
         }
-        agg.entry((from, to, input.kind.clone()))
+        let key = (from, to, input.kind.clone());
+        if !input.keys.is_empty() {
+            keys.entry(key.clone())
+                .or_default()
+                .extend(input.keys.iter().cloned());
+        }
+        agg.entry(key)
             .and_modify(|e| {
                 e.weight += 1;
                 e.flags &= input.flags;
@@ -971,13 +1022,121 @@ fn aggregate(
                 flags: input.flags,
                 ev_line: input.ev_line,
                 ev: input.ev,
-                ev_file: Some(input.ev_file),
+                ev_file: (!input.ev_file.is_empty()).then_some(input.ev_file),
                 res: None,
+                keys: Vec::new(),
             });
+    }
+    // A derived edge weighs as many distinct keys as it stands for.
+    for (key, set) in keys {
+        if let Some(e) = agg.get_mut(&key) {
+            let list: Vec<String> = set.into_iter().collect();
+            let more = list.len().saturating_sub(4);
+            e.ev = Some(format!(
+                "{}{}",
+                list.iter().take(4).cloned().collect::<Vec<_>>().join(", "),
+                if more > 0 {
+                    format!(" (+{more})")
+                } else {
+                    String::new()
+                }
+            ));
+            e.weight = list.len() as u32;
+            e.keys = list;
+        }
     }
     graph.edges = agg.into_values().collect();
     propagate_scope(&mut graph);
     graph
+}
+
+/// Bridge kinds that send to an endpoint (the caller side), and the
+/// transport each one names.
+fn sender_transport(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "CHANNEL_PUBLISH" => "BUS",
+        "RPC_CALL" => "RPC",
+        "HTTP_CALL" => "HTTP",
+        "CONFIG_SOURCE" => "CONFIG",
+        _ => return None,
+    })
+}
+
+/// Bridge kinds that receive from an endpoint (after the flow-direction
+/// flip: the endpoint is their source).
+fn receives(kind: &str) -> bool {
+    matches!(
+        kind,
+        "CHANNEL_SUBSCRIBE" | "RPC_IMPL" | "HTTP_ROUTE" | "CONFIG_READ"
+    )
+}
+
+/// Leaf -> leaf bridge edges through shared endpoints:
+///
+/// - `VIA_BUS` / `VIA_RPC` / `VIA_HTTP` / `VIA_CONFIG`: each leaf that sends
+///   to an endpoint (publishes, calls, sources a key) joined to each leaf
+///   that receives from it (subscribes, implements, serves, reads). This is
+///   how a service map draws a cross-process call: between the owners, not
+///   through a central hub.
+/// - `DECLARES_RPC`: a proto's `RPC_ROUTE` declares the route; it joins the
+///   proto to the implementers, never as a caller.
+///
+/// Every edge carries the endpoint key it goes through, so merging (here
+/// into a pair, in the viewer into folders) counts distinct keys, not
+/// files. A leaf is never joined to itself. Derived before any
+/// `--max-nodes` trim, so a trimmed endpoint still links its owners.
+fn derive_leaf_bridges(inputs: &[AggInput]) -> Vec<AggInput> {
+    let mut senders: BTreeMap<&str, BTreeSet<(&Leaf, &'static str)>> = BTreeMap::new();
+    let mut receivers: BTreeMap<&str, BTreeSet<&Leaf>> = BTreeMap::new();
+    let mut declarers: BTreeMap<&str, BTreeSet<&Leaf>> = BTreeMap::new();
+    for i in inputs {
+        match (&i.from, &i.to) {
+            (Leaf::Endpoint(_), Leaf::Endpoint(_)) => {}
+            (from, Leaf::Endpoint(p)) => {
+                if let Some(t) = sender_transport(&i.kind) {
+                    senders.entry(p).or_default().insert((from, t));
+                } else if i.kind == "RPC_ROUTE" {
+                    declarers.entry(p).or_default().insert(from);
+                }
+            }
+            (Leaf::Endpoint(p), to) if receives(&i.kind) => {
+                receivers.entry(p).or_default().insert(to);
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let mut push = |from: &Leaf, to: &Leaf, kind: String, key: &str| {
+        if from != to {
+            out.push(AggInput {
+                from: from.clone(),
+                to: to.clone(),
+                kind,
+                flags: EDGE_DERIVED,
+                ev_line: 0,
+                ev: None,
+                ev_file: String::new(),
+                keys: vec![key.to_string()],
+            });
+        }
+    };
+    for (p, ss) in &senders {
+        let Some(rs) = receivers.get(p) else { continue };
+        for (a, t) in ss {
+            for b in rs {
+                push(a, b, format!("VIA_{t}"), p);
+            }
+        }
+    }
+    for (p, ds) in &declarers {
+        let Some(rs) = receivers.get(p) else { continue };
+        for d in ds {
+            for b in rs {
+                push(d, b, "DECLARES_RPC".to_string(), p);
+            }
+        }
+    }
+    out
 }
 
 /// Aggregate a symbol graph into files (or modules).
@@ -1014,7 +1173,7 @@ pub fn aggregate_symbol_graph(ctx: &Ctx, sym: Graph, level: Level) -> Graph {
             info.endpoint_kind.get_or_insert_with(|| n.kind.clone());
         }
     }
-    let inputs = sym
+    let mut inputs: Vec<AggInput> = sym
         .edges
         .into_iter()
         .filter_map(|e| {
@@ -1026,9 +1185,12 @@ pub fn aggregate_symbol_graph(ctx: &Ctx, sym: Graph, level: Level) -> Graph {
                 ev_line: e.ev_line,
                 ev: e.ev,
                 ev_file: e.ev_file.unwrap_or_default(),
+                keys: Vec::new(),
             })
         })
         .collect();
+    let derived = derive_leaf_bridges(&inputs);
+    inputs.extend(derived);
     let mut graph = aggregate(ctx, leaves, inputs, false);
     graph.truncated = sym.truncated;
     graph.notes = sym.notes;
@@ -1169,7 +1331,19 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
         }
         let to = match (tgt, tgt_lang) {
             (Some(_), Some(lang)) if lang == "external" => {
-                Leaf::External(external_package(tgt_qual.as_deref().unwrap_or("?")))
+                // One chip per consumer folder, not a repo-wide hub.
+                let consumer = match &from {
+                    Leaf::Module(m) => m.clone(),
+                    _ => ctx.module_of(&src),
+                };
+                let pkg = external_package(tgt_qual.as_deref().unwrap_or("?"));
+                *leaves
+                    .entry(Leaf::External(consumer.clone()))
+                    .or_default()
+                    .ext_packages
+                    .entry(pkg)
+                    .or_default() += 1;
+                Leaf::External(consumer)
             }
             (Some(path), _) => {
                 let leaf = leaf_for_file(&path);
@@ -1211,8 +1385,13 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
             ev_line: ev_line.unwrap_or(0),
             ev,
             ev_file,
+            keys: Vec::new(),
         });
     }
+    // Bridges between owners are derived before the trim below, so a small
+    // --max-nodes keeps them even when it drops the endpoints.
+    let derived = derive_leaf_bridges(&inputs);
+    inputs.extend(derived);
 
     // Stored DISPATCH edges (a Go call through an interface) are in `rows`
     // above. The synthetic interface-method -> implementation hops that
@@ -1251,16 +1430,28 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
             *degree.entry(&i.to).or_default() += 1;
         }
         let repo_leaf = |l: &Leaf| matches!(l, Leaf::File(_) | Leaf::Module(_));
+        // Endpoints rank last: the derived bridges already join their owners.
+        let endpoint = |l: &Leaf| matches!(l, Leaf::Endpoint(_));
         let mut ranked: Vec<&Leaf> = leaves.keys().collect();
         ranked.sort_by(|a, b| {
-            degree
-                .get(b)
-                .unwrap_or(&0)
-                .cmp(degree.get(a).unwrap_or(&0))
+            endpoint(a)
+                .cmp(&endpoint(b))
+                .then_with(|| degree.get(b).unwrap_or(&0).cmp(degree.get(a).unwrap_or(&0)))
                 .then_with(|| repo_leaf(b).cmp(&repo_leaf(a)))
                 .then_with(|| a.cmp(b))
         });
         let drop: HashSet<Leaf> = ranked[max_leaves..].iter().map(|l| (*l).clone()).collect();
+        let lost: BTreeSet<(&Leaf, &Leaf)> = inputs
+            .iter()
+            .filter(|i| !i.keys.is_empty() && (drop.contains(&i.from) || drop.contains(&i.to)))
+            .map(|i| (&i.from, &i.to))
+            .collect();
+        if !lost.is_empty() {
+            notes.push(format!(
+                "{} dropped with their nodes by --max-nodes {max_leaves}",
+                count(lost.len(), "bridge link", "bridge links")
+            ));
+        }
         leaves.retain(|l, _| !drop.contains(l));
         notes.push(format!(
             "kept the {max_leaves} most connected of {} (--max-nodes; externals and bridge endpoints count)",

@@ -168,11 +168,20 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
   (tests, docs, fixtures, CI tooling, vendored code) are embedded but hidden
   until shown from the legend. `--title` names the page (default: the git
   remote's name).
-- In the page: force or layered layout, folders you can collapse, search
-  (`/`), a details panel with incoming and outgoing edges by kind, n-hop
-  highlighting, edge-kind and language filters, and PNG/SVG export. Bridge
-  edges (channel, RPC, HTTP, config) are dashed, and a publisher and a
-  subscriber meet on a shared endpoint node.
+- In the page:
+  - Force or layered layout. Layered gives one column per hop from the seed.
+  - Folders you can open and close, plus a folder-by-folder dependency
+    matrix in which cycles are outlined.
+  - Cross-process bridges (message bus, RPC, HTTP, config keys) drawn
+    between the folders that own each side and labelled by transport.
+  - Search (`/`), breadcrumbs, and back/forward history.
+  - A details panel with top callers and callees and every edge with its
+    call-site line.
+  - Highlighting by hops, upstream or downstream, plus paths between two
+    nodes and isolating a neighbourhood.
+  - A minimap, pinning, and PNG, SVG and JSON export.
+  - Colours from the Okabe-Ito palette, with every edge kind also told
+    apart by its dash pattern.
 
 ## Configuration
 

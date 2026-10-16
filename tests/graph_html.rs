@@ -817,3 +817,319 @@ fn seeds_over_the_cap_raise_it_and_say_so() {
         "{notes}"
     );
 }
+
+/// A bus publisher in one folder and its subscriber in another: the
+/// overview joins the two folders with one derived `VIA_BUS` edge naming the
+/// key, instead of routing both through a central endpoint hub.
+#[test]
+fn bridges_are_drawn_between_the_folders_that_own_them() {
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-bridges-",
+        &[
+            (
+                "sender/send.py",
+                "def send(msg):\n    _bus.publish(\"order-created\", msg)\n",
+            ),
+            (
+                "worker/handle.py",
+                "@router.subscribe('order-created')\ndef handle(msg):\n    pass\n",
+            ),
+        ],
+    );
+    let (_, doc) = graph(&root, &db, &["--level", "file"]);
+    let d = Doc::new(&doc);
+    let derived = doc["meta"]["flags"]["edge_derived"].as_u64().unwrap();
+    let via: Vec<(String, String, String, u64, u64, String)> = d
+        .edges
+        .iter()
+        .filter(|e| d.s(&e[2]).starts_with("VIA_"))
+        .map(|e| {
+            (
+                d.qual(e[0].as_u64().unwrap() as usize).to_string(),
+                d.qual(e[1].as_u64().unwrap() as usize).to_string(),
+                d.s(&e[2]).to_string(),
+                e[3].as_u64().unwrap(),
+                e[4].as_u64().unwrap() & derived,
+                d.s(&e[6]).to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        via,
+        vec![(
+            "sender/send.py".to_string(),
+            "worker/handle.py".to_string(),
+            "VIA_BUS".to_string(),
+            1,
+            derived,
+            "channel://ordercreated".to_string(),
+        )],
+        "{via:?}"
+    );
+    // The endpoint itself is still in the data, for the viewer to show on
+    // request; nothing joins a folder to itself.
+    let endpoint = doc["meta"]["flags"]["endpoint"].as_u64().unwrap();
+    assert_eq!(
+        (0..d.nodes.len())
+            .filter(|&i| d.flags(i) & endpoint != 0)
+            .count(),
+        1
+    );
+}
+
+/// Externals become one chip per consumer folder, listing its packages,
+/// rather than a repo-wide `(external)` hub.
+#[test]
+fn externals_are_chips_inside_their_consumer_folder() {
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-extchips-",
+        &[
+            (
+                "a/one.rs",
+                "pub fn one() -> Vec<u8> { let v = Vec::new(); std::mem::drop(1); v }\n",
+            ),
+            ("b/two.rs", "pub fn two() -> String { String::new() }\n"),
+        ],
+    );
+    let (_, doc) = graph(&root, &db, &["--level", "file"]);
+    let d = Doc::new(&doc);
+    let external = doc["meta"]["flags"]["external"].as_u64().unwrap();
+    let chips: BTreeSet<(String, String)> = (0..d.nodes.len())
+        .filter(|&i| d.flags(i) & external != 0)
+        .map(|i| (d.qual(i).to_string(), d.s(&d.nodes[i][5]).to_string()))
+        .collect();
+    assert!(!chips.is_empty());
+    for (qual, module) in &chips {
+        assert_eq!(
+            qual,
+            &format!("ext:{module}"),
+            "a chip lives in its consumer folder"
+        );
+        assert!(module == "a/" || module == "b/", "{module}");
+    }
+}
+
+/// Derived bridge edges of a document: `(from qual, to qual, kind, weight,
+/// keys)`.
+fn bridge_edges(doc: &Value) -> Vec<(String, String, String, u64, Vec<String>)> {
+    let d = Doc::new(doc);
+    let derived = doc["meta"]["flags"]["edge_derived"].as_u64().unwrap();
+    let mut out: Vec<_> = d
+        .edges
+        .iter()
+        .filter(|e| e[4].as_u64().unwrap() & derived != 0)
+        .map(|e| {
+            let keys = e
+                .get(9)
+                .and_then(Value::as_array)
+                .map(|ks| ks.iter().map(|k| d.s(k).to_string()).collect())
+                .unwrap_or_default();
+            (
+                d.qual(e[0].as_u64().unwrap() as usize).to_string(),
+                d.qual(e[1].as_u64().unwrap() as usize).to_string(),
+                d.s(&e[2]).to_string(),
+                e[3].as_u64().unwrap(),
+                keys,
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn publisher(keys: &[&str]) -> String {
+    let mut s = String::from("def send(msg):\n");
+    for k in keys {
+        s.push_str(&format!("    _bus.publish(\"{k}\", msg)\n"));
+    }
+    s
+}
+
+fn subscriber(keys: &[&str]) -> String {
+    keys.iter()
+        .enumerate()
+        .map(|(i, k)| format!("@router.subscribe('{k}')\ndef handle_{i}(msg):\n    pass\n\n\n"))
+        .collect()
+}
+
+/// Two senders in one folder share a key with a receiver in another: the
+/// folder edge weighs the distinct keys (3), not the file pairs (2 + 2).
+/// A key published and received inside one file, or inside one folder, never
+/// draws an edge from a node to itself. Bridges are derived before the
+/// --max-nodes trim, so a cap that drops every endpoint keeps them.
+#[test]
+fn bridge_weights_count_distinct_keys_and_survive_the_cap() {
+    let a = publisher(&["alpha", "beta"]);
+    let b = publisher(&["beta", "gamma"]);
+    let w = subscriber(&["alpha", "beta", "gamma"]);
+    let selfish = format!("{}\n\n{}", publisher(&["delta"]), subscriber(&["delta"]));
+    let pub_e = publisher(&["epsilon"]);
+    let sub_e = subscriber(&["epsilon"]);
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-bridgekeys-",
+        &[
+            ("sender/a.py", a.as_str()),
+            ("sender/b.py", b.as_str()),
+            ("worker/w.py", w.as_str()),
+            ("loop/self.py", selfish.as_str()),
+            ("pair/p.py", pub_e.as_str()),
+            ("pair/s.py", sub_e.as_str()),
+        ],
+    );
+    let ch = |k: &str| format!("channel://{k}");
+
+    // File level: one edge per file pair, each with its own keys.
+    let (_, doc) = graph(&root, &db, &["--level", "file"]);
+    let edges = bridge_edges(&doc);
+    assert_eq!(
+        edges,
+        vec![
+            (
+                "pair/p.py".into(),
+                "pair/s.py".into(),
+                "VIA_BUS".into(),
+                1,
+                vec![ch("epsilon")]
+            ),
+            (
+                "sender/a.py".into(),
+                "worker/w.py".into(),
+                "VIA_BUS".into(),
+                2,
+                vec![ch("alpha"), ch("beta")]
+            ),
+            (
+                "sender/b.py".into(),
+                "worker/w.py".into(),
+                "VIA_BUS".into(),
+                2,
+                vec![ch("beta"), ch("gamma")]
+            ),
+        ],
+        "{edges:?}"
+    );
+    assert!(edges.iter().all(|e| e.0 != e.1), "no self loops");
+
+    // Module leaves (6 files over --max-nodes 4) and a cap that also drops
+    // every endpoint: one sender/ -> worker/ edge of 3 distinct keys; the
+    // same-folder pair/ key and the same-file loop/ key draw nothing.
+    let (_, doc) = graph(&root, &db, &["--level", "module", "--max-nodes", "4"]);
+    let edges = bridge_edges(&doc);
+    assert_eq!(
+        edges,
+        vec![(
+            "sender/".into(),
+            "worker/".into(),
+            "VIA_BUS".into(),
+            3,
+            vec![ch("alpha"), ch("beta"), ch("gamma")]
+        )],
+        "{edges:?}"
+    );
+    let endpoint = doc["meta"]["flags"]["endpoint"].as_u64().unwrap();
+    let d = Doc::new(&doc);
+    assert_eq!(
+        (0..d.nodes.len())
+            .filter(|&i| d.flags(i) & endpoint != 0)
+            .count(),
+        0,
+        "endpoints trimmed"
+    );
+    assert!(d.nodes.len() <= 4);
+
+    // A cap that drops an owner says how many bridge links went with it.
+    let (_, doc) = graph(&root, &db, &["--level", "file", "--max-nodes", "1"]);
+    let notes = doc["meta"]["notes"].to_string();
+    assert!(notes.contains("bridge link"), "{notes}");
+}
+
+/// A proto declares the route; it is not a caller. The client calls the
+/// implementer over RPC, and the proto gets a `DECLARES_RPC` link to the
+/// implementer instead of a `VIA_RPC` one.
+#[test]
+fn a_proto_declares_its_route_and_does_not_call_the_implementer() {
+    const PROTO: &str = "syntax = \"proto3\";\npackage datacatalog.v1;\n\
+service DataCatalogService {\n  rpc GetTables (Req) returns (Res);\n}\n\
+message Req {}\nmessage Res {}\n";
+    const HANDLER: &str = "export function getTables(call, cb) { cb(null, {}); }\n";
+    const PLUGIN: &str = r#"
+import { getTables } from "../features/datacatalog/tables/get";
+import { DataCatalogServiceService } from "../gen/datacatalog_grpc_pb";
+export function grpcPlugin(fastify) {
+  fastify.grpcServer.addService(DataCatalogServiceService, {
+    getTables: grpcHandler(getTables, fastify),
+  });
+}
+"#;
+    const CLIENT: &str = r#"
+import { DataCatalogServiceClient } from "../gen/datacatalog_grpc_pb";
+const client = new DataCatalogServiceClient("h");
+const dataCatalogClient = client;
+export function loadTables(req) {
+  return dataCatalogClient.getTables.bind(dataCatalogClient)(req);
+}
+"#;
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-protobridge-",
+        &[
+            ("protos/datacatalog.proto", PROTO),
+            ("src/features/datacatalog/tables/get.ts", HANDLER),
+            ("src/plugins/grpc.ts", PLUGIN),
+            ("src/client/tables.ts", CLIENT),
+        ],
+    );
+    let (_, doc) = graph(&root, &db, &["--level", "file", "--scope", "all"]);
+    let edges: Vec<(String, String, String)> = bridge_edges(&doc)
+        .into_iter()
+        .map(|(a, b, k, _, _)| (a, b, k))
+        .collect();
+    let route = "src/features/datacatalog/tables/get.ts".to_string();
+    assert!(
+        edges.contains(&(
+            "src/client/tables.ts".into(),
+            route.clone(),
+            "VIA_RPC".into()
+        )),
+        "{edges:?}"
+    );
+    assert!(
+        edges.contains(&(
+            "protos/datacatalog.proto".into(),
+            route.clone(),
+            "DECLARES_RPC".into()
+        )),
+        "{edges:?}"
+    );
+    assert!(
+        !edges
+            .iter()
+            .any(|(a, _, k)| a == "protos/datacatalog.proto" && k == "VIA_RPC"),
+        "a proto is never a caller: {edges:?}"
+    );
+}
+
+/// A consumer folder's chip lists its external packages with call counts.
+#[test]
+fn external_chips_list_their_packages() {
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-chiplist-",
+        &[(
+            "a/one.rs",
+            "pub fn one() -> Vec<u8> { let v = Vec::new(); let w: Vec<u8> = Vec::new(); drop(w); std::mem::drop(1); v }\n",
+        )],
+    );
+    let (_, doc) = graph(&root, &db, &["--level", "file"]);
+    let d = Doc::new(&doc);
+    let external = doc["meta"]["flags"]["external"].as_u64().unwrap();
+    let chip = (0..d.nodes.len())
+        .find(|&i| d.flags(i) & external != 0)
+        .expect("a chip");
+    assert_eq!(d.qual(chip), "ext:a/");
+    let sig = d.s(&d.nodes[chip][8]).to_string();
+    assert!(sig.contains("Vec ×"), "{sig}");
+    let name = d.s(&d.nodes[chip][0]).to_string();
+    assert!(
+        name.ends_with("external package") || name.ends_with("external packages"),
+        "{name}"
+    );
+}
