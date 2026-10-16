@@ -49,9 +49,78 @@ impl JsStale<'_> {
         graph_version: i64,
     ) -> Result<HashSet<String>> {
         let mut stale = self.config_stale(changed)?;
-        stale.extend(self.import_stale(changed, graph_version)?);
+        let workspace = self.workspace_stale(changed, graph_version)?;
+        // A re-exporting importer passes the change on to its own importers.
+        let relays: Vec<String> = workspace
+            .iter()
+            .filter(|p| javascript::is_re_exporting(self.repo_root, p))
+            .map(|p| javascript::module_name_from_rel_path(p))
+            .collect();
+        stale.extend(workspace);
+        stale.extend(self.import_stale(changed, relays, graph_version)?);
         for path in changed {
             stale.remove(path);
+        }
+        Ok(stale)
+    }
+
+    /// Files whose bare imports a workspace change can re-map: every JS/TS
+    /// file when a manifest or workspace declaration changed, and the
+    /// importers of a workspace package that gained or lost a source file.
+    fn workspace_stale(&self, changed: &[String], graph_version: i64) -> Result<HashSet<String>> {
+        let is_declaration = |p: &String| {
+            matches!(
+                Path::new(p).file_name().and_then(|n| n.to_str()),
+                Some("package.json" | "lerna.json" | "pnpm-workspace.yaml")
+            )
+        };
+        if changed.iter().any(is_declaration) {
+            return Ok(self.js_ts_file_paths()?.into_iter().collect());
+        }
+        let candidates: Vec<&String> = changed
+            .iter()
+            .filter(|p| javascript::is_js_ts_path(p))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(HashSet::new());
+        }
+        // Only an added or deleted file moves what a package name resolves to.
+        let known: HashSet<String> = self.js_ts_file_paths()?.into_iter().collect();
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for path in candidates {
+            let exists = self.repo_root.join(path).is_file();
+            if exists != known.contains(path.as_str()) {
+                names.extend(javascript::owning_workspace_packages(self.repo_root, path));
+            }
+        }
+        let mut stale = HashSet::new();
+        if names.is_empty() {
+            return Ok(stale);
+        }
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN files f ON f.id = s.file_id
+             WHERE e.graph_version = ?1 AND e.kind = 'IMPORTS'
+               AND (e.target_qualname = ?2 OR e.target_qualname LIKE ?2 || '/%')
+             UNION
+             SELECT f.path FROM unresolved_references u
+             JOIN files f ON f.id = u.file_id
+             WHERE u.graph_version = ?1 AND u.edge_kind = 'IMPORTS'
+               AND (u.reference_name = ?2 OR u.reference_name LIKE ?2 || '/%')",
+        )?;
+        for name in &names {
+            let importers = stmt
+                .query_map(rusqlite::params![graph_version, name], |r| {
+                    r.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            stale.extend(
+                importers
+                    .into_iter()
+                    .filter(|p| javascript::is_js_ts_path(p)),
+            );
         }
         Ok(stale)
     }
@@ -121,9 +190,14 @@ impl JsStale<'_> {
     /// surface changed. Recurses only through importers that re-export, since
     /// only those pass a change on. An added or deleted file is covered: an
     /// importer's edge targets the module name even while the file is missing.
-    fn import_stale(&self, changed: &[String], graph_version: i64) -> Result<HashSet<String>> {
+    fn import_stale(
+        &self,
+        changed: &[String],
+        relays: Vec<String>,
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
         let mut stale = HashSet::new();
-        let mut frontier: Vec<String> = Vec::new();
+        let mut frontier: Vec<String> = relays;
         for path in changed.iter().filter(|p| javascript::is_js_ts_path(p)) {
             if self.export_surface_changed(path)? {
                 frontier.push(javascript::module_name_from_rel_path(path));
@@ -186,12 +260,24 @@ impl JsStale<'_> {
         let mut push_file = |rel: &str| {
             data.extend_from_slice(rel.as_bytes());
             data.push(0);
-            if let Ok(bytes) = std::fs::read(self.repo_root.join(rel)) {
+            // Only the fields workspace-package resolution reads of a
+            // manifest, so an edit to dependencies or scripts does not
+            // re-extract every file.
+            let bytes = if rel.ends_with("package.json") {
+                javascript::workspace_manifest_summary(self.repo_root, Path::new(rel))
+                    .map(String::into_bytes)
+            } else {
+                std::fs::read(self.repo_root.join(rel)).ok()
+            };
+            if let Some(bytes) = bytes {
                 data.extend_from_slice(&bytes);
             }
             data.push(0);
         };
         for dir in &dirs {
+            push_file(&dir.join("package.json").to_string_lossy());
+            push_file(&dir.join("lerna.json").to_string_lossy());
+            push_file(&dir.join("pnpm-workspace.yaml").to_string_lossy());
             for name in ["tsconfig.json", "jsconfig.json"] {
                 push_file(&dir.join(name).to_string_lossy());
             }

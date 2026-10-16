@@ -1844,7 +1844,8 @@ impl<'c> Resolver<'c> {
     /// dependency) is an external stub -- never a repo item that shares the
     /// trait's name. `None` leaves the edge to the tiers below.
     fn resolve_rust_trait(&mut self, r: &Reference<'_>) -> Result<Option<Resolution>> {
-        if !is_rust_trait_edge(r.edge_kind)
+        if r.source_lang != "rust"
+            || !is_rust_trait_edge(r.edge_kind)
             || !r
                 .import_candidates
                 .iter()
@@ -2366,6 +2367,7 @@ impl<'c> Resolver<'c> {
         self.arg_hint = r
             .import_candidates
             .iter()
+            .filter(|_| r.source_lang == "rust")
             .find(|c| c.starts_with(RUST_ARG_HINT))
             .cloned();
         self.value_source = r
@@ -4782,16 +4784,18 @@ impl<'c> Resolver<'c> {
         via_language_fallback: bool,
     ) -> Result<Option<Resolution>> {
         let named: Vec<String>;
-        let import_candidates = if import_candidates.iter().any(|c| is_rust_crate_marker(c)) {
-            named = import_candidates
-                .iter()
-                .filter(|c| !is_rust_crate_marker(c))
-                .cloned()
-                .collect();
-            &named[..]
-        } else {
-            import_candidates
-        };
+        let is_rust = resolution_language_family(source_lang) == "rust";
+        let import_candidates =
+            if is_rust && import_candidates.iter().any(|c| is_rust_crate_marker(c)) {
+                named = import_candidates
+                    .iter()
+                    .filter(|c| !is_rust_crate_marker(c))
+                    .cloned()
+                    .collect();
+                &named[..]
+            } else {
+                import_candidates
+            };
         let Some(qualname) = external_stub_qualname(target_qualname, import_candidates, bare_call)
         else {
             return Ok(Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)));
@@ -5147,10 +5151,11 @@ pub(crate) const RUST_STD_RECEIVER: &str = "<std>";
 pub(crate) const RUST_EXTERNAL_RECEIVER: &str = "<ext>";
 
 /// Whether an import candidate is one of the Rust markers above rather than a
-/// qualname.
+/// qualname. A pin needs its `|` separator: a scoped npm package
+/// (`@scope/pkg:name`, a JS/TS candidate) also starts with `@`.
 fn is_rust_crate_marker(candidate: &str) -> bool {
     candidate == RUST_EXTERNAL_CRATE
-        || candidate.starts_with(RUST_CRATE_PIN)
+        || parse_rust_crate_pin(candidate).is_some()
         || candidate.starts_with(RUST_IMPL_SELF)
         || candidate.starts_with(RUST_BOUND_ITEM)
         || candidate.starts_with(RUST_ARG_HINT)

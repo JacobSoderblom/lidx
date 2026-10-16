@@ -82,3 +82,88 @@ fn class_callers_include_new_sites_bound_to_the_constructor() {
         "{result}"
     );
 }
+
+const WITH_TESTS: &[(&str, &str)] = &[
+    (
+        "src/errors.ts",
+        "export class FatalError extends Error {\n  constructor(message: string) {\n    super(message);\n  }\n}\nexport class Bare {\n  run() {}\n}\n",
+    ),
+    (
+        "src/errors.test.ts",
+        "import { FatalError, Bare } from './errors';\nimport { it } from 'vitest';\nit('builds the error', () => {\n  new FatalError('x');\n});\nit('builds bare', () => {\n  new Bare();\n});\n",
+    ),
+];
+
+fn indexed_with_tests() -> (tempfile::TempDir, Indexer) {
+    let (tmp, root, db_path) = common::index_repo("lidx-ts-ctor-tests-", WITH_TESTS);
+    (tmp, Indexer::new(root, db_path).unwrap())
+}
+
+fn names_of(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            r["symbol"]["qualname"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn class_tests_count_new_sites_bound_to_the_constructor() {
+    let (_tmp, mut indexer) = indexed_with_tests();
+    for class in ["src/errors.FatalError", "src/errors.Bare"] {
+        let result = rpc::handle_method(
+            &mut indexer,
+            "explain_symbol",
+            serde_json::json!({"qualname": class, "sections": ["tests", "callers"]}),
+        )
+        .unwrap();
+        assert_eq!(names_of(&result["tests"]).len(), 1, "{class}: {result}");
+        assert_eq!(names_of(&result["callers"]).len(), 1, "{class}: {result}");
+    }
+}
+
+#[test]
+fn impact_test_layer_reaches_tests_that_construct_the_class() {
+    let (_tmp, mut indexer) = indexed_with_tests();
+    let result = rpc::handle_method(
+        &mut indexer,
+        "analyze_impact",
+        serde_json::json!({"qualname": "src/errors.FatalError", "direction": "upstream"}),
+    )
+    .unwrap();
+    let tests: Vec<&serde_json::Value> = result["affected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["relationship"] == "TEST")
+        .collect();
+    assert!(!tests.is_empty(), "{result}");
+}
+
+#[test]
+fn csharp_class_tests_count_new_sites_bound_to_the_constructor() {
+    let files: &[(&str, &str)] = &[
+        (
+            "src/Svc.cs",
+            "namespace Shop\n{\n    public class Svc\n    {\n        public Svc(int a) { }\n        public void Run() { }\n    }\n}\n",
+        ),
+        (
+            "tests/SvcTests.cs",
+            "namespace Shop.Tests\n{\n    public class SvcTests\n    {\n        [Fact]\n        public void Builds()\n        {\n            var s = new Shop.Svc(1);\n        }\n    }\n}\n",
+        ),
+    ];
+    let (_tmp, root, db_path) = common::index_repo("lidx-cs-ctor-tests-", files);
+    let mut indexer = Indexer::new(root, db_path).unwrap();
+    let result = rpc::handle_method(
+        &mut indexer,
+        "explain_symbol",
+        serde_json::json!({"qualname": "Shop.Svc", "sections": ["tests"]}),
+    )
+    .unwrap();
+    assert_eq!(result["tests_total"], 1, "{result}");
+}

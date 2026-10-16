@@ -965,6 +965,7 @@ thread_local! {
 /// end of every sync/reindex so no stale barrel survives a file edit.
 pub fn clear_export_cache() {
     EXPORT_CACHE.with(|c| c.borrow_mut().clear());
+    crate::indexer::js_workspace::clear_cache();
 }
 
 /// Whether `rel_path` is a JS/TS source file (by extension).
@@ -1607,13 +1608,37 @@ fn resolve_import_target(
     is_relative: bool,
 ) -> Option<(String, bool)> {
     if !is_relative {
-        return resolve_tsconfig_alias(repo_root, file_rel_path, target);
+        return resolve_tsconfig_alias(repo_root, file_rel_path, target)
+            .or_else(|| resolve_workspace_package(repo_root, target));
     }
     let rel = relative_import_target(file_rel_path, target)?;
     match probe_module_candidates(repo_root, &rel) {
         Some(found) => Some((found, true)),
         None => Some((util::normalize_path(&rel), false)),
     }
+}
+
+/// A bare specifier naming a workspace package of the repository
+/// (`@scope/pkg/sub`, see `js_workspace`), resolved to a real source file.
+fn resolve_workspace_package(repo_root: &Path, target: &str) -> Option<(String, bool)> {
+    crate::indexer::js_workspace::module_stems(repo_root, target)
+        .iter()
+        .find_map(|stem| {
+            probe_module_candidates_in(repo_root, stem, &|found| {
+                crate::indexer::js_workspace::is_scanned(repo_root, found)
+            })
+        })
+        .map(|found| (found, true))
+}
+
+/// The parts of a `package.json` that decide which imports resolve to it.
+pub fn workspace_manifest_summary(repo_root: &Path, rel: &Path) -> Option<String> {
+    crate::indexer::js_workspace::manifest_summary(&repo_root.join(rel))
+}
+
+/// Names of the workspace packages whose directory contains `rel_path`.
+pub fn owning_workspace_packages(repo_root: &Path, rel_path: &str) -> Vec<String> {
+    crate::indexer::js_workspace::owning_package_names(repo_root, rel_path)
 }
 
 /// Checks whether `rel` (extension-less or not, relative to `repo_root`)
@@ -1623,8 +1648,17 @@ fn resolve_import_target(
 /// Shared by plain relative imports and by tsconfig alias resolution so
 /// both go through identical, filesystem-verified matching.
 fn probe_module_candidates(repo_root: &Path, rel: &Path) -> Option<String> {
+    probe_module_candidates_in(repo_root, rel, &|_| true)
+}
+
+/// `probe_module_candidates` restricted to files `accept` allows.
+fn probe_module_candidates_in(
+    repo_root: &Path,
+    rel: &Path,
+    accept: &dyn Fn(&Path) -> bool,
+) -> Option<String> {
     if rel.extension().is_some() {
-        if repo_root.join(rel).is_file() {
+        if repo_root.join(rel).is_file() && accept(rel) {
             return Some(util::normalize_path(rel));
         }
         // NodeNext/ESM TypeScript imports the emitted name: `./x.js` is
@@ -1639,18 +1673,18 @@ fn probe_module_candidates(repo_root: &Path, rel: &Path) -> Option<String> {
         return ts_ext
             .iter()
             .map(|ext| rel.with_extension(ext))
-            .find(|candidate| repo_root.join(candidate).is_file())
+            .find(|candidate| repo_root.join(candidate).is_file() && accept(candidate))
             .map(|candidate| util::normalize_path(&candidate));
     }
     for ext in JS_TS_EXTENSIONS {
         let candidate = rel.with_extension(ext);
-        if repo_root.join(&candidate).is_file() {
+        if repo_root.join(&candidate).is_file() && accept(&candidate) {
             return Some(util::normalize_path(&candidate));
         }
     }
     for ext in JS_TS_EXTENSIONS {
         let candidate = rel.join("index").with_extension(ext);
-        if repo_root.join(&candidate).is_file() {
+        if repo_root.join(&candidate).is_file() && accept(&candidate) {
             return Some(util::normalize_path(&candidate));
         }
     }

@@ -3010,3 +3010,291 @@ fn incremental_add_same_named_function_unbinds_a_bare_name_guess() {
         common::index_files(&[("a.py", a_py), ("caller.py", caller_py), ("b.py", b_py)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+const WS_CALLER: &str =
+    "import { foo } from '@acme/lib';\nexport function go() {\n  return foo();\n}\n";
+const WS_SRC: (&str, &str) = ("pkgs/lib/src/index.ts", "export function foo() {}\n");
+const WS_MANIFEST: (&str, &str) = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+
+#[test]
+fn incremental_package_manifest_added_reextracts_workspace_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-ws-added",
+        &[WS_SRC, ("use.ts", WS_CALLER)],
+        |root| common::write_files(root, &[WS_MANIFEST]),
+        &["pkgs/lib/package.json"],
+        &[WS_MANIFEST, WS_SRC, ("use.ts", WS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src.foo"));
+}
+
+#[test]
+fn incremental_package_manifest_deleted_reextracts_workspace_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-ws-deleted",
+        &[WS_MANIFEST, WS_SRC, ("use.ts", WS_CALLER)],
+        |root| std::fs::remove_file(root.join("pkgs/lib/package.json")).unwrap(),
+        &["pkgs/lib/package.json"],
+        &[WS_SRC, ("use.ts", WS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_workspace_importer_after_manifest_edit() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-ws-reindex",
+        &[WS_MANIFEST, WS_SRC, ("use.ts", WS_CALLER)],
+    );
+    assert_eq!(target_of(&indexer).as_deref(), Some("pkgs/lib/src.foo"));
+    common::write_files(
+        &root,
+        &[("pkgs/lib/package.json", "{\"name\":\"@acme/other\"}")],
+    );
+    indexer.reindex().unwrap();
+    assert_ne!(target_of(&indexer).as_deref(), Some("pkgs/lib/src.foo"));
+}
+
+const W_USE: &str = "import { f } from '@acme/lib';\nexport function go() { f(); }\n";
+const W_A: (&str, &str) = ("pkgs/lib/src/a.ts", "export function f() {}\n");
+const W_B: (&str, &str) = ("pkgs/lib/src/b.ts", "export function f() {}\n");
+
+#[test]
+fn rv_exports_edit() {
+    let m1 = (
+        "pkgs/lib/package.json",
+        "{\"name\":\"@acme/lib\",\"exports\":{\".\":\"./dist/a.js\"}}",
+    );
+    let m2 = (
+        "pkgs/lib/package.json",
+        "{\"name\":\"@acme/lib\",\"exports\":{\".\":\"./dist/b.js\"}}",
+    );
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rv-exp",
+        &[m1, W_A, W_B, ("use.ts", W_USE)],
+        |root| common::write_files(root, &[m2]),
+        &["pkgs/lib/package.json"],
+        &[m2, W_A, W_B, ("use.ts", W_USE)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src/b.f"));
+}
+
+#[test]
+fn rv_rename() {
+    let m1 = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+    let m2 = ("pkgs/lib/package.json", "{\"name\":\"@acme/renamed\"}");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rv-ren",
+        &[
+            m1,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+        |root| common::write_files(root, &[m2]),
+        &["pkgs/lib/package.json"],
+        &[
+            m2,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rv_duplicate_added_then_removed() {
+    let m1 = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+    let dup = ("other/package.json", "{\"name\":\"@acme/lib\"}");
+    let src = ("pkgs/lib/src/index.ts", "export function f() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rv-dup",
+        &[m1, src, ("use.ts", W_USE)],
+        |root| common::write_files(root, &[dup]),
+        &["other/package.json"],
+        &[m1, dup, src, ("use.ts", W_USE)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+    let (_t, root, mut indexer) = indexed_tree("rv-dup2", &[m1, dup, src, ("use.ts", W_USE)]);
+    std::fs::remove_file(root.join("other/package.json")).unwrap();
+    indexer
+        .sync_rel_paths(&["other/package.json".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_f, fresh) = common::index_files(&[m1, src, ("use.ts", W_USE)]);
+    common::assert_matches_fresh(&snap, &fresh);
+    assert_eq!(target_of(&indexer).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rv_malformed_edit_and_src_added() {
+    // manifest broken then repaired; target source added later
+    let ok = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+    let bad = ("pkgs/lib/package.json", "{oops");
+    let (_t, _idx) = ts_incremental_matches_fresh(
+        "rv-bad",
+        &[
+            ok,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+        |root| common::write_files(root, &[bad]),
+        &["pkgs/lib/package.json"],
+        &[
+            bad,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+    );
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rv-srcadd",
+        &[ok, ("use.ts", W_USE)],
+        |root| {
+            common::write_files(
+                root,
+                &[("pkgs/lib/src/index.ts", "export function f() {}\n")],
+            )
+        },
+        &["pkgs/lib/src/index.ts"],
+        &[
+            ok,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rv_src_added_only() {
+    let ok = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+    let _ = ts_incremental_matches_fresh(
+        "rv-srcadd2",
+        &[ok, ("use.ts", W_USE)],
+        |root| {
+            common::write_files(
+                root,
+                &[("pkgs/lib/src/index.ts", "export function f() {}\n")],
+            )
+        },
+        &["pkgs/lib/src/index.ts"],
+        &[
+            ok,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+    );
+}
+#[test]
+fn rv_malformed_only() {
+    let ok = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+    let bad = ("pkgs/lib/package.json", "{oops");
+    let _ = ts_incremental_matches_fresh(
+        "rv-bad2",
+        &[
+            ok,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+        |root| common::write_files(root, &[bad]),
+        &["pkgs/lib/package.json"],
+        &[
+            bad,
+            ("pkgs/lib/src/index.ts", "export function f() {}\n"),
+            ("use.ts", W_USE),
+        ],
+    );
+}
+
+#[test]
+fn rv_src_deleted_only() {
+    let ok = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+    let src = ("pkgs/lib/src/index.ts", "export function f() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rv-srcdel",
+        &[ok, src, ("use.ts", W_USE)],
+        |root| std::fs::remove_file(root.join("pkgs/lib/src/index.ts")).unwrap(),
+        &["pkgs/lib/src/index.ts"],
+        &[ok, ("use.ts", W_USE)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rv_workspace_declaration_edit_matches_fresh() {
+    let root_v1 = (
+        "package.json",
+        "{\"name\":\"root\",\"workspaces\":[\"pkgs/*\"]}",
+    );
+    let root_v2 = (
+        "package.json",
+        "{\"name\":\"root\",\"workspaces\":[\"other/*\"]}",
+    );
+    let ok = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+    let src = ("pkgs/lib/src/index.ts", "export function f() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rv-wsdecl",
+        &[root_v1, ok, src, ("use.ts", W_USE)],
+        |root| common::write_files(root, &[root_v2]),
+        &["package.json"],
+        &[root_v2, ok, src, ("use.ts", W_USE)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+const RX_MANIFEST: (&str, &str) = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+const RX_SRC: (&str, &str) = ("pkgs/lib/src/index.ts", "export function f() {}\n");
+const RX_BARREL: (&str, &str) = ("barrel.ts", "export { f } from '@acme/lib';\n");
+const RX_USER: (&str, &str) = (
+    "use.ts",
+    "import { f } from './barrel';\nexport function go() { f(); }\n",
+);
+
+#[test]
+fn rx_reexport_chain_through_workspace_added_src() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-add",
+        &[RX_MANIFEST, RX_BARREL, RX_USER],
+        |r| common::write_files(r, &[RX_SRC]),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, RX_USER],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rx_reexport_chain_through_workspace_deleted_src() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-del",
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, RX_USER],
+        |r| std::fs::remove_file(r.join("pkgs/lib/src/index.ts")).unwrap(),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_BARREL, RX_USER],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rx_two_level_barrel_chain_through_workspace() {
+    let outer = ("outer.ts", "export { f } from './barrel';\n");
+    let user = (
+        "use.ts",
+        "import { f } from './outer';\nexport function go() { f(); }\n",
+    );
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-two",
+        &[RX_MANIFEST, RX_BARREL, outer, user],
+        |r| common::write_files(r, &[RX_SRC]),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, outer, user],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-two-del",
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, outer, user],
+        |r| std::fs::remove_file(r.join("pkgs/lib/src/index.ts")).unwrap(),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_BARREL, outer, user],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
