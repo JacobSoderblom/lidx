@@ -215,9 +215,14 @@
   var V = { nodes: [], edges: [], links: [], byId: new Map(), leafTo: new Int32Array(N.length) };
   var pos = new Map(); // node id -> {x, y}, survives rebuilds
 
-  function leafVisible(n) {
+  // Shown under the scope and halo rules, before any legend filter.
+  function inView(n) {
     if (has(n, F.scope_out) && !st.showNonCode && !st.revealed.has(n.i)) return false;
     if (has(n, F.halo) && !st.revealed.has(n.i) && !(has(n, F.scope_out) && st.showNonCode)) return false;
+    return true;
+  }
+  function leafVisible(n) {
+    if (!inView(n)) return false;
     if (has(n, F.external | F.unresolved) && !st.showExternal) return false;
     if (has(n, F.test) && !st.showTests) return false;
     if (st.langOn[langKey(n)] === false) return false;
@@ -332,7 +337,7 @@
       if (!BRIDGE_FAMILIES[e.fam]) l.bridge = false;
     });
     V.links = Array.from(links.values());
-    V.nodes = nodes; V.edges = edges; V.byId = byId; V.leafTo = leafTo;
+    V.nodes = nodes; V.edges = edges; V.byId = byId; V.leafTo = leafTo; V.columns = null;
     placeNodes();
     buildAdjacency();
     labelWidths.clear();
@@ -612,7 +617,7 @@
   // distance from the seeds in a one-way trace (the seed in the first
   // column, also for an upward walk, which is mirrored), and longest-path
   // layers otherwise; barycentre sweeps order each layer.
-  function layered() {
+  function layered(instant) {
     var ns = V.nodes, n = ns.length;
     var out = ns.map(function () { return []; });
     var inn = ns.map(function () { return []; });
@@ -626,6 +631,7 @@
     });
     var colGap = AGGREGATED ? 240 : 270;
     var targets = new Array(n);
+    V.columns = null;
     var comps = components();
     var lone = comps.filter(function (c) { return c.length === 1; });
     var y = 0;
@@ -633,6 +639,11 @@
       if (comp.length === 1) return;
       var t = layoutComponent(comp, out, inn, colGap);
       comp.forEach(function (i) { targets[i] = { x: t.pos[i].x, y: t.pos[i].y + y - t.y0 }; });
+      if (!V.columns) {
+        // Headers for the first (seeded or largest) component's columns.
+        var dy = y - t.y0;
+        V.columns = t.cols.map(function (cl) { return { x: cl.x, top: cl.top + dy, n: cl.n }; });
+      }
       y += t.y1 - t.y0 + 70;
     });
     // Lone nodes: a grid under everything else.
@@ -640,7 +651,7 @@
     lone.forEach(function (c, k) {
       targets[c[0]] = { x: (k % cols) * colGap * 0.8, y: y + Math.floor(k / cols) * 34 };
     });
-    animateTo(targets);
+    animateTo(targets, instant);
   }
 
   function layoutComponent(comp, out, inn, colGap) {
@@ -704,28 +715,30 @@
       for (li = 1; li < layers.length; li++) sweep(layers[li], up ? out : inn);
       for (li = layers.length - 2; li >= 0; li--) sweep(layers[li], up ? inn : out);
     }
-    // A tall layer (a hub's callees) wraps into side-by-side sub-columns so
-    // the trace stays readable at a zoom where labels show.
-    var perCol = Math.max(14, Math.round(Math.sqrt(comp.length) * 1.6));
-    var res = { pos: {}, y0: Infinity, y1: -Infinity };
-    var x = 0;
-    layers.forEach(function (l) {
-      var cols = Math.max(1, Math.ceil(l.length / perCol));
-      var rows = Math.ceil(l.length / cols);
-      for (var cI = 0; cI < cols; cI++) {
-        var col = l.slice(cI * rows, (cI + 1) * rows);
-        var yy = 0;
-        var ys = col.map(function (v) { var r = ns[v].r; yy += r + 9; var here = yy; yy += r + 9; return here; });
-        var mid = yy / 2;
-        col.forEach(function (v, j) {
-          var p = { x: x + cI * colGap * 0.85, y: ys[j] - mid };
-          res.pos[v] = p;
-          res.y0 = Math.min(res.y0, p.y - ns[v].r);
-          res.y1 = Math.max(res.y1, p.y + ns[v].r);
-        });
-      }
-      x += (cols - 1) * colGap * 0.85 + colGap;
+    // One column per layer (per hop in a trace), each centred on y = 0 so
+    // the seed's column sits level with the middle of the others. Rows are
+    // packed tight (a label is ~14px) so a hub's callees stay on screen.
+    var res = { pos: {}, y0: Infinity, y1: -Infinity, cols: [] };
+    layers.forEach(function (l, li) {
+      var yy = 0;
+      var ys = l.map(function (v) {
+        var half = Math.max(ns[v].r + 3, l.length <= 20 ? 15 : 9); // short columns get label room
+        yy += half; var here = yy; yy += half;
+        return here;
+      });
+      var mid = yy / 2;
+      var top = Infinity;
+      l.forEach(function (v, j) {
+        var p = { x: li * colGap, y: ys[j] - mid };
+        ns[v].hop = li;
+        res.pos[v] = p;
+        top = Math.min(top, p.y - ns[v].r);
+        res.y0 = Math.min(res.y0, p.y - ns[v].r);
+        res.y1 = Math.max(res.y1, p.y + ns[v].r);
+      });
+      res.cols.push({ x: li * colGap, top: isFinite(top) ? top : 0, n: l.length });
     });
+    res.y0 -= 30; // room for the column headers
     return res;
   }
 
@@ -785,7 +798,7 @@
 
   // After a force layout settles: keep the main component in place and shelf-
   // pack every other component (and lone node) in a column beside it.
-  function packComponents() {
+  function packComponents(instant) {
     var comps = components();
     if (comps.length < 2) return false;
     var ns = V.nodes;
@@ -813,17 +826,28 @@
       x += w + gap;
       rowH = Math.max(rowH, h);
     });
-    animateTo(targets);
+    animateTo(targets, instant);
     return true;
   }
 
   var anim = null;
-  function animateTo(targets) {
+  // Move nodes to `targets`, animated, or at once when `instant` (the first
+  // layout on load, which must not depend on animation frames: a headless
+  // or background page may never run one).
+  function animateTo(targets, instant) {
     var from = V.nodes.map(function (v) { return { x: v.x, y: v.y }; });
     var t0 = performance.now();
     var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     var dur = reduce ? 0 : 450;
     if (anim) cancelAnimationFrame(anim);
+    if (instant || !dur) {
+      V.nodes.forEach(function (v, i) { v.x = targets[i].x; v.y = targets[i].y; });
+      anim = null;
+      savePositions();
+      if (!st.userMoved) fit(false);
+      draw();
+      return;
+    }
     function step(now) {
       var p = dur ? Math.min(1, (now - t0) / dur) : 1;
       var e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
@@ -902,7 +926,31 @@
 
   function edgeGeom(e) {
     var a = V.nodes[e.a], b = V.nodes[e.b];
-    return { x1: sx(a.x), y1: sy(a.y), x2: sx(b.x), y2: sy(b.y), rb: screenR(b), ra: screenR(a) };
+    var g = { x1: sx(a.x), y1: sy(a.y), x2: sx(b.x), y2: sy(b.y), rb: screenR(b), ra: screenR(a) };
+    if (st.layout === 'layered') g.route = edgeRoute(g.x1, g.y1, g.x2, g.y2, st.view.k);
+    return g;
+  }
+
+  // Layered edges as cubic beziers: a forward edge is a short horizontal
+  // S-curve; an edge within one column bows out to the right of it; a back
+  // edge (to an earlier column) arcs over both ends, and both are dashed.
+  function edgeRoute(x1, y1, x2, y2, k) {
+    var dx = x2 - x1, col = 40 * k;
+    if (dx > col) {
+      var h = dx * 0.5;
+      return { type: 'fwd', c: [x1 + h, y1, x2 - h, y2] };
+    }
+    if (dx >= -col) {
+      var bow = (50 + Math.min(140, Math.abs(y2 - y1) * 0.3)) * k;
+      return { type: 'same', c: [x1 + bow, y1, x2 + bow, y2] };
+    }
+    var top = Math.min(y1, y2) - (40 + Math.min(220, -dx * 0.2)) * k;
+    return { type: 'back', c: [x1 + 70 * k, top, x2 - 70 * k, top] };
+  }
+  function bezierAt(g, t) {
+    var c = g.route.c, u = 1 - t;
+    return [u * u * u * g.x1 + 3 * u * u * t * c[0] + 3 * u * t * t * c[2] + t * t * t * g.x2,
+            u * u * u * g.y1 + 3 * u * u * t * c[1] + 3 * u * t * t * c[3] + t * t * t * g.y2];
   }
 
   function draw(target) {
@@ -918,6 +966,7 @@
 
     // Cluster hulls
     var hullLabels = st.layout === 'force' && st.group !== 'none' ? drawHulls(c, w, h) : [];
+    if (st.layout === 'layered' && V.columns && !anim) drawColumnHeaders(c);
 
     // Edges, batched by family and emphasis
     var curved = st.layout === 'layered';
@@ -932,7 +981,7 @@
       if (maxx < -pad || minx > w + pad || maxy < -pad || miny > h + pad) return;
       var emph = hl ? (hlEdges.has(idx) ? 2 : 0) : 1;
       if (st.hoverEdge === e) emph = 3;
-      var key = e.fam + '|' + emph;
+      var key = e.fam + '|' + emph + (g.route && g.route.type !== 'fwd' ? '|back' : '');
       var list = batches.get(key);
       if (!list) { list = []; batches.set(key, list); }
       list.push([e, g]);
@@ -947,11 +996,12 @@
       return ea - eb || (BRIDGE_FAMILIES[a.split('|')[0]] ? 1 : 0) - (BRIDGE_FAMILIES[b.split('|')[0]] ? 1 : 0);
     });
     keys.forEach(function (key) {
-      var parts = key.split('|'), fam = parts[0], emph = +parts[1];
+      var parts = key.split('|'), fam = parts[0], emph = +parts[1], back = parts[2] === 'back';
       var bridge = !!BRIDGE_FAMILIES[fam];
       var list = batches.get(key);
       var alpha = emph === 0 ? 0.07 : emph === 1 ? (V.edges.length > 8000 ? 0.16 : manyEdges ? 0.28 : 0.5) : 0.95;
       if (bridge && emph === 1) alpha = 0.85;
+      if (back && emph === 1) alpha *= 0.7;
       c.strokeStyle = famColor(fam);
       if (bridge && emph > 0) {
         // Faint wide underlay, then a dashed line: bridges read at any zoom.
@@ -961,7 +1011,7 @@
         strokeEdges(c, list, curved);
       }
       c.globalAlpha = alpha;
-      c.setLineDash(bridge ? [7, 4] : []);
+      c.setLineDash(bridge ? [7, 4] : back ? [3, 3] : []);
       c.lineWidth = bridge ? 2.2 : emph >= 2 ? 1.6 : 1;
       if (list.length < 4000) {
         list.forEach(function (it) {
@@ -1008,6 +1058,19 @@
     drawLabels(c, labelled, w, h, hullLabels);
   }
 
+  // "seed", "1 hop", ... over a trace's columns ("layer n" otherwise).
+  function drawColumnHeaders(c) {
+    c.font = '600 11px ' + SANS;
+    c.textAlign = 'center';
+    c.textBaseline = 'bottom';
+    c.fillStyle = theme['hull-label'];
+    V.columns.forEach(function (cl, i) {
+      if (!cl.n) return;
+      var text = TRACE ? (i === 0 ? 'seed' : i + (i === 1 ? ' hop' : ' hops')) : 'layer ' + (i + 1);
+      c.fillText(text + ' (' + cl.n + ')', sx(cl.x), sy(cl.top) - 8);
+    });
+  }
+
   // Weight drives thickness: an aggregated edge between two folders reads
   // as heavy as the calls it stands for.
   function edgeWidth(e, emph) {
@@ -1020,10 +1083,9 @@
 
   function pathEdge(c, g, curved) {
     c.moveTo(g.x1, g.y1);
-    if (curved) {
-      var dx = (g.x2 - g.x1) * 0.5;
-      if (Math.abs(dx) < 30) dx = dx < 0 ? -30 : 30;
-      c.bezierCurveTo(g.x1 + dx, g.y1, g.x2 - dx, g.y2, g.x2, g.y2);
+    if (curved && g.route) {
+      var r = g.route.c;
+      c.bezierCurveTo(r[0], r[1], r[2], r[3], g.x2, g.y2);
     } else {
       c.lineTo(g.x2, g.y2);
     }
@@ -1035,9 +1097,9 @@
   }
   function endTangent(g, curved) {
     var dx, dy;
-    if (curved) {
-      // A bezier's end tangent is P3 - P2, here (dx, 0).
-      dx = g.x2 - g.x1 < 0 ? -1 : 1; dy = 0;
+    if (curved && g.route) {
+      // A bezier's end tangent is P3 - P2.
+      dx = g.x2 - g.route.c[2]; dy = g.y2 - g.route.c[3];
     } else {
       dx = g.x2 - g.x1; dy = g.y2 - g.y1;
     }
@@ -1054,8 +1116,7 @@
     c.lineTo(bx - t[0] * size - px * size * 0.45, by - t[1] * size - py * size * 0.45);
     c.closePath();
   }
-  // Also the bezier's t = 0.5 point: its control points mirror each other.
-  function edgeMid(g) { return [(g.x1 + g.x2) / 2, (g.y1 + g.y2) / 2]; }
+  function edgeMid(g) { return g.route ? bezierAt(g, 0.5) : [(g.x1 + g.x2) / 2, (g.y1 + g.y2) / 2]; }
   function edgeLabel(c, e) {
     var g = edgeGeom(e);
     var m = edgeMid(g);
@@ -1254,6 +1315,8 @@
     // skipped when it would overlap one already drawn, best-connected first.
     var cand = list.filter(function (v) { return important(v) || near(v) || lodOk(v); }).map(function (v) {
       var prio = important(v) ? 1e9 : near(v) ? 1e7 + v.deg : v.cluster !== null ? v.members.length * 4 + v.deg : v.deg * 2 + v.r;
+      // In layers, columns nearer the seed get first pick.
+      if (st.layout === 'layered' && v.hop !== undefined && prio < 1e7) prio += (30 - Math.min(30, v.hop)) * 1e4;
       return { v: v, prio: prio };
     });
     (hullLabels || []).forEach(function (hl2) { cand.push({ hull: hl2, prio: hl2.prio }); });
@@ -1330,20 +1393,18 @@
       var e = V.edges[i];
       if (hlEdges && !hlEdges.has(i)) continue;
       var g = edgeGeom(e);
-      if (px < Math.min(g.x1, g.x2) - 6 || px > Math.max(g.x1, g.x2) + 6) continue;
+      if (!curved && (px < Math.min(g.x1, g.x2) - 6 || px > Math.max(g.x1, g.x2) + 6)) continue;
       if (!curved && (py < Math.min(g.y1, g.y2) - 6 || py > Math.max(g.y1, g.y2) + 6)) continue;
       var d;
-      if (curved) {
+      if (curved && g.route) {
+        var rc = g.route.c;
+        if (px < Math.min(g.x1, g.x2, rc[0], rc[2]) - 6 || px > Math.max(g.x1, g.x2, rc[0], rc[2]) + 6) continue;
         d = Infinity;
-        var dx = (g.x2 - g.x1) * 0.5;
-        if (Math.abs(dx) < 30) dx = dx < 0 ? -30 : 30;
         var lx = g.x1, ly = g.y1;
         for (var s = 1; s <= 12; s++) {
-          var t = s / 12, u = 1 - t;
-          var x = u * u * u * g.x1 + 3 * u * u * t * (g.x1 + dx) + 3 * u * t * t * (g.x2 - dx) + t * t * t * g.x2;
-          var y = u * u * u * g.y1 + 3 * u * u * t * g.y1 + 3 * u * t * t * g.y2 + t * t * t * g.y2;
-          d = Math.min(d, segDist2(px, py, lx, ly, x, y));
-          lx = x; ly = y;
+          var pt = bezierAt(g, s / 12);
+          d = Math.min(d, segDist2(px, py, lx, ly, pt[0], pt[1]));
+          lx = pt[0]; ly = pt[1];
         }
       } else {
         d = segDist2(px, py, g.x1, g.y1, g.x2, g.y2);
@@ -1375,10 +1436,13 @@
       x1 = Math.max(x1, v.x + v.r + (v.cluster === null ? Math.min(160, v.label.length * 6.5) : 0));
       y1 = Math.max(y1, v.y + v.r);
     });
+    var layeredView = st.layout === 'layered';
+    if (layeredView) y0 -= 34; // column headers
     var bw = x1 - x0 + 80, bh = y1 - y0 + 60;
     var k = clampK(Math.min(W / bw, H / bh, 2.2));
     st.view.k = k;
-    st.view.x = W / 2 - (x0 + x1) / 2 * k;
+    // A layered graph reads from its first column: pin it to the left edge.
+    st.view.x = layeredView ? 40 - x0 * k : W / 2 - (x0 + x1) / 2 * k;
     st.view.y = H / 2 - (y0 + y1) / 2 * k;
     if (markUser) st.userMoved = false;
     requestDraw();
@@ -1910,8 +1974,16 @@
   // ----------------------------------------------------------------- legend
   var legend = document.getElementById('legend');
   function renderLegend() {
+    // Counts cover what the scope and halo rules show (not the legend's own
+    // toggles), so a hidden non-code language does not inflate them.
+    var kc = {}, lc = {};
+    N.forEach(function (n) { if (inView(n)) lc[langKey(n)] = (lc[langKey(n)] || 0) + 1; });
+    E.forEach(function (e) { if (inView(N[e.s]) && inView(N[e.t])) kc[e.kind] = (kc[e.kind] || 0) + 1; });
+    var listed = function (counts, on) {
+      return function (k) { return counts[k] > 0 || on[k] === false; };
+    };
     var html = '<h3>Edges</h3>';
-    var kinds = Object.keys(kindCounts).sort(function (a, b) {
+    var kinds = Object.keys(kindCounts).filter(listed(kc, st.kindOn)).sort(function (a, b) {
       return FAMILY_ORDER.indexOf(family(a)) - FAMILY_ORDER.indexOf(family(b)) || (a < b ? -1 : 1);
     });
     var code = kinds.filter(function (k) { return !BRIDGE_FAMILIES[family(k)]; });
@@ -1920,7 +1992,7 @@
       var fam = family(k);
       return '<label><input type="checkbox" data-kind="' + esc(k) + '"' + (st.kindOn[k] ? ' checked' : '') + '>' +
         '<span class="swatch' + (BRIDGE_FAMILIES[fam] ? ' bridge' : '') + '" style="border-color:' + esc(famColor(fam)) + '"></span>' +
-        '<span>' + esc(k) + '</span><span class="count">' + kindCounts[k] + '</span></label>';
+        '<span>' + esc(k) + '</span><span class="count">' + (kc[k] || 0) + '</span></label>';
     }
     html += code.map(row).join('') || '<p class="notes">None</p>';
     if (bridges.length) {
@@ -1930,13 +2002,13 @@
       '<button type="button" data-legend="calls">Calls only</button>' +
       (bridges.length ? '<button type="button" data-legend="bridges">Bridges + calls</button>' : '') + '</div>';
     html += '<h3>Languages</h3>';
-    Object.keys(langCounts).sort(function (a, b) { return langCounts[b] - langCounts[a] || (a < b ? -1 : 1); }).forEach(function (l) {
+    Object.keys(langCounts).filter(listed(lc, st.langOn)).sort(function (a, b) { return (lc[b] || 0) - (lc[a] || 0) || (a < b ? -1 : 1); }).forEach(function (l) {
       html += '<label><input type="checkbox" data-lang="' + esc(l) + '"' + (st.langOn[l] ? ' checked' : '') + '>' +
         '<span class="dot" style="background:' + esc(langColor(l.charAt(0) === '(' ? null : l)) + '"></span>' +
-        '<span>' + esc(l) + '</span><span class="count">' + langCounts[l] + '</span></label>';
+        '<span>' + esc(l) + '</span><span class="count">' + (lc[l] || 0) + '</span></label>';
     });
-    var ext = N.filter(function (n) { return has(n, F.external | F.unresolved); }).length;
-    var tests = N.filter(function (n) { return has(n, F.test); }).length;
+    var ext = N.filter(function (n) { return inView(n) && has(n, F.external | F.unresolved); }).length;
+    var tests = N.filter(function (n) { return inView(n) && has(n, F.test); }).length;
     var halo = N.filter(function (n) { return has(n, F.halo); }).length;
     var nonCode = N.filter(function (n) { return has(n, F.scope_out); }).length;
     html += '<h3>Show</h3>';
@@ -1977,6 +2049,7 @@
     else return;
     if (t.dataset.toggle === 'showLabels') { requestDraw(); return; }
     applyFilters();
+    if (t.dataset.toggle === 'showNonCode') renderLegend();
   });
   legend.addEventListener('click', function (ev) {
     var b = ev.target.closest('button[data-legend]');
@@ -2156,10 +2229,10 @@
       var ex = b.x - dx / l * (b.r + 2), ey = b.y - dy / l * (b.r + 2);
       var d;
       if (curved) {
-        var cx = (b.x - a.x) * 0.5;
-        if (Math.abs(cx) < 30) cx = cx < 0 ? -30 : 30;
-        ex = b.x - (cx < 0 ? -1 : 1) * (b.r + 2); ey = b.y;
-        d = 'M' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) + 'C' + (a.x + cx).toFixed(1) + ' ' + a.y.toFixed(1) + ' ' + (b.x - cx).toFixed(1) + ' ' + b.y.toFixed(1) + ' ' + ex.toFixed(1) + ' ' + ey.toFixed(1);
+        var rt = edgeRoute(a.x, a.y, b.x, b.y, 1).c;
+        var tx = b.x - rt[2], ty = b.y - rt[3], tl = Math.sqrt(tx * tx + ty * ty) || 1;
+        ex = b.x - tx / tl * (b.r + 2); ey = b.y - ty / tl * (b.r + 2);
+        d = 'M' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) + 'C' + rt.map(function (n) { return n.toFixed(1); }).join(' ') + ' ' + ex.toFixed(1) + ' ' + ey.toFixed(1);
       } else {
         d = 'M' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) + 'L' + ex.toFixed(1) + ' ' + ey.toFixed(1);
       }
@@ -2278,7 +2351,23 @@
   fit(true);
   layForce.setAttribute('aria-pressed', String(st.layout === 'force'));
   layLayer.setAttribute('aria-pressed', String(st.layout === 'layered'));
-  if (st.layout === 'layered') layered(); else startForce(1);
+  if (st.layout === 'layered') {
+    layered(true);
+  } else {
+    // Settle as much as a short budget allows before the first paint, so
+    // the page is laid out even if no animation frame ever runs.
+    sim.alpha = 1;
+    var bootT0 = performance.now();
+    while (sim.alpha > 0.002 && performance.now() - bootT0 < 400) tick();
+    savePositions();
+    if (sim.alpha <= 0.002) {
+      packComponents(true);
+      if (window.lidxGraph) window.lidxGraph.settledAt = Math.round(performance.now());
+    }
+    fit(false);
+    draw();
+    if (sim.alpha > 0.002) startForce(sim.alpha);
+  }
   setStatus();
   // Exposed for automated checks (headless screenshots, tests).
   window.lidxGraph = {
