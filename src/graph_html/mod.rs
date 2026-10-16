@@ -159,12 +159,19 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
                         .iter()
                         .filter(|s| s.id != resolved.symbol.id)
                         .take(5)
-                        .map(|s| format!("{} ({}:{})", s.qualname, s.file_path, s.start_line))
+                        .map(|s| {
+                            format!(
+                                "{} ({}:{})",
+                                printable(&s.qualname),
+                                printable(&s.file_path),
+                                s.start_line
+                            )
+                        })
                         .collect();
                     if !others.is_empty() {
                         warnings.push(format!(
                             "--seed {seed:?} is ambiguous: using {}; also matched {}{}",
-                            resolved.symbol.qualname,
+                            printable(&resolved.symbol.qualname),
                             others.join(", "),
                             if tied.len() > others.len() + 1 {
                                 ", ..."
@@ -290,6 +297,20 @@ pub fn repo_display_name(repo_root: &Path) -> String {
         .canonicalize()
         .unwrap_or_else(|_| repo_root.to_path_buf());
     folder(&root).unwrap_or_else(|| "repo".to_string())
+}
+
+/// `s` with control characters (ESC, CR, BEL, DEL, ...) escaped, so a crafted
+/// qualname or path printed to a terminal cannot carry escape sequences.
+fn printable(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// An index that exists but holds nothing is as unusable as a missing one.
@@ -437,6 +458,12 @@ pub fn open_in_browser(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn printable_escapes_control_characters() {
+        assert_eq!(printable("a\u{1b}[31mb\r\u{7f}"), "a\\u{1b}[31mb\\r\\u{7f}");
+        assert_eq!(printable("pkg/ü.rs"), "pkg/ü.rs");
+    }
 
     #[test]
     fn viewer_assets_cannot_end_their_script_block() {

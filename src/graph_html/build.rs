@@ -169,6 +169,11 @@ impl Ctx<'_> {
     }
 }
 
+/// `n` and `one` or `many`: "1 node", "2 nodes".
+pub(crate) fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 /// The module (directory, trailing `/`) a repo-relative file belongs to;
 /// `./` at the root. A non-zero `depth` cuts it after that many directories.
 pub fn module_of(path: &str, depth: usize) -> String {
@@ -454,6 +459,12 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
     // halo (externals, endpoints and unresolved names included). The walk
     // leaves a fifth of it for the halo; the halo then takes what is left.
     let max_nodes = scope.max_nodes.max(seeds.len());
+    if max_nodes > scope.max_nodes {
+        graph.notes.push(format!(
+            "--max-nodes {} raised to {max_nodes} to fit the seeds",
+            scope.max_nodes
+        ));
+    }
     let walk_cap = (max_nodes - (max_nodes / 5).min(HALO_MAX_TOTAL)).max(seeds.len());
 
     let mut core: Vec<Key> = Vec::new();
@@ -481,7 +492,8 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
     if extra_trimmed > 0 {
         graph.truncated = true;
         graph.notes.push(format!(
-            "{extra_trimmed} callers of the diff left out (--max-nodes {max_nodes})"
+            "{} of the diff left out (--max-nodes {max_nodes})",
+            count(extra_trimmed, "caller", "callers")
         ));
     }
     let mut frontier = frontier_seeds;
@@ -547,7 +559,8 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
     if capped {
         graph.truncated = true;
         graph.notes.push(format!(
-            "walk stopped at {walk_cap} nodes (--max-nodes {max_nodes}, a fifth kept for the halo)"
+            "walk stopped at {} (--max-nodes {max_nodes}, a fifth kept for the halo)",
+            count(walk_cap, "node", "nodes")
         ));
     }
 
@@ -593,7 +606,8 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
     if halo_skipped > 0 {
         graph.truncated = true;
         graph.notes.push(format!(
-            "{halo_skipped} edges to further neighbours not embedded (halo budget: {halo_total} of --max-nodes {max_nodes})"
+            "{} to further neighbours not embedded (halo budget: {halo_total} of --max-nodes {max_nodes})",
+            count(halo_skipped, "edge", "edges")
         ));
     }
     let halo_ids: Vec<i64> = halo
@@ -1212,14 +1226,19 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
     ];
     if unresolved > 0 {
         notes.push(format!(
-            "{unresolved} unresolved non-bridge edges not shown in an aggregated view"
+            "{} not shown in an aggregated view",
+            count(
+                unresolved,
+                "unresolved non-bridge edge",
+                "unresolved non-bridge edges"
+            )
         ));
     }
     let mut truncated = !file_leaves;
     if !file_leaves {
         notes.push(format!(
-            "{} files exceed --max-nodes {max_leaves}: showing modules",
-            files.len()
+            "{} exceed --max-nodes {max_leaves}: showing modules",
+            count(files.len(), "file", "files")
         ));
     }
     // Every leaf counts against --max-nodes, externals and bridge endpoints
@@ -1244,7 +1263,8 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
         let drop: HashSet<Leaf> = ranked[max_leaves..].iter().map(|l| (*l).clone()).collect();
         leaves.retain(|l, _| !drop.contains(l));
         notes.push(format!(
-            "kept the {max_leaves} most connected of {total} nodes (--max-nodes; externals and bridge endpoints count)"
+            "kept the {max_leaves} most connected of {} (--max-nodes; externals and bridge endpoints count)",
+            count(total, "node", "nodes")
         ));
         truncated = true;
     }
@@ -1258,6 +1278,13 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn count_pluralises() {
+        assert_eq!(count(1, "node", "nodes"), "1 node");
+        assert_eq!(count(0, "node", "nodes"), "0 nodes");
+        assert_eq!(count(2, "caller", "callers"), "2 callers");
+    }
 
     #[test]
     fn module_of_uses_directory_and_depth() {

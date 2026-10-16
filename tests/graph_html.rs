@@ -799,3 +799,21 @@ fn ambiguous_seed_warns_with_the_other_candidates() {
     let notes = doc["meta"]["notes"].to_string();
     assert!(notes.contains("ambiguous"), "{notes}");
 }
+
+/// More seeds than `--max-nodes`: every seed is kept and the page says the
+/// cap was raised, rather than only showing the raised value.
+#[test]
+fn seeds_over_the_cap_raise_it_and_say_so() {
+    let (_tmp, root, db) = fixture("lidx-graph-seedcap-");
+    let (_, doc) = graph(
+        &root,
+        &db,
+        &["--seed", "alpha", "--seed", "beta", "--max-nodes", "1"],
+    );
+    assert_eq!(Doc::new(&doc).names(false), set(&["alpha", "beta"]));
+    let notes = doc["meta"]["notes"].to_string();
+    assert!(
+        notes.contains("--max-nodes 1 raised to 2 to fit the seeds"),
+        "{notes}"
+    );
+}
