@@ -143,6 +143,28 @@ lidx serve --repo .
 lidx request --method find_symbol --params '{"query":"MyClass"}'
 ```
 
+## Graph view
+
+`lidx graph` writes one self-contained HTML file (no network access, works
+offline, safe to email) with an interactive view of the existing index. It
+never re-indexes.
+
+```bash
+lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --depth 3 --open
+```
+
+- No `--seed`: a module overview of the whole repo with weighted edges;
+  double-click a module to expand it into files (`--level file` starts expanded).
+- `--seed <qualname or query>` (repeatable), `--depth`, `--direction up|down|both`,
+  `--kinds CALLS,USES`, `--lang`, `--max-nodes`: a symbol neighbourhood plus
+  a one-hop halo you can reveal node by node.
+- `--diff <rev>`: the symbols changed against `rev` and their callers.
+- In the page: force or layered layout, clusters you can collapse, search
+  (`/`), a details panel with incoming and outgoing edges by kind, n-hop
+  highlighting, edge-kind and language filters, and PNG/SVG export. Bridge
+  edges (channel, RPC, HTTP, config) are dashed, and a publisher and a
+  subscriber meet on a shared endpoint node.
+
 ## Configuration
 
 | Variable | Default | Description |

@@ -871,6 +871,21 @@ impl ModeGuard {
     }
 }
 
+/// `analyze_diff`'s raw (uncompacted) result, for in-process callers such
+/// as `lidx graph --diff` that need its changed symbols and callers.
+pub fn analyze_diff_value(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let guard = ModeGuard::enter(UnknownMode::Strict);
+    let result = handlers::handle_analyze_diff(indexer, params);
+    guard.finish();
+    result
+}
+
+/// Upper-cased `kinds`, or an error naming the first unknown edge kind --
+/// the same check every RPC method's `kinds` parameter gets.
+pub fn normalize_edge_kinds(kinds: &[String]) -> Result<Vec<String>> {
+    Ok(validate::normalize_kinds(Some(kinds))?.unwrap_or_default())
+}
+
 /// Strict dispatch (CLI, raw RPC): an unknown param is an error, raised
 /// while the handler parses its params, before it does any work.
 pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {

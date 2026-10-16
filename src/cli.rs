@@ -14,6 +14,8 @@ use std::path::PathBuf;
   lidx request --method trace_flow --params '{"start_qualname":"crate::indexer::Indexer::reindex","direction":"downstream","kinds":["CALLS"],"max_hops":1}'
   lidx request --method search --params '{"query":"def\\s+greet","context_lines":8}'
   lidx dispatch-pairs --repo .
+  lidx graph --repo . --open
+  lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --depth 3
   lidx serve --repo . --watch auto
   lidx mcp-serve --repo .
 "#
@@ -134,6 +136,55 @@ pub enum Command {
         /// File path to analyze (relative to repo root).
         path: String,
     },
+    /// Write an interactive, self-contained HTML view of the indexed graph.
+    ///
+    /// Without --seed or --diff: a module (or file) overview of the whole
+    /// repo with weighted edges. With --seed: the seeds' neighbourhood.
+    /// Reads the existing index; never indexes.
+    Graph {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Output HTML file.
+        #[arg(long, default_value = "lidx-graph.html")]
+        out: PathBuf,
+        /// Open the written file in the default browser.
+        #[arg(long)]
+        open: bool,
+        /// Seed symbol: a qualname or a search query (repeatable).
+        #[arg(long = "seed", value_name = "QUALNAME_OR_QUERY")]
+        seeds: Vec<String>,
+        /// Hops to walk from the seeds (or the diff's changed symbols).
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        /// Walk direction from the seeds: up (callers), down (callees) or
+        /// both. Default: both for --seed, up for --diff.
+        #[arg(long, value_parser = ["up", "down", "both"])]
+        direction: Option<String>,
+        /// Edge kinds to show, comma-separated (default: all but CONTAINS
+        /// and MODULE_FILE).
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+        /// Languages to include, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        lang: Vec<String>,
+        /// Node cap: symbols walked (default 500), or file/module leaves
+        /// (default 5000).
+        #[arg(long)]
+        max_nodes: Option<usize>,
+        /// Node granularity. Default: symbol with --seed/--diff, module
+        /// otherwise.
+        #[arg(long, value_parser = ["symbol", "file", "module"])]
+        level: Option<String>,
+        /// Show the symbols changed against this git revision and their
+        /// callers (via analyze_diff).
+        #[arg(long, value_name = "REV")]
+        diff: Option<String>,
+        /// Cut module paths after this many directories (0: whole directory).
+        #[arg(long, default_value_t = 0)]
+        module_depth: usize,
+    },
     /// Initialize lidx: index repo, install hooks, update gitignore.
     Init {
         #[arg(long, default_value = ".")]
@@ -161,6 +212,7 @@ impl Command {
             | Command::Request { repo, .. }
             | Command::McpServe { repo, .. }
             | Command::Context { repo, .. }
+            | Command::Graph { repo, .. }
             | Command::Init { repo, .. } => repo,
         }
     }

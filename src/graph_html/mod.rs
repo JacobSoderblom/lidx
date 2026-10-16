@@ -1,0 +1,380 @@
+//! `lidx graph`: one self-contained, offline HTML file showing a scoped or
+//! aggregated view of the indexed graph.
+//!
+//! The page is `template.html` with `viewer.css`, `viewer.js` and the graph
+//! document (see [`doc`]) inlined; it makes no network requests. The graph
+//! is read from the existing index and never re-indexed.
+
+pub mod build;
+pub mod doc;
+
+pub use build::{Direction, Level};
+pub use doc::Counts;
+
+use crate::db::Db;
+use crate::indexer::{Indexer, scan};
+use crate::resolve::{SymbolRef, resolve_symbol};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+const TEMPLATE: &str = include_str!("template.html");
+const CSS: &str = include_str!("viewer.css");
+const JS: &str = include_str!("viewer.js");
+
+/// Default `--max-nodes` for a seeded symbol graph.
+pub const DEFAULT_MAX_SYMBOLS: usize = 500;
+/// Default `--max-nodes` for a file/module graph (leaves).
+pub const DEFAULT_MAX_LEAVES: usize = 5_000;
+
+#[derive(Clone, Debug)]
+pub struct GraphOptions {
+    pub seeds: Vec<String>,
+    pub depth: usize,
+    /// `None`: `both` for seeds, `up` (callers) for `--diff`.
+    pub direction: Option<Direction>,
+    pub kinds: Option<Vec<String>>,
+    pub languages: Option<Vec<String>>,
+    pub max_nodes: Option<usize>,
+    /// `None`: `symbol` with seeds or a diff, `module` without.
+    pub level: Option<Level>,
+    /// Git revision to diff the working tree against.
+    pub diff: Option<String>,
+    pub module_depth: usize,
+}
+
+impl Default for GraphOptions {
+    fn default() -> Self {
+        Self {
+            seeds: Vec::new(),
+            depth: 2,
+            direction: None,
+            kinds: None,
+            languages: None,
+            max_nodes: None,
+            level: None,
+            diff: None,
+            module_depth: 0,
+        }
+    }
+}
+
+/// A generated page.
+pub struct Generated {
+    pub html: String,
+    pub counts: Counts,
+    pub scope: String,
+}
+
+/// Build the page for `opts` from the index at `db_path`.
+pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result<Generated> {
+    if !db_path.exists() {
+        bail!(
+            "no lidx index at {}; run `lidx reindex --repo {}` first (`lidx graph` reads an existing index and never indexes)",
+            db_path.display(),
+            repo_root.display()
+        );
+    }
+    let kinds = match &opts.kinds {
+        Some(k) if !k.is_empty() => Some(crate::rpc::normalize_edge_kinds(k)?),
+        _ => None,
+    };
+    let languages = scan::normalize_language_filter(opts.languages.as_deref())?;
+
+    // `--diff` needs an indexer for analyze_diff; everything else a Db.
+    let mut diff_scope: Option<(Vec<i64>, Vec<i64>)> = None;
+    let indexer;
+    let plain_db;
+    let db: &Db = if let Some(rev) = &opts.diff {
+        let mut ix = Indexer::new_with_options(
+            repo_root.to_path_buf(),
+            db_path.to_path_buf(),
+            scan::ScanOptions::default(),
+        )?;
+        ensure_indexed(ix.db(), db_path)?;
+        diff_scope = Some(diff_symbols(&mut ix, repo_root, rev, opts, &languages)?);
+        indexer = ix;
+        indexer.db()
+    } else {
+        plain_db = Db::new(db_path)?;
+        ensure_indexed(&plain_db, db_path)?;
+        &plain_db
+    };
+
+    let graph_version = db.current_graph_version()?;
+    let ctx = build::Ctx {
+        db,
+        graph_version,
+        languages: languages.clone(),
+        filter: build::KindFilter {
+            include: kinds.as_ref().map(|k| k.iter().cloned().collect()),
+        },
+        module_depth: opts.module_depth,
+        file_lang: build::file_languages(db, graph_version)?,
+    };
+
+    let seeded = !opts.seeds.is_empty() || diff_scope.is_some();
+    let level = opts
+        .level
+        .unwrap_or(if seeded { Level::Symbol } else { Level::Module });
+    let mut scope_parts: Vec<String> = Vec::new();
+    let graph = if seeded {
+        let (seeds, extra, direction) = if let Some((changed, callers)) = diff_scope {
+            let rev = opts.diff.as_deref().unwrap_or_default();
+            scope_parts.push(format!("diff {rev}: {} changed symbols", changed.len()));
+            (changed, callers, opts.direction.unwrap_or(Direction::Up))
+        } else {
+            let mut ids = Vec::new();
+            for seed in &opts.seeds {
+                let resolved = resolve_symbol(
+                    db,
+                    SymbolRef::Qualname(seed.clone()),
+                    languages.as_deref(),
+                    graph_version,
+                )
+                .with_context(|| format!("resolve --seed {seed:?}"))?;
+                ids.push(resolved.symbol.id);
+            }
+            let names: Vec<String> = db
+                .symbols_by_ids(&ids, None, graph_version)?
+                .into_iter()
+                .map(|s| s.qualname)
+                .collect();
+            scope_parts.push(format!("seed {}", names.join(", ")));
+            (ids, Vec::new(), opts.direction.unwrap_or(Direction::Both))
+        };
+        scope_parts.push(format!("depth {}", opts.depth));
+        scope_parts.push(direction.as_str().to_string());
+        let scope = build::SymbolScope {
+            seeds,
+            extra,
+            depth: opts.depth,
+            direction,
+            max_nodes: opts.max_nodes.unwrap_or(DEFAULT_MAX_SYMBOLS).max(1),
+        };
+        let graph = build::symbol_graph(&ctx, &scope)?;
+        if level == Level::Symbol {
+            graph
+        } else {
+            scope_parts.push(format!("{} level", level.as_str()));
+            build::aggregate_symbol_graph(&ctx, graph, level)
+        }
+    } else {
+        if level == Level::Symbol {
+            bail!(
+                "--level symbol needs --seed or --diff: a whole-repo symbol graph is unreadable; use --level file or module"
+            );
+        }
+        scope_parts.push(format!("whole repo, {} level", level.as_str()));
+        build::repo_graph(
+            &ctx,
+            level,
+            opts.max_nodes.unwrap_or(DEFAULT_MAX_LEAVES).max(1),
+        )?
+    };
+    if let Some(k) = &kinds {
+        scope_parts.push(format!("kinds {}", k.join(",")));
+    }
+    if let Some(l) = &languages {
+        scope_parts.push(format!("lang {}", l.join(",")));
+    }
+    let scope = scope_parts.join(" · ");
+
+    let repo_name = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf())
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string());
+    let meta = doc::Meta {
+        repo: repo_name,
+        commit: db.graph_version_commit(graph_version)?,
+        graph_version,
+        level: level.as_str().to_string(),
+        scope: scope.clone(),
+        generated_by: format!("lidx {}", env!("CARGO_PKG_VERSION")),
+        generated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    let counts = doc::counts(&graph);
+    let document = doc::to_json(&graph, &meta);
+    let title = format!("lidx graph · {}", meta.repo);
+    Ok(Generated {
+        html: render_html(&title, &document)?,
+        counts,
+        scope,
+    })
+}
+
+/// An index that exists but holds nothing is as unusable as a missing one.
+fn ensure_indexed(db: &Db, db_path: &Path) -> Result<()> {
+    let files: i64 = db
+        .read_conn()?
+        .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+    if files == 0 {
+        bail!(
+            "the lidx index at {} is empty; run `lidx reindex` first",
+            db_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// `(changed symbols, their callers)` for the working tree against `rev`,
+/// from `analyze_diff`.
+fn diff_symbols(
+    indexer: &mut Indexer,
+    repo_root: &Path,
+    rev: &str,
+    opts: &GraphOptions,
+    languages: &Option<Vec<String>>,
+) -> Result<(Vec<i64>, Vec<i64>)> {
+    if rev.starts_with('-') {
+        bail!("--diff takes a revision, not an option: {rev:?}");
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["diff", "--no-color", "--no-ext-diff", rev, "--"])
+        .output()
+        .context("run git diff")?;
+    if !out.status.success() {
+        bail!(
+            "git diff {rev} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let diff = String::from_utf8_lossy(&out.stdout);
+    if diff.trim().is_empty() {
+        bail!("no changes against {rev}");
+    }
+    let mut params = json!({
+        "diff": diff,
+        "max_depth": opts.depth.clamp(1, 5),
+        "include_tests": false,
+        "include_risk": false,
+        "max_bytes": 200_000,
+    });
+    if let Some(langs) = languages {
+        params["languages"] = json!(langs);
+    }
+    let result = crate::rpc::analyze_diff_value(indexer, params)?;
+    let ids = |key: &str| -> Vec<i64> {
+        let mut seen = HashSet::new();
+        result
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.pointer("/symbol/id").and_then(Value::as_i64))
+            .filter(|id| seen.insert(*id))
+            .collect()
+    };
+    let changed = ids("changed_symbols");
+    if changed.is_empty() {
+        bail!("the diff against {rev} touches no indexed symbol");
+    }
+    Ok((changed, ids("upstream")))
+}
+
+/// The page: the template with styles, script and the escaped document.
+pub fn render_html(title: &str, document: &Value) -> Result<String> {
+    let json = serde_json::to_string(document)?;
+    let html = TEMPLATE
+        .replace("__TITLE__", &escape_html(title))
+        .replace("/*__CSS__*/", CSS)
+        .replace("/*__JS__*/", JS);
+    // Data last, so nothing in it is ever scanned for a placeholder.
+    Ok(html.replacen("__DATA__", &script_safe_json(&json), 1))
+}
+
+/// `json` made safe to embed in a `<script type="application/json">` block:
+/// `<`, `>` and `&` become `<`/`>`/`&` (so no `</script>` or
+/// `<!--` can end or confuse the block) and U+2028/U+2029 are escaped. In
+/// serialized JSON those characters only occur inside strings, where the
+/// escapes decode back to the same text.
+pub fn script_safe_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len() + 64);
+    for c in json.chars() {
+        match c {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The JSON document embedded in a page written by [`render_html`].
+pub fn extract_document(html: &str) -> Result<Value> {
+    let start_tag = r#"<script type="application/json" id="lidx-graph-data">"#;
+    let start = html
+        .find(start_tag)
+        .context("no graph data block in page")?
+        + start_tag.len();
+    let end = start
+        + html[start..]
+            .find("</script>")
+            .context("unterminated graph data block")?;
+    Ok(serde_json::from_str(&html[start..end])?)
+}
+
+/// Open `path` in the default browser.
+pub fn open_in_browser(path: &Path) -> Result<()> {
+    let path: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut cmd = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    let status = cmd.arg(&path).status().context("launch browser")?;
+    if !status.success() {
+        bail!("could not open {} in a browser", path.display());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewer_assets_cannot_end_their_script_block() {
+        assert!(!JS.to_ascii_lowercase().contains("</script"));
+        assert!(!CSS.to_ascii_lowercase().contains("</style"));
+        for placeholder in ["__TITLE__", "/*__CSS__*/", "/*__JS__*/", "__DATA__"] {
+            assert!(TEMPLATE.contains(placeholder), "{placeholder}");
+        }
+    }
+
+    #[test]
+    fn script_safe_json_round_trips_hostile_strings() {
+        let hostile = "</script><script>alert(1)</script> <!-- x --> a&b \u{2028}\u{2029} </SCRIPT";
+        let doc = json!({ "s": [hostile] });
+        let html = render_html("t</title>", &doc).unwrap();
+        let body = &html[html.find("lidx-graph-data").unwrap()..];
+        let block = &body[..body.find("</script>").unwrap()];
+        for bad in ["</", "<!--", "\u{2028}", "\u{2029}"] {
+            assert!(!block.contains(bad), "{bad:?} leaked into the data block");
+        }
+        assert!(!html.contains("t</title>"));
+        assert_eq!(extract_document(&html).unwrap(), doc);
+    }
+}

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use lidx::{cli, context, db, indexer, init, mcp, rpc, watch};
+use lidx::{cli, context, db, graph_html, indexer, init, mcp, rpc, watch};
 use std::path::{Path, PathBuf};
 
 fn default_db_path(repo: &Path) -> PathBuf {
@@ -153,6 +153,59 @@ fn main() -> Result<()> {
                         print!("{text}");
                     }
                 }
+            }
+            Ok(())
+        }
+        cli::Command::Graph {
+            repo,
+            db,
+            out,
+            open,
+            seeds,
+            depth,
+            direction,
+            kinds,
+            lang,
+            max_nodes,
+            level,
+            diff,
+            module_depth,
+        } => {
+            let db_path = db.unwrap_or_else(|| default_db_path(&repo));
+            let opts = graph_html::GraphOptions {
+                seeds,
+                depth,
+                direction: direction.as_deref().map(|d| match d {
+                    "up" => graph_html::Direction::Up,
+                    "down" => graph_html::Direction::Down,
+                    _ => graph_html::Direction::Both,
+                }),
+                kinds: (!kinds.is_empty()).then_some(kinds),
+                languages: (!lang.is_empty()).then_some(lang),
+                max_nodes,
+                level: level.as_deref().map(|l| match l {
+                    "symbol" => graph_html::Level::Symbol,
+                    "file" => graph_html::Level::File,
+                    _ => graph_html::Level::Module,
+                }),
+                diff,
+                module_depth,
+            };
+            let started = std::time::Instant::now();
+            let page = graph_html::generate(&repo, &db_path, &opts)?;
+            std::fs::write(&out, &page.html)
+                .map_err(|e| anyhow::anyhow!("write {}: {e}", out.display()))?;
+            println!(
+                "wrote {} ({} nodes, {} edges, {} KB) in {} ms -- {}",
+                out.display(),
+                page.counts.nodes,
+                page.counts.edges,
+                page.html.len().div_ceil(1024),
+                started.elapsed().as_millis(),
+                page.scope
+            );
+            if open {
+                graph_html::open_in_browser(&out)?;
             }
             Ok(())
         }
