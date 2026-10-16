@@ -587,3 +587,215 @@ fn header_uses_the_remote_name_or_title() {
     assert_eq!(doc["meta"]["repo"], "Widgets <core>");
     assert!(html.contains("<title>lidx graph · Widgets &lt;core&gt;</title>"));
 }
+
+/// A wider fixture: four packages of chained functions that also call into
+/// the standard library, so walks, halos, externals and file leaves all
+/// outgrow a small `--max-nodes`.
+fn wide_files() -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    for p in 0..4 {
+        let mut src = String::from("import os\nimport json\n");
+        if p > 0 {
+            src.push_str(&format!("from pkg{}.mod import f{}_0\n", p - 1, p - 1));
+        }
+        for f in 0..8 {
+            src.push_str(&format!("\n\ndef f{p}_{f}():\n"));
+            if f + 1 < 8 {
+                src.push_str(&format!("    f{p}_{}()\n", f + 1));
+            }
+            if p > 0 && f == 0 {
+                src.push_str(&format!("    f{}_0()\n", p - 1));
+            }
+            src.push_str(&format!(
+                "    os.path.join('a{f}', 'b')\n    json.dumps({f})\n"
+            ));
+        }
+        files.push((format!("pkg{p}/mod.py"), src));
+        files.push((
+            format!("pkg{p}/extra.py"),
+            format!("from pkg{p}.mod import f{p}_3\n\n\ndef helper{p}():\n    f{p}_3()\n"),
+        ));
+    }
+    files
+}
+
+/// `--max-nodes` bounds every node the page holds: walk, halo, `--diff`
+/// callers, externals, endpoints, files and modules.
+#[test]
+fn max_nodes_bounds_every_emitted_node() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-graph-cap-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    let files = wide_files();
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    common::write_files(&root, &refs);
+    let git = |args: &[&str]| {
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            st.status.success(),
+            "{}",
+            String::from_utf8_lossy(&st.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+    // Touch the bottom of the chain so the diff's callers are many.
+    let changed = files[6]
+        .1
+        .replace("def f3_7():\n", "def f3_7():\n    x = 1\n");
+    std::fs::write(root.join("pkg3/mod.py"), changed).unwrap();
+    let db = root.join(".lidx").join(".lidx.sqlite");
+    lidx::indexer::Indexer::new(root.clone(), db.clone())
+        .unwrap()
+        .reindex()
+        .unwrap();
+
+    let views: &[&[&str]] = &[
+        &["--seed", "f0_0", "--depth", "9", "--direction", "both"],
+        &["--seed", "f0_0", "--depth", "9", "--level", "file"],
+        &["--level", "file"],
+        &["--level", "module"],
+        &["--diff", "HEAD", "--depth", "5"],
+    ];
+    for view in views {
+        let (_, full) = graph(&root, &db, view);
+        let total = full["meta"]["counts"]["nodes"].as_u64().unwrap();
+        for cap in [3u64, 5, 7] {
+            if total <= cap {
+                continue;
+            }
+            let mut args: Vec<&str> = view.to_vec();
+            let cap_s = cap.to_string();
+            args.extend(["--max-nodes", cap_s.as_str()]);
+            let (_, doc) = graph(&root, &db, &args);
+            let n = doc["meta"]["counts"]["nodes"].as_u64().unwrap();
+            assert!(n <= cap, "{view:?} --max-nodes {cap}: {n} nodes");
+            assert_eq!(doc["meta"]["truncated"], true, "{view:?} --max-nodes {cap}");
+            assert!(
+                !doc["meta"]["notes"].as_array().unwrap().is_empty(),
+                "{view:?}: a trimmed page says so"
+            );
+        }
+        assert!(
+            total > 3,
+            "{view:?} is too small to exercise the cap: {total}"
+        );
+    }
+}
+
+/// An RPC call and its implementation store a guessed route; the proto
+/// declares the real one. All three meet on one endpoint node, whichever
+/// side the walk starts from and in the whole-repo view.
+#[test]
+fn rpc_route_endpoint_is_the_same_node_from_either_side() {
+    const PROTO: &str = "syntax = \"proto3\";\npackage datacatalog.v1;\n\
+service DataCatalogService {\n  rpc GetTables (Req) returns (Res);\n}\n\
+message Req {}\nmessage Res {}\n";
+    const HANDLER: &str = "export function getTables(call, cb) { cb(null, {}); }\n";
+    const PLUGIN: &str = r#"
+import { getTables } from "../features/datacatalog/tables/get";
+import { DataCatalogServiceService } from "../gen/datacatalog_grpc_pb";
+export function grpcPlugin(fastify) {
+  fastify.grpcServer.addService(DataCatalogServiceService, {
+    getTables: grpcHandler(getTables, fastify),
+  });
+}
+"#;
+    const CLIENT: &str = r#"
+import { DataCatalogServiceClient } from "../gen/datacatalog_grpc_pb";
+const client = new DataCatalogServiceClient("h");
+const dataCatalogClient = client;
+export function loadTables(req) {
+  return dataCatalogClient.getTables.bind(dataCatalogClient)(req);
+}
+"#;
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-rpc-",
+        &[
+            ("protos/datacatalog.proto", PROTO),
+            ("src/features/datacatalog/tables/get.ts", HANDLER),
+            ("src/plugins/grpc.ts", PLUGIN),
+            ("src/client/tables.ts", CLIENT),
+        ],
+    );
+    let endpoints = |doc: &Value| -> Vec<String> {
+        let d = Doc::new(doc);
+        let flag = doc["meta"]["flags"]["endpoint"].as_u64().unwrap();
+        let mut out: Vec<String> = (0..d.nodes.len())
+            .filter(|&i| d.flags(i) & flag != 0)
+            .map(|i| d.qual(i).to_string())
+            .collect();
+        out.sort();
+        out
+    };
+    let route = "/datacatalog.v1.datacatalogservice/gettables".to_string();
+    let views: &[&[&str]] = &[
+        &[
+            "--seed",
+            "loadTables",
+            "--depth",
+            "3",
+            "--direction",
+            "down",
+        ],
+        &["--seed", "getTables", "--depth", "3", "--direction", "up"],
+        &["--seed", "GetTables", "--depth", "2", "--direction", "both"],
+        &["--level", "file", "--scope", "all"],
+    ];
+    for view in views {
+        let (_, doc) = graph(&root, &db, view);
+        assert_eq!(endpoints(&doc), vec![route.clone()], "{view:?}");
+    }
+    // From the client, the walk crosses the endpoint to the handler.
+    let (_, doc) = graph(
+        &root,
+        &db,
+        &[
+            "--seed",
+            "loadTables",
+            "--depth",
+            "3",
+            "--direction",
+            "down",
+        ],
+    );
+    let names = Doc::new(&doc).names(false);
+    assert!(names.iter().any(|n| n.ends_with(".getTables")), "{names:?}");
+}
+
+/// A `--seed` matching several symbols equally well names the one taken and
+/// the others, on stderr and in the page.
+#[test]
+fn ambiguous_seed_warns_with_the_other_candidates() {
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-ambiguous-",
+        &[
+            ("a/one.py", "def run():\n    return 1\n"),
+            ("b/two.py", "def run():\n    return 2\n"),
+        ],
+    );
+    let out = root.join("g.html");
+    let res = graph_cmd(&root, &db, &out, &["--seed", "run"]);
+    assert!(res.status.success());
+    let err = String::from_utf8_lossy(&res.stderr);
+    assert!(err.contains("ambiguous"), "{err}");
+    assert!(
+        err.contains("a.one.run") && err.contains("b.two.run"),
+        "{err}"
+    );
+    let doc = lidx::graph_html::extract_document(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let notes = doc["meta"]["notes"].to_string();
+    assert!(notes.contains("ambiguous"), "{notes}");
+}

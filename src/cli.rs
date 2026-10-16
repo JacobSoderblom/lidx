@@ -169,8 +169,10 @@ pub enum Command {
         /// Languages to include, comma-separated.
         #[arg(long, value_delimiter = ',')]
         lang: Vec<String>,
-        /// Node cap: symbols walked (default 500), or file/module leaves
-        /// (default 5000).
+        /// Cap on every node written to the page: the walk, the expandable
+        /// halo, --diff callers, externals and bridge endpoints all count
+        /// (default 500 for symbols, 5000 for file/module views). The page
+        /// notes what was left out.
         #[arg(long)]
         max_nodes: Option<usize>,
         /// Node granularity. Default: symbol with --seed/--diff, module

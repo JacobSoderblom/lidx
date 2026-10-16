@@ -13,7 +13,7 @@ pub use doc::Counts;
 
 use crate::db::Db;
 use crate::indexer::{Indexer, scan};
-use crate::resolve::{SymbolRef, resolve_symbol};
+use crate::resolve::{QueryResolution, SymbolRef, resolve_symbol, resolve_symbol_with_candidates};
 use crate::search::SearchScope;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -73,6 +73,8 @@ pub struct Generated {
     pub html: String,
     pub counts: Counts,
     pub scope: String,
+    /// For stderr: e.g. a `--seed` that matched several symbols equally well.
+    pub warnings: Vec<String>,
 }
 
 /// Build the page for `opts` from the index at `db_path`.
@@ -129,6 +131,7 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
         .unwrap_or(if seeded { Level::Symbol } else { Level::Module });
     let mut scope_parts: Vec<String> = Vec::new();
     let mut walk_direction = None;
+    let mut warnings: Vec<String> = Vec::new();
     let graph = if seeded {
         let (seeds, extra, direction) = if let Some((changed, callers)) = diff_scope {
             let rev = opts.diff.as_deref().unwrap_or_default();
@@ -144,6 +147,33 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
                     graph_version,
                 )
                 .with_context(|| format!("resolve --seed {seed:?}"))?;
+                // A tie at the best match tier is a guess: say which one
+                // was taken and what else matched.
+                if let QueryResolution::Ambiguous(tied) = resolve_symbol_with_candidates(
+                    db,
+                    SymbolRef::Qualname(seed.clone()),
+                    languages.as_deref(),
+                    graph_version,
+                )? {
+                    let others: Vec<String> = tied
+                        .iter()
+                        .filter(|s| s.id != resolved.symbol.id)
+                        .take(5)
+                        .map(|s| format!("{} ({}:{})", s.qualname, s.file_path, s.start_line))
+                        .collect();
+                    if !others.is_empty() {
+                        warnings.push(format!(
+                            "--seed {seed:?} is ambiguous: using {}; also matched {}{}",
+                            resolved.symbol.qualname,
+                            others.join(", "),
+                            if tied.len() > others.len() + 1 {
+                                ", ..."
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
+                }
                 ids.push(resolved.symbol.id);
             }
             let names: Vec<String> = db
@@ -190,7 +220,7 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
     if let Some(l) = &languages {
         scope_parts.push(format!("lang {}", l.join(",")));
     }
-    let file_scope = scope_name(ctx.scope);
+    let file_scope = ctx.scope.as_str();
     scope_parts.push(format!("{file_scope} files"));
     let scope = scope_parts.join(" · ");
 
@@ -212,6 +242,8 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
             .map(|d| d.as_secs())
             .unwrap_or(0),
     };
+    let mut graph = graph;
+    graph.notes.extend(warnings.iter().cloned());
     let counts = doc::counts(&graph);
     let document = doc::to_json(&graph, &meta);
     let title = format!("lidx graph · {}", meta.repo);
@@ -219,17 +251,8 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
         html: render_html(&title, &document)?,
         counts,
         scope,
+        warnings,
     })
-}
-
-fn scope_name(scope: SearchScope) -> &'static str {
-    match scope {
-        SearchScope::Code => "code",
-        SearchScope::Tests => "tests",
-        SearchScope::Docs => "docs",
-        SearchScope::Examples => "examples",
-        SearchScope::All => "all",
-    }
 }
 
 /// The repository's name: its `origin` remote's last path segment (so a

@@ -46,6 +46,19 @@ impl<'a> SearchOptions<'a> {
     }
 }
 
+impl SearchScope {
+    /// The scope's name as `parse_scope` accepts it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchScope::Code => "code",
+            SearchScope::Docs => "docs",
+            SearchScope::Tests => "tests",
+            SearchScope::Examples => "examples",
+            SearchScope::All => "all",
+        }
+    }
+}
+
 pub fn parse_scope(raw: Option<&str>) -> Result<Option<SearchScope>> {
     let Some(raw) = raw else {
         return Ok(None);

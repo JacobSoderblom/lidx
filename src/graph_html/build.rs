@@ -38,7 +38,6 @@ pub const GROUP_UNRESOLVED: &str = "(unresolved)";
 
 /// Halo neighbours embedded per scoped node, and in total.
 const HALO_PER_NODE: usize = 24;
-const HALO_MIN_TOTAL: usize = 100;
 const HALO_MAX_TOTAL: usize = 2_000;
 /// SQLite parameter batches for the per-level edge fetch.
 const ID_BATCH: usize = 400;
@@ -219,7 +218,7 @@ fn is_bridge_kind(kind: &str) -> bool {
 
 /// `(from, to, flags)` of `edge` in flow direction; `None` for an edge with
 /// no usable endpoints.
-fn display(edge: &Edge, alias: &HashMap<String, String>) -> Option<(Key, Key, u32)> {
+fn display(edge: &Edge) -> Option<(Key, Key, u32)> {
     let src = Key::Sym(edge.source_symbol_id?);
     let tgt = match edge.target_symbol_id {
         Some(t) => Key::Sym(t),
@@ -229,7 +228,7 @@ fn display(edge: &Edge, alias: &HashMap<String, String>) -> Option<(Key, Key, u3
                 return None;
             }
             if is_bridge_kind(&edge.kind) {
-                Key::Endpoint(alias.get(tq).cloned().unwrap_or_else(|| tq.to_string()))
+                Key::Endpoint(tq.to_string())
             } else {
                 Key::Unresolved(tq.to_string())
             }
@@ -243,6 +242,52 @@ fn display(edge: &Edge, alias: &HashMap<String, String>) -> Option<(Key, Key, u3
     } else {
         (src, tgt, 0)
     })
+}
+
+/// One name per bridge endpoint. An RPC edge may store a guessed route
+/// (`/Service/Method` without the proto package); the route it binds to is
+/// a property of the index, not of the order edges are met in, so every edge
+/// is rewritten to it before anything keys on its target.
+#[derive(Default)]
+pub(crate) struct RouteCanon {
+    cache: HashMap<String, String>,
+}
+
+impl RouteCanon {
+    pub(crate) fn canonical(
+        &mut self,
+        db: &Db,
+        graph_version: i64,
+        kind: &str,
+        tq: &str,
+    ) -> String {
+        if !edge_views::contains(edge_views::RPC_FAMILY, kind) || !tq.starts_with('/') {
+            return tq.to_string();
+        }
+        if let Some(c) = self.cache.get(tq) {
+            return c.clone();
+        }
+        let c = db
+            .resolve_rpc_route(tq, graph_version)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| tq.to_string());
+        self.cache.insert(tq.to_string(), c.clone());
+        c
+    }
+
+    /// Rewrite the target of every unresolved bridge edge in `edges`.
+    fn normalise(&mut self, db: &Db, graph_version: i64, edges: &mut [Edge]) {
+        for e in edges {
+            if e.target_symbol_id.is_none()
+                && is_bridge_kind(&e.kind)
+                && let Some(tq) = e.target_qualname.as_deref()
+            {
+                let c = self.canonical(db, graph_version, &e.kind, tq.trim());
+                e.target_qualname = Some(c);
+            }
+        }
+    }
 }
 
 fn edge_rank(kind: &str) -> u8 {
@@ -261,7 +306,7 @@ struct Fetcher<'c, 'a> {
     ctx: &'c Ctx<'a>,
     edges: HashMap<Key, Vec<Edge>>,
     symbols: HashMap<i64, Option<Symbol>>,
-    alias: HashMap<String, String>,
+    routes: RouteCanon,
 }
 
 impl<'c, 'a> Fetcher<'c, 'a> {
@@ -270,7 +315,7 @@ impl<'c, 'a> Fetcher<'c, 'a> {
             ctx,
             edges: HashMap::new(),
             symbols: HashMap::new(),
-            alias: HashMap::new(),
+            routes: RouteCanon::default(),
         }
     }
 
@@ -330,6 +375,8 @@ impl<'c, 'a> Fetcher<'c, 'a> {
             for id in chunk {
                 let mut list = map.remove(id).unwrap_or_default();
                 list.retain(|e| self.ctx.filter.allows(e));
+                self.routes
+                    .normalise(self.ctx.db, self.ctx.graph_version, &mut list);
                 list.sort_by(|a, b| {
                     (edge_rank(&a.kind), a.id, &a.kind, a.source_symbol_id).cmp(&(
                         edge_rank(&b.kind),
@@ -358,14 +405,10 @@ impl<'c, 'a> Fetcher<'c, 'a> {
                 self.ctx.graph_version,
             )?;
             list.retain(|e| self.ctx.filter.allows(e) && e.target_symbol_id.is_none());
-            // An RPC route guess that binds to this route joins this node.
-            for e in &list {
-                if let Some(other) = e.target_qualname.as_deref()
-                    && other != tq
-                {
-                    self.alias.insert(other.to_string(), tq.clone());
-                }
-            }
+            // A route guess that binds to this route is rewritten to it.
+            self.routes
+                .normalise(self.ctx.db, self.ctx.graph_version, &mut list);
+            list.retain(|e| e.target_qualname.as_deref() == Some(tq.as_str()));
             list.sort_by_key(|e| (edge_rank(&e.kind), e.id));
             self.edges.insert(key.clone(), list);
         }
@@ -407,7 +450,11 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
     fetch.load_symbols(&scope.extra)?;
     let mut graph = Graph::default();
     seeds.retain(|id| fetch.symbol(*id).is_some());
+    // `max_nodes` bounds every node emitted: seeds, `extra`, the walk and the
+    // halo (externals, endpoints and unresolved names included). The walk
+    // leaves a fifth of it for the halo; the halo then takes what is left.
     let max_nodes = scope.max_nodes.max(seeds.len());
+    let walk_cap = (max_nodes - (max_nodes / 5).min(HALO_MAX_TOTAL)).max(seeds.len());
 
     let mut core: Vec<Key> = Vec::new();
     let mut in_core: HashSet<Key> = HashSet::new();
@@ -417,7 +464,27 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
             core.push(key);
         }
     }
-    let mut frontier = core.clone();
+    let frontier_seeds = core.clone();
+    let mut extra_trimmed = 0usize;
+    for id in &scope.extra {
+        let key = Key::Sym(*id);
+        if fetch.symbol(*id).is_none() || in_core.contains(&key) {
+            continue;
+        }
+        if core.len() >= walk_cap {
+            extra_trimmed += 1;
+            continue;
+        }
+        in_core.insert(key.clone());
+        core.push(key);
+    }
+    if extra_trimmed > 0 {
+        graph.truncated = true;
+        graph.notes.push(format!(
+            "{extra_trimmed} callers of the diff left out (--max-nodes {max_nodes})"
+        ));
+    }
+    let mut frontier = frontier_seeds;
     let mut capped = false;
     for _ in 0..scope.depth {
         if frontier.is_empty() {
@@ -428,7 +495,7 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
         let mut new_ids: Vec<i64> = Vec::new();
         for node in &frontier {
             for edge in fetch.edges_of(node) {
-                let Some((from, to, _)) = display(edge, &fetch.alias) else {
+                let Some((from, to, _)) = display(edge) else {
                     continue;
                 };
                 let down = matches!(scope.direction, Direction::Down | Direction::Both);
@@ -443,7 +510,7 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
                 if in_core.contains(&other) {
                     continue;
                 }
-                if core.len() >= max_nodes {
+                if core.len() >= walk_cap {
                     capped = true;
                     break;
                 }
@@ -477,22 +544,16 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
         }
         frontier = next;
     }
-    for id in &scope.extra {
-        let key = Key::Sym(*id);
-        if fetch.symbol(*id).is_some() && in_core.insert(key.clone()) {
-            core.push(key);
-        }
-    }
     if capped {
         graph.truncated = true;
-        graph
-            .notes
-            .push(format!("walk stopped at --max-nodes {max_nodes}"));
+        graph.notes.push(format!(
+            "walk stopped at {walk_cap} nodes (--max-nodes {max_nodes}, a fifth kept for the halo)"
+        ));
     }
 
     // Every edge touching the scope; edges leaving it seed the halo.
     fetch.load_edges(&core)?;
-    let halo_total = (max_nodes / 2).clamp(HALO_MIN_TOTAL, HALO_MAX_TOTAL);
+    let halo_total = max_nodes.saturating_sub(core.len()).min(HALO_MAX_TOTAL);
     let mut halo: Vec<Key> = Vec::new();
     let mut in_halo: HashSet<Key> = HashSet::new();
     let mut flow: Vec<FlowEdge> = Vec::new();
@@ -501,7 +562,7 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
     for node in &core {
         let mut per_node = 0usize;
         for edge in fetch.edges_of(node) {
-            let Some((from, to, flags)) = display(edge, &fetch.alias) else {
+            let Some((from, to, flags)) = display(edge) else {
                 continue;
             };
             if &from != node && &to != node {
@@ -530,8 +591,9 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
         }
     }
     if halo_skipped > 0 {
+        graph.truncated = true;
         graph.notes.push(format!(
-            "{halo_skipped} edges to further neighbours not embedded (halo cap)"
+            "{halo_skipped} edges to further neighbours not embedded (halo budget: {halo_total} of --max-nodes {max_nodes})"
         ));
     }
     let halo_ids: Vec<i64> = halo
@@ -1061,6 +1123,7 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
 
     let mut inputs = Vec::new();
     let mut unresolved = 0usize;
+    let mut routes = RouteCanon::default();
     for (kind, src, tgt, tgt_lang, tgt_qual, tq, ev, ev_line, ev_file, detail) in rows {
         let probe = Edge {
             id: 0,
@@ -1104,7 +1167,7 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
             }
             (None, _) => match tq.as_deref().map(str::trim) {
                 Some(tq) if !tq.is_empty() && is_bridge_kind(&kind) => {
-                    Leaf::Endpoint(tq.to_string())
+                    Leaf::Endpoint(routes.canonical(ctx.db, gv, &kind, tq))
                 }
                 _ => {
                     unresolved += 1;
@@ -1137,44 +1200,51 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
         });
     }
 
-    let mut notes = Vec::new();
+    // Stored DISPATCH edges (a Go call through an interface) are in `rows`
+    // above. The synthetic interface-method -> implementation hops that
+    // `edges_for_symbols_with_dispatch` adds per visited node are not: the
+    // whole-repo form of that query (`Db::all_dispatch_pairs`) takes ~25 s on
+    // syft, ~250x the rest of this overview. Seeded views include them; the
+    // page says the overview does not.
+    let mut notes = vec![
+        "interface-dispatch hops (interface method -> implementation) appear in seeded views only"
+            .to_string(),
+    ];
     if unresolved > 0 {
         notes.push(format!(
             "{unresolved} unresolved non-bridge edges not shown in an aggregated view"
         ));
     }
-    let mut truncated = false;
-    let repo_leaves = leaves
-        .keys()
-        .filter(|l| matches!(l, Leaf::File(_) | Leaf::Module(_)))
-        .count();
+    let mut truncated = !file_leaves;
     if !file_leaves {
         notes.push(format!(
             "{} files exceed --max-nodes {max_leaves}: showing modules",
             files.len()
         ));
-    } else if repo_leaves > max_leaves {
-        // Keep the most connected files.
+    }
+    // Every leaf counts against --max-nodes, externals and bridge endpoints
+    // included: keep the most connected ones (repo files first on a tie).
+    let total = leaves.len();
+    if total > max_leaves {
         let mut degree: HashMap<&Leaf, u64> = HashMap::new();
         for i in &inputs {
             *degree.entry(&i.from).or_default() += 1;
             *degree.entry(&i.to).or_default() += 1;
         }
-        let mut ranked: Vec<&Leaf> = leaves
-            .keys()
-            .filter(|l| matches!(l, Leaf::File(_)))
-            .collect();
+        let repo_leaf = |l: &Leaf| matches!(l, Leaf::File(_) | Leaf::Module(_));
+        let mut ranked: Vec<&Leaf> = leaves.keys().collect();
         ranked.sort_by(|a, b| {
             degree
                 .get(b)
                 .unwrap_or(&0)
                 .cmp(degree.get(a).unwrap_or(&0))
+                .then_with(|| repo_leaf(b).cmp(&repo_leaf(a)))
                 .then_with(|| a.cmp(b))
         });
         let drop: HashSet<Leaf> = ranked[max_leaves..].iter().map(|l| (*l).clone()).collect();
         leaves.retain(|l, _| !drop.contains(l));
         notes.push(format!(
-            "kept the {max_leaves} most connected of {repo_leaves} files (--max-nodes)"
+            "kept the {max_leaves} most connected of {total} nodes (--max-nodes; externals and bridge endpoints count)"
         ));
         truncated = true;
     }

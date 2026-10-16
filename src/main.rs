@@ -197,6 +197,9 @@ fn main() -> Result<()> {
             };
             let started = std::time::Instant::now();
             let page = graph_html::generate(&repo, &db_path, &opts)?;
+            for warning in &page.warnings {
+                eprintln!("lidx graph: warning: {warning}");
+            }
             std::fs::write(&out, &page.html)
                 .map_err(|e| anyhow::anyhow!("write {}: {e}", out.display()))?;
             println!(

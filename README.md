@@ -145,9 +145,11 @@ lidx request --method find_symbol --params '{"query":"MyClass"}'
 
 ## Graph view
 
-`lidx graph` writes one self-contained HTML file (no network access, works
-offline, safe to email) with an interactive view of the existing index. It
-never re-indexes.
+`lidx graph` writes one self-contained HTML file with an interactive view of
+the existing index. It makes no network requests and works offline, but it
+embeds source snippets (call-site lines), docstrings, signatures and file
+paths from the repo, so share it only where the code itself may go. It never
+re-indexes.
 
 ```bash
 lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --depth 3 --open
@@ -157,7 +159,8 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
   folders with weighted edges between them; double-click a folder (or use
   the depth buttons) to drill down to files (`--level file` starts open).
 - `--seed <qualname or query>` (repeatable), `--depth`, `--direction up|down|both`,
-  `--kinds CALLS,USES`, `--lang`, `--max-nodes`: a symbol neighbourhood plus
+  `--kinds CALLS,USES`, `--lang`, `--max-nodes` (a cap on every node in the
+  page, halo and externals included): a symbol neighbourhood plus
   a one-hop halo you can reveal node by node. A one-way trace opens in the
   layered layout with the seed in the first column.
 - `--diff <rev>`: the symbols changed against `rev` and their callers.
