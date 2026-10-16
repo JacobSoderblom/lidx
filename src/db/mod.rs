@@ -213,6 +213,16 @@ impl PythonSurface {
     }
 }
 
+/// The identity of a pending reference within one file, less its ordinal:
+/// source symbol, edge kind, reference name and line span.
+type PendingIdentity = (
+    Option<i64>,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
 pub struct Db {
     db_path: PathBuf,
     write_conn: Arc<Mutex<Connection>>,
@@ -873,7 +883,7 @@ impl Db {
                      import_candidates, detail, evidence_snippet, evidence_start_line,
                      evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
                      receiver_type, bare_call, call_shape, graph_version, receiver_scope,
-                     deferred_kind, deferred)
+                     deferred_kind, deferred, occurrence)
                  SELECT
                     (SELECT ns.id FROM symbols ns
                         WHERE ns.stable_id = os.stable_id AND ns.graph_version = ?
@@ -882,7 +892,7 @@ impl Db {
                     ur.import_candidates, ur.detail, ur.evidence_snippet, ur.evidence_start_line,
                     ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id, ur.span_id,
                     ur.event_ts, ur.receiver_type, ur.bare_call, ur.call_shape, ?,
-                    ur.receiver_scope, ur.deferred_kind, ur.deferred
+                    ur.receiver_scope, ur.deferred_kind, ur.deferred, ur.occurrence
                  FROM unresolved_references ur
                  LEFT JOIN symbols os ON os.id = ur.source_symbol_id
                  WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})
@@ -1023,6 +1033,7 @@ impl Db {
                     receiver_scope,
                     deferred_kind,
                     deferred,
+                    0i64,
                 ])?;
             }
         }
@@ -1675,6 +1686,10 @@ impl Db {
             // rescanning every NULL-target edge.
             let mut unresolved_insert_stmt =
                 tx.prepare(resolver::UNRESOLVED_REFERENCE_INSERT_SQL)?;
+            // The ordinal of each pending reference among those with the same
+            // identity in this file: identical uses on one line stay separate
+            // rows, so a later resolution gives each its own edge.
+            let mut occurrences: HashMap<PendingIdentity, i64> = HashMap::new();
             let mut resolver = resolver::Resolver::new(&tx, graph_version)?;
             // Look up the source file's language and path — same-language
             // preference and the guarded name-fallback's visibility check
@@ -1865,6 +1880,22 @@ impl Db {
                     })
                 });
                 if let Some((Some(reason), reference_name, name_tail)) = stored_reference {
+                    let occurrence = if edge_id.is_none() {
+                        let slot = occurrences
+                            .entry((
+                                source_id,
+                                edge.kind.clone(),
+                                reference_name.clone(),
+                                edge.evidence_start_line,
+                                edge.evidence_end_line,
+                            ))
+                            .or_insert(0);
+                        let ordinal = *slot;
+                        *slot += 1;
+                        ordinal
+                    } else {
+                        0
+                    };
                     unresolved_insert_stmt.execute(params![
                         edge_id,
                         source_id,
@@ -1890,6 +1921,7 @@ impl Db {
                         receiver.receiver_scope.as_deref(),
                         receiver.deferred_kind,
                         receiver.deferred.as_deref(),
+                        occurrence,
                     ])?;
                 }
             }

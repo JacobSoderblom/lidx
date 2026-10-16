@@ -703,9 +703,7 @@ impl Indexer {
         // ... and Python files whose package root a layout marker moved.
         stale_files.extend(self.stale_python_files(previous_graph_version)?);
         // ... and Python files resolved through a package `__init__` that changed.
-        let python_importers =
-            self.stale_python_importers(&changed_paths, previous_graph_version)?;
-        stale_files.extend(python_importers.iter().cloned());
+        stale_files.extend(self.stale_python_importers(&changed_paths, previous_graph_version)?);
         // ... and Rust files when the Cargo manifests changed what a
         // crate-named path means.
         let scanned_rust: Vec<String> = scanned
@@ -876,18 +874,37 @@ impl Indexer {
         // flag.
         let mut any_symbols_deleted = false;
 
-        // Now process edges for all files. A Python importer extracted again
-        // only because a package `__init__` it resolves through changed waits
-        // for the carry-forward below: the unchanged `__init__` files' import
-        // rows are the evidence its references resolve by, and a reference
-        // left unresolved here would be stored once and retried once, losing
-        // a second identical use on the same line.
-        let (late_file_data, file_data): (Vec<_>, Vec<_>) = file_data
-            .into_iter()
-            .partition(|(file, ..)| python_importers.contains(&file.rel_path));
+        // Now process edges for all files
         for (file, extracted, diff, file_id) in file_data {
             any_symbols_deleted |= !diff.deleted.is_empty();
-            self.insert_file_edges(&file, &extracted, &diff, file_id, &mut stats)?;
+            // Delete existing edges
+            self.db.delete_edges_for_file(file_id, self.graph_version)?;
+
+            // Get symbols for edge resolution
+            let symbols = self
+                .db
+                .get_symbols_for_file(&file.rel_path, self.graph_version)?;
+            let symbol_map = resolver::build_exact_symbol_map(&symbols);
+
+            // Insert edges
+            let edges_count = self.db.insert_edges(
+                file_id,
+                &extracted.edges,
+                &symbol_map,
+                self.graph_version,
+                self.commit_sha.as_deref(),
+            )?;
+
+            // Update metrics
+            if let Some(metrics) = extracted.file_metrics.as_ref() {
+                self.db.upsert_file_metrics(file_id, metrics)?;
+            }
+            self.db
+                .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbols)?;
+
+            stats.indexed += 1;
+            stats.symbols += diff.added.len() + diff.modified.len() + diff.unchanged.len();
+            stats.edges += edges_count;
         }
 
         // Carry forward unchanged files' edges (and metrics, stubs, stored
@@ -911,13 +928,6 @@ impl Indexer {
                 self.db.mark_file_deleted(path, self.graph_version)?;
                 stats.deleted += 1;
             }
-        }
-
-        // The deleted files are gone from the graph now, as a fresh index
-        // never has them: a package whose last file went is no repo import.
-        for (file, extracted, diff, file_id) in late_file_data {
-            any_symbols_deleted |= !diff.deleted.is_empty();
-            self.insert_file_edges(&file, &extracted, &diff, file_id, &mut stats)?;
         }
 
         let xref_edges =
@@ -1541,46 +1551,6 @@ impl Indexer {
         }
         self.cs_globals_db()
             .stale_unresolved_extension_callers(&declared, graph_version)
-    }
-
-    /// Replace the edges (and metrics) of a re-parsed file in the graph version being built.
-    fn insert_file_edges(
-        &mut self,
-        file: &scan::ScannedFile,
-        extracted: &ExtractedFile,
-        diff: &differ::SymbolDiff,
-        file_id: i64,
-        stats: &mut IndexStats,
-    ) -> Result<()> {
-        // Delete existing edges
-        self.db.delete_edges_for_file(file_id, self.graph_version)?;
-
-        // Get symbols for edge resolution
-        let symbols = self
-            .db
-            .get_symbols_for_file(&file.rel_path, self.graph_version)?;
-        let symbol_map = resolver::build_exact_symbol_map(&symbols);
-
-        // Insert edges
-        let edges_count = self.db.insert_edges(
-            file_id,
-            &extracted.edges,
-            &symbol_map,
-            self.graph_version,
-            self.commit_sha.as_deref(),
-        )?;
-
-        // Update metrics
-        if let Some(metrics) = extracted.file_metrics.as_ref() {
-            self.db.upsert_file_metrics(file_id, metrics)?;
-        }
-        self.db
-            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbols)?;
-
-        stats.indexed += 1;
-        stats.symbols += diff.added.len() + diff.modified.len() + diff.unchanged.len();
-        stats.edges += edges_count;
-        Ok(())
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {

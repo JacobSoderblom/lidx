@@ -1163,8 +1163,10 @@ const IMPORT_SUFFIX_SQL: &str = "SELECT id FROM symbols
      WHERE name = ?1 AND substr(qualname, -length(?2)) = ?2 AND graph_version = ?3
      LIMIT 2";
 
-/// Any graph version, so an incremental reindex that has not yet carried
-/// the package forward still counts it. See `is_repo_python_import`.
+/// A Python package of the graph version being built, in a live file: an
+/// incremental reindex carries unchanged symbols forward before any edge is
+/// resolved, and a package whose last file went is no repo import. See
+/// `is_repo_python_import`.
 const REPO_PYTHON_MODULE_SQL: &str = "SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
      WHERE s.name = ?1 AND s.kind = 'module' AND f.language = 'python'
        AND s.graph_version = ?2 AND (f.deleted_version IS NULL OR f.deleted_version > ?2)
@@ -5465,10 +5467,13 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
 /// reference_name, name_tail, reason, import_candidates, detail,
 /// evidence_snippet, evidence_start_line, evidence_end_line, confidence,
 /// commit_sha, trace_id, span_id, event_ts, receiver_type, bare_call,
-/// call_shape, graph_version, receiver_scope, deferred_kind, deferred. A
-/// pending reference (`edge_id` NULL) already stored for the same identity
-/// (migration 27's partial unique index) is kept, not duplicated (issue
-/// #251). Used by `Db::insert_edges` (an edge's first resolution attempt), `reconcile_unresolved_reference_store` (an edge that went
+/// call_shape, graph_version, receiver_scope, deferred_kind, deferred,
+/// occurrence. A pending reference (`edge_id` NULL) already stored for the
+/// same identity (migration 27's partial unique index, widened by migration 29
+/// with `occurrence`) is kept, not duplicated (issue #251). `occurrence` is
+/// the ordinal of the reference among those with the same identity -- two
+/// identical calls on one line are two rows, resolved and retried one by one,
+/// as a fresh index keeps two edges. Used by `Db::insert_edges` (an edge's first resolution attempt), `reconcile_unresolved_reference_store` (an edge that went
 /// NULL-target with no row yet), and `Db::carry_forward_references` (carrying an
 /// already-unresolved reference into the new graph version).
 pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved_references
@@ -5476,8 +5481,8 @@ pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved
       reason, import_candidates, detail, evidence_snippet, evidence_start_line,
       evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
       receiver_type, bare_call, call_shape, graph_version, receiver_scope, deferred_kind,
-      deferred)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      deferred, occurrence)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT DO NOTHING";
 
 /// Everything `Resolver::resolve` needs to re-judge one reference, shared by
@@ -6466,6 +6471,14 @@ impl Db {
             let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             let mut delete_edge = tx.prepare("DELETE FROM edges WHERE id = ?")?;
             let mut insert_unresolved = tx.prepare(UNRESOLVED_REFERENCE_INSERT_SQL)?;
+            let mut count_pending_identity = tx.prepare(
+                "SELECT COUNT(*) FROM unresolved_references
+                 WHERE edge_id IS NULL AND graph_version = ?1 AND file_id = ?2
+                   AND COALESCE(source_symbol_id, -1) = COALESCE(?3, -1)
+                   AND edge_kind = ?4 AND COALESCE(reference_name, '') = COALESCE(?5, '')
+                   AND COALESCE(evidence_start_line, -1) = COALESCE(?6, -1)
+                   AND COALESCE(evidence_end_line, -1) = COALESCE(?7, -1)",
+            )?;
             let mut clear_resolution_kind =
                 tx.prepare("UPDATE edges SET resolution_kind = NULL WHERE id = ?")?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
@@ -6514,11 +6527,28 @@ impl Db {
                             delete_edge.execute(params![edge_id])?;
                             None
                         };
+                        let kind = store_edge_kind(&row.ctx.edge_kind, row.ctx.shape());
+                        let occurrence: i64 = if stored_edge_id.is_none() {
+                            count_pending_identity.query_row(
+                                params![
+                                    graph_version,
+                                    row.file_id,
+                                    row.source_symbol_id,
+                                    kind,
+                                    reference_name,
+                                    row.evidence_start_line,
+                                    row.evidence_end_line
+                                ],
+                                |r| r.get(0),
+                            )?
+                        } else {
+                            0
+                        };
                         insert_unresolved.execute(params![
                             stored_edge_id,
                             row.source_symbol_id,
                             row.file_id,
-                            store_edge_kind(&row.ctx.edge_kind, row.ctx.shape()),
+                            kind,
                             reference_name,
                             name_tail,
                             reason.as_str(),
@@ -6539,6 +6569,7 @@ impl Db {
                             row.ctx.receiver_scope.as_deref(),
                             row.ctx.deferred_kind.as_deref(),
                             row.ctx.deferred.as_deref(),
+                            occurrence,
                         ])?;
                         reconciled += 1;
                     }
