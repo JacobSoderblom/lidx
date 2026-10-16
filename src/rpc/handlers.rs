@@ -230,9 +230,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // A const, static, field, property, type alias or enum member is used,
     // not called: its users are `USES`/`REFERENCES` edges, which `callers`
     // (CALLS only) never shows. Asking for `callers` on such a symbol
-    // therefore also yields `used_by`; any symbol can ask for it by name.
+    // therefore also yields `used_by` (when it has users and no CALLS
+    // callers of its own); any symbol can ask for it by name.
     let value_like = crate::resolve::is_value_like_kind(&symbol.kind);
-    let wants_used_by = wants("used_by") || (value_like && wants_callers);
+    let explicit_used_by = wants("used_by");
 
     // 4. Get edges for callers/callees
     let edges = indexer.db().edges_for_symbol_with_dispatch(
@@ -288,11 +289,22 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     };
 
     let used_by_edges: Vec<(&crate::model::Edge, Symbol)> =
-        if wants_used_by || (wants_tests && value_like) {
+        if explicit_used_by || (value_like && (wants_callers || wants_tests)) {
             symbol_users(indexer.db(), &symbol, &edges, &meets_min_resolution)?
         } else {
             Vec::new()
         };
+    // A callable-like const/field/type (an arrow function, a callable
+    // alias) has real CALLS callers already; the implicit section is for
+    // symbols that are only ever used.
+    let has_call_callers = edges.iter().any(|e| {
+        edge_views::is_call_like(&e.kind)
+            && !e.is_synthetic()
+            && e.target_symbol_id == Some(symbol.id)
+    });
+    let wants_used_by = explicit_used_by
+        || (value_like && wants_callers && !has_call_callers && !used_by_edges.is_empty());
+    let has_used_by = wants_used_by && !used_by_edges.is_empty();
 
     // Sections with no candidates are known before filling, so they are
     // left out of the share renormalization: their share goes to the other
@@ -376,6 +388,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     const CALLEES_PCT: usize = 20;
     const TESTS_PCT: usize = 10;
     const IMPLEMENTS_PCT: usize = 10;
+    const USED_BY_PCT: usize = 20;
 
     let active_pct: usize = [
         (wants_source, SOURCE_PCT),
@@ -383,6 +396,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         (has_callees, CALLEES_PCT),
         (has_tests, TESTS_PCT),
         (has_implements, IMPLEMENTS_PCT),
+        (has_used_by, USED_BY_PCT),
     ]
     .into_iter()
     .filter_map(|(active, pct)| active.then_some(pct))
@@ -1009,10 +1023,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
     // 8.4. Users of a non-callable symbol (USES / REFERENCES), production
     // code first, honestly counted like the other sections.
-    // It claims no share of its own, so adding it never shrinks callers or
-    // the other sections: it spends what they left over (plus the first-ref
-    // allowance, so a non-empty list is never starved).
-    let mut used_by_budget = SectionBudget::new(0, rollover);
+    // It has a real share, renormalised across the requested sections, so
+    // asking for it alone gets the whole budget (a zero share would leave
+    // only the first-ref allowance, one row).
+    let mut used_by_budget = SectionBudget::new(alloc_share(USED_BY_PCT, has_used_by), rollover);
     let (mut used_by, used_by_total) = if wants_used_by {
         let mut refs = Vec::new();
         let used_by_total = used_by_edges.len();
@@ -3547,6 +3561,13 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     let mut upstream = Vec::new();
     let mut seen_ids: HashSet<i64> = seed_ids.iter().copied().collect();
     let max_upstream = 50;
+    // Users (USES/REFERENCES) of a changed const/static/type alias are
+    // kept apart from callers: callers fill `upstream` first, users get a
+    // small cap of their own, and the total is counted for the risk factor.
+    const MAX_DIFF_USERS: usize = 10;
+    let mut users_up: Vec<DiffImpactEntry> = Vec::new();
+    let mut seen_users: HashSet<i64> = HashSet::new();
+    let mut user_total = 0usize;
 
     // BFS: start with changed symbols, expand callers level by level
     let mut current_level: Vec<Symbol> =
@@ -3575,23 +3596,44 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 }
                 // A changed const/static/field/type alias has no callers: its
                 // users are USES/REFERENCES edges, reported as "user".
-                let is_user_edge = value_like_symbol
+                if value_like_symbol
                     && matches!(edge.kind.as_str(), "USES" | "REFERENCES")
-                    && !edge.is_synthetic();
-                if (edge_views::is_call_like(&edge.kind) || is_user_edge)
+                    && !edge.is_synthetic()
+                    && edge.target_symbol_id == Some(sym.id)
+                    && let Some(source_id) = edge.source_symbol_id
+                    && !seed_ids.contains(&source_id)
+                    && seen_users.insert(source_id)
+                    && let Ok(Some(user)) = indexer.db().get_symbol_by_id(source_id)
+                {
+                    user_total += 1;
+                    if users_up.len() < MAX_DIFF_USERS {
+                        users_up.push(DiffImpactEntry {
+                            symbol: user,
+                            relationship: if current_distance == 1 {
+                                "user".to_string()
+                            } else {
+                                format!("user_depth_{current_distance}")
+                            },
+                            distance: current_distance,
+                            confidence: base_confidence,
+                            resolution_kind: edge.resolution_kind.clone(),
+                        });
+                    }
+                    continue;
+                }
+                if edge_views::is_call_like(&edge.kind)
                     && edge.target_symbol_id == Some(sym.id)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_ids.insert(source_id)
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                 {
                     next_level.push(caller.clone());
-                    let noun = if is_user_edge { "user" } else { "caller" };
                     upstream.push(DiffImpactEntry {
                         symbol: caller,
                         relationship: if current_distance == 1 {
-                            noun.to_string()
+                            "caller".to_string()
                         } else {
-                            format!("{noun}_depth_{}", current_distance)
+                            format!("caller_depth_{}", current_distance)
                         },
                         distance: current_distance,
                         confidence: base_confidence,
@@ -3801,7 +3843,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         // 4. High fan-in = HIGH risk
         let high_fan_in: Vec<_> = upstream
             .iter()
-            .filter(|d| d.relationship.starts_with("caller") || d.relationship.starts_with("user"))
+            .filter(|d| d.relationship.starts_with("caller"))
             .collect();
         if high_fan_in.len() > 10 {
             factors.push(RiskFactor {
@@ -3818,6 +3860,16 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     review_checklist.push(format!("Review callers in {}", file));
                 }
             }
+        }
+
+        // Users of changed values are reported, but weigh little: a type
+        // alias or const can have hundreds, so they never raise the level.
+        if user_total > 0 {
+            factors.push(RiskFactor {
+                factor: "Users of changed values".to_string(),
+                description: format!("{user_total} users of changed values"),
+                severity: "low".to_string(),
+            });
         }
 
         // 5. Wide blast radius = MEDIUM risk
@@ -3896,6 +3948,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         next_hops.push(json!({"method": "analyze_impact", "params": {"id": cs.symbol.id, "direction": "both"}, "description": "Explore full impact graph"}));
     }
 
+    // Callers first, then the capped users.
+    upstream.extend(users_up);
     let result = AnalyzeDiffResult {
         changed_symbols,
         upstream,
