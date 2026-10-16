@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// The identity columns of an `unresolved_references` row beyond
 /// `(graph_version, file_id)`, NULL-normalised so the unique index treats
@@ -671,6 +671,25 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_go_dep_interfaces_pkg ON go_dep_interfaces(pkg_path);",
         )?;
+    }
+
+    if existing < 29 {
+        // Identical references on one line (`f(1), f(2)`) are separate pending
+        // rows: the identity of migration 27's index gains the row's
+        // `occurrence` among those sharing it, so a later resolution gives
+        // each its own edge, as a fresh index has them.
+        if !has_column(conn, "unresolved_references", "occurrence")? {
+            conn.execute_batch(
+                "ALTER TABLE unresolved_references
+                    ADD COLUMN occurrence INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        conn.execute_batch(&format!(
+            "DROP INDEX IF EXISTS idx_unresolved_references_identity;
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_unresolved_references_identity
+                ON unresolved_references(graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS}, occurrence)
+                WHERE edge_id IS NULL;"
+        ))?;
     }
 
     if existing < SCHEMA_VERSION {
@@ -2071,6 +2090,40 @@ mod tests {
         conn.execute(&format!("{dup} ON CONFLICT DO NOTHING"), [])
             .unwrap();
         assert_eq!(count(1), 2);
+    }
+
+    /// Migration 29: identical pending references on one line are separate
+    /// rows by `occurrence`; the same occurrence is still one row.
+    #[test]
+    fn migration_29_keeps_identical_references_apart_by_occurrence() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO files (id, path, hash, language, size, modified)
+             VALUES (1, 'a.py', 'h', 'python', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let insert = |occurrence: i64| {
+            conn.execute(
+                "INSERT INTO unresolved_references
+                    (source_symbol_id, file_id, edge_kind, reference_name, name_tail,
+                     reason, evidence_start_line, evidence_end_line, graph_version, occurrence)
+                 VALUES (NULL, 1, 'CALLS', 'f', 'f', 'no_candidates', 3, 3, 1, ?)
+                 ON CONFLICT DO NOTHING",
+                [occurrence],
+            )
+            .unwrap()
+        };
+        assert_eq!(insert(0), 1);
+        assert_eq!(insert(1), 1);
+        assert_eq!(insert(1), 0, "the same occurrence is the same row");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM unresolved_references", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 2);
     }
 
     #[test]

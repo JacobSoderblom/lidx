@@ -1,0 +1,1 @@
+table = lambda x: x
