@@ -1846,7 +1846,7 @@ impl Db {
     pub fn edges_snapshot(&self, graph_version: i64) -> Result<Vec<EdgeSnapshotRow>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT src.qualname, e.kind, tgt.qualname, e.resolution_kind
+            "SELECT src.qualname, e.kind, tgt.qualname, e.resolution_kind, e.confidence
              FROM edges e
              JOIN files f ON e.file_id = f.id
              JOIN symbols src ON e.source_symbol_id = src.id
@@ -1856,7 +1856,7 @@ impl Db {
 
              UNION ALL
 
-             SELECT src.qualname, ur.edge_kind, NULL, NULL
+             SELECT src.qualname, ur.edge_kind, NULL, NULL, NULL
              FROM unresolved_references ur
              JOIN files f ON ur.file_id = f.id
              JOIN symbols src ON ur.source_symbol_id = src.id
@@ -1872,6 +1872,9 @@ impl Db {
                     kind: row.get(1)?,
                     target_qualname: row.get(2)?,
                     resolution_kind: row.get(3)?,
+                    confidence_milli: row
+                        .get::<_, Option<f64>>(4)?
+                        .map(|c| (c * 1000.0).round() as i64),
                 })
             },
         )?;

@@ -124,6 +124,8 @@ fn expected_edges_after_rename() -> Vec<ExpectedEdge> {
             kind: "CALLS".to_string(),
             target_qualname: None,
             resolution_kind: None,
+            confidence_milli: None,
+            occurrence: 0,
         },
         xfail: false,
     });

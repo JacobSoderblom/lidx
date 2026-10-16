@@ -258,6 +258,9 @@ pub struct SymbolsCarried<'a> {
     to_version: i64,
     /// Symbols copied into `to_version`.
     pub symbols: usize,
+    /// A `subset` carry: copies only the external stubs its own edges target,
+    /// not every stub of `from_version`.
+    partial: bool,
 }
 
 impl SymbolsCarried<'_> {
@@ -268,6 +271,20 @@ impl SymbolsCarried<'_> {
     /// Number of unchanged files being carried forward.
     pub fn file_count(&self) -> usize {
         self.file_ids.len()
+    }
+
+    /// The same carry restricted to `file_ids` (a subset of this token's
+    /// files, whose symbols are already copied), so their references can be
+    /// carried before the rest -- see `Db::python_reexport_file_ids`. A
+    /// `partial` carry copies only the external stubs its own edges target.
+    pub fn subset<'b>(&self, file_ids: &'b [i64], partial: bool) -> SymbolsCarried<'b> {
+        SymbolsCarried {
+            file_ids,
+            from_version: self.from_version,
+            to_version: self.to_version,
+            symbols: 0,
+            partial,
+        }
     }
 }
 
@@ -589,6 +606,7 @@ impl Db {
             from_version,
             to_version,
             symbols: 0,
+            partial: false,
         };
         if carried.file_ids.is_empty() {
             return Ok(carried);
@@ -630,6 +648,7 @@ impl Db {
             file_ids,
             from_version,
             to_version,
+            partial,
             ..
         } = carried;
         if file_ids.is_empty() {
@@ -658,16 +677,34 @@ impl Db {
         // this reindex is swept by `Db::prune_orphan_external_symbols` in
         // the repair pass, same as a fresh reindex would simply never have
         // created it.
-        let stubs_copied = tx.execute(
+        let stub_filter = if partial {
+            format!(
+                "AND id IN (SELECT target_symbol_id FROM edges
+                            WHERE graph_version = ?2 AND file_id IN ({placeholders}))"
+            )
+        } else {
+            String::new()
+        };
+        let stubs_sql = format!(
             "INSERT INTO symbols
                 (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
                  start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id, visibility)
              SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
-                    start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id, visibility
+                    start_byte, end_byte, signature, docstring, ?1, commit_sha, stable_id, visibility
              FROM symbols
-             WHERE graph_version = ? AND kind = 'external'
-             ON CONFLICT DO NOTHING",
-            params![to_version, from_version],
+             WHERE graph_version = ?2 AND kind = 'external' {stub_filter}
+             ON CONFLICT DO NOTHING"
+        );
+        let mut stub_params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(to_version), Box::new(from_version)];
+        if partial {
+            for id in file_ids {
+                stub_params.push(Box::new(*id));
+            }
+        }
+        let stubs_copied = tx.execute(
+            &stubs_sql,
+            rusqlite::params_from_iter(stub_params.iter().map(|p| p.as_ref())),
         )?;
 
         // Issue #79: whether any of these carried files have a *Bridge Edge
@@ -2253,7 +2290,13 @@ impl Db {
                 .replace('_', "\\_")
         };
         for (package, name) in names {
-            let dotted = escape(&format!("{package}.{name}"));
+            // `*`: a star import (or `__all__`) changed, so any name of the
+            // package may now bind differently.
+            let dotted = if name == "*" {
+                format!("{}.%", escape(package))
+            } else {
+                escape(&format!("{package}.{name}"))
+            };
             let exact = dotted.clone();
             let below = format!("{dotted}.%");
             let candidate_exact = format!("%\"{dotted}\"%");
@@ -2402,6 +2445,43 @@ impl Db {
         out.sort();
         out.dedup();
         Ok(out)
+    }
+
+    /// The subset of `file_ids` (files of `graph_version`) that a Python
+    /// import resolves *through*: package `__init__` files, whose import rows
+    /// say what the package re-exports, and files declaring `__all__`, whose
+    /// export rows say what a star import brings in. A reindex carries their
+    /// references forward before it resolves any re-extracted file, so that
+    /// resolution reads them as a fresh index does.
+    pub fn python_reexport_file_ids(
+        &self,
+        file_ids: &[i64],
+        graph_version: i64,
+    ) -> Result<Vec<i64>> {
+        if file_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.read_conn()?;
+        let placeholders = vec!["?"; file_ids.len()].join(",");
+        let sql = format!(
+            "SELECT f.id FROM files f
+             WHERE f.language = 'python' AND f.id IN ({placeholders})
+               AND (f.path = '__init__.py' OR f.path LIKE '%/__init__.py'
+                    OR EXISTS (SELECT 1 FROM symbols s
+                               WHERE s.file_id = f.id AND s.graph_version = ?
+                                 AND s.name = '__all__'))"
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for id in file_ids {
+            params.push(Box::new(*id));
+        }
+        params.push(Box::new(graph_version));
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            |r| r.get::<_, i64>(0),
+        )?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn python_module_names(&self, graph_version: i64) -> Result<Vec<(String, String)>> {

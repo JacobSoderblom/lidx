@@ -576,6 +576,9 @@ pub struct EdgeSnapshotRow {
     /// `None` when `target_symbol_id` is NULL (unresolved).
     pub target_qualname: Option<String>,
     pub resolution_kind: Option<String>,
+    /// `edges.confidence` in thousandths (so the row stays `Eq`/`Ord`);
+    /// `None` for a pending row or an edge stored without one.
+    pub confidence_milli: Option<i64>,
 }
 
 /// One `(language, reason, count)` bucket of `Db::unresolved_reference_summary`

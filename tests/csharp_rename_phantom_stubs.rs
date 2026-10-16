@@ -26,7 +26,8 @@ const BASE: &[(&str, &str)] = &[
     ("c_proxy/Program.cs", PROXY),
 ];
 
-type Dump = (BTreeSet<String>, BTreeSet<String>);
+/// Sorted rows, duplicates kept: a repeated row is a different index.
+type Dump = (Vec<String>, Vec<String>);
 
 /// Joins the first `n` columns of a row with `|`; NULLs render as empty.
 fn render_row(row: &rusqlite::Row<'_>, n: usize) -> rusqlite::Result<String> {
@@ -42,31 +43,35 @@ fn dump(indexer: &Indexer, db_path: &PathBuf) -> Dump {
     let conn = Connection::open(db_path).unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT s.qualname, e.kind, e.target_qualname, t.qualname
+            "SELECT e.resolution_kind, CAST(ROUND(e.confidence * 1000) AS TEXT),
+                    s.qualname, e.kind, e.target_qualname, t.qualname
              FROM edges e
              LEFT JOIN symbols s ON s.id = e.source_symbol_id
              LEFT JOIN symbols t ON t.id = e.target_symbol_id
              WHERE e.graph_version = ? AND e.kind = 'CALLS'",
         )
         .unwrap();
-    let edges = stmt
-        .query_map([gv], |r| render_row(r, 4))
+    let mut edges: Vec<String> = stmt
+        .query_map([gv], |r| render_row(r, 6))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
+    edges.sort();
     let mut stmt = conn
         .prepare(
-            "SELECT s.qualname, ur.edge_kind, ur.reference_name, ur.reason
+            "SELECT CAST(ROUND(ur.confidence * 1000) AS TEXT),
+                    s.qualname, ur.edge_kind, ur.reference_name, ur.reason
              FROM unresolved_references ur
              LEFT JOIN symbols s ON s.id = ur.source_symbol_id
              WHERE ur.graph_version = ?",
         )
         .unwrap();
-    let unresolved = stmt
-        .query_map([gv], |r| render_row(r, 4))
+    let mut unresolved: Vec<String> = stmt
+        .query_map([gv], |r| render_row(r, 5))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
+    unresolved.sort();
     (edges, unresolved)
 }
 

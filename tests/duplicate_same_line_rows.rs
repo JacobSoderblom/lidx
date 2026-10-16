@@ -22,19 +22,29 @@ fn write(root: &std::path::Path, list: &Files) {
     common::write_files(root, &borrowed);
 }
 
-/// `(bound edges, pending references)` of the calls and references in `path`.
-fn rows(indexer: &Indexer, path: &str) -> (i64, i64) {
+/// `(bound edges, pending references)` of the calls and references in `path`:
+/// each bound edge as `kind|target|resolution_kind|confidence`, sorted with
+/// duplicates kept, and the number of pending rows.
+fn rows(indexer: &Indexer, path: &str) -> (Vec<String>, i64) {
     let gv = indexer.db().current_graph_version().unwrap();
     let conn = indexer.db().read_conn().unwrap();
-    let bound = conn
-        .query_row(
-            "SELECT COUNT(*) FROM edges e JOIN files f ON f.id = e.file_id
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.kind || '|' || COALESCE(t.qualname, '') || '|'
+                    || COALESCE(e.resolution_kind, '') || '|'
+                    || COALESCE(CAST(ROUND(e.confidence * 1000) AS TEXT), '')
+             FROM edges e JOIN files f ON f.id = e.file_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
              WHERE f.path = ?1 AND e.kind IN ('CALLS', 'REFERENCES')
                AND e.target_symbol_id IS NOT NULL AND e.graph_version = ?2",
-            rusqlite::params![path, gv],
-            |r| r.get(0),
         )
         .unwrap();
+    let mut bound: Vec<String> = stmt
+        .query_map(rusqlite::params![path, gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    bound.sort();
     let pending = conn
         .query_row(
             "SELECT COUNT(*) FROM unresolved_references u JOIN files f ON f.id = u.file_id
@@ -95,7 +105,8 @@ fn check(base: &Files, steps: &[Files], watched: &[&str], reindex: bool) {
             "{path} (reindex: {reindex}): incremental rows differ from a fresh index"
         );
         assert_eq!(
-            expected.0, 2,
+            expected.0.len(),
+            2,
             "{path}: both uses are bound in a fresh index"
         );
     }
