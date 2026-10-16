@@ -6,6 +6,7 @@ pub mod edge_views;
 pub mod freshness;
 pub mod gather_context;
 pub mod git_mining;
+pub mod graph_html;
 pub mod impact;
 pub mod indexer;
 pub mod init;

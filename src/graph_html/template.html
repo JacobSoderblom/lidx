@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:">
+<meta name="generator" content="lidx graph">
+<title>__TITLE__</title>
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">◇</span><strong>lidx graph</strong><span id="repo-name" class="repo"></span></div>
+  <p id="meta" class="meta"></p>
+</header>
+<div class="toolbar" role="toolbar" aria-label="Graph controls">
+  <div class="search">
+    <label for="search" class="sr-only">Search nodes</label>
+    <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search symbols  /" role="combobox" aria-expanded="false" aria-controls="search-list" aria-autocomplete="list">
+    <ul id="search-list" role="listbox" aria-label="Matching nodes" hidden></ul>
+  </div>
+  <div class="seg" role="group" aria-label="Layout">
+    <button type="button" id="lay-force" aria-pressed="true" title="Force-directed layout (L)">Force</button>
+    <button type="button" id="lay-layer" aria-pressed="false" title="Layered left-to-right layout (L)">Layered</button>
+  </div>
+  <label class="field">Group
+    <select id="group">
+      <option value="tree">Folders</option>
+      <option value="none">None</option>
+    </select>
+  </label>
+  <div class="seg" role="group" aria-label="Folder depth">
+    <button type="button" id="collapse-all" title="Collapse to top-level folders">Top</button>
+    <button type="button" id="depth-less" aria-label="One folder level up" title="Fewer folder levels">−</button>
+    <span id="depth-label" class="depth-label" aria-live="polite">depth 1</span>
+    <button type="button" id="depth-more" aria-label="One folder level down" title="More folder levels">+</button>
+    <button type="button" id="expand-all" title="Expand every folder">All</button>
+  </div>
+  <button type="button" id="fit" title="Fit to view (F)">Fit</button>
+  <button type="button" id="legend-toggle" aria-expanded="true" aria-controls="legend">Legend</button>
+  <div class="seg" role="group" aria-label="Export">
+    <button type="button" id="export-png" title="Export the current view as PNG">PNG</button>
+    <button type="button" id="export-svg" title="Export the visible graph as SVG">SVG</button>
+  </div>
+  <button type="button" id="theme" title="Toggle dark or light theme">Theme</button>
+  <button type="button" id="help" aria-haspopup="dialog" title="Keyboard shortcuts (?)">?</button>
+</div>
+<main class="main">
+  <aside id="legend" class="legend" aria-label="Legend and filters"></aside>
+  <div class="stage" id="stage">
+    <canvas id="canvas" tabindex="0" role="application" aria-roledescription="graph" aria-label="Code graph. Use search to find a node, arrow keys to pan, plus and minus to zoom, F to fit." aria-describedby="status"></canvas>
+    <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+    <div id="status" class="status" aria-live="off"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="empty" class="empty" hidden>
+      <p><strong>Nothing to show.</strong> Every node is hidden by the current filters.</p>
+      <button type="button" id="empty-reset">Reset filters</button>
+    </div>
+  </div>
+  <aside id="panel" class="panel" aria-label="Node details" hidden></aside>
+</main>
+<div id="live" class="sr-only" aria-live="polite"></div>
+<dialog id="help-dialog" aria-labelledby="help-title">
+  <h2 id="help-title">Keyboard and mouse</h2>
+  <dl class="keys">
+    <dt><kbd>/</kbd></dt><dd>Search; <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>Enter</kbd> go</dd>
+    <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Pan (canvas focused)</dd>
+    <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Zoom; wheel or pinch also zoom</dd>
+    <dt><kbd>F</kbd></dt><dd>Fit to view</dd>
+    <dt><kbd>L</kbd></dt><dd>Toggle force / layered layout</dd>
+    <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous / next neighbour of the selection</dd>
+    <dt><kbd>Enter</kbd> or double-click</dt><dd>Expand: reveal hidden neighbours, or open a cluster</dd>
+    <dt><kbd>C</kbd></dt><dd>Collapse the folder the selection is in</dd>
+    <dt>Top / − / + / All</dt><dd>Show folders one level at a time; double-click a folder to open it</dd>
+    <dt><kbd>1</kbd>–<kbd>4</kbd></dt><dd>Highlight 1–4 hops around the selection</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Clear selection</dd>
+    <dt>Drag</dt><dd>Pan the canvas or move a node</dd>
+    <dt>Hover an edge</dt><dd>Its kinds, weight and call-site line</dd>
+    <dt>Legend</dt><dd>Toggle edge kinds, languages, external nodes and files outside the scope</dd>
+  </dl>
+  <form method="dialog"><button type="submit">Close</button></form>
+</dialog>
+<script type="application/json" id="lidx-graph-data">__DATA__</script>
+<script>/*__JS__*/</script>
+</body>
+</html>

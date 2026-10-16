@@ -1337,7 +1337,11 @@ impl Db {
     /// guess that carries a package binds only to routes whose package agrees
     /// (one a dotted suffix of the other), so a contradicting package never
     /// binds; still ambiguous means unbound.
-    fn resolve_rpc_route(&self, guess: &str, graph_version: i64) -> Result<Option<String>> {
+    pub(crate) fn resolve_rpc_route(
+        &self,
+        guess: &str,
+        graph_version: i64,
+    ) -> Result<Option<String>> {
         let (guess_pkg, svc_method) = rpc_split(guess);
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
