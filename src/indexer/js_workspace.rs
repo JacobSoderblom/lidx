@@ -25,6 +25,8 @@ const MAX_MANIFEST_BYTES: u64 = 1_000_000;
 /// Workspace globs kept, and the longest one honoured.
 const MAX_PATTERNS: usize = 1000;
 const MAX_PATTERN_BYTES: usize = 1024;
+/// Path segments in a workspace glob; longer patterns are dropped.
+const MAX_PATTERN_SEGMENTS: usize = 32;
 /// Output directories a package builds into, mapped back to `src`.
 const BUILD_DIRS: &[&str] = &[
     "dist", "build", "lib", "out", "esm", "cjs", "esm5", "esm2015",
@@ -335,9 +337,13 @@ fn declared_members(repo_root: &Path, manifests: &[(PathBuf, Json)]) -> Option<M
         exclude: Vec::new(),
     };
     for p in &patterns {
-        match p.strip_prefix('!') {
-            Some(neg) => out.exclude.push(split(neg)),
-            None => out.include.push(split(p)),
+        let (list, text) = match p.strip_prefix('!') {
+            Some(neg) => (&mut out.exclude, neg),
+            None => (&mut out.include, p.as_str()),
+        };
+        let segments = split(text);
+        if segments.len() <= MAX_PATTERN_SEGMENTS {
+            list.push(segments);
         }
     }
     Some(out)

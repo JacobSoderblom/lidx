@@ -437,8 +437,9 @@ fn pathological_workspace_globs_finish_quickly() {
         .join("/");
     let pattern = format!("{}nomatch", "**/".repeat(30));
     let wildcards = format!("{}z", "a*".repeat(200));
+    let many_segments = format!("{}nomatch", "**/".repeat(500));
     let root = format!(
-        "{{\"name\":\"r\",\"workspaces\":[\"{pattern}\",\"{wildcards}\",\"{}\"]}}",
+        "{{\"name\":\"r\",\"workspaces\":[\"{pattern}\",\"{wildcards}\",\"{many_segments}\",\"{}\"]}}",
         "x/".repeat(600)
     );
     let manifest = format!("{deep}/package.json");
@@ -502,4 +503,26 @@ fn duplicate_manifest_keys_take_the_last_like_json_parse() {
         ],
     );
     assert_eq!(t, vec!["p/src/b.f".to_string()]);
+}
+
+#[test]
+fn workspace_globs_over_the_segment_cap_are_dropped() {
+    let long = format!("{}c", "*/".repeat(40));
+    let decl = format!("{{\"name\":\"r\",\"workspaces\":[\"{long}\"]}}");
+    // 41 segments is over the cap, so even a matching deep member is not declared.
+    let deep = (0..40)
+        .map(|i| format!("d{i}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    let manifest = format!("{deep}/c/package.json");
+    let source = format!("{deep}/c/src/index.ts");
+    let t = resolve(
+        "@a/p",
+        vec![
+            ("package.json", decl),
+            (&manifest, s("{\"name\":\"@a/p\"}")),
+            (&source, s(F)),
+        ],
+    );
+    assert_eq!(t, vec!["ext:@a/p:f".to_string()]);
 }
