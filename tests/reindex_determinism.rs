@@ -33,6 +33,7 @@ fn normalized_output(db_path: &Path) -> Vec<String> {
                  || '|' || e.kind || '|' || COALESCE(e.target_qualname, '') \
                  || '|' || COALESCE(b.qualname, '') || '@' || COALESCE(b.start_line, '') \
                  || '|' || COALESCE(e.resolution_kind, '') \
+                 || '|' || COALESCE(CAST(ROUND(e.confidence * 1000) AS TEXT), '') \
                  || '|' || COALESCE(e.evidence_start_line, '') || '-' || COALESCE(e.evidence_end_line, '') \
              FROM edges e JOIN files f ON f.id = e.file_id \
              LEFT JOIN symbols a ON a.id = e.source_symbol_id \

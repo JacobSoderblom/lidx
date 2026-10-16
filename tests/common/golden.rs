@@ -134,6 +134,13 @@ pub struct EdgeKey {
     pub kind: String,
     pub target_qualname: Option<String>,
     pub resolution_kind: Option<String>,
+    /// `edges.confidence` in thousandths. Compared by incremental==fresh
+    /// checks; ignored by `compare` (the scoreboard grades target and tier).
+    pub confidence_milli: Option<i64>,
+    /// 0 for the first row with these exact fields, 1 for the second, ...
+    /// so a `BTreeSet<EdgeKey>` is a multiset: two identical rows differ
+    /// from one. `compare` looks at the first row of each only.
+    pub occurrence: u32,
 }
 
 impl std::fmt::Display for EdgeKey {
@@ -159,6 +166,8 @@ impl From<&EdgeSnapshotRow> for EdgeKey {
             kind: row.kind.clone(),
             target_qualname: row.target_qualname.clone(),
             resolution_kind: row.resolution_kind.clone(),
+            confidence_milli: row.confidence_milli,
+            occurrence: 0,
         }
     }
 }
@@ -178,11 +187,23 @@ fn base(key: &EdgeKey) -> (&str, &str, Option<&str>) {
 /// accessor into a sorted, normalized, deduplicated set. The one seam a
 /// test needs — no SQL, no resolver internals.
 pub fn snapshot_edges(db: &Db, graph_version: i64) -> anyhow::Result<BTreeSet<EdgeKey>> {
-    Ok(db
-        .edges_snapshot(graph_version)?
-        .iter()
-        .map(EdgeKey::from)
-        .collect())
+    let mut out = BTreeSet::new();
+    let mut previous: Option<EdgeKey> = None;
+    // `edges_snapshot` is sorted, so identical rows are adjacent.
+    for row in db.edges_snapshot(graph_version)? {
+        let mut key = EdgeKey::from(&row);
+        if let Some(prev) = &previous
+            && (EdgeKey {
+                occurrence: 0,
+                ..prev.clone()
+            }) == key
+        {
+            key.occurrence = prev.occurrence + 1;
+        }
+        previous = Some(key.clone());
+        out.insert(key);
+    }
+    Ok(out)
 }
 
 /// Print `graph_version`'s unresolved-reference-store summary (issue #78),
@@ -250,6 +271,8 @@ pub fn parse_expected_edges(text: &str) -> Vec<ExpectedEdge> {
                 kind: tokens[1].to_string(),
                 target_qualname: target,
                 resolution_kind,
+                confidence_milli: None,
+                occurrence: 0,
             },
             xfail,
         });
@@ -428,7 +451,12 @@ pub fn compare(
             expected_kinds.contains(edge.kind.as_str())
                 && is_fixture_source(&edge.source_qualname, fixture_modules)
         })
-        .cloned()
+        // The scoreboard grades target and tier, not row counts or confidence.
+        .map(|edge| EdgeKey {
+            confidence_milli: None,
+            occurrence: 0,
+            ..edge.clone()
+        })
         .collect();
 
     let expected_ok: Vec<&ExpectedEdge> = expected.iter().filter(|e| !e.xfail).collect();
@@ -558,6 +586,8 @@ mod tests {
             kind: kind.to_string(),
             target_qualname: target.map(str::to_string),
             resolution_kind: None,
+            confidence_milli: None,
+            occurrence: 0,
         }
     }
 

@@ -4,8 +4,6 @@
 
 mod common;
 
-use std::collections::BTreeSet;
-
 use common::golden;
 use lidx::indexer::Indexer;
 use lidx::rpc;
@@ -180,7 +178,8 @@ fn unused_imports_is_file_scoped_for_function_imports() {
 
 type UnresolvedRow = (String, String, Option<String>, String);
 
-fn unresolved_snapshot(indexer: &Indexer) -> BTreeSet<UnresolvedRow> {
+/// Sorted, duplicates kept: a repeated pending row is a different index.
+fn unresolved_snapshot(indexer: &Indexer) -> Vec<UnresolvedRow> {
     let gv = indexer.db().current_graph_version().unwrap();
     let conn = indexer.db().read_conn().unwrap();
     let mut stmt = conn
@@ -191,10 +190,13 @@ fn unresolved_snapshot(indexer: &Indexer) -> BTreeSet<UnresolvedRow> {
              WHERE ur.graph_version = ?",
         )
         .unwrap();
-    stmt.query_map([gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+    let mut rows: Vec<UnresolvedRow> = stmt
+        .query_map([gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
-        .unwrap()
+        .unwrap();
+    rows.sort();
+    rows
 }
 
 #[test]

@@ -105,13 +105,13 @@
           "steps": [
             {
               "edge_kind": "IMPORTS",
-              "from_symbol": "app",
-              "resolution_kind": "exact",
+              "from_symbol": "pkg",
+              "resolution_kind": "two_segment",
               "to_symbol": "pkg.core.Greeter"
             },
             {
               "edge_kind": "IMPORTS_FILE",
-              "from_symbol": "app",
+              "from_symbol": "pkg",
               "resolution_kind": "import",
               "to_symbol": "pkg.core"
             },

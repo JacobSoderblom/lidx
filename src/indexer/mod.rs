@@ -27,6 +27,21 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
         .with_context(|| format!("canonicalize repo root {}", repo.display()))
 }
 
+/// Whether a Python import can resolve *through* this file: a package
+/// `__init__` (its import rows say what the package re-exports) or a module
+/// declaring `__all__` (its export rows say what a star import brings in).
+/// Such files resolve their edges first, so a file that imports through them
+/// finds the rows no matter where its path sorts (issue #528).
+fn is_python_reexport_source(
+    language: &str,
+    rel_path: &str,
+    symbols: &[crate::indexer::extract::SymbolInput],
+) -> bool {
+    language == "python"
+        && (rel_path.rsplit('/').next() == Some("__init__.py")
+            || symbols.iter().any(|s| s.name == "__all__"))
+}
+
 /// The stored record of `file` when a reindex can carry it forward instead
 /// of re-extracting it: same hash, no forced re-extraction, not stale.
 fn unchanged_record<'a>(
@@ -43,7 +58,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 53;
+pub const EXTRACTOR_VERSION: i64 = 54;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 /// `meta` key of the Cargo manifest view (`rust_workspace`) the Rust files
 /// were last extracted against.
@@ -414,11 +429,9 @@ impl Indexer {
         let changed_rels = self.changed_batch_paths(&batch_rels)?;
         let stale_cs = self.stale_csharp_files(&changed_rels, graph_version, live_csharp)?;
         stale_files.extend(stale_cs);
-        stale_files.extend(
-            self.stale_python_importers(&changed_rels, graph_version)?
-                .into_iter()
-                .filter(|p| !batch_rels.contains(p)),
-        );
+        // A stale importer that is also in the batch stays in `stale_files`: its
+        // hash may be unchanged, and it must still be resolved again.
+        stale_files.extend(self.stale_python_importers(&changed_rels, graph_version)?);
         if batch_rels.iter().any(|p| py_layout::is_layout_marker(p)) {
             let stale_py = self.stale_python_files(graph_version)?;
             stale_files.extend(stale_py.into_iter().filter(|p| !batch_rels.contains(p)));
@@ -443,7 +456,12 @@ impl Indexer {
         }
         self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
-        all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
+        all_paths.extend(
+            stale_files
+                .iter()
+                .filter(|rel| !batch_rels.contains(rel))
+                .map(|rel| self.repo_root.join(rel)),
+        );
         let stale_callers = self.prescan_files(all_paths.iter().cloned(), graph_version)?;
         all_paths.extend(stale_callers.iter().map(|rel| self.repo_root.join(rel)));
         stale_files.extend(stale_callers);
@@ -504,7 +522,11 @@ impl Indexer {
             }
         }
         // Phase 2: resolve edges for every file in this batch, now that
-        // every file's visibility is settled.
+        // every file's visibility is settled. Files imports resolve through
+        // go first (see `is_python_reexport_source`).
+        pending.sort_by_key(|(scanned, extracted, _, _)| {
+            !is_python_reexport_source(&scanned.language, &scanned.rel_path, &extracted.symbols)
+        });
         for (_scanned, extracted, file_id, symbols) in &pending {
             let (symbol_count, edge_count) =
                 self.resolve_file_edges(*file_id, extracted, symbols)?;
@@ -854,6 +876,24 @@ impl Indexer {
             self.graph_version,
         )?;
 
+        // A Python import resolves through the `__init__` (or `__all__`) of the
+        // package it names, and reads that file's import and export rows. For
+        // an unchanged one those rows are only carried below, after the
+        // re-extracted files resolve -- so carry them now, as a fresh index
+        // has them (issue #528). Nothing else of theirs depends on the order.
+        let early_ids = self
+            .db
+            .python_reexport_file_ids(&carry_forward_ids, previous_graph_version)?;
+        let late_ids: Vec<i64> = carry_forward_ids
+            .iter()
+            .copied()
+            .filter(|id| !early_ids.contains(id))
+            .collect();
+        let early_refs = self
+            .db
+            .carry_forward_references(symbols_carried.subset(&early_ids, true))?;
+        let symbols_carried_late = symbols_carried.subset(&late_ids, false);
+
         // Mark every file's private/unexported symbols in its own pass,
         // before any edge in this reindex is resolved. Must not be
         // interleaved with the edge loop below: a cross-file candidate's
@@ -874,7 +914,11 @@ impl Indexer {
         // flag.
         let mut any_symbols_deleted = false;
 
-        // Now process edges for all files
+        // Now process edges for all files, the files imports resolve through
+        // first (a stable sort keeps the scan order within each group).
+        file_data.sort_by_key(|(file, extracted, _, _)| {
+            !is_python_reexport_source(&file.language, &file.rel_path, &extracted.symbols)
+        });
         for (file, extracted, diff, file_id) in file_data {
             any_symbols_deleted |= !diff.deleted.is_empty();
             // Delete existing edges
@@ -915,11 +959,11 @@ impl Indexer {
         if !carry_forward_ids.is_empty() {
             let files = symbols_carried.file_count();
             let symbols = symbols_carried.symbols;
-            let refs = self.db.carry_forward_references(symbols_carried)?;
+            let refs = self.db.carry_forward_references(symbols_carried_late)?;
             eprintln!(
                 "lidx: carried forward {files} unchanged file(s): {} symbol(s), {} edge(s)",
-                symbols + refs.stubs,
-                refs.edges
+                symbols + early_refs.stubs + refs.stubs,
+                early_refs.edges + refs.edges
             );
         }
 
