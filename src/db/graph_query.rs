@@ -246,7 +246,9 @@ pub(super) fn live_nested_member_sql(t: &str, gv: i64) -> String {
              UNION
              SELECT ce.target_symbol_id FROM edges ce
              JOIN nested n ON ce.source_symbol_id = n.id
-             WHERE ce.kind = 'CONTAINS' AND ce.graph_version = {gv}
+             -- `+` keeps the planner on idx_edges_source: with a plain
+             -- `kind = 'CONTAINS'` it scanned every CONTAINS edge per step.
+             WHERE +ce.kind = 'CONTAINS' AND ce.graph_version = {gv}
                AND ce.target_symbol_id IS NOT NULL
            )
            SELECT 1 FROM nested n JOIN symbols m ON m.id = n.id

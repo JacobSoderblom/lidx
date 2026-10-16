@@ -766,14 +766,15 @@ impl Db {
                      -- one of them: none of the candidates is provably dead.
                      -- A type too (`deserialize_any(V)` with two function-local
                      -- `struct V` in one module).
-                     AND NOT EXISTS (
-                       SELECT 1 FROM unresolved_references ur
+                     -- One concatenated key, not a row value: SQLite probes a
+                     -- two-column `NOT IN` by scanning the whole list per row.
+                     AND (f.language || ':' || s.name) NOT IN (
+                       SELECT uf.language || ':' || ur.name_tail
+                       FROM unresolved_references ur
                        JOIN files uf ON uf.id = ur.file_id
-                       WHERE ur.name_tail = s.name
-                         AND ur.reason = 'ambiguous'
+                       WHERE ur.reason = 'ambiguous'
                          AND ur.edge_kind IN ('CALLS', 'REFERENCES', 'USES')
                          AND ur.graph_version = {gv}
-                         AND uf.language = f.language
                      )
                      -- Rust cfg twins: the declarations of one qualname under
                      -- different `#[cfg(..)]` are one item to every caller (the
