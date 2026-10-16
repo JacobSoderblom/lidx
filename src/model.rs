@@ -1137,6 +1137,16 @@ pub struct ExplainSymbolResult {
     pub callees: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callees_total: Option<usize>,
+    /// For a non-callable symbol (const, static, field, property, type alias,
+    /// enum member): the symbols that use or reference it through `USES` /
+    /// `REFERENCES` edges, which are not calls and so never appear in
+    /// `callers`. Each ref's `edge_kind` says which. Production users come
+    /// first; capped by `max_refs`/the byte budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_by: Option<Vec<ExplainRef>>,
+    /// True count of distinct users, before capping. Present with `used_by`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_by_total: Option<usize>,
     /// Symbol-use edges that are not `callers`/`callees`/`tests` material
     /// (`REFERENCES`, incoming `EXTENDS`/`IMPLEMENTS`/`INHERITS`, and `USES`
     /// when the `other_edges` section is requested), grouped by edge kind,
@@ -1332,7 +1342,7 @@ pub struct ChangedSymbol {
 #[derive(Debug, Serialize)]
 pub struct DiffImpactEntry {
     pub symbol: Symbol,
-    pub relationship: String, // "caller", "caller_depth_2", "caller_depth_3", ...
+    pub relationship: String, // "caller", "caller_depth_2", ...; "user", "user_depth_2", ... for a non-callable symbol
     pub distance: usize,
     pub confidence: f64,
     /// The tier that bound the edge connecting this entry to the previous

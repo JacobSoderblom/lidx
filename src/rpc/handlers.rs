@@ -81,11 +81,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         "callees",
         "tests",
         "implements",
+        "used_by",
         "other_edges",
     ];
     let aliases: &[(&str, &str)] = &[
         ("dependencies", "callees"),
         ("dependents", "callers"),
+        ("users", "used_by"),
+        ("references", "used_by"),
         ("summary", "source"),
         ("body", "source"),
     ];
@@ -108,7 +111,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
         if !known_sections.contains(&lower.as_str()) {
             warnings.push(format!(
-                "Unknown section '{}'. Valid: source, callers, callees, tests, implements (aliases: dependencies\u{2192}callees, dependents\u{2192}callers, summary/body\u{2192}source)",
+                "Unknown section '{}'. Valid: source, callers, callees, tests, implements, used_by, other_edges (aliases: dependencies\u{2192}callees, dependents\u{2192}callers, users/references\u{2192}used_by, summary/body\u{2192}source)",
                 s
             ));
         }
@@ -224,6 +227,12 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let wants_callees = wants("callees");
     let wants_tests = wants("tests");
     let wants_implements = wants("implements");
+    // A const, static, field, property, type alias or enum member is used,
+    // not called: its users are `USES`/`REFERENCES` edges, which `callers`
+    // (CALLS only) never shows. Asking for `callers` on such a symbol
+    // therefore also yields `used_by`; any symbol can ask for it by name.
+    let value_like = crate::resolve::is_value_like_kind(&symbol.kind);
+    let wants_used_by = wants("used_by") || (value_like && wants_callers);
 
     // 4. Get edges for callers/callees
     let edges = indexer.db().edges_for_symbol_with_dispatch(
@@ -278,6 +287,13 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         Vec::new()
     };
 
+    let used_by_edges: Vec<(&crate::model::Edge, Symbol)> =
+        if wants_used_by || (wants_tests && value_like) {
+            symbol_users(indexer.db(), &symbol, &edges, &meets_min_resolution)?
+        } else {
+            Vec::new()
+        };
+
     // Sections with no candidates are known before filling, so they are
     // left out of the share renormalization: their share goes to the other
     // requested sections instead of stranding behind an earlier one.
@@ -317,6 +333,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     };
     let has_tests = wants_tests
         && (!incoming_cross.is_empty()
+            || (value_like && used_by_edges.iter().any(|(_, s)| is_test_symbol(s)))
             || edges.iter().any(|e| {
                 edge_views::is_call_like(&e.kind) && e.target_symbol_id == Some(symbol.id)
             })
@@ -852,6 +869,38 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 still_adding = false;
             }
         }
+        // A test that uses a const/static/type alias/... (USES/REFERENCES,
+        // never CALLS) covers it just as a calling test covers a function.
+        if value_like {
+            for (edge, user) in &used_by_edges {
+                if !is_test_symbol(user) || !calls_test_ids.insert(user.id) {
+                    continue;
+                }
+                test_total += 1;
+                if !still_adding {
+                    continue;
+                }
+                let ref_bytes = serde_json::to_string(user).map_or(0, |j| j.len());
+                if !tests_budget.admits(ref_bytes, test_refs.is_empty(), used_bytes, max_bytes) {
+                    still_adding = false;
+                    continue;
+                }
+                tests_budget.used += ref_bytes;
+                test_refs.push(ExplainRef {
+                    symbol: user.clone(),
+                    evidence: edge.evidence_snippet.clone(),
+                    evidence_line: edge.evidence_start_line,
+                    edge_kind: edge.kind.clone(),
+                    protocol_context: None,
+                    resolution_kind: edge.resolution_kind.clone(),
+                    via_interface: false,
+                    file_level: is_file_level_test(user),
+                });
+                if test_refs.len() >= max_refs {
+                    still_adding = false;
+                }
+            }
+        }
         used_bytes += tests_budget.used;
         (Some(test_refs), test_total)
     } else {
@@ -956,6 +1005,45 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         (None, 0)
     };
 
+    rollover = implements_budget.rollover();
+
+    // 8.4. Users of a non-callable symbol (USES / REFERENCES), production
+    // code first, honestly counted like the other sections.
+    // It claims no share of its own, so adding it never shrinks callers or
+    // the other sections: it spends what they left over (plus the first-ref
+    // allowance, so a non-empty list is never starved).
+    let mut used_by_budget = SectionBudget::new(0, rollover);
+    let (mut used_by, used_by_total) = if wants_used_by {
+        let mut refs = Vec::new();
+        let used_by_total = used_by_edges.len();
+        for (edge, user) in &used_by_edges {
+            if refs.len() >= max_refs {
+                break;
+            }
+            let evidence = edge.evidence_snippet.clone();
+            let ref_bytes = serde_json::to_string(user).map_or(0, |j| j.len())
+                + evidence.as_ref().map_or(0, |e| e.len());
+            if !used_by_budget.admits(ref_bytes, refs.is_empty(), used_bytes, max_bytes) {
+                break;
+            }
+            used_by_budget.used += ref_bytes;
+            refs.push(ExplainRef {
+                symbol: user.clone(),
+                evidence,
+                evidence_line: edge.evidence_start_line,
+                edge_kind: edge.kind.clone(),
+                protocol_context: None,
+                resolution_kind: edge.resolution_kind.clone(),
+                via_interface: false,
+                file_level: is_test_symbol(user) && is_file_level_test(user),
+            });
+        }
+        used_bytes += used_by_budget.used;
+        (Some(refs), used_by_total)
+    } else {
+        (None, 0)
+    };
+
     // 8.5. Symbol-use edges that are not consumer edges (`USES`,
     // `REFERENCES`, incoming type hierarchy): kept out of callers and
     // callees, reported per kind with a per-kind total. `USES` only on an
@@ -968,6 +1056,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             wants_callers || wants_other_edges,
             wants_callees || wants_other_edges,
             wants_other_edges,
+            wants_used_by,
             ctx.languages.as_deref(),
             ctx.graph_version,
             &meets_min_resolution,
@@ -1076,6 +1165,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         if let Some(ref mut t) = tests {
             strip_to_compact(t);
         }
+        if let Some(ref mut u) = used_by {
+            strip_to_compact(u);
+        }
         for group in other_edges.iter_mut().flat_map(|r| r.values_mut()) {
             for rel in group.items.iter_mut() {
                 strip_symbol(&mut rel.symbol);
@@ -1091,6 +1183,16 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // so understanding (explain_symbol) leads straight to reading (read_symbol).
         json!({"method": "read_symbol", "params": {"qualname": symbol.qualname}, "description": format!("Read exact source of {}", symbol.name)}),
     ];
+    if used_by.as_ref().is_some_and(|u| u.len() < used_by_total) {
+        next_hops.push(json!({
+            "method": "analyze_impact",
+            "params": {"id": symbol.id, "direction": "upstream", "kinds": [edge_views::USES, edge_views::REFERENCES]},
+            "description": format!(
+                "List all {used_by_total} users (used_by shows {})",
+                used_by.as_ref().map_or(0, Vec::len)
+            ),
+        }));
+    }
     // A capped group is not the full list: point at the traversal that has it.
     for (kind, group) in other_edges.iter().flatten() {
         if group.items.len() < group.total {
@@ -1120,6 +1222,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         || callers.as_ref().is_some_and(|c| c.len() < callers_total)
         || callees.as_ref().is_some_and(|c| c.len() < callees_total)
         || tests.as_ref().is_some_and(|t| t.len() < tests_total)
+        || used_by.as_ref().is_some_and(|u| u.len() < used_by_total)
         || implements
             .as_ref()
             .is_some_and(|i| i.len() < implements_total)
@@ -1140,6 +1243,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         callers,
         callees_total: callees.as_ref().map(|_| callees_total),
         callees,
+        used_by_total: used_by.as_ref().map(|_| used_by_total),
+        used_by,
         other_edges,
         tests_total: tests.as_ref().map(|_| tests_total),
         tests,
@@ -1174,6 +1279,58 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     Ok(response)
 }
 
+/// The distinct symbols that use or reference `symbol` through resolved
+/// incoming `USES` / `REFERENCES` edges, each with the edge that connects it
+/// (`USES` wins a tie), production code first and then in file/line order.
+/// The symbol's own enclosing module is skipped: extractors record a
+/// module-level `USES` for the declaration itself, which is not a user.
+fn symbol_users<'a>(
+    db: &crate::db::Db,
+    symbol: &Symbol,
+    edges: &'a [crate::model::Edge],
+    meets_min_resolution: &dyn Fn(&Option<String>) -> bool,
+) -> Result<Vec<(&'a crate::model::Edge, Symbol)>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut users: Vec<(&crate::model::Edge, Symbol)> = Vec::new();
+    // USES before REFERENCES so a symbol with both is labelled USES.
+    for kind in [edge_views::USES, edge_views::REFERENCES] {
+        for edge in edges {
+            if edge.kind != kind
+                || edge.is_synthetic()
+                || edge.target_symbol_id != Some(symbol.id)
+                || !meets_min_resolution(&edge.resolution_kind)
+            {
+                continue;
+            }
+            let Some(source_id) = edge.source_symbol_id else {
+                continue;
+            };
+            if source_id == symbol.id || !seen.insert(source_id) {
+                continue;
+            }
+            let Some(user) = db.get_symbol_by_id(source_id)? else {
+                continue;
+            };
+            let declares_it = matches!(user.kind.as_str(), "module" | "namespace")
+                && user.file_path == symbol.file_path
+                && (symbol.qualname.starts_with(&format!("{}.", user.qualname))
+                    || symbol.qualname.starts_with(&format!("{}::", user.qualname)));
+            if !declares_it {
+                users.push((edge, user));
+            }
+        }
+    }
+    users.sort_by(|(_, a), (_, b)| {
+        (is_test_symbol(a), &a.file_path, a.start_line, a.id).cmp(&(
+            is_test_symbol(b),
+            &b.file_path,
+            b.start_line,
+            b.id,
+        ))
+    });
+    Ok(users)
+}
+
 /// Symbol-use edges that are not consumer edges (`edge_views::is_other_edge`)
 /// touching `seeds`, grouped by edge kind. `incoming` collects edges whose
 /// target is a seed (the other end uses the explained symbol), `outgoing`
@@ -1190,6 +1347,7 @@ fn explain_other_edges(
     incoming: bool,
     outgoing: bool,
     with_uses: bool,
+    users_listed: bool,
     languages: Option<&[String]>,
     graph_version: i64,
     meets_min_resolution: &dyn Fn(&Option<String>) -> bool,
@@ -1220,7 +1378,11 @@ fn explain_other_edges(
                 continue;
             }
             let (other, direction) = if seeds.contains(&target) {
-                if !incoming {
+                // `used_by` already lists the symbols that use or reference
+                // this one.
+                if !incoming
+                    || (users_listed && matches!(edge.kind.as_str(), "USES" | "REFERENCES"))
+                {
                     continue;
                 }
                 (source, "incoming")
@@ -2117,6 +2279,16 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     if trace.is_empty() && !no_more_results {
         // Different method schema (analyze_impact takes no query/max_hops/...),
         // so its params are built from scratch rather than cloned.
+        // A const/static/field/type alias is used, not called, so an
+        // execution trace from it is empty by design; its users are
+        // USES/REFERENCES edges, which explain_symbol lists as `used_by`.
+        if crate::resolve::is_value_like_kind(&start.kind) {
+            next_hops.push(json!({
+                "method": "explain_symbol",
+                "params": {"id": start.id, "sections": ["used_by"]},
+                "description": format!("List the symbols that use {} (USES/REFERENCES edges, which trace_flow does not follow)", start.name),
+            }));
+        }
         let mut impact_params = json!({"id": start.id, "direction": "upstream"});
         if matches!(start.kind.as_str(), "class" | "property") {
             impact_params["kinds"] = json!(edge_views::CONFIG_CONSUMER_RETRY);
@@ -3394,25 +3566,32 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 languages.as_deref(),
                 ctx.graph_version,
             )?;
+            let value_like_symbol = crate::resolve::is_value_like_kind(&sym.kind);
 
             // Find callers via resolved edges
             for edge in &edges {
                 if upstream.len() >= max_upstream {
                     break;
                 }
-                if edge_views::is_call_like(&edge.kind)
+                // A changed const/static/field/type alias has no callers: its
+                // users are USES/REFERENCES edges, reported as "user".
+                let is_user_edge = value_like_symbol
+                    && matches!(edge.kind.as_str(), "USES" | "REFERENCES")
+                    && !edge.is_synthetic();
+                if (edge_views::is_call_like(&edge.kind) || is_user_edge)
                     && edge.target_symbol_id == Some(sym.id)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_ids.insert(source_id)
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                 {
                     next_level.push(caller.clone());
+                    let noun = if is_user_edge { "user" } else { "caller" };
                     upstream.push(DiffImpactEntry {
                         symbol: caller,
                         relationship: if current_distance == 1 {
-                            "caller".to_string()
+                            noun.to_string()
                         } else {
-                            format!("caller_depth_{}", current_distance)
+                            format!("{noun}_depth_{}", current_distance)
                         },
                         distance: current_distance,
                         confidence: base_confidence,
@@ -3454,7 +3633,10 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 .map(|e| (e, "direct"))
                 .chain(via_interface.iter().map(|e| (e, "via_interface")))
             {
-                if edge_views::is_call_like(&edge.kind)
+                if (edge_views::is_call_like(&edge.kind)
+                    || (crate::resolve::is_value_like_kind(&cs.symbol.kind)
+                        && matches!(edge.kind.as_str(), "USES" | "REFERENCES")
+                        && !edge.is_synthetic()))
                     && let Some(source_id) = edge.source_symbol_id
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                     && is_test_symbol(&caller)
@@ -3496,7 +3678,9 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             if cs.change_type == "signature_changed" {
                 let caller_count = upstream
                     .iter()
-                    .filter(|d| d.relationship.starts_with("caller"))
+                    .filter(|d| {
+                        d.relationship.starts_with("caller") || d.relationship.starts_with("user")
+                    })
                     .count();
 
                 if caller_count > 10 {
@@ -3617,7 +3801,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         // 4. High fan-in = HIGH risk
         let high_fan_in: Vec<_> = upstream
             .iter()
-            .filter(|d| d.relationship.starts_with("caller"))
+            .filter(|d| d.relationship.starts_with("caller") || d.relationship.starts_with("user"))
             .collect();
         if high_fan_in.len() > 10 {
             factors.push(RiskFactor {

@@ -286,10 +286,14 @@ struct ExplainSymbolParams {
     query: Option<String>,
     max_bytes: Option<usize>,
     /// Sections to include in the response. Accepts any of: "source",
-    /// "callers", "callees", "tests", "implements", "other_edges" (opt-in; adds
-    /// `USES` edges and both directions). Aliases: "dependencies"
-    /// -> "callees", "dependents" -> "callers", "summary"/"body" -> "source".
-    /// Default: all five sections except "other_edges".
+    /// "callers", "callees", "tests", "implements", "used_by", "other_edges"
+    /// (opt-in; adds `USES` edges and both directions). "used_by" lists the
+    /// `USES`/`REFERENCES` users of a non-callable symbol (const, static,
+    /// field, property, type alias, enum member); it comes with "callers" for
+    /// those symbols and is empty-and-omitted for others unless requested.
+    /// Aliases: "dependencies" -> "callees", "dependents" -> "callers",
+    /// "users"/"references" -> "used_by", "summary"/"body" -> "source".
+    /// Default: source, callers, callees, tests and implements.
     sections: Option<Vec<String>>,
     /// Max references returned per section (callers, callees, tests,
     /// implements). Each capped section also reports its true `<section>_total`

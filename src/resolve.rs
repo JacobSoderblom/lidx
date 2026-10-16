@@ -794,6 +794,26 @@ pub fn is_type_container_kind(kind: &str) -> bool {
     matches!(kind, "class" | "struct" | "record" | "interface")
 }
 
+/// Whether `kind` names a symbol that is used rather than called: a const,
+/// static, field, property, type alias, enum member or similar value or type
+/// declaration. Its users reach it through `USES` / `REFERENCES` edges, never
+/// `CALLS`, so "who uses this" views must read those kinds for it.
+pub fn is_value_like_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "const"
+            | "static"
+            | "variable"
+            | "field"
+            | "property"
+            | "type"
+            | "type_alias"
+            | "enum_variant"
+            | "enum_member"
+            | "global"
+    )
+}
+
 /// Expands a symbol into seed IDs for BFS traversal.
 /// For container symbols (types, module, resource), returns the symbol plus
 /// its members.
