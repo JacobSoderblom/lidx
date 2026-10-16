@@ -5,7 +5,8 @@
 //! `-1` means absent. Nodes and edges are positional arrays:
 //!
 //! - node: `[name, qualname, kind, lang, file, module, line, flags, sig, doc, size]`
-//! - edge: `[from, to, kind, weight, flags, ev_line, ev, ev_file, resolution]`
+//! - edge: `[from, to, kind, weight, flags, ev_line, ev, ev_file, resolution, keys?]`
+//!   (`keys`: string ids of the endpoint keys a derived bridge edge stands for)
 //!
 //! `from`/`to` index `nodes`. Flag bits are the `FLAG_*` / `EDGE_*`
 //! constants in `build`, repeated in `meta.flags` so the viewer never
@@ -125,7 +126,7 @@ pub fn to_json(graph: &Graph, meta: &Meta) -> Value {
         .edges
         .iter()
         .map(|e| {
-            json!([
+            let mut row = json!([
                 e.from,
                 e.to,
                 s.id(&e.kind),
@@ -135,7 +136,14 @@ pub fn to_json(graph: &Graph, meta: &Meta) -> Value {
                 s.opt(e.ev.as_deref(), MAX_EVIDENCE),
                 s.opt(e.ev_file.as_deref(), usize::MAX),
                 s.opt(e.res.as_deref(), usize::MAX),
-            ])
+            ]);
+            // A derived bridge's endpoint keys, so the viewer can merge
+            // file-level bridges into folders by distinct key.
+            if !e.keys.is_empty() {
+                let ids: Vec<i64> = e.keys.iter().map(|k| s.id(k)).collect();
+                row.as_array_mut().expect("edge row").push(json!(ids));
+            }
+            row
         })
         .collect();
     json!({

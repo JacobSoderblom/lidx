@@ -34,7 +34,8 @@
   var E = raw.edges.map(function (r, j) {
     return {
       j: j, s: r[0], t: r[1], kind: S[r[2]], w: r[3], flags: r[4], evLine: r[5],
-      ev: str(r[6]), evFile: str(r[7]), res: str(r[8])
+      ev: str(r[6]), evFile: str(r[7]), res: str(r[8]),
+      keys: r[9] ? r[9].map(function (k) { return S[k]; }) : null
     };
   });
   E.forEach(function (e) { N[e.s].out.push(e); N[e.t].inn.push(e); });
@@ -63,10 +64,14 @@
     if (kind === 'EXTENDS' || kind === 'IMPLEMENTS' || kind === 'INHERITS') return 'inherit';
     if (kind === 'USES' || kind === 'REFERENCES') return 'uses';
     if (kind === 'XREF') return 'xref';
+    if (kind === 'DECLARES_RPC') return 'declares';
     return 'other';
   }
   var BRIDGE = { bus: 1, rpc: 1, http: 1, config: 1 };
-  var FAMILIES = ['calls', 'imports', 'inherit', 'uses', 'xref', 'other', 'bus', 'rpc', 'http', 'config'];
+  var FAMILIES = ['calls', 'imports', 'inherit', 'uses', 'xref', 'other', 'bus', 'rpc', 'http', 'config', 'declares'];
+  // Shown with the bridges, but not a call: a proto declaring the route its
+  // implementers serve.
+  var CROSS = { bus: 1, rpc: 1, http: 1, config: 1, declares: 1 };
   // Colour is never the only cue (WCAG 1.4.1): every family has its own dash.
   var STYLE = {
     calls: { tok: 'edge', dash: [], w: 1, label: 'calls', solid: true },
@@ -75,6 +80,7 @@
     uses: { tok: 'edge-2', dash: [7, 3], w: 0.9, label: 'uses / references' },
     xref: { tok: 'edge-4', dash: [7, 3, 1.5, 3], w: 0.9, label: 'cross-reference' },
     other: { tok: 'edge-2', dash: [2, 2], w: 0.85, label: 'other' },
+    declares: { tok: 'edge-4', dash: [2, 3], w: 0.9, label: 'proto declares (to implementers)', tag: 'declares' },
     bus: { tok: 'bridge', dash: [11, 4], w: 1.6, label: 'message bus', tag: 'bus' },
     rpc: { tok: 'bridge', dash: [3, 3], w: 1.6, label: 'RPC', tag: 'rpc' },
     http: { tok: 'bridge', dash: [11, 3, 2, 3], w: 1.6, label: 'HTTP', tag: 'http' },
@@ -290,7 +296,9 @@
   var pos = new Map(); // node id -> {x, y}, survives rebuilds
 
   function nodeRadius(v) {
-    if (v.cluster !== null) return Math.min(40, 12 + Math.sqrt(v.members.length) * 2.4);
+    // A folder box is wide enough for its name at 100% (the label sits
+    // inside every box, never below some).
+    if (v.cluster !== null) return Math.max(Math.min(40, 12 + Math.sqrt(v.members.length) * 2.4), (v.label.length * 7.4 + 18) / 2.5);
     var n = v.leaf;
     if (has(n, F.external) && AGGREGATED) return 6;
     if (AGGREGATED) return Math.min(18, 4.5 + Math.sqrt(Math.max(1, n.size)) * 0.8);
@@ -299,8 +307,9 @@
 
   // Degree of interest of a leaf: seeds and the selection first, then degree.
   function interest(n) {
-    var sel = st.selected && st.selected.charAt(0) === 'n' && +st.selected.slice(1) === n.i;
-    return (has(n, F.seed) ? 1e6 : 0) + (sel ? 2e6 : 0) + n.out.length + n.inn.length;
+    var id = 'n' + n.i;
+    var kept = st.selected === id || st.pathTo === id || st.pathFrom === id || st.focusId === id;
+    return (has(n, F.seed) ? 1e6 : 0) + (kept ? 2e6 : 0) + n.out.length + n.inn.length;
   }
 
   function rebuild() {
@@ -391,6 +400,23 @@
       ve.w += e.w;
       ve.n += 1;
       ve.refs.push(e);
+      if (e.keys) {
+        if (!ve.keys) ve.keys = {};
+        e.keys.forEach(function (k) { (ve.keys[e.kind] = ve.keys[e.kind] || new Set()).add(k); });
+      }
+    });
+    // A derived bridge merged into folders weighs its distinct keys: two
+    // files of one folder sharing a key with another folder count it once.
+    edges.forEach(function (ve) {
+      if (!ve.keys) return;
+      var w = 0;
+      Object.keys(ve.keys).forEach(function (k) {
+        var raw = ve.refs.filter(function (r) { return r.kind === k && !r.keys; })
+          .reduce(function (s0, r) { return s0 + r.w; }, 0);
+        ve.kinds[k] = ve.keys[k].size + raw;
+      });
+      Object.keys(ve.kinds).forEach(function (k) { w += ve.kinds[k]; });
+      ve.w = w;
     });
     edges.forEach(function (ve) {
       var best = ve.kind;
@@ -1326,7 +1352,7 @@
       if (!list) { list = []; batches.set(key, list); }
       list.push(g);
       if (emph >= 2 || (!hl && st.cam.k > 1.6 && !taper && V.edges.length < 600)) arrows.push([e, g, emph]);
-      if (BRIDGE[e.fam] && emph > 0 && derived(e.refs[0])) tags.push([e, g]);
+      if (CROSS[e.fam] && emph > 0 && derived(e.refs[0])) tags.push([e, g]);
     });
     var keys = Array.from(batches.keys()).sort(function (a, b) {
       var pa = a.split('|'), pb = b.split('|');
@@ -1759,8 +1785,15 @@
         var r = screenR(v);
         if (v.cluster !== null) {
           var b = clusterBox(v, sx(v.x), sy(v.y), r);
-          if (tw + 14 <= b.w && b.h > 26) { x = b.x + 7; y = b.y + 12; }
-          else { x = sx(v.x) - tw / 2; y = b.y + b.h + 10; }
+          if (b.h > 22) {
+            // Inside the box; a name too long for it at this zoom is cut.
+            x = b.x + 7; y = b.y + 12;
+            if (tw > b.w - 14) {
+              while (text.length > 2 && c.measureText(text + '…').width > b.w - 14) text = text.slice(0, -1);
+              text += '…';
+              tw = c.measureText(text).width;
+            }
+          } else { x = sx(v.x) - tw / 2; y = b.y + b.h + 10; }
         } else { x = sx(v.x) + r + 5; y = sy(v.y); }
       }
       x = Math.round(x); y = Math.round(y);
@@ -1952,22 +1985,35 @@
     setStatus();
   }
   // Fit the view to every drawn node, or to `only` (node indices).
+  // Labels are drawn at a fixed screen size, so the fit reserves their
+  // width in pixels (not world units) beyond the rightmost nodes.
+  function labelPx(v) { return v.cluster !== null ? 0 : Math.min(400, labelText(v).length * 7) + 8; }
   function fit(markUser, only) {
     if (!V.nodes.length) return;
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    (only ? only.map(function (i) { return V.nodes[i]; }) : V.nodes).forEach(function (v) {
+    var list = only ? only.map(function (i) { return V.nodes[i]; }) : V.nodes;
+    list.forEach(function (v) {
       var r = v.cluster !== null ? v.r * 1.3 : v.r;
       x0 = Math.min(x0, v.x - r); y0 = Math.min(y0, v.y - r);
-      x1 = Math.max(x1, v.x + r + (v.cluster === null ? Math.min(230, v.label.length * 7) : 0));
+      x1 = Math.max(x1, v.x + r);
       y1 = Math.max(y1, v.y + r + (v.cluster !== null ? 18 : 0));
     });
     var layeredView = st.layout === 'layered' && !only;
     if (layeredView) y0 -= 40;
-    var avail = W;
-    var bw = x1 - x0 + 80, bh = y1 - y0 + 60;
-    var k = clampK(Math.min(avail / bw, H / bh, 2.2));
+    var avail = W, ww = Math.max(1, x1 - x0), wh = Math.max(1, y1 - y0);
+    // Largest label overhang among nodes in the rightmost tenth.
+    var over = 0;
+    list.forEach(function (v) { if (v.x >= x1 - ww * 0.1 - 1) over = Math.max(over, labelPx(v)); });
+    var k = clampK(Math.min((avail - 80 - over) / ww, (H - 60) / wh, 2.2));
+    // A label beyond the right edge at this zoom tightens it further.
+    list.forEach(function (v) {
+      var room = avail - 40 - labelPx(v) - (layeredView ? 0 : 0);
+      if (v.x > x0 && (v.x - x0) * k > room && room > 40) k = Math.min(k, room / (v.x - x0));
+    });
+    k = clampK(k);
+    var bw = ww * k + over;
     st.cam.k = k;
-    st.cam.x = layeredView ? 40 - x0 * k : avail / 2 - (x0 + x1) / 2 * k;
+    st.cam.x = layeredView ? 40 - x0 * k : (avail - bw) / 2 - x0 * k;
     st.cam.y = H / 2 - (y0 + y1) / 2 * k;
     if (markUser) st.userMoved = false;
     requestDraw();
@@ -2278,6 +2324,7 @@
   function startPath() {
     if (!selectedV()) return;
     st.picking = true;
+    st.pathFrom = st.selected;
     toast('Pick the other end: click a node or search');
     drawOverlay();
   }
@@ -2300,6 +2347,9 @@
   // select and centre it.
   function focusLeaf(i, keepHistory) {
     var n = N[i], changed = false;
+    // Mark it first: the rebuild below must not fold it into its folder.
+    st.focusId = 'n' + i;
+    if (V.leafTo[i] < 0 || V.nodes[V.leafTo[i]].id !== st.focusId) changed = true;
     if (st.isolate && !st.isolate.has(i)) { st.isolate = null; changed = true; updateBanner(); }
     if ((has(n, F.halo) || has(n, F.scope_out)) && !st.revealed.has(i)) { st.revealed.add(i); changed = true; }
     if (has(n, F.external | F.unresolved) && !st.showExternal) { st.showExternal = true; changed = true; }
@@ -2312,8 +2362,9 @@
       savePositions(); rebuild(); renderLegend(); relayout(0.3);
     }
     var id = V.leafTo[i] >= 0 ? V.nodes[V.leafTo[i]].id : 'n' + i;
-    if (st.picking && V.byId.get(id)) { finishPath(V.byId.get(id)); return; }
+    if (st.picking && V.byId.get(id)) { finishPath(V.byId.get(id)); st.focusId = null; return; }
     select(id, true);
+    st.focusId = null;
   }
   function expand(v) {
     pushHistory();
@@ -2738,8 +2789,8 @@
       return '<label><input type="checkbox" data-fam="' + f + '"' + (st.famOn[f] ? ' checked' : '') + '>' + swatch(f) +
         '<span' + (st.famOn[f] ? '' : ' class="off"') + '>' + esc(STYLE[f].label) + '</span><span class="count">' + fmt(fc[f] || 0) + '</span></label>';
     }
-    var code = FAMILIES.filter(function (f) { return !BRIDGE[f]; }).map(fam).join('');
-    var bridges = FAMILIES.filter(function (f) { return BRIDGE[f]; }).map(fam).join('');
+    var code = FAMILIES.filter(function (f) { return !CROSS[f]; }).map(fam).join('');
+    var bridges = FAMILIES.filter(function (f) { return CROSS[f]; }).map(fam).join('');
     var html = '<details data-sec="edges"' + (legendOpen.edges ? ' open' : '') + '><summary>Edges</summary>' + (code || '<p class="hint">None in view</p>');
     if (bridges) html += '<p class="hint">Across processes, between the folders that own each side:</p>' + bridges;
     html += '<div class="row-actions"><button type="button" data-legend="all">All</button><button type="button" data-legend="calls">Calls only</button>' +
@@ -3290,6 +3341,22 @@
     },
     setLayout: setLayout,
     setView: setView,
-    back: goBack
+    back: goBack,
+    selected: function () { return st.selected; },
+    // A qualname drawn inside a folder the visible budget folded, if any.
+    foldedSample: function () {
+      var c = V.nodes.find(function (v) { return v.folded; });
+      return c ? c.members[Math.floor(c.members.length / 2)].qual : null;
+    },
+    folded: function () { return st.folded.size; },
+    // The drawn node a qualname is shown as: itself ('n<i>') or a folder.
+    drawnAs: function (q) {
+      var n = N.find(function (x) { return x.qual === q || x.name === q; });
+      return n && V.leafTo[n.i] >= 0 ? V.nodes[V.leafTo[n.i]].id : null;
+    },
+    nodeId: function (q) {
+      var n = N.find(function (x) { return x.qual === q || x.name === q; });
+      return n ? 'n' + n.i : null;
+    }
   };
 })();
