@@ -95,15 +95,20 @@
   E.forEach(function (e) { kindCounts[e.kind] = (kindCounts[e.kind] || 0) + 1; });
   var langCounts = {};
   N.forEach(function (n) { var l = langKey(n); langCounts[l] = (langCounts[l] || 0) + 1; });
+  var SEEDED = N.some(function (n) { return has(n, F.seed); });
+  // A one-way walk from seeds reads best as layers with the seed first.
+  var TRACE = !AGGREGATED && SEEDED && (META.direction === 'up' || META.direction === 'down');
 
   var st = {
-    layout: 'force',
-    group: AGGREGATED ? 'module' : 'module',
-    collapsed: new Set(),
+    layout: TRACE ? 'layered' : 'force',
+    group: 'tree',
+    expanded: new Set(),
+    depth: Infinity,
     kindOn: {},
     langOn: {},
     showExternal: true,
     showTests: true,
+    showNonCode: false,
     showLabels: true,
     revealed: new Set(),
     selected: null,
@@ -116,23 +121,103 @@
   Object.keys(kindCounts).forEach(function (k) { st.kindOn[k] = true; });
   Object.keys(langCounts).forEach(function (l) { st.langOn[l] = true; });
 
+  // Folder hierarchy: every leaf's chain of folder prefixes (`syft/`,
+  // `syft/pkg/`, ...) and, for a symbol, its file. A leaf is drawn inside the
+  // first prefix of its chain that is not expanded.
+  function chainOf(n) {
+    if (n.mod.charAt(0) === '(') return [n.mod];
+    var chain = [], acc = '';
+    var moduleLeaf = AGGREGATED && n.kind === 'module';
+    var dirs = moduleLeaf ? n.qual.split('/').filter(Boolean)
+      : n.file ? n.file.split('/').slice(0, -1) : n.mod.split('/').filter(Boolean);
+    dirs.forEach(function (d) { if (d === '.') return; acc += d + '/'; chain.push(acc); });
+    if (moduleLeaf) chain.pop();
+    if (!chain.length && !moduleLeaf) chain.push('./');
+    if (!AGGREGATED && n.file) chain.push(n.file);
+    return chain;
+  }
+  N.forEach(function (n) { n.chain = chainOf(n); });
+  var MAX_DEPTH = N.reduce(function (m, n) { return Math.max(m, n.chain.length); }, 1);
+  var PREFIX_DEPTH = new Map();
+  N.forEach(function (n) {
+    n.chain.forEach(function (p, i) {
+      if (!PREFIX_DEPTH.has(p) || PREFIX_DEPTH.get(p) > i + 1) PREFIX_DEPTH.set(p, i + 1);
+    });
+  });
+  var ALL_PREFIXES = Array.from(PREFIX_DEPTH.keys()).sort();
+  function prefixDepth(p) { return PREFIX_DEPTH.get(p) || 1; }
+
+  // The cluster a leaf is drawn in, or null when it is drawn itself.
   function groupOf(n) {
     if (st.group === 'none') return null;
-    if (st.group === 'file') return n.file || n.mod;
-    return n.mod;
+    for (var i = 0; i < n.chain.length; i++) if (!st.expanded.has(n.chain[i])) return n.chain[i];
+    return null;
   }
-  if (META.collapse_modules) {
-    N.forEach(function (n) { st.collapsed.add(n.mod); });
+  // The folder whose outline a drawn leaf sits in.
+  function hullOf(n) {
+    if (st.group === 'none' || !n.chain.length) return null;
+    var c = n.chain;
+    var last = c[c.length - 1];
+    if (last.charAt(last.length - 1) !== '/' && last.charAt(0) !== '(' && c.length > 1) return c[c.length - 2];
+    return last;
+  }
+  function parentOf(p) {
+    if (p.charAt(0) === '(' || p === './') return null;
+    var isDir = p.charAt(p.length - 1) === '/';
+    var t = isDir ? p.slice(0, -1) : p;
+    var i = t.lastIndexOf('/');
+    return i < 0 ? null : t.slice(0, i + 1);
+  }
+
+  // A folder with a single sub-folder and nothing else opens straight
+  // through to it, so drilling down never shows a one-box level.
+  function compress() {
+    for (var guard = 0; guard < 64; guard++) {
+      var kids = new Map();
+      N.forEach(function (n) {
+        if (!leafVisible(n)) return;
+        var c = n.chain;
+        for (var i = 0; i < c.length; i++) {
+          if (!st.expanded.has(c[i])) {
+            var s = kids.get(c[i]);
+            if (!s) { s = new Set(); kids.set(c[i], s); }
+            s.add(i + 1 < c.length ? c[i + 1] : '#' + n.i);
+            return;
+          }
+        }
+      });
+      var changed = false;
+      kids.forEach(function (s, p) {
+        var only = s.size === 1 ? s.values().next().value : null;
+        if (only !== null && only.charAt(0) !== '#') { st.expanded.add(p); changed = true; }
+      });
+      if (!changed) return;
+    }
+  }
+  function setDepth(d) {
+    st.depth = d;
+    st.expanded = new Set(ALL_PREFIXES.filter(function (p) {
+      return p.charAt(0) !== '(' && prefixDepth(p) < d;
+    }));
+    if (d === Infinity) ALL_PREFIXES.forEach(function (p) { st.expanded.add(p); });
+    compress();
+  }
+  function expandPrefix(p) { st.expanded.add(p); compress(); }
+  function collapsePrefix(p) {
+    st.expanded.delete(p);
+    Array.from(st.expanded).forEach(function (q) { if (q !== p && q.indexOf(p) === 0) st.expanded.delete(q); });
+    st.depth = NaN;
   }
 
   // ------------------------------------------------------------------ view
   // The view graph is what is drawn: visible leaves, plus one node per
   // collapsed cluster, with edges aggregated between them.
-  var V = { nodes: [], edges: [], byId: new Map(), leafTo: new Int32Array(N.length) };
+  var V = { nodes: [], edges: [], links: [], byId: new Map(), leafTo: new Int32Array(N.length) };
   var pos = new Map(); // node id -> {x, y}, survives rebuilds
 
   function leafVisible(n) {
-    if (has(n, F.halo) && !st.revealed.has(n.i)) return false;
+    if (has(n, F.scope_out) && !st.showNonCode && !st.revealed.has(n.i)) return false;
+    if (has(n, F.halo) && !st.revealed.has(n.i) && !(has(n, F.scope_out) && st.showNonCode)) return false;
     if (has(n, F.external | F.unresolved) && !st.showExternal) return false;
     if (has(n, F.test) && !st.showTests) return false;
     if (st.langOn[langKey(n)] === false) return false;
@@ -147,24 +232,43 @@
   }
 
   function shortGroup(g) {
+    if (g.charAt(g.length - 1) !== '/') return g.split('/').pop();
     var t = g.replace(/\/$/, '');
     var parts = t.split('/');
     return parts.length > 2 ? '…/' + parts.slice(-2).join('/') + '/' : g;
+  }
+
+  // Code kinds between one pair of nodes merge into one weighted line; each
+  // bridge family keeps its own, so cross-process flow stays visible.
+  function edgeBucket(kind) {
+    var f = family(kind);
+    return BRIDGE_FAMILIES[f] ? f : 'code';
+  }
+  function kindsText(e) {
+    var ks = Object.keys(e.kinds).sort(function (a, b) { return e.kinds[b] - e.kinds[a]; });
+    return ks.map(function (k) { return k + (e.kinds[k] > 1 || ks.length > 1 ? ' ×' + e.kinds[k] : ''); }).join(', ');
   }
 
   function rebuild() {
     var nodes = [];
     var byId = new Map();
     var leafTo = new Int32Array(N.length).fill(-1);
-    var clusters = new Map();
+    var visible = [];
+    var groupCount = new Map();
     N.forEach(function (n) {
       if (!leafVisible(n)) return;
       var g = groupOf(n);
-      if (g !== null && st.collapsed.has(g)) {
+      visible.push([n, g]);
+      if (g !== null) groupCount.set(g, (groupCount.get(g) || 0) + 1);
+    });
+    var clusters = new Map();
+    visible.forEach(function (it) {
+      var n = it[0], g = it[1];
+      if (g !== null && groupCount.get(g) > 1) {
         var c = clusters.get(g);
         if (!c) {
           c = { id: 'c:' + g, idx: nodes.length, leaf: null, cluster: g, members: [], deg: 0,
-                label: shortGroup(g), x: 0, y: 0, vx: 0, vy: 0, r: 8, q: 1 };
+                label: shortGroup(g), group: parentOf(g), x: 0, y: 0, vx: 0, vy: 0, r: 8, q: 1 };
           clusters.set(g, c);
           nodes.push(c);
           byId.set(c.id, c);
@@ -173,7 +277,7 @@
         leafTo[n.i] = c.idx;
       } else {
         var v = { id: 'n' + n.i, idx: nodes.length, leaf: n, cluster: null, members: null, deg: 0,
-                  label: n.name, group: g, x: 0, y: 0, vx: 0, vy: 0, r: 5, q: 1 };
+                  label: n.name, group: g !== null ? parentOf(g) : hullOf(n), x: 0, y: 0, vx: 0, vy: 0, r: 5, q: 1 };
         nodes.push(v);
         byId.set(v.id, v);
         leafTo[n.i] = v.idx;
@@ -185,17 +289,26 @@
       if (!st.kindOn[e.kind]) return;
       var a = leafTo[e.s], b = leafTo[e.t];
       if (a < 0 || b < 0 || a === b) return;
-      var key = a + '|' + b + '|' + e.kind;
+      var bucket = edgeBucket(e.kind);
+      var key = a + '|' + b + '|' + bucket;
       var ve = agg.get(key);
       if (!ve) {
-        ve = { a: a, b: b, kind: e.kind, fam: family(e.kind), w: 0, n: 0, refs: [], halo: true };
+        ve = { a: a, b: b, kind: e.kind, fam: family(e.kind), kinds: {}, w: 0, n: 0, refs: [], halo: true };
         agg.set(key, ve);
         edges.push(ve);
       }
+      ve.kinds[e.kind] = (ve.kinds[e.kind] || 0) + e.w;
       ve.w += e.w;
       ve.n += 1;
       if (!(e.flags & F.edge_halo)) ve.halo = false;
       if (ve.refs.length < 6) ve.refs.push(e);
+    });
+    edges.forEach(function (ve) {
+      // Colour by the heaviest kind.
+      var best = ve.kind;
+      Object.keys(ve.kinds).forEach(function (k) { if (ve.kinds[k] > ve.kinds[best]) best = k; });
+      ve.kind = best;
+      ve.fam = family(best);
     });
     var pairSeen = new Set();
     edges.forEach(function (e) {
@@ -207,7 +320,7 @@
     nodes.forEach(function (v) {
       v.r = nodeRadius(v);
       v.q = 45 + v.r * 6;
-      if (v.cluster !== null) v.group = v.cluster;
+      v.seed = v.leaf ? has(v.leaf, F.seed) : v.members.some(function (m) { return has(m, F.seed); });
     });
     // One spring per connected pair, however many kinds join it.
     var links = new Map();
@@ -223,6 +336,8 @@
     placeNodes();
     buildAdjacency();
     labelWidths.clear();
+    updateEmpty();
+    updateDepthLabel();
   }
 
   function buildAdjacency() {
@@ -230,9 +345,36 @@
     V.edges.forEach(function (e) { V.nodes[e.a].outE.push(e); V.nodes[e.b].inE.push(e); });
   }
 
-  // Positions: remembered ones first, then a cluster's member centroid, a
-  // collapsed cluster's position, a neighbour's, or a seeded spiral spot.
+  // Connected components (by any drawn edge), largest first.
+  function components() {
+    var n = V.nodes.length, parent = new Int32Array(n);
+    for (var i = 0; i < n; i++) parent[i] = i;
+    function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+    V.links.forEach(function (l) { var a = find(l.a), b = find(l.b); if (a !== b) parent[a] = b; });
+    var groups = new Map();
+    for (i = 0; i < n; i++) {
+      var r = find(i);
+      var g = groups.get(r);
+      if (!g) { g = []; groups.set(r, g); }
+      g.push(i);
+    }
+    return Array.from(groups.values()).sort(function (a, b) {
+      var sa = a.some(function (i) { return V.nodes[i].seed; }) ? 1 : 0;
+      var sb = b.some(function (i) { return V.nodes[i].seed; }) ? 1 : 0;
+      return sb - sa || b.length - a.length || a[0] - b[0];
+    });
+  }
+
+  // Positions: remembered ones first, then a cluster's member centroid, an
+  // enclosing cluster's position, a neighbour's, or a seeded spiral spot.
   var firstPlacement = true;
+  function ancestorPos(n) {
+    for (var i = n.chain.length - 1; i >= 0; i--) {
+      var p = pos.get('c:' + n.chain[i]);
+      if (p) return p;
+    }
+    return null;
+  }
   function placeNodes() {
     var groups = [];
     var groupIndex = new Map();
@@ -253,6 +395,7 @@
       var p = pos.get(v.id);
       if (p) { v.x = p.x; v.y = p.y; return; }
       var r = rng(hash(v.id));
+      var member = v.cluster !== null ? v.members[0] : v.leaf;
       if (v.cluster !== null) {
         var sx = 0, sy = 0, c = 0;
         v.members.forEach(function (m) {
@@ -260,12 +403,13 @@
           if (mp) { sx += mp.x; sy += mp.y; c++; }
         });
         if (c) { v.x = sx / c; v.y = sy / c; return; }
-      } else {
-        var cp = v.group !== null && v.group !== undefined ? pos.get('c:' + v.group) : null;
-        if (cp) {
-          v.x = cp.x + (r() - 0.5) * 60; v.y = cp.y + (r() - 0.5) * 60;
-          return;
-        }
+      }
+      var cp = ancestorPos(member);
+      if (cp) {
+        v.x = cp.x + (r() - 0.5) * 70; v.y = cp.y + (r() - 0.5) * 70;
+        return;
+      }
+      if (v.cluster === null) {
         var anchor = neighbourWithPos(v.leaf);
         if (anchor && !firstPlacement) {
           var ang = r() * Math.PI * 2;
@@ -373,26 +517,26 @@
       var cent = new Map();
       for (i = 0; i < n; i++) {
         v = ns[i];
-        if (v.cluster !== null || v.group === null || LOOSE_GROUPS[v.group]) continue;
+        if (v.group === null || v.group === undefined || LOOSE_GROUPS[v.group]) continue;
         var c = cent.get(v.group);
         if (!c) { c = { x: 0, y: 0, n: 0 }; cent.set(v.group, c); }
         c.x += v.x; c.y += v.y; c.n++;
       }
       for (i = 0; i < n; i++) {
         v = ns[i];
-        if (v.cluster !== null || v.group === null || LOOSE_GROUPS[v.group]) continue;
+        if (v.group === null || v.group === undefined || LOOSE_GROUPS[v.group]) continue;
         var g = cent.get(v.group);
         if (g.n < 2) continue;
         v.vx += (g.x / g.n - v.x) * 0.12 * alpha;
         v.vy += (g.y / g.n - v.y) * 0.12 * alpha;
       }
     }
-    // Isolated nodes get a stronger pull so they ring the graph instead of
-    // drifting off to the edge of the charge field.
-    var gravity = 0.03 * alpha, loneGravity = 0.1 * alpha;
+    // Seeds are pulled hard to the centre so a trace grows around them;
+    // components that end up apart are packed beside the main one at the end.
+    var gravity = 0.03 * alpha, seedGravity = 0.25 * alpha;
     for (i = 0; i < n; i++) {
       v = ns[i];
-      var gr = v.deg ? gravity : loneGravity;
+      var gr = v.seed ? seedGravity : gravity;
       v.vx -= v.x * gr; v.vy -= v.y * gr;
       if (v === sim.pinned) { v.vx = 0; v.vy = 0; continue; }
       v.vx *= 0.6; v.vy *= 0.6;
@@ -455,7 +599,7 @@
     if (sim.alpha <= 0.002) {
       sim.running = false;
       if (window.lidxGraph && !window.lidxGraph.settledAt) window.lidxGraph.settledAt = Math.round(performance.now());
-      if (!st.userMoved) fit(false);
+      if (!packComponents() && !st.userMoved) fit(false);
       setStatus();
     }
     draw();
@@ -463,8 +607,11 @@
   }
 
   // -------------------------------------------------------- layered layout
-  // Left-to-right Sugiyama-style layout: cycles broken by DFS, longest-path
-  // layers, barycentre ordering sweeps.
+  // Left-to-right Sugiyama-style layout, one connected component at a time
+  // (largest first, stacked; lone nodes in a grid below). Layers are hop
+  // distance from the seeds in a one-way trace (the seed in the first
+  // column, also for an upward walk, which is mirrored), and longest-path
+  // layers otherwise; barycentre sweeps order each layer.
   function layered() {
     var ns = V.nodes, n = ns.length;
     var out = ns.map(function () { return []; });
@@ -477,91 +624,197 @@
       out[e.a].push(e.b);
       inn[e.b].push(e.a);
     });
-    // Cycle breaking: DFS from seeds, then sources, then the rest.
-    var order = ns.map(function (v, i) { return i; });
-    function rank(i) {
-      var v = ns[i];
-      if (v.leaf && has(v.leaf, F.seed)) return 0;
-      return inn[i].length === 0 ? 1 : 2;
-    }
-    order.sort(function (a, b) { return rank(a) - rank(b) || a - b; });
-    var state = new Uint8Array(n);
-    var dagOut = ns.map(function () { return []; });
-    order.forEach(function (start) {
-      if (state[start]) return;
-      var stack = [[start, 0]];
-      state[start] = 1;
-      while (stack.length) {
-        var top = stack[stack.length - 1];
-        var u = top[0];
-        if (top[1] < out[u].length) {
-          var w = out[u][top[1]++];
-          if (state[w] === 1) continue; // back edge: dropped from the DAG
-          dagOut[u].push(w);
-          if (state[w] === 0) { state[w] = 1; stack.push([w, 0]); }
-        } else {
-          state[u] = 2;
-          stack.pop();
-        }
-      }
+    var colGap = AGGREGATED ? 240 : 270;
+    var targets = new Array(n);
+    var comps = components();
+    var lone = comps.filter(function (c) { return c.length === 1; });
+    var y = 0;
+    comps.forEach(function (comp) {
+      if (comp.length === 1) return;
+      var t = layoutComponent(comp, out, inn, colGap);
+      comp.forEach(function (i) { targets[i] = { x: t.pos[i].x, y: t.pos[i].y + y - t.y0 }; });
+      y += t.y1 - t.y0 + 70;
     });
-    var indeg = new Int32Array(n);
-    dagOut.forEach(function (l) { l.forEach(function (w) { indeg[w]++; }); });
-    var layer = new Int32Array(n);
-    var queue = [];
-    for (var i = 0; i < n; i++) if (!indeg[i]) queue.push(i);
-    var topo = [];
-    while (queue.length) {
-      var u = queue.shift();
-      topo.push(u);
-      dagOut[u].forEach(function (w) {
-        if (layer[u] + 1 > layer[w]) layer[w] = layer[u] + 1;
-        if (--indeg[w] === 0) queue.push(w);
-      });
-    }
-    // Pull sources next to their first target.
-    for (var t = topo.length - 1; t >= 0; t--) {
-      var x = topo[t];
-      if (inn[x].length === 0 && dagOut[x].length) {
-        var m = Infinity;
-        dagOut[x].forEach(function (w) { if (layer[w] < m) m = layer[w]; });
-        layer[x] = Math.max(0, m - 1);
+    // Lone nodes: a grid under everything else.
+    var cols = Math.max(1, Math.ceil(Math.sqrt(lone.length * 3)));
+    lone.forEach(function (c, k) {
+      targets[c[0]] = { x: (k % cols) * colGap * 0.8, y: y + Math.floor(k / cols) * 34 };
+    });
+    animateTo(targets);
+  }
+
+  function layoutComponent(comp, out, inn, colGap) {
+    var ns = V.nodes;
+    var inComp = new Set(comp);
+    var layer = new Map();
+    var seeds = comp.filter(function (i) { return ns[i].seed; });
+    var up = META.direction === 'up';
+    if (TRACE && seeds.length) {
+      // Hop distance from the seeds along the walk's direction.
+      var next = up ? inn : out;
+      var queue = seeds.slice();
+      seeds.forEach(function (s) { layer.set(s, 0); });
+      while (queue.length) {
+        var u = queue.shift();
+        next[u].forEach(function (w) {
+          if (inComp.has(w) && !layer.has(w)) { layer.set(w, layer.get(u) + 1); queue.push(w); }
+        });
       }
+      // Whatever the walk did not reach (revealed halo, reverse edges) sits
+      // one column past a placed neighbour.
+      var changed = true;
+      while (changed) {
+        changed = false;
+        comp.forEach(function (i) {
+          if (layer.has(i)) return;
+          var nb = out[i].concat(inn[i]).filter(function (w) { return layer.has(w); });
+          if (nb.length) {
+            layer.set(i, Math.min.apply(null, nb.map(function (w) { return layer.get(w); })) + 1);
+            changed = true;
+          }
+        });
+      }
+      comp.forEach(function (i) { if (!layer.has(i)) layer.set(i, 0); });
+    } else {
+      longestPathLayers(comp, out, inn, inComp, layer);
     }
     var layers = [];
-    for (i = 0; i < n; i++) (layers[layer[i]] = layers[layer[i]] || []).push(i);
-    for (i = 0; i < layers.length; i++) if (!layers[i]) layers[i] = [];
-    var at = new Float64Array(n);
+    comp.forEach(function (i) { var l = layer.get(i); (layers[l] = layers[l] || []).push(i); });
+    for (var li = 0; li < layers.length; li++) if (!layers[li]) layers[li] = [];
+    var at = new Map();
     layers.forEach(function (l) {
       l.sort(function (a, b) {
         var ga = ns[a].group || '', gb = ns[b].group || '';
-        return ga < gb ? -1 : ga > gb ? 1 : (ns[a].label < ns[b].label ? -1 : 1);
+        return (ns[b].seed ? 1 : 0) - (ns[a].seed ? 1 : 0) ||
+          (ga < gb ? -1 : ga > gb ? 1 : (ns[a].label < ns[b].label ? -1 : 1));
       });
-      l.forEach(function (v, k) { at[v] = k; });
+      l.forEach(function (v, k) { at.set(v, k); });
     });
     function sweep(l, nbrs) {
       var bc = new Map();
       l.forEach(function (v) {
         var s = 0, c = 0;
-        nbrs[v].forEach(function (w) { if (layer[w] !== layer[v]) { s += at[w]; c++; } });
-        bc.set(v, c ? s / c : at[v]);
+        nbrs[v].forEach(function (w) { if (inComp.has(w) && layer.get(w) !== layer.get(v)) { s += at.get(w); c++; } });
+        bc.set(v, c ? s / c : at.get(v));
       });
-      l.sort(function (a, b) { return bc.get(a) - bc.get(b) || at[a] - at[b]; });
-      l.forEach(function (v, k) { at[v] = k; });
+      l.sort(function (a, b) { return bc.get(a) - bc.get(b) || at.get(a) - at.get(b); });
+      l.forEach(function (v, k) { at.set(v, k); });
     }
     for (var it = 0; it < 6; it++) {
-      for (i = 1; i < layers.length; i++) sweep(layers[i], inn);
-      for (i = layers.length - 2; i >= 0; i--) sweep(layers[i], out);
+      for (li = 1; li < layers.length; li++) sweep(layers[li], up ? out : inn);
+      for (li = layers.length - 2; li >= 0; li--) sweep(layers[li], up ? inn : out);
     }
-    var colGap = AGGREGATED ? 240 : 270;
-    var targets = new Array(n);
-    layers.forEach(function (l, li) {
-      var y = 0;
-      var ys = l.map(function (v) { var r = ns[v].r; y += r + 9; var here = y; y += r + 9; return here; });
-      var mid = y / 2;
-      l.forEach(function (v, k) { targets[v] = { x: li * colGap, y: ys[k] - mid }; });
+    // A tall layer (a hub's callees) wraps into side-by-side sub-columns so
+    // the trace stays readable at a zoom where labels show.
+    var perCol = Math.max(14, Math.round(Math.sqrt(comp.length) * 1.6));
+    var res = { pos: {}, y0: Infinity, y1: -Infinity };
+    var x = 0;
+    layers.forEach(function (l) {
+      var cols = Math.max(1, Math.ceil(l.length / perCol));
+      var rows = Math.ceil(l.length / cols);
+      for (var cI = 0; cI < cols; cI++) {
+        var col = l.slice(cI * rows, (cI + 1) * rows);
+        var yy = 0;
+        var ys = col.map(function (v) { var r = ns[v].r; yy += r + 9; var here = yy; yy += r + 9; return here; });
+        var mid = yy / 2;
+        col.forEach(function (v, j) {
+          var p = { x: x + cI * colGap * 0.85, y: ys[j] - mid };
+          res.pos[v] = p;
+          res.y0 = Math.min(res.y0, p.y - ns[v].r);
+          res.y1 = Math.max(res.y1, p.y + ns[v].r);
+        });
+      }
+      x += (cols - 1) * colGap * 0.85 + colGap;
+    });
+    return res;
+  }
+
+  // Longest-path layers on the graph with DFS back edges dropped; sources
+  // pulled next to their first target.
+  function longestPathLayers(comp, out, inn, inComp, layer) {
+    var ns = V.nodes;
+    var order = comp.slice().sort(function (a, b) {
+      var ra = ns[a].seed ? 0 : inn[a].length === 0 ? 1 : 2;
+      var rb = ns[b].seed ? 0 : inn[b].length === 0 ? 1 : 2;
+      return ra - rb || a - b;
+    });
+    var state = new Map();
+    var dagOut = new Map();
+    comp.forEach(function (i) { dagOut.set(i, []); });
+    order.forEach(function (start) {
+      if (state.get(start)) return;
+      var stack = [[start, 0]];
+      state.set(start, 1);
+      while (stack.length) {
+        var top = stack[stack.length - 1];
+        var u = top[0];
+        if (top[1] < out[u].length) {
+          var w = out[u][top[1]++];
+          if (!inComp.has(w) || state.get(w) === 1) continue;
+          dagOut.get(u).push(w);
+          if (!state.get(w)) { state.set(w, 1); stack.push([w, 0]); }
+        } else {
+          state.set(u, 2);
+          stack.pop();
+        }
+      }
+    });
+    var indeg = new Map();
+    comp.forEach(function (i) { indeg.set(i, 0); layer.set(i, 0); });
+    dagOut.forEach(function (l) { l.forEach(function (w) { indeg.set(w, indeg.get(w) + 1); }); });
+    var queue = comp.filter(function (i) { return !indeg.get(i); });
+    var topo = [];
+    while (queue.length) {
+      var u = queue.shift();
+      topo.push(u);
+      dagOut.get(u).forEach(function (w) {
+        if (layer.get(u) + 1 > layer.get(w)) layer.set(w, layer.get(u) + 1);
+        indeg.set(w, indeg.get(w) - 1);
+        if (!indeg.get(w)) queue.push(w);
+      });
+    }
+    for (var t = topo.length - 1; t >= 0; t--) {
+      var x = topo[t];
+      if (!ns[x].seed && inn[x].length === 0 && dagOut.get(x).length) {
+        var m = Infinity;
+        dagOut.get(x).forEach(function (w) { if (layer.get(w) < m) m = layer.get(w); });
+        layer.set(x, Math.max(0, m - 1));
+      }
+    }
+  }
+
+  // After a force layout settles: keep the main component in place and shelf-
+  // pack every other component (and lone node) in a column beside it.
+  function packComponents() {
+    var comps = components();
+    if (comps.length < 2) return false;
+    var ns = V.nodes;
+    function box(c) {
+      var b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+      c.forEach(function (i) {
+        var v = ns[i];
+        b.x0 = Math.min(b.x0, v.x - v.r); b.y0 = Math.min(b.y0, v.y - v.r);
+        b.x1 = Math.max(b.x1, v.x + v.r + 60); b.y1 = Math.max(b.y1, v.y + v.r);
+      });
+      return b;
+    }
+    var main = box(comps[0]);
+    var rest = comps.slice(1).map(function (c) { return { c: c, b: box(c) }; });
+    var area = rest.reduce(function (s, r) { return s + (r.b.x1 - r.b.x0 + 30) * (r.b.y1 - r.b.y0 + 30); }, 0);
+    var shelf = Math.max(260, Math.sqrt(area) * 1.15, (main.y1 - main.y0) ? area / (main.y1 - main.y0) : 0);
+    var gap = 30;
+    var x0 = main.x1 + 80, x = x0, y = main.y0, rowH = 0;
+    var targets = ns.map(function (v) { return { x: v.x, y: v.y }; });
+    rest.forEach(function (r) {
+      var w = r.b.x1 - r.b.x0, h = r.b.y1 - r.b.y0;
+      if (x > x0 && x + w > x0 + shelf) { x = x0; y += rowH + gap; rowH = 0; }
+      var dx = x - r.b.x0, dy = y - r.b.y0;
+      r.c.forEach(function (i) { targets[i] = { x: ns[i].x + dx, y: ns[i].y + dy }; });
+      x += w + gap;
+      rowH = Math.max(rowH, h);
     });
     animateTo(targets);
+    return true;
   }
 
   var anim = null;
@@ -658,19 +911,13 @@
     c.setTransform(DPR, 0, 0, DPR, 0, 0);
     c.fillStyle = theme.canvas;
     c.fillRect(0, 0, w, h);
-    if (!V.nodes.length) {
-      c.fillStyle = theme['text-dim'];
-      c.font = '14px ' + getComputedStyle(document.body).fontFamily;
-      c.textAlign = 'center';
-      c.fillText('Nothing to show: every node is filtered out.', w / 2, h / 2);
-      return;
-    }
+    if (!V.nodes.length) return; // the #empty overlay explains it
     var k = st.view.k;
     var pad = 40;
     function onScreen(x, y, r) { return x > -r - pad && y > -r - pad && x < w + r + pad && y < h + r + pad; }
 
     // Cluster hulls
-    if (st.layout === 'force' && st.group !== 'none') drawHulls(c, w, h);
+    var hullLabels = st.layout === 'force' && st.group !== 'none' ? drawHulls(c, w, h) : [];
 
     // Edges, batched by family and emphasis
     var curved = st.layout === 'layered';
@@ -716,9 +963,9 @@
       c.globalAlpha = alpha;
       c.setLineDash(bridge ? [7, 4] : []);
       c.lineWidth = bridge ? 2.2 : emph >= 2 ? 1.6 : 1;
-      if (!bridge && list.length < 4000) {
+      if (list.length < 4000) {
         list.forEach(function (it) {
-          c.lineWidth = (emph >= 2 ? 1.5 : 1) * (1 + Math.log2(it[0].w) * 0.45);
+          c.lineWidth = edgeWidth(it[0], emph);
           c.beginPath();
           pathEdge(c, it[1], curved);
           c.stroke();
@@ -740,7 +987,7 @@
     c.globalAlpha = 1;
 
     // Edge kind labels for the hovered edge and, zoomed in, highlighted ones
-    if (hlEdges && k > 1.4 && hlEdges.size < 120) {
+    if (hlEdges && k > 1.4 && hlEdges.size <= 30) {
       c.font = '10.5px ' + MONO;
       c.textAlign = 'center';
       c.textBaseline = 'middle';
@@ -758,7 +1005,14 @@
       if (!dim) labelled.push(v);
     });
     c.globalAlpha = 1;
-    drawLabels(c, labelled, w, h);
+    drawLabels(c, labelled, w, h, hullLabels);
+  }
+
+  // Weight drives thickness: an aggregated edge between two folders reads
+  // as heavy as the calls it stands for.
+  function edgeWidth(e, emph) {
+    var base = BRIDGE_FAMILIES[e.fam] ? 2.2 : emph >= 2 ? 1.5 : 1;
+    return Math.min(10, base * (1 + Math.log2(Math.max(1, e.w)) * 0.75));
   }
 
   var MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
@@ -805,7 +1059,8 @@
   function edgeLabel(c, e) {
     var g = edgeGeom(e);
     var m = edgeMid(g);
-    var text = e.kind + (e.w > 1 ? ' ×' + e.w : '');
+    var extra = Object.keys(e.kinds).length - 1;
+    var text = e.kind + (e.kinds[e.kind] > 1 ? ' ×' + e.kinds[e.kind] : '') + (extra > 0 ? ' +' + extra : '');
     c.lineWidth = 3;
     c.strokeStyle = theme['label-halo'];
     c.strokeText(text, m[0], m[1]);
@@ -866,7 +1121,7 @@
       c.stroke();
       c.setLineDash([]);
     }
-    if ((n && has(n, F.seed)) || (v.cluster !== null && v.members.some(function (m) { return has(m, F.seed); }))) {
+    if (v.seed) {
       c.beginPath();
       c.arc(x, y, r + 3.5, 0, Math.PI * 2);
       c.strokeStyle = theme.seed;
@@ -932,12 +1187,13 @@
   function drawHulls(c, w, h) {
     var groups = new Map();
     V.nodes.forEach(function (v) {
-      if (v.cluster !== null || v.group === null || v.group === undefined || LOOSE_GROUPS[v.group]) return;
+      if (v.group === null || v.group === undefined || LOOSE_GROUPS[v.group]) return;
       var l = groups.get(v.group);
       if (!l) { l = []; groups.set(v.group, l); }
       l.push(v);
     });
     var k = st.view.k;
+    var labels = [];
     c.lineJoin = 'round';
     groups.forEach(function (members, g) {
       if (members.length < 2) return;
@@ -964,16 +1220,14 @@
       c.stroke();
       c.fillStyle = theme.hull;
       c.fill();
-      if (maxx - minx + padPx * 2 > 70 || k > 0.6) {
-        c.font = '600 11px ' + SANS;
-        c.textAlign = 'left';
-        c.textBaseline = 'bottom';
-        c.fillStyle = theme['hull-label'];
-        c.fillText(shortGroup(g), minx - padPx + 4, miny - padPx + 2);
+      if (!dim) {
+        labels.push({ id: 'h:' + g, text: shortGroup(g), x: minx - padPx + 4, y: miny - padPx - 4,
+                      prio: members.length * 3, hull: true });
       }
     });
     c.globalAlpha = 1;
     c.lineJoin = 'miter';
+    return labels;
   }
 
   var labelWidths = new Map();
@@ -981,7 +1235,7 @@
     if (v.cluster !== null) return v.label;
     return v.label.length > 48 ? v.label.slice(0, 47) + '…' : v.label;
   }
-  function drawLabels(c, list, w, h) {
+  function drawLabels(c, list, w, h, hullLabels) {
     if (!st.showLabels) return;
     var k = st.view.k;
     // Always labelled; the selection's neighbours only get first pick of
@@ -992,13 +1246,18 @@
     var near = function (v) { return hl && hl.has(v.idx) && hl.get(v.idx) <= 1; };
     var lodOk = function (v) {
       if (v.cluster !== null) return true;
+      // Layered rows are ~26 units apart: labels fit once a row is ~13px.
+      if (st.layout === 'layered') return k >= 0.5;
       return screenR(v) >= 5.5 && k >= 0.55;
     };
-    var cand = list.filter(function (v) { return important(v) || near(v) || lodOk(v); });
-    cand.sort(function (a, b) {
-      return (important(b) ? 1 : 0) - (important(a) ? 1 : 0) || (near(b) ? 1 : 0) - (near(a) ? 1 : 0) ||
-        b.deg - a.deg || b.r - a.r;
+    // One collision pass over node, cluster and folder labels: a label is
+    // skipped when it would overlap one already drawn, best-connected first.
+    var cand = list.filter(function (v) { return important(v) || near(v) || lodOk(v); }).map(function (v) {
+      var prio = important(v) ? 1e9 : near(v) ? 1e7 + v.deg : v.cluster !== null ? v.members.length * 4 + v.deg : v.deg * 2 + v.r;
+      return { v: v, prio: prio };
     });
+    (hullLabels || []).forEach(function (hl2) { cand.push({ hull: hl2, prio: hl2.prio }); });
+    cand.sort(function (a, b) { return b.prio - a.prio; });
     if (cand.length > 1500) cand.length = 1500;
     c.font = '12px ' + SANS;
     c.textBaseline = 'middle';
@@ -1020,19 +1279,25 @@
     }
     c.lineWidth = 3.5;
     c.lineJoin = 'round';
-    cand.forEach(function (v) {
-      var text = labelText(v);
-      var tw = labelWidths.get(v.id);
-      if (tw === undefined) { tw = c.measureText(text).width; labelWidths.set(v.id, tw); }
-      var x = sx(v.x) + screenR(v) + 5, y = sy(v.y);
-      if (v.cluster !== null) { x = sx(v.x) - tw / 2; y = sy(v.y) + screenR(v) * 0.75 + 10; }
+    cand.forEach(function (item) {
+      var v = item.v, hullItem = item.hull;
+      var text, id, x, y;
+      if (hullItem) { text = hullItem.text; id = hullItem.id; x = hullItem.x; y = hullItem.y; }
+      else { text = labelText(v); id = v.id; }
+      c.font = hullItem ? '600 11px ' + SANS : '12px ' + SANS;
+      var tw = labelWidths.get(id);
+      if (tw === undefined) { tw = c.measureText(text).width; labelWidths.set(id, tw); }
+      if (!hullItem) {
+        x = sx(v.x) + screenR(v) + 5; y = sy(v.y);
+        if (v.cluster !== null) { x = sx(v.x) - tw / 2; y = sy(v.y) + screenR(v) * 0.75 + 10; }
+      }
       if (x > w || x + tw < 0 || y < -10 || y > h + 10) return;
-      var imp = important(v);
+      var imp = !hullItem && important(v);
       if (!imp && !free(x, y - 7, x + tw, y + 7)) return;
       take(x, y - 7, x + tw, y + 7);
       c.strokeStyle = theme['label-halo'];
       c.strokeText(text, x, y);
-      c.fillStyle = theme.label;
+      c.fillStyle = hullItem ? theme['hull-label'] : theme.label;
       c.fillText(text, x, y);
     });
     c.lineJoin = 'miter';
@@ -1106,7 +1371,9 @@
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     V.nodes.forEach(function (v) {
       x0 = Math.min(x0, v.x - v.r); y0 = Math.min(y0, v.y - v.r);
-      x1 = Math.max(x1, v.x + v.r); y1 = Math.max(y1, v.y + v.r);
+      // Leave room for the label to the right of the node.
+      x1 = Math.max(x1, v.x + v.r + (v.cluster === null ? Math.min(160, v.label.length * 6.5) : 0));
+      y1 = Math.max(y1, v.y + v.r);
     });
     var bw = x1 - x0 + 80, bh = y1 - y0 + 60;
     var k = clampK(Math.min(W / bw, H / bh, 2.2));
@@ -1262,8 +1529,7 @@
   }
   function edgeTooltip(e) {
     var reversed = e.refs[0] && (e.refs[0].flags & F.edge_reversed);
-    var html = '<div class="t-kind" style="color:' + esc(famColor(e.fam)) + '">' + esc(e.kind) +
-      (e.w > 1 ? ' ×' + e.w : '') + (BRIDGE_FAMILIES[e.fam] ? ' <span class="t-dim">bridge</span>' : '') + '</div>' +
+    var html = '<div class="t-kind" style="color:' + esc(famColor(e.fam)) + '">' + esc(kindsText(e)) + (BRIDGE_FAMILIES[e.fam] ? ' <span class="t-dim">bridge</span>' : '') + '</div>' +
       '<div class="t-qual">' + esc(vName(e.a)) + ' → ' + esc(vName(e.b)) + '</div>';
     if (reversed) {
       html += '<div class="t-dim">' + esc(vName(e.b)) + ' ' + (RECEIVING_VERB[e.kind] || 'receives') +
@@ -1322,9 +1588,10 @@
     if (has(n, F.external | F.unresolved) && !st.showExternal) { st.showExternal = true; changed = true; }
     if (has(n, F.test) && !st.showTests) { st.showTests = true; changed = true; }
     if (st.langOn[langKey(n)] === false) { st.langOn[langKey(n)] = true; changed = true; }
-    var g = groupOf(n);
-    if (g !== null && st.collapsed.has(g)) { st.collapsed.delete(g); changed = true; }
-    if (changed) { rebuild(); renderLegend(); relayout(0.3); }
+    if (st.group !== 'none') {
+      n.chain.forEach(function (p) { if (!st.expanded.has(p)) { st.expanded.add(p); changed = true; } });
+    }
+    if (changed) { savePositions(); rebuild(); renderLegend(); relayout(0.3); }
     select('n' + i, true);
   }
 
@@ -1338,18 +1605,20 @@
   function expand(v) {
     if (v.cluster !== null) {
       savePositions();
-      st.collapsed.delete(v.cluster);
-      var first = v.members[0];
+      expandPrefix(v.cluster);
+      st.depth = NaN;
       rebuild();
+      st.selected = null;
+      computeHighlight();
+      renderPanel();
       relayout(0.35);
-      if (first) select('n' + first.i, false);
       return;
     }
     var n = v.leaf, added = 0;
     n.out.concat(n.inn).forEach(function (e) {
       var o = e.s === n.i ? e.t : e.s;
       var on = N[o];
-      if (has(on, F.halo) && !st.revealed.has(o)) { st.revealed.add(o); added++; }
+      if ((has(on, F.halo) || (has(on, F.scope_out) && !st.showNonCode)) && !st.revealed.has(o)) { st.revealed.add(o); added++; }
       if (has(on, F.external | F.unresolved) && !st.showExternal) { st.showExternal = true; added++; }
       if (has(on, F.test) && !st.showTests) { st.showTests = true; added++; }
       if (st.langOn[langKey(on)] === false) { st.langOn[langKey(on)] = true; added++; }
@@ -1365,14 +1634,22 @@
     }
     select(v.id, false);
   }
+  // Collapse the folder (or file) a node is drawn in.
   function collapseGroupOf(v) {
-    if (!v || v.cluster !== null || v.group === null || v.group === undefined) return;
+    if (!v || st.group === 'none') return;
+    var g = null;
+    if (v.cluster !== null) g = parentOf(v.cluster);
+    else {
+      var c = v.leaf.chain;
+      for (var i = c.length - 1; i >= 0; i--) if (st.expanded.has(c[i])) { g = c[i]; break; }
+    }
+    if (!g) return;
     savePositions();
-    st.collapsed.add(v.group);
-    var g = v.group;
+    collapsePrefix(g);
     rebuild();
     relayout(0.25);
-    select('c:' + g, false);
+    if (V.byId.has('c:' + g)) select('c:' + g, false);
+    else clearSelection();
   }
 
   function badge(text, cls) { return '<span class="badge ' + (cls || '') + '">' + esc(text) + '</span>'; }
@@ -1540,7 +1817,7 @@
   var list = document.getElementById('search-list');
   var results = [];
   var active = -1;
-  var groupNames = Array.from(new Set(N.map(function (n) { return n.mod; }))).sort();
+  var groupNames = ALL_PREFIXES.filter(function (p) { return p.charAt(p.length - 1) === '/' || p.charAt(0) === '('; });
   function runSearch() {
     var q = search.value.trim().toLowerCase();
     results = [];
@@ -1573,7 +1850,7 @@
       list.innerHTML = results.map(function (r, i) {
         if (r.group) {
           return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
-            '<span class="nm">' + esc(r.group) + '</span><span class="kd">cluster</span></li>';
+            '<span class="nm">' + esc(r.group) + '</span><span class="kd">folder</span></li>';
         }
         var hiddenTag = V.leafTo[r.i] < 0 ? ' · hidden' : '';
         return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
@@ -1601,6 +1878,12 @@
     if (!r) return;
     closeList();
     if (r.group) {
+      // Open the folders above it so it is on screen, as a box or open.
+      var opened = false;
+      for (var p = parentOf(r.group); p; p = parentOf(p)) {
+        if (!st.expanded.has(p)) { st.expanded.add(p); opened = true; }
+      }
+      if (opened) { savePositions(); st.depth = NaN; rebuild(); relayout(0.3); }
       var c = V.byId.get('c:' + r.group);
       if (c) { select(c.id, true); return; }
       var m = V.nodes.find(function (v) { return v.group === r.group; });
@@ -1655,7 +1938,12 @@
     var ext = N.filter(function (n) { return has(n, F.external | F.unresolved); }).length;
     var tests = N.filter(function (n) { return has(n, F.test); }).length;
     var halo = N.filter(function (n) { return has(n, F.halo); }).length;
+    var nonCode = N.filter(function (n) { return has(n, F.scope_out); }).length;
     html += '<h3>Show</h3>';
+    if (nonCode) {
+      html += '<label class="plain"><input type="checkbox" data-toggle="showNonCode"' + (st.showNonCode ? ' checked' : '') +
+        '><span>Outside ' + esc(META.file_scope || 'code') + ' scope (tests, docs, fixtures, tooling)</span><span class="count">' + nonCode + '</span></label>';
+    }
     html += '<label class="plain"><input type="checkbox" data-toggle="showExternal"' + (st.showExternal ? ' checked' : '') + '><span>External &amp; unresolved</span><span class="count">' + ext + '</span></label>';
     if (tests) html += '<label class="plain"><input type="checkbox" data-toggle="showTests"' + (st.showTests ? ' checked' : '') + '><span>Tests</span><span class="count">' + tests + '</span></label>';
     html += '<label class="plain"><input type="checkbox" data-toggle="showLabels"' + (st.showLabels ? ' checked' : '') + '><span>Labels</span><span></span></label>';
@@ -1731,40 +2019,63 @@
   layForce.addEventListener('click', function () { setLayout('force'); });
   layLayer.addEventListener('click', function () { setLayout('layered'); });
   var groupSel = document.getElementById('group');
-  if (AGGREGATED) {
-    var fileOpt = groupSel.querySelector('option[value="file"]');
-    if (fileOpt) fileOpt.remove();
-  }
   groupSel.value = st.group;
   groupSel.addEventListener('change', function () {
     savePositions();
     st.group = groupSel.value;
-    st.collapsed.clear();
     rebuild();
+    if (st.selected && !V.byId.has(st.selected)) st.selected = null;
     computeHighlight();
     renderPanel();
     relayout(0.5);
   });
-  document.getElementById('collapse-all').addEventListener('click', function () {
-    if (st.group === 'none') { toast('Pick a grouping first'); return; }
+  // Folder depth: clusters at depth d (1 = top-level folders); All = none.
+  function applyDepth(d) {
+    if (st.group === 'none') { st.group = 'tree'; groupSel.value = 'tree'; }
     savePositions();
-    N.forEach(function (n) { var g = groupOf(n); if (g !== null) st.collapsed.add(g); });
+    setDepth(d);
     rebuild();
     if (st.selected && !V.byId.has(st.selected)) st.selected = null;
     computeHighlight();
     renderPanel();
     st.userMoved = false;
     relayout(0.5);
+  }
+  function currentDepth() {
+    if (st.depth === Infinity) return MAX_DEPTH;
+    if (st.depth > 0) return st.depth;
+    // After a manual expand/collapse: the shallowest cluster shown.
+    var d = Infinity;
+    V.nodes.forEach(function (v) { if (v.cluster !== null && v.cluster.charAt(0) !== '(') d = Math.min(d, prefixDepth(v.cluster)); });
+    return isFinite(d) ? d : MAX_DEPTH;
+  }
+  var depthLabel = document.getElementById('depth-label');
+  function updateDepthLabel() {
+    if (!depthLabel) return;
+    depthLabel.textContent = st.group === 'none' ? 'flat' : st.depth === Infinity ? 'all' :
+      st.depth > 0 ? 'depth ' + st.depth : 'custom';
+  }
+  document.getElementById('collapse-all').addEventListener('click', function () { applyDepth(1); });
+  document.getElementById('expand-all').addEventListener('click', function () { applyDepth(Infinity); });
+  document.getElementById('depth-less').addEventListener('click', function () { applyDepth(Math.max(1, currentDepth() - 1)); });
+  document.getElementById('depth-more').addEventListener('click', function () {
+    var d = currentDepth() + 1;
+    applyDepth(d >= MAX_DEPTH ? Infinity : d);
   });
-  document.getElementById('expand-all').addEventListener('click', function () {
-    savePositions();
-    st.collapsed.clear();
-    rebuild();
-    if (st.selected && !V.byId.has(st.selected)) st.selected = null;
-    computeHighlight();
-    renderPanel();
-    st.userMoved = false;
-    relayout(0.5);
+
+  // Empty state: every node filtered out.
+  var emptyEl = document.getElementById('empty');
+  function updateEmpty() {
+    if (!emptyEl) return;
+    emptyEl.hidden = V.nodes.length > 0;
+  }
+  document.getElementById('empty-reset').addEventListener('click', function () {
+    Object.keys(st.kindOn).forEach(function (k) { st.kindOn[k] = true; });
+    Object.keys(st.langOn).forEach(function (l) { st.langOn[l] = true; });
+    st.showExternal = true; st.showTests = true;
+    if (!N.some(function (n) { return !has(n, F.scope_out); })) st.showNonCode = true;
+    applyFilters();
+    renderLegend();
   });
   document.getElementById('fit').addEventListener('click', function () { fit(true); });
   var legendBtn = document.getElementById('legend-toggle');
@@ -1855,7 +2166,7 @@
       var bridge = BRIDGE_FAMILIES[e.fam];
       out.push('<path d="' + d + '" fill="none" stroke="' + esc(famColor(e.fam)) + '" stroke-opacity="' + (bridge ? 0.9 : 0.55) +
         '" stroke-width="' + (bridge ? 2 : (1 + Math.log2(e.w) * 0.45).toFixed(2)) + '"' + (bridge ? ' stroke-dasharray="7 4"' : '') +
-        ' marker-end="url(#a-' + e.fam + ')"><title>' + esc(e.kind + ': ' + vName(e.a) + ' → ' + vName(e.b)) + '</title></path>');
+        ' marker-end="url(#a-' + e.fam + ')"><title>' + esc(kindsText(e) + ': ' + vName(e.a) + ' → ' + vName(e.b)) + '</title></path>');
     });
     V.nodes.forEach(function (v) {
       var n = v.leaf;
@@ -1955,13 +2266,19 @@
   readTheme();
   setHeader();
   if (window.matchMedia && window.matchMedia('(max-width: 760px)').matches) setLegend(false);
+  // A whole-repo overview starts at the top-level folders; a seeded view
+  // starts open. When nothing in scope exists, show everything instead.
+  if (!N.some(function (n) { return !has(n, F.scope_out); })) st.showNonCode = true;
+  setDepth(META.collapse_modules ? 1 : Infinity);
   rebuild();
   applyTheme(null);
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resize).observe(stage);
   else window.addEventListener('resize', resize);
   resize();
   fit(true);
-  startForce(1);
+  layForce.setAttribute('aria-pressed', String(st.layout === 'force'));
+  layLayer.setAttribute('aria-pressed', String(st.layout === 'layered'));
+  if (st.layout === 'layered') layered(); else startForce(1);
   setStatus();
   // Exposed for automated checks (headless screenshots, tests).
   window.lidxGraph = {
@@ -1969,6 +2286,14 @@
     visible: function () { return V.nodes.length; },
     settled: function () { return !sim.running && !anim; },
     svg: function () { return toSvg(); },
+    // Client coordinates of a drawn node ('c:<folder>' or 'n<index>').
+    clientXY: function (id) {
+      var v = V.byId.get(id);
+      if (!v) return null;
+      var r = canvas.getBoundingClientRect();
+      return [r.left + sx(v.x), r.top + sy(v.y)];
+    },
+    clusters: function () { return V.nodes.filter(function (v) { return v.cluster !== null; }).map(function (v) { return v.id; }); },
     layoutKey: function () {
       return V.nodes.map(function (v) { return v.id + '@' + Math.round(v.x) + ',' + Math.round(v.y); }).join(';');
     },

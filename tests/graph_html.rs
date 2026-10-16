@@ -66,6 +66,7 @@ struct Doc {
     edges: Vec<Vec<Value>>,
     flag_halo: u64,
     flag_seed: u64,
+    flag_scope_out: u64,
 }
 
 impl Doc {
@@ -89,6 +90,7 @@ impl Doc {
             edges: arr("edges"),
             flag_halo: doc["meta"]["flags"]["halo"].as_u64().unwrap(),
             flag_seed: doc["meta"]["flags"]["seed"].as_u64().unwrap(),
+            flag_scope_out: doc["meta"]["flags"]["scope_out"].as_u64().unwrap(),
         }
     }
     fn s(&self, v: &Value) -> &str {
@@ -450,4 +452,138 @@ fn diff_view_seeds_changed_symbols_and_walks_to_callers() {
             .unwrap()
             .starts_with("diff HEAD")
     );
+}
+
+/// A test caller and a fixture under `testdata/` sit outside the default
+/// `code` scope: embedded (so the page can show them) but flagged, and not
+/// walked through. `--scope all` takes them in.
+#[test]
+fn scope_flags_non_code_files_and_keeps_them_out_of_the_walk() {
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-graph-scope-",
+        &[
+            ("app/main.py", MAIN),
+            ("lib/util.py", UTIL),
+            ("lib/helpers.py", HELPERS),
+            (
+                "tests/test_main.py",
+                "from app.main import alpha\n\n\ndef test_alpha():\n    alpha()\n",
+            ),
+            ("lib/testdata/sample.py", "def sample():\n    return 3\n"),
+        ],
+    );
+    let out_of_scope = |d: &Doc| -> BTreeSet<String> {
+        (0..d.nodes.len())
+            .filter(|&i| d.flags(i) & d.flag_scope_out != 0)
+            .map(|i| d.qual(i).to_string())
+            .collect()
+    };
+
+    let (_, doc) = graph(&root, &db, &["--kinds", "CALLS"]);
+    let d = Doc::new(&doc);
+    assert_eq!(doc["meta"]["file_scope"], "code");
+    assert_eq!(
+        out_of_scope(&d),
+        ["lib/testdata/sample.py", "tests/test_main.py"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+    assert_eq!(doc["meta"]["counts"]["out_of_scope"], 2);
+
+    let (_, doc) = graph(&root, &db, &["--kinds", "CALLS", "--scope", "all"]);
+    assert!(out_of_scope(&Doc::new(&doc)).is_empty());
+
+    // Upward from beta: alpha is walked, the test caller only embedded as
+    // an out-of-scope halo node.
+    let (_, doc) = graph(
+        &root,
+        &db,
+        &[
+            "--seed",
+            "beta",
+            "--depth",
+            "3",
+            "--direction",
+            "up",
+            "--kinds",
+            "CALLS",
+        ],
+    );
+    let d = Doc::new(&doc);
+    assert_eq!(d.names(false), set(&["beta", "alpha"]));
+    // The halo holds both directions' next hops; the test caller is the one
+    // out-of-scope node.
+    assert_eq!(d.names(true), set(&["test_alpha", "gamma", "delta"]));
+    let outs = out_of_scope(&d);
+    assert_eq!(outs.len(), 1);
+    assert!(outs.iter().all(|q| q.ends_with("test_alpha")), "{outs:?}");
+
+    let (_, doc) = graph(
+        &root,
+        &db,
+        &[
+            "--seed",
+            "beta",
+            "--depth",
+            "3",
+            "--direction",
+            "up",
+            "--kinds",
+            "CALLS",
+            "--scope",
+            "all",
+        ],
+    );
+    assert_eq!(
+        Doc::new(&doc).names(false),
+        set(&["beta", "alpha", "test_alpha"])
+    );
+}
+
+/// The header names the repo after its git remote, not the folder it was
+/// cloned into; `--title` overrides it.
+#[test]
+fn header_uses_the_remote_name_or_title() {
+    let (_tmp, root, db) = fixture("lidx-graph-name-");
+    let git = |args: &[&str]| {
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            st.status.success(),
+            "{}",
+            String::from_utf8_lossy(&st.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    let (_, doc) = graph(&root, &db, &[]);
+    let folder = root
+        .canonicalize()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        doc["meta"]["repo"],
+        folder.as_str(),
+        "no remote: the top-level folder"
+    );
+
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.com/acme/widgets.git",
+    ]);
+    let (_, doc) = graph(&root, &db, &[]);
+    assert_eq!(doc["meta"]["repo"], "widgets");
+
+    let (html, doc) = graph(&root, &db, &["--title", "Widgets <core>"]);
+    assert_eq!(doc["meta"]["repo"], "Widgets <core>");
+    assert!(html.contains("<title>lidx graph · Widgets &lt;core&gt;</title>"));
 }

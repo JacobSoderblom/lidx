@@ -153,13 +153,19 @@ never re-indexes.
 lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --depth 3 --open
 ```
 
-- No `--seed`: a module overview of the whole repo with weighted edges;
-  double-click a module to expand it into files (`--level file` starts expanded).
+- No `--seed`: an overview of the whole repo that starts at the top-level
+  folders with weighted edges between them; double-click a folder (or use
+  the depth buttons) to drill down to files (`--level file` starts open).
 - `--seed <qualname or query>` (repeatable), `--depth`, `--direction up|down|both`,
   `--kinds CALLS,USES`, `--lang`, `--max-nodes`: a symbol neighbourhood plus
-  a one-hop halo you can reveal node by node.
+  a one-hop halo you can reveal node by node. A one-way trace opens in the
+  layered layout with the seed in the first column.
 - `--diff <rev>`: the symbols changed against `rev` and their callers.
-- In the page: force or layered layout, clusters you can collapse, search
+- `--scope code|tests|docs|examples|all` (default `code`): files outside it
+  (tests, docs, fixtures, CI tooling, vendored code) are embedded but hidden
+  until shown from the legend. `--title` names the page (default: the git
+  remote's name).
+- In the page: force or layered layout, folders you can collapse, search
   (`/`), a details panel with incoming and outgoing edges by kind, n-hop
   highlighting, edge-kind and language filters, and PNG/SVG export. Bridge
   edges (channel, RPC, HTTP, config) are dashed, and a publisher and a

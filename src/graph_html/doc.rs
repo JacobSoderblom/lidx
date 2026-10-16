@@ -28,6 +28,10 @@ pub struct Meta {
     pub graph_version: i64,
     pub level: String,
     pub scope: String,
+    /// `--scope`: which files are shown at first (`code`, `tests`, ...).
+    pub file_scope: String,
+    /// Walk direction of a seeded view (`up`/`down`/`both`), if any.
+    pub direction: Option<String>,
     pub generated_by: String,
     pub generated_at: u64,
 }
@@ -78,6 +82,8 @@ pub struct Counts {
     pub seeds: usize,
     pub external: usize,
     pub endpoints: usize,
+    /// Nodes outside `--scope`, embedded but hidden at first.
+    pub out_of_scope: usize,
 }
 
 pub fn counts(graph: &Graph) -> Counts {
@@ -89,6 +95,7 @@ pub fn counts(graph: &Graph) -> Counts {
         seeds: has(build::FLAG_SEED),
         external: has(build::FLAG_EXTERNAL),
         endpoints: has(build::FLAG_ENDPOINT),
+        out_of_scope: has(build::FLAG_SCOPE_OUT),
     }
 }
 
@@ -139,6 +146,8 @@ pub fn to_json(graph: &Graph, meta: &Meta) -> Value {
             "graph_version": meta.graph_version,
             "level": meta.level,
             "scope": meta.scope,
+            "file_scope": meta.file_scope,
+            "direction": meta.direction,
             "generated_by": meta.generated_by,
             "generated_at": meta.generated_at,
             "collapse_modules": graph.collapse_modules,
@@ -152,6 +161,7 @@ pub fn to_json(graph: &Graph, meta: &Meta) -> Value {
                 "unresolved": build::FLAG_UNRESOLVED,
                 "endpoint": build::FLAG_ENDPOINT,
                 "test": build::FLAG_TEST,
+                "scope_out": build::FLAG_SCOPE_OUT,
                 "edge_reversed": build::EDGE_REVERSED,
                 "edge_halo": build::EDGE_HALO,
             },

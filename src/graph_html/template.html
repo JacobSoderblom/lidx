@@ -25,14 +25,16 @@
   </div>
   <label class="field">Group
     <select id="group">
-      <option value="module">Module</option>
-      <option value="file">File</option>
+      <option value="tree">Folders</option>
       <option value="none">None</option>
     </select>
   </label>
-  <div class="seg" role="group" aria-label="Clusters">
-    <button type="button" id="collapse-all" title="Collapse every cluster">Collapse</button>
-    <button type="button" id="expand-all" title="Expand every cluster">Expand</button>
+  <div class="seg" role="group" aria-label="Folder depth">
+    <button type="button" id="collapse-all" title="Collapse to top-level folders">Top</button>
+    <button type="button" id="depth-less" aria-label="One folder level up" title="Fewer folder levels">−</button>
+    <span id="depth-label" class="depth-label" aria-live="polite">depth 1</span>
+    <button type="button" id="depth-more" aria-label="One folder level down" title="More folder levels">+</button>
+    <button type="button" id="expand-all" title="Expand every folder">All</button>
   </div>
   <button type="button" id="fit" title="Fit to view (F)">Fit</button>
   <button type="button" id="legend-toggle" aria-expanded="true" aria-controls="legend">Legend</button>
@@ -50,6 +52,10 @@
     <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
     <div id="status" class="status" aria-live="off"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="empty" class="empty" hidden>
+      <p><strong>Nothing to show.</strong> Every node is hidden by the current filters.</p>
+      <button type="button" id="empty-reset">Reset filters</button>
+    </div>
   </div>
   <aside id="panel" class="panel" aria-label="Node details" hidden></aside>
 </main>
@@ -64,10 +70,13 @@
     <dt><kbd>L</kbd></dt><dd>Toggle force / layered layout</dd>
     <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous / next neighbour of the selection</dd>
     <dt><kbd>Enter</kbd> or double-click</dt><dd>Expand: reveal hidden neighbours, or open a cluster</dd>
-    <dt><kbd>C</kbd></dt><dd>Collapse the selection's cluster</dd>
+    <dt><kbd>C</kbd></dt><dd>Collapse the folder the selection is in</dd>
+    <dt>Top / − / + / All</dt><dd>Show folders one level at a time; double-click a folder to open it</dd>
     <dt><kbd>1</kbd>–<kbd>4</kbd></dt><dd>Highlight 1–4 hops around the selection</dd>
     <dt><kbd>Esc</kbd></dt><dd>Clear selection</dd>
     <dt>Drag</dt><dd>Pan the canvas or move a node</dd>
+    <dt>Hover an edge</dt><dd>Its kinds, weight and call-site line</dd>
+    <dt>Legend</dt><dd>Toggle edge kinds, languages, external nodes and files outside the scope</dd>
   </dl>
   <form method="dialog"><button type="submit">Close</button></form>
 </dialog>

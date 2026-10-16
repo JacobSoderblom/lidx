@@ -15,6 +15,7 @@ use crate::edge_views;
 use crate::indexer::channel::boundary_type_for_kind;
 use crate::indexer::test_detection::is_test_symbol;
 use crate::model::{Edge, Symbol, xref_is_traversable};
+use crate::search::{SearchScope, scope_allows};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -24,6 +25,9 @@ pub const FLAG_EXTERNAL: u32 = 4;
 pub const FLAG_UNRESOLVED: u32 = 8;
 pub const FLAG_ENDPOINT: u32 = 16;
 pub const FLAG_TEST: u32 = 32;
+/// Outside `--scope` (tests, docs, examples, generated or tooling files when
+/// the scope is `code`): embedded, but hidden until the viewer shows it.
+pub const FLAG_SCOPE_OUT: u32 = 64;
 
 pub const EDGE_REVERSED: u32 = 1;
 pub const EDGE_HALO: u32 = 2;
@@ -141,6 +145,8 @@ pub struct Ctx<'a> {
     pub module_depth: usize,
     /// Live file path -> language.
     pub file_lang: HashMap<String, String>,
+    /// Which files are in scope (`search`'s classifier).
+    pub scope: SearchScope,
 }
 
 impl Ctx<'_> {
@@ -150,6 +156,17 @@ impl Ctx<'_> {
 
     pub fn module_of(&self, path: &str) -> String {
         module_of(path, self.module_depth)
+    }
+
+    /// Whether `path` is in `--scope`. `code` also leaves out generated and
+    /// vendored files (`node_modules/`, `dist/`, ...).
+    pub fn in_scope(&self, path: &str) -> bool {
+        scope_allows(
+            path,
+            Some(self.scope),
+            self.scope == SearchScope::Code,
+            None,
+        )
     }
 }
 
@@ -440,9 +457,17 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
         }
         fetch.load_symbols(&new_ids)?;
         // A symbol the language filter (or a deletion) hides is dropped.
+        // So is one outside --scope: it is not walked through, but stays
+        // eligible for the halo below.
         let dropped: HashSet<Key> = next
             .iter()
-            .filter(|k| matches!(k, Key::Sym(id) if fetch.symbol(*id).is_none()))
+            .filter(|k| match k {
+                Key::Sym(id) => match fetch.symbol(*id) {
+                    None => true,
+                    Some(sym) => !sym.is_external() && !ctx.in_scope(&sym.file_path),
+                },
+                _ => false,
+            })
             .cloned()
             .collect();
         if !dropped.is_empty() {
@@ -522,6 +547,8 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
     let mut keys: Vec<(Key, u32)> = core.iter().map(|k| (k.clone(), 0)).collect();
     keys.extend(halo.iter().map(|k| (k.clone(), FLAG_HALO)));
     let mut index: HashMap<Key, usize> = HashMap::new();
+    // Identical external stubs (one target qualname) become one node.
+    let mut external_index: HashMap<String, usize> = HashMap::new();
     let endpoint_kinds = endpoint_kinds(&flow);
     for (key, extra) in keys {
         let node = match &key {
@@ -529,6 +556,16 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
                 let Some(sym) = fetch.symbol(*id) else {
                     continue;
                 };
+                if sym.is_external()
+                    && let Some(&i) = external_index.get(&sym.qualname)
+                {
+                    graph.nodes[i].flags &= extra | !FLAG_HALO;
+                    index.insert(key, i);
+                    continue;
+                }
+                if sym.is_external() {
+                    external_index.insert(sym.qualname.clone(), graph.nodes.len());
+                }
                 let mut node = symbol_node(ctx, sym);
                 if seed_set.contains(id) {
                     node.flags |= FLAG_SEED;
@@ -543,10 +580,26 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
         index.insert(key, graph.nodes.len());
         graph.nodes.push(node);
     }
+    let mut seen_pairs: HashMap<(usize, usize, String), usize> = HashMap::new();
     for f in flow {
         let (Some(&from), Some(&to)) = (index.get(&f.from), index.get(&f.to)) else {
             continue;
         };
+        if from == to {
+            continue;
+        }
+        // Merged externals can make two edges one.
+        let pair = (from, to, f.edge.kind.clone());
+        if graph.nodes[to].flags & FLAG_EXTERNAL != 0
+            || graph.nodes[from].flags & FLAG_EXTERNAL != 0
+        {
+            if let Some(&i) = seen_pairs.get(&pair) {
+                graph.edges[i].weight += 1;
+                graph.edges[i].flags &= f.flags;
+                continue;
+            }
+            seen_pairs.insert(pair, graph.edges.len());
+        }
         graph.edges.push(GEdge {
             from,
             to,
@@ -559,7 +612,28 @@ pub fn symbol_graph(ctx: &Ctx, scope: &SymbolScope) -> Result<Graph> {
             res: f.edge.resolution_kind.clone(),
         });
     }
+    propagate_scope(&mut graph);
     Ok(graph)
+}
+
+/// An external or bridge-endpoint node has no file of its own: it is out of
+/// scope when everything it is connected to is.
+fn propagate_scope(graph: &mut Graph) {
+    let mut in_scope_neighbour = vec![false; graph.nodes.len()];
+    let mut has_edge = vec![false; graph.nodes.len()];
+    for e in &graph.edges {
+        for (me, other) in [(e.from, e.to), (e.to, e.from)] {
+            has_edge[me] = true;
+            if graph.nodes[other].flags & FLAG_SCOPE_OUT == 0 {
+                in_scope_neighbour[me] = true;
+            }
+        }
+    }
+    for (i, n) in graph.nodes.iter_mut().enumerate() {
+        if n.flags & (FLAG_EXTERNAL | FLAG_ENDPOINT) != 0 && has_edge[i] && !in_scope_neighbour[i] {
+            n.flags |= FLAG_SCOPE_OUT;
+        }
+    }
 }
 
 /// The bridge kind each endpoint key was first reached through.
@@ -581,8 +655,15 @@ fn symbol_node(ctx: &Ctx, sym: &Symbol) -> GNode {
     if !external && is_test_symbol(sym) {
         flags |= FLAG_TEST;
     }
+    if !external && !ctx.in_scope(&sym.file_path) {
+        flags |= FLAG_SCOPE_OUT;
+    }
     GNode {
-        name: sym.name.clone(),
+        name: if external {
+            owner_and_name(&sym.qualname)
+        } else {
+            sym.name.clone()
+        },
         qual: sym.qualname.clone(),
         kind: sym.kind.clone(),
         lang: if external {
@@ -623,9 +704,38 @@ fn endpoint_node(tq: &str, kind: Option<&str>) -> GNode {
     }
 }
 
+/// The last two segments of a qualname with the separator between them
+/// (`ext:std::collections::HashMap::new` -> `HashMap::new`,
+/// `ext:./base:query` -> `base:query`), so `new` and `new` are told apart.
+pub fn owner_and_name(qualname: &str) -> String {
+    let rest = qualname.strip_prefix("ext:").unwrap_or(qualname);
+    let last_sep = |text: &str| -> Option<(usize, usize)> {
+        ["::", ":", ".", "/", "#"]
+            .iter()
+            .filter_map(|sep| text.rfind(sep).map(|i| (i, sep.len())))
+            // Rightmost end; on a tie the longer separator (`::` over `:`).
+            .max_by_key(|(i, len)| (i + len, *len))
+    };
+    let Some((i, len)) = last_sep(rest) else {
+        return rest.to_string();
+    };
+    let (head, tail) = (&rest[..i], &rest[i + len..]);
+    if tail.is_empty() {
+        return rest.to_string();
+    }
+    let owner = match last_sep(head) {
+        Some((j, l)) => &head[j + l..],
+        None => head,
+    };
+    if owner.is_empty() {
+        return tail.to_string();
+    }
+    format!("{owner}{}{tail}", &rest[i..i + len])
+}
+
 fn unresolved_node(tq: &str) -> GNode {
     GNode {
-        name: tq.rsplit(['.', ':']).next().unwrap_or(tq).to_string(),
+        name: owner_and_name(tq),
         qual: tq.to_string(),
         kind: "unresolved".to_string(),
         lang: None,
@@ -679,6 +789,8 @@ struct LeafInfo {
     lang_counts: BTreeMap<String, i64>,
     symbols: i64,
     halo_only: bool,
+    /// Some file (or symbol) of the leaf is in scope.
+    in_scope: bool,
     seed: bool,
     endpoint_kind: Option<String>,
 }
@@ -705,6 +817,10 @@ fn aggregate(
         let mut flags = 0;
         if info.halo_only {
             flags |= FLAG_HALO;
+        }
+        let repo_leaf = matches!(leaf, Leaf::File(_) | Leaf::Module(_));
+        if repo_leaf && !info.in_scope {
+            flags |= FLAG_SCOPE_OUT;
         }
         if info.seed {
             flags |= FLAG_SEED;
@@ -784,6 +900,7 @@ fn aggregate(
             });
     }
     graph.edges = agg.into_values().collect();
+    propagate_scope(&mut graph);
     graph
 }
 
@@ -812,6 +929,7 @@ pub fn aggregate_symbol_graph(ctx: &Ctx, sym: Graph, level: Level) -> Graph {
         });
         info.symbols += 1;
         info.halo_only &= n.flags & FLAG_HALO != 0;
+        info.in_scope |= n.flags & FLAG_SCOPE_OUT == 0;
         info.seed |= n.flags & FLAG_SEED != 0;
         if let Some(lang) = &n.lang {
             *info.lang_counts.entry(lang.clone()).or_default() += 1;
@@ -888,6 +1006,7 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
     let mut leaves: BTreeMap<Leaf, LeafInfo> = BTreeMap::new();
     for (path, lang, count) in &files {
         let info = leaves.entry(leaf_for_file(path)).or_default();
+        info.in_scope |= ctx.in_scope(path);
         info.symbols += count;
         *info.lang_counts.entry(lang.clone()).or_default() += 1;
     }
@@ -1076,6 +1195,22 @@ mod tests {
         assert_eq!(module_of("src/db/mod.rs", 0), "src/db/");
         assert_eq!(module_of("src/db/mod.rs", 1), "src/");
         assert_eq!(module_of("src/lib.rs", 3), "src/");
+    }
+
+    #[test]
+    fn owner_and_name_keeps_the_owner() {
+        assert_eq!(owner_and_name("ext:Vec::new"), "Vec::new");
+        assert_eq!(
+            owner_and_name("ext:std::collections::HashMap::new"),
+            "HashMap::new"
+        );
+        assert_eq!(
+            owner_and_name("ext:./base:baseQueryOptions"),
+            "base:baseQueryOptions"
+        );
+        assert_eq!(owner_and_name("ext:fmt.Println"), "fmt.Println");
+        assert_eq!(owner_and_name("ext:len"), "len");
+        assert_eq!(owner_and_name("self.repo.save"), "repo.save");
     }
 
     #[test]

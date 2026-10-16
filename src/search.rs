@@ -776,6 +776,9 @@ struct PathFlags {
     tests: bool,
     examples: bool,
     generated: bool,
+    /// Under a dot-directory (`.github/`, `.circleci/`, `.vscode/`): CI and
+    /// editor tooling, in no scope but `all`.
+    tooling: bool,
     src: bool,
     lib: bool,
     app: bool,
@@ -833,7 +836,7 @@ pub fn scope_allows(
         SearchScope::Docs => flags.docs,
         SearchScope::Tests => flags.tests,
         SearchScope::Examples => flags.examples,
-        SearchScope::Code => !(flags.docs || flags.tests || flags.examples),
+        SearchScope::Code => !(flags.docs || flags.tests || flags.examples || flags.tooling),
     }
 }
 
@@ -868,6 +871,28 @@ fn classify_path(path: &str) -> PathFlags {
     let mut flags = PathFlags::default();
     let segments: Vec<&str> = lower.split('/').collect();
     let filename = segments.last().copied().unwrap_or("");
+    let dirs = &segments[..segments.len().saturating_sub(1)];
+    if dirs
+        .iter()
+        .any(|d| d.len() > 1 && d.starts_with('.') && *d != "..")
+    {
+        flags.tooling = true;
+    }
+    for segment in dirs {
+        // Test inputs: Go's `testdata/` and the usual fixture folders.
+        if matches!(
+            *segment,
+            "testdata"
+                | "test-data"
+                | "test_data"
+                | "fixtures"
+                | "__fixtures__"
+                | "test-fixtures"
+                | "test_fixtures"
+        ) {
+            flags.tests = true;
+        }
+    }
     for segment in &segments {
         match *segment {
             "docs" | "doc" | "documentation" => flags.docs = true,
@@ -1210,6 +1235,38 @@ fn build_rg_context(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_scope_leaves_out_test_inputs_and_tooling() {
+        use super::{SearchScope, scope_allows};
+        let code = |p: &str| scope_allows(p, Some(SearchScope::Code), false, None);
+        let tests = |p: &str| scope_allows(p, Some(SearchScope::Tests), false, None);
+        for p in [
+            "syft/pkg/cataloger/java/testdata/app.go",
+            "internal/test-fixtures/image/Dockerfile.yaml",
+            "tests/fixtures/py_mvp/app.py",
+            "src/__fixtures__/a.ts",
+        ] {
+            assert!(!code(p) && tests(p), "{p}");
+        }
+        assert!(!code(".github/workflows/ci.yaml"));
+        assert!(!tests(".github/workflows/ci.yaml"));
+        assert!(scope_allows(
+            ".github/workflows/ci.yaml",
+            Some(SearchScope::All),
+            false,
+            None
+        ));
+        for p in [
+            "src/fixture.rs",
+            "src/testdata.rs",
+            "lib/fixtures.py",
+            "./main.go",
+            "cmd/syft/main.go",
+        ] {
+            assert!(code(p), "{p}");
+        }
+    }
+
     use super::*;
     use crate::model::Symbol;
 

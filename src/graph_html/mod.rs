@@ -14,6 +14,7 @@ pub use doc::Counts;
 use crate::db::Db;
 use crate::indexer::{Indexer, scan};
 use crate::resolve::{SymbolRef, resolve_symbol};
+use crate::search::SearchScope;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -42,6 +43,11 @@ pub struct GraphOptions {
     /// Git revision to diff the working tree against.
     pub diff: Option<String>,
     pub module_depth: usize,
+    /// Files shown at first; the rest is embedded but hidden. `None`: code.
+    pub scope: Option<SearchScope>,
+    /// Name in the page header and title. `None`: the repo's git remote
+    /// name, else its top-level folder name.
+    pub title: Option<String>,
 }
 
 impl Default for GraphOptions {
@@ -56,6 +62,8 @@ impl Default for GraphOptions {
             level: None,
             diff: None,
             module_depth: 0,
+            scope: None,
+            title: None,
         }
     }
 }
@@ -112,6 +120,7 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
         },
         module_depth: opts.module_depth,
         file_lang: build::file_languages(db, graph_version)?,
+        scope: opts.scope.unwrap_or(SearchScope::Code),
     };
 
     let seeded = !opts.seeds.is_empty() || diff_scope.is_some();
@@ -119,6 +128,7 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
         .level
         .unwrap_or(if seeded { Level::Symbol } else { Level::Module });
     let mut scope_parts: Vec<String> = Vec::new();
+    let mut walk_direction = None;
     let graph = if seeded {
         let (seeds, extra, direction) = if let Some((changed, callers)) = diff_scope {
             let rev = opts.diff.as_deref().unwrap_or_default();
@@ -146,6 +156,7 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
         };
         scope_parts.push(format!("depth {}", opts.depth));
         scope_parts.push(direction.as_str().to_string());
+        walk_direction = Some(direction.as_str().to_string());
         let scope = build::SymbolScope {
             seeds,
             extra,
@@ -179,16 +190,18 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
     if let Some(l) = &languages {
         scope_parts.push(format!("lang {}", l.join(",")));
     }
+    let file_scope = scope_name(ctx.scope);
+    scope_parts.push(format!("{file_scope} files"));
     let scope = scope_parts.join(" · ");
 
-    let repo_name = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf())
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "repo".to_string());
+    let repo_name = match &opts.title {
+        Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+        _ => repo_display_name(repo_root),
+    };
     let meta = doc::Meta {
         repo: repo_name,
+        file_scope: file_scope.to_string(),
+        direction: walk_direction,
         commit: db.graph_version_commit(graph_version)?,
         graph_version,
         level: level.as_str().to_string(),
@@ -207,6 +220,53 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
         counts,
         scope,
     })
+}
+
+fn scope_name(scope: SearchScope) -> &'static str {
+    match scope {
+        SearchScope::Code => "code",
+        SearchScope::Tests => "tests",
+        SearchScope::Docs => "docs",
+        SearchScope::Examples => "examples",
+        SearchScope::All => "all",
+    }
+}
+
+/// The repository's name: its `origin` remote's last path segment (so a
+/// worktree or a clone in an oddly named folder still reads `lidx`), else
+/// the name of its git top-level folder, else of `repo_root` itself.
+pub fn repo_display_name(repo_root: &Path) -> String {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(args)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !text.is_empty()).then_some(text)
+    };
+    let folder = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    if let Some(url) = git(&["remote", "get-url", "origin"]) {
+        let name = url
+            .trim_end_matches('/')
+            .rsplit(['/', ':'])
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".git");
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    if let Some(top) = git(&["rev-parse", "--show-toplevel"])
+        && let Some(name) = folder(Path::new(&top))
+    {
+        return name;
+    }
+    let root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    folder(&root).unwrap_or_else(|| "repo".to_string())
 }
 
 /// An index that exists but holds nothing is as unusable as a missing one.

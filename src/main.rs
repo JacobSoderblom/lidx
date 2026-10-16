@@ -170,6 +170,8 @@ fn main() -> Result<()> {
             level,
             diff,
             module_depth,
+            scope,
+            title,
         } => {
             let db_path = db.unwrap_or_else(|| default_db_path(&repo));
             let opts = graph_html::GraphOptions {
@@ -190,6 +192,8 @@ fn main() -> Result<()> {
                 }),
                 diff,
                 module_depth,
+                scope: lidx::search::parse_scope(scope.as_deref())?,
+                title,
             };
             let started = std::time::Instant::now();
             let page = graph_html::generate(&repo, &db_path, &opts)?;

@@ -184,6 +184,13 @@ pub enum Command {
         /// Cut module paths after this many directories (0: whole directory).
         #[arg(long, default_value_t = 0)]
         module_depth: usize,
+        /// Files shown at first: code (default), tests, docs, examples or
+        /// all. The rest is embedded and can be shown from the page.
+        #[arg(long, value_parser = ["code", "tests", "docs", "examples", "all"])]
+        scope: Option<String>,
+        /// Name shown in the page header (default: the git remote's name).
+        #[arg(long)]
+        title: Option<String>,
     },
     /// Initialize lidx: index repo, install hooks, update gitignore.
     Init {
