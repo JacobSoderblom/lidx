@@ -49,8 +49,15 @@ impl JsStale<'_> {
         graph_version: i64,
     ) -> Result<HashSet<String>> {
         let mut stale = self.config_stale(changed)?;
-        stale.extend(self.workspace_stale(changed, graph_version)?);
-        stale.extend(self.import_stale(changed, graph_version)?);
+        let workspace = self.workspace_stale(changed, graph_version)?;
+        // A re-exporting importer passes the change on to its own importers.
+        let relays: Vec<String> = workspace
+            .iter()
+            .filter(|p| javascript::is_re_exporting(self.repo_root, p))
+            .map(|p| javascript::module_name_from_rel_path(p))
+            .collect();
+        stale.extend(workspace);
+        stale.extend(self.import_stale(changed, relays, graph_version)?);
         for path in changed {
             stale.remove(path);
         }
@@ -183,9 +190,14 @@ impl JsStale<'_> {
     /// surface changed. Recurses only through importers that re-export, since
     /// only those pass a change on. An added or deleted file is covered: an
     /// importer's edge targets the module name even while the file is missing.
-    fn import_stale(&self, changed: &[String], graph_version: i64) -> Result<HashSet<String>> {
+    fn import_stale(
+        &self,
+        changed: &[String],
+        relays: Vec<String>,
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
         let mut stale = HashSet::new();
-        let mut frontier: Vec<String> = Vec::new();
+        let mut frontier: Vec<String> = relays;
         for path in changed.iter().filter(|p| javascript::is_js_ts_path(p)) {
             if self.export_surface_changed(path)? {
                 frontier.push(javascript::module_name_from_rel_path(path));

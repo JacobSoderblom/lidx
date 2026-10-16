@@ -428,3 +428,78 @@ fn export_conditions_prefer_types_import_default_require() {
     ];
     assert_eq!(resolve("@a/p", files), vec!["p/src/esm.f".to_string()]);
 }
+
+#[test]
+fn pathological_workspace_globs_finish_quickly() {
+    let deep = (0..30)
+        .map(|i| format!("d{i}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    let pattern = format!("{}nomatch", "**/".repeat(30));
+    let wildcards = format!("{}z", "a*".repeat(200));
+    let root = format!(
+        "{{\"name\":\"r\",\"workspaces\":[\"{pattern}\",\"{wildcards}\",\"{}\"]}}",
+        "x/".repeat(600)
+    );
+    let manifest = format!("{deep}/package.json");
+    let source = format!("{deep}/src/index.ts");
+    let start = std::time::Instant::now();
+    let t = resolve(
+        "@a/p",
+        vec![
+            ("package.json", root),
+            (&manifest, s("{\"name\":\"@a/p\"}")),
+            (&source, s(F)),
+        ],
+    );
+    assert_eq!(t, vec!["ext:@a/p:f".to_string()]);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn globs_still_match_after_the_rewrite() {
+    let files = |decl: String| {
+        vec![
+            ("package.json", decl),
+            ("a/b/c/package.json", s("{\"name\":\"@a/p\"}")),
+            ("a/b/c/src/index.ts", s(F)),
+        ]
+    };
+    for (pattern, member) in [
+        ("**/c", true),
+        ("a/**/c", true),
+        ("a/**/**/c", true),
+        ("a/*/c", true),
+        ("a/b*/c", true),
+        ("a/*b/c", true),
+        ("a/*/*/c", false),
+        ("a/x*/c", false),
+    ] {
+        let decl = format!("{{\"name\":\"r\",\"workspaces\":[\"{pattern}\"]}}");
+        let t = resolve("@a/p", files(decl));
+        let want = if member { "a/b/c/src.f" } else { "ext:@a/p:f" };
+        assert_eq!(t, vec![want.to_string()], "{pattern}");
+    }
+}
+
+#[test]
+fn duplicate_manifest_keys_take_the_last_like_json_parse() {
+    let t = resolve(
+        "@a/p",
+        vec![
+            (
+                "p/package.json",
+                s(
+                    "{\"name\":\"@a/old\",\"name\":\"@a/p\",\"exports\":{\".\":\"./dist/a.js\",\".\":\"./dist/b.js\"}}",
+                ),
+            ),
+            ("p/src/a.ts", s("export function wrong() {}\n")),
+            ("p/src/b.ts", s(F)),
+        ],
+    );
+    assert_eq!(t, vec!["p/src/b.f".to_string()]);
+}

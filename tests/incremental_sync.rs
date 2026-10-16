@@ -3241,3 +3241,60 @@ fn rv_workspace_declaration_edit_matches_fresh() {
     );
     assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
 }
+
+const RX_MANIFEST: (&str, &str) = ("pkgs/lib/package.json", "{\"name\":\"@acme/lib\"}");
+const RX_SRC: (&str, &str) = ("pkgs/lib/src/index.ts", "export function f() {}\n");
+const RX_BARREL: (&str, &str) = ("barrel.ts", "export { f } from '@acme/lib';\n");
+const RX_USER: (&str, &str) = (
+    "use.ts",
+    "import { f } from './barrel';\nexport function go() { f(); }\n",
+);
+
+#[test]
+fn rx_reexport_chain_through_workspace_added_src() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-add",
+        &[RX_MANIFEST, RX_BARREL, RX_USER],
+        |r| common::write_files(r, &[RX_SRC]),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, RX_USER],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rx_reexport_chain_through_workspace_deleted_src() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-del",
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, RX_USER],
+        |r| std::fs::remove_file(r.join("pkgs/lib/src/index.ts")).unwrap(),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_BARREL, RX_USER],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}
+
+#[test]
+fn rx_two_level_barrel_chain_through_workspace() {
+    let outer = ("outer.ts", "export { f } from './barrel';\n");
+    let user = (
+        "use.ts",
+        "import { f } from './outer';\nexport function go() { f(); }\n",
+    );
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-two",
+        &[RX_MANIFEST, RX_BARREL, outer, user],
+        |r| common::write_files(r, &[RX_SRC]),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, outer, user],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "rx-chain-two-del",
+        &[RX_MANIFEST, RX_SRC, RX_BARREL, outer, user],
+        |r| std::fs::remove_file(r.join("pkgs/lib/src/index.ts")).unwrap(),
+        &["pkgs/lib/src/index.ts"],
+        &[RX_MANIFEST, RX_BARREL, outer, user],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("pkgs/lib/src.f"));
+}

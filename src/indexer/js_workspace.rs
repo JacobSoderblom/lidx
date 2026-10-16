@@ -22,6 +22,9 @@ use std::rc::Rc;
 
 /// Manifests larger than this are skipped.
 const MAX_MANIFEST_BYTES: u64 = 1_000_000;
+/// Workspace globs kept, and the longest one honoured.
+const MAX_PATTERNS: usize = 1000;
+const MAX_PATTERN_BYTES: usize = 1024;
 /// Output directories a package builds into, mapped back to `src`.
 const BUILD_DIRS: &[&str] = &[
     "dist", "build", "lib", "out", "esm", "cjs", "esm5", "esm2015",
@@ -104,7 +107,8 @@ impl<'de> Deserialize<'de> for Json {
 impl Json {
     fn get(&self, key: &str) -> Option<&Json> {
         match self {
-            Json::Obj(items) => items.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            // Like `JSON.parse`, the last of a duplicated key wins.
+            Json::Obj(items) => items.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v),
             _ => None,
         }
     }
@@ -316,6 +320,9 @@ fn declared_members(repo_root: &Path, manifests: &[(PathBuf, Json)]) -> Option<M
     if !declared {
         return None;
     }
+    // Patterns are untrusted: bound their number and size.
+    patterns.retain(|p| p.len() <= MAX_PATTERN_BYTES);
+    patterns.truncate(MAX_PATTERNS);
     let split = |p: &str| -> Vec<String> {
         p.trim_start_matches("./")
             .trim_end_matches('/')
@@ -336,29 +343,53 @@ fn declared_members(repo_root: &Path, manifests: &[(PathBuf, Json)]) -> Option<M
     Some(out)
 }
 
+/// Whether `segments` match the glob `pattern`, in time polynomial in both
+/// lengths: patterns are untrusted repository input.
 fn glob_match(pattern: &[String], segments: &[String]) -> bool {
-    match pattern.split_first() {
-        None => segments.is_empty(),
-        Some((p, rest)) if p == "**" => {
-            (0..=segments.len()).any(|skip| glob_match(rest, &segments[skip..]))
+    // Consecutive `**` match what one does.
+    let mut pat: Vec<&str> = Vec::with_capacity(pattern.len());
+    for p in pattern {
+        if p == "**" && pat.last() == Some(&"**") {
+            continue;
         }
-        Some((p, rest)) => match segments.split_first() {
-            Some((s, tail)) => wildcard(p, s) && glob_match(rest, tail),
-            None => false,
-        },
+        pat.push(p);
     }
+    let (n, m) = (pat.len(), segments.len());
+    // reach[i][j]: pat[i..] matches segments[j..].
+    let mut reach = vec![vec![false; m + 1]; n + 1];
+    reach[n][m] = true;
+    for i in (0..n).rev() {
+        for j in (0..=m).rev() {
+            reach[i][j] = if pat[i] == "**" {
+                reach[i + 1][j] || (j < m && reach[i][j + 1])
+            } else {
+                j < m && wildcard(pat[i], &segments[j]) && reach[i + 1][j + 1]
+            };
+        }
+    }
+    reach[0][0]
 }
 
-/// `*` within one path segment.
+/// `*` within one path segment, by dynamic programming.
 fn wildcard(pattern: &str, text: &str) -> bool {
-    match pattern.split_once('*') {
-        None => pattern == text,
-        Some((head, tail)) => text.strip_prefix(head).is_some_and(|rest| {
-            (0..=rest.len())
-                .filter(|i| rest.is_char_boundary(*i))
-                .any(|i| wildcard(tail, &rest[i..]))
-        }),
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    // reach[j]: the pattern prefix handled so far matches t[..j].
+    let mut reach = vec![false; t.len() + 1];
+    reach[0] = true;
+    for &pc in &p {
+        if pc == '*' {
+            for j in 1..=t.len() {
+                reach[j] = reach[j] || reach[j - 1];
+            }
+        } else {
+            for j in (1..=t.len()).rev() {
+                reach[j] = reach[j - 1] && t[j - 1] == pc;
+            }
+            reach[0] = false;
+        }
     }
+    reach[t.len()]
 }
 
 /// Whether the scan walk lists `rel` as a (non-symlink) JS/TS file.
@@ -457,7 +488,7 @@ fn export_targets(exports: &Json, sub: &str) -> Vec<String> {
     };
     let value: Option<(&Json, Option<String>)> = match exports {
         Json::Obj(map) if map.iter().any(|(k, _)| k.starts_with('.')) => {
-            if let Some((_, v)) = map.iter().find(|(k, _)| *k == key) {
+            if let Some((_, v)) = map.iter().rev().find(|(k, _)| *k == key) {
                 Some((v, None))
             } else {
                 // The longest matching prefix wins, as in Node.
@@ -490,7 +521,7 @@ fn collect_targets(value: &Json, star: Option<&str>, out: &mut Vec<String>) {
         Json::Arr(items) => items.iter().for_each(|v| collect_targets(v, star, out)),
         Json::Obj(map) => {
             for key in CONDITION_PRIORITY {
-                if let Some((_, v)) = map.iter().find(|(k, _)| k == key) {
+                if let Some((_, v)) = map.iter().rev().find(|(k, _)| k == key) {
                     collect_targets(v, star, out);
                 }
             }
