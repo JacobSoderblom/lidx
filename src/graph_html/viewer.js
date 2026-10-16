@@ -1521,15 +1521,32 @@
       c.restore();
       if (b.h > 64 && b.w > 90) {
         var kids = v.kids || (v.kids = childSummary(v));
-        var lines = Math.min(kids.length, Math.floor((b.h - 40) / 14));
+        var lines = Math.min(kids.length, Math.floor((b.h - 48) / 14)); // clear of the count below
         c.font = '11px ' + SANS;
         c.textAlign = 'left';
         c.textBaseline = 'top';
         c.fillStyle = theme['ink-3'];
+        // Name on the left, cut with an ellipsis to fit; count right-aligned,
+        // both inside the box.
+        var left = b.x + 8, right = b.x + b.w - 8;
         for (var li2 = 0; li2 < lines; li2++) {
-          var kt = kids[li2][0] + '  ' + fmt(kids[li2][1]);
-          if (li2 === lines - 1 && kids.length > lines) kt = '+' + (kids.length - lines + 1) + ' more';
-          c.fillText(kt.length > 34 ? kt.slice(0, 33) + '…' : kt, b.x + 8, b.y + 24 + li2 * 14);
+          var ly = b.y + 24 + li2 * 14;
+          if (li2 === lines - 1 && kids.length > lines && lines > 1) {
+            c.textAlign = 'left';
+            c.fillText('+' + (kids.length - lines + 1) + ' more', left, ly);
+            continue;
+          }
+          var cnt = fmt(kids[li2][1]);
+          c.textAlign = 'right';
+          c.fillText(cnt, right, ly);
+          var room = right - left - c.measureText(cnt).width - 8;
+          var nm = kids[li2][0];
+          if (c.measureText(nm).width > room) {
+            while (nm.length > 1 && c.measureText(nm + '…').width > room) nm = nm.slice(0, -1);
+            nm += '…';
+          }
+          c.textAlign = 'left';
+          if (room > 12) c.fillText(nm, left, ly);
         }
       }
       if (b.h > 22) {
