@@ -1166,7 +1166,8 @@ const IMPORT_SUFFIX_SQL: &str = "SELECT id FROM symbols
 /// Any graph version, so an incremental reindex that has not yet carried
 /// the package forward still counts it. See `is_repo_python_import`.
 const REPO_PYTHON_MODULE_SQL: &str = "SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
-     WHERE s.name = ? AND s.kind = 'module' AND f.language = 'python'
+     WHERE s.name = ?1 AND s.kind = 'module' AND f.language = 'python'
+       AND s.graph_version = ?2 AND (f.deleted_version IS NULL OR f.deleted_version > ?2)
      LIMIT 1";
 
 /// One round of `resolve_import_file`: an exact qualname match restricted
@@ -4853,7 +4854,11 @@ impl<'c> Resolver<'c> {
                 continue;
             }
             let root = candidate.split('.').next().unwrap_or("");
-            if root.is_empty() || self.repo_python_module.exists(params![root])? {
+            if root.is_empty()
+                || self
+                    .repo_python_module
+                    .exists(params![root, self.graph_version])?
+            {
                 return Ok(true);
             }
         }

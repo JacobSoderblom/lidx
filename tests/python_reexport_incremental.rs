@@ -382,3 +382,184 @@ fn a_two_level_re_export_follows_a_change_in_the_inner_init() {
     assert_eq!(indexed, 2);
     assert_eq!(targets, vec!["pkg.sub.other.table".to_string()]);
 }
+
+fn edge_rows(indexer: &Indexer, kind: &str, source: &str) -> (i64, i64) {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let count = |only_resolved: bool| -> i64 {
+        conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+                 WHERE e.kind = ?1 AND s.qualname = ?2 AND e.graph_version = ?3 {}",
+                if only_resolved {
+                    "AND e.target_symbol_id IS NOT NULL"
+                } else {
+                    ""
+                }
+            ),
+            rusqlite::params![kind, source, gv],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    (count(true), count(false))
+}
+
+/// Rewrite `pkg/a.py` and sync it: the importer's identical uses on one line
+/// keep their multiplicity, as in a fresh index.
+fn sync_kind_change(before: &str, after: &str, use_src: &'static str, kind: &str, reindex: bool) {
+    let base = |a: &'static str| -> Files {
+        vec![
+            ("pkg/__init__.py", "from .a import table\n"),
+            ("pkg/a.py", a),
+            ("use.py", use_src),
+        ]
+    };
+    let before: &'static str = Box::leak(before.to_string().into_boxed_str());
+    let after: &'static str = Box::leak(after.to_string().into_boxed_str());
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-py-kind-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(&root, &base(before));
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+
+    common::write_files(&root, &[("pkg/a.py", after)]);
+    if reindex {
+        indexer.reindex().unwrap();
+    } else {
+        indexer.sync_rel_paths(&["pkg/a.py".to_string()]).unwrap();
+    }
+    let incremental = edge_rows(&indexer, kind, "use.run");
+
+    let fresh_tmp = tempfile::Builder::new()
+        .prefix("lidx-py-kind-fresh-")
+        .tempdir()
+        .unwrap();
+    common::write_files(fresh_tmp.path(), &base(after));
+    let mut fresh_indexer = Indexer::new(
+        fresh_tmp.path().to_path_buf(),
+        fresh_tmp.path().join(".lidx").join(".lidx.sqlite"),
+    )
+    .unwrap();
+    fresh_indexer.reindex().unwrap();
+    let fresh = edge_rows(&fresh_indexer, kind, "use.run");
+    assert_eq!(
+        incremental, fresh,
+        "{kind} rows after {before:?} -> {after:?}"
+    );
+    assert_eq!(fresh.0, 2, "two uses on one line keep two rows");
+}
+
+const TWO_CALLS: &str = "from pkg import table as t\n\n\ndef run():\n    return t(1), t(2)\n";
+const TWO_REFS: &str = "from pkg import table as t\n\n\ndef run():\n    return [t, map(t, [1])]\n";
+const AS_DEF: &str = "def table(x):\n    return x\n";
+const AS_CLASS: &str = "class table:\n    pass\n";
+
+#[test]
+fn a_def_made_a_class_keeps_both_calls_on_a_line() {
+    sync_kind_change(AS_DEF, AS_CLASS, TWO_CALLS, "CALLS", false);
+}
+
+#[test]
+fn a_def_made_a_class_keeps_both_calls_on_a_line_on_reindex() {
+    sync_kind_change(AS_DEF, AS_CLASS, TWO_CALLS, "CALLS", true);
+}
+
+#[test]
+fn a_class_made_a_def_keeps_both_calls_on_a_line() {
+    sync_kind_change(AS_CLASS, AS_DEF, TWO_CALLS, "CALLS", false);
+}
+
+#[test]
+fn a_class_made_a_def_keeps_both_calls_on_a_line_on_reindex() {
+    sync_kind_change(AS_CLASS, AS_DEF, TWO_CALLS, "CALLS", true);
+}
+
+#[test]
+fn a_def_made_a_class_keeps_both_references_on_a_line() {
+    sync_kind_change(AS_DEF, AS_CLASS, TWO_REFS, "REFERENCES", false);
+}
+
+#[test]
+fn a_def_made_a_class_keeps_both_references_on_a_line_on_reindex() {
+    sync_kind_change(AS_DEF, AS_CLASS, TWO_REFS, "REFERENCES", true);
+}
+
+#[test]
+fn a_class_made_a_def_keeps_both_references_on_a_line() {
+    sync_kind_change(AS_CLASS, AS_DEF, TWO_REFS, "REFERENCES", false);
+}
+
+#[test]
+fn a_class_made_a_def_keeps_both_references_on_a_line_on_reindex() {
+    sync_kind_change(AS_CLASS, AS_DEF, TWO_REFS, "REFERENCES", true);
+}
+
+fn delete_init(reindex: bool, files: Files) {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-py-init-deleted-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(&root, &files);
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+
+    std::fs::remove_file(root.join("pkg/__init__.py")).unwrap();
+    if reindex {
+        indexer.reindex().unwrap();
+    } else {
+        indexer
+            .sync_rel_paths(&["pkg/__init__.py".to_string()])
+            .unwrap();
+    }
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&files[1..]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    assert!(
+        snapshot
+            .iter()
+            .any(|e| e.kind == "CALLS" && e.source_qualname == "use.run"),
+        "the importer keeps its call, now to an external stub: {snapshot:#?}"
+    );
+}
+
+fn init_with_submodule() -> Files {
+    vec![
+        ("pkg/__init__.py", "from .table import table\n"),
+        ("pkg/table.py", TABLE),
+        ("use.py", USE),
+    ]
+}
+
+/// The package holds nothing but its `__init__`, which defines the name.
+fn init_alone() -> Files {
+    vec![("pkg/__init__.py", TABLE), ("use.py", USE)]
+}
+
+#[test]
+fn a_deleted_init_leaves_the_importer_as_a_fresh_index_has_it() {
+    delete_init(false, init_with_submodule());
+}
+
+#[test]
+fn a_deleted_init_leaves_the_importer_as_a_fresh_index_has_it_on_reindex() {
+    delete_init(true, init_with_submodule());
+}
+
+#[test]
+fn a_deleted_only_init_leaves_the_importer_with_its_external_stub() {
+    delete_init(false, init_alone());
+}
+
+#[test]
+fn a_deleted_only_init_leaves_the_importer_with_its_external_stub_on_reindex() {
+    delete_init(true, init_alone());
+}
