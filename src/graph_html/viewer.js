@@ -4300,9 +4300,9 @@
   // files, a file into its symbols (classes with their members, free
   // functions, constants). One open path per card (the breadcrumb); several
   // cards can be open at once. Relations are drawn between whatever is
-  // visible at that depth, aggregated with weights; links to other units end
-  // at the card's edge, named, and go on to that card when it is shown.
-  // Only the items in view are in the DOM.
+  // visible at that depth, aggregated with weights; links that leave the
+  // deepest open level end in one named, weighted stub per target on its
+  // edge. Only the items in view are in the DOM.
   var ZR = APPS && APPS.zoom ? APPS.zoom : null;
   var ZD = null;
   var ZPAD = 12, ZHEAD = 84, ZGAP = 12;

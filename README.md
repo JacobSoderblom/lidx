@@ -171,10 +171,12 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
   symbols behind it. Scroll into a card (or double-click it) to open it in
   place: its folders, then a folder's files, then a file's classes with
   their methods, functions and constants, each with its signature and
-  `file:line`. The calls, uses and bridges between whatever is shown are
-  drawn with weights; links to another app end at the card's edge, named,
-  and run on to that card. Several cards can be open at once, so a client's
-  RPC call reaches the server method. Scroll out, `Esc` or the breadcrumb
+  `file:line`. The calls, uses and bridges between whatever is shown inside
+  the open folder or file are drawn with weights; links that leave it go
+  through one stub per target on its edge, named with the folder, file or
+  app and the count (hover one for the boxes behind it). Several cards can
+  be open at once: with both ends in view a client's RPC call is drawn to
+  the server method. Scroll out, `Esc` or the breadcrumb
   goes back up, and the panel lists everything inside a unit in a
   filterable tree. The URL fragment keeps what is open. `--max-symbols`
   (default 60000) caps the symbols embedded for this, whole files per
