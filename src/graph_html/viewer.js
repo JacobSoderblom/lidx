@@ -4335,7 +4335,7 @@
     }
     for (var y = 0; y < ny; y++) {
       syms[y] = {
-        i: y, file: ZR.y_file[y], kind: s[ZR.y_kind[y]], name: s[ZR.y_name[y]], qual: s[ZR.y_qual[y]], line: ZR.y_line[y],
+        i: y, file: ZR.y_file[y], kind: s[ZR.y_kind[y]], name: s[ZR.y_name[y]], qual: ZR.y_qual[y] >= 0 ? s[ZR.y_qual[y]] + s[ZR.y_name[y]] : s[-1 - ZR.y_qual[y]], line: ZR.y_line[y],
         parent: ZR.y_parent[y], sig: ZR.y_sig[y] >= 0 ? s[ZR.y_sig[y]] : null, kids: []
       };
     }
@@ -4749,7 +4749,10 @@
     } catch (e) { /* no canvas: estimate */ }
     return text.length * 6.8;
   }
-  function stubText(s) { return (s.out && s.inn ? '⇄ ' : s.out ? '→ ' : '← ') + stubName(s) + ' ×' + fmt(s.w); }
+  function stubText(s) {
+    var t = s.target, hidden = !!t && t.card !== undefined && !ast.pos['u' + t.card];
+    return (s.out && s.inn ? '⇄ ' : s.out ? '→ ' : '← ') + stubName(s) + ' ×' + fmt(s.w) + (hidden ? ' (hidden)' : '');
+  }
   function endBox(r) {
     if (r.card !== undefined) { var p = ast.pos['u' + r.card]; return p ? { x: p.x, y: p.y, w: p.w, h: p.h } : null; }
     return r.it ? itemBox(r.u, r.it) : null;

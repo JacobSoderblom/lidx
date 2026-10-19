@@ -9,7 +9,10 @@
 //! - files: `f_unit`, `f_path`, `f_lang`, `f_syms` (its symbols),
 //!   `f_emb` (1 when those symbols are embedded)
 //! - symbols: `y_file`, `y_kind`, `y_name`, `y_qual`, `y_line`, `y_parent`
-//!   (the enclosing embedded symbol, `-1` at file level), `y_sig`
+//!   (the enclosing embedded symbol, `-1` at file level), `y_sig`. A
+//!   qualname ending in the name is stored as its prefix: `y_qual >= 0` is
+//!   `s[y_qual] + name` (`crate::a::T::` + `run`), so the members of one
+//!   type share a string; `y_qual < 0` is the whole qualname `s[-1 - q]`.
 //! - edges: `e`, flat `[from, to, kind, weight]` quads. An endpoint `>= 0` is
 //!   a symbol; `< 0` is file `-1 - end` (an import or call made from a
 //!   file's module scope, or into a file whose symbols are not embedded).
@@ -365,7 +368,13 @@ pub(crate) fn zoom_json(
     let y_file: Vec<usize> = syms.iter().map(|y| y.file).collect();
     let y_kind: Vec<i64> = syms.iter().map(|y| s.id(&y.kind)).collect();
     let y_name: Vec<i64> = syms.iter().map(|y| s.id(&y.name)).collect();
-    let y_qual: Vec<i64> = syms.iter().map(|y| s.id(&y.qual)).collect();
+    let y_qual: Vec<i64> = syms
+        .iter()
+        .map(|y| match y.qual.strip_suffix(y.name.as_str()) {
+            Some(prefix) => s.id(prefix),
+            None => -1 - s.id(&y.qual),
+        })
+        .collect();
     let y_line: Vec<i64> = syms.iter().map(|y| y.line).collect();
     let y_parent: Vec<i64> = syms.iter().map(&parent_of).collect();
     let y_sig: Vec<i64> = syms

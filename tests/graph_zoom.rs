@@ -144,7 +144,12 @@ impl Zoom {
                     yf[i] as usize,
                     s[yk[i] as usize].clone(),
                     s[yn[i] as usize].clone(),
-                    s[yq[i] as usize].clone(),
+                    // The qualname: its prefix plus the name, or whole.
+                    if yq[i] >= 0 {
+                        format!("{}{}", s[yq[i] as usize], s[yn[i] as usize])
+                    } else {
+                        s[(-1 - yq[i]) as usize].clone()
+                    },
                     yl[i],
                     yp[i],
                     (yg[i] >= 0).then(|| s[yg[i] as usize].clone()),
@@ -241,6 +246,15 @@ fn every_unit_embeds_its_symbols_with_their_nesting() {
     assert_eq!(z.syms[z.sym("fmt_order") as usize].5, -1);
     let render = &z.syms[z.sym("render") as usize];
     assert_eq!(render.4, 6, "start line");
+    // Qualnames come back whole from their shared prefix.
+    assert_eq!(render.3, "shared_utils.fmt.Formatter.render");
+    assert_eq!(z.syms[formatter as usize].3, "shared_utils.fmt.Formatter");
+    let quals = z.z["y_qual"].as_array().unwrap();
+    assert_eq!(
+        quals[z.sym("render") as usize],
+        quals[z.sym("width") as usize],
+        "members share one prefix string"
+    );
     assert!(
         render.6.as_deref().unwrap_or("").contains("self, n"),
         "{render:?}"
@@ -477,4 +491,5 @@ fn a_method_declared_away_from_its_type_sits_in_its_own_file() {
         "not parented to a symbol in another file: {:?}",
         z.syms
     );
+    assert_eq!(get.3, "svc/a.Store.Get");
 }
