@@ -296,6 +296,17 @@ if (scenario === 'focus') {
     z.activate(unit, id); flush(40);
     out.tag = tag; out.backUp = { crumbs: z.crumbs(), items: z.items(unit), sel: z.selected() };
   }
+} else if (scenario === 'zoom-labels') {
+  // Every label drawn with a card open at `rel`, optionally a symbol
+  // selected, the stage narrowed to `stageW` px (a panel beside it) and the
+  // camera at scale k with the open level's top (or foot) at a screen y,
+  // or its left edge at a screen x.
+  const z = g.zoom, [unit, rel, sel, stageW, k, top, bottom, left] = arg.split(',');
+  if (stageW) elements.get('stage').rect = { left: 0, top: 0, right: +stageW, bottom: 900, width: +stageW, height: 900 };
+  z.open(unit, rel); flush(40);
+  if (sel) { z.select(unit, sel); flush(20); }
+  if (k) z.look(unit, +k, top ? +top : null, bottom ? +bottom : null, left ? +left : null);
+  out = { labels: z.labels(), cam: z.cam(), level: z.focusScreen(unit) };
 } else if (scenario === 'zoom-hash') {
   // The page opened at a URL fragment (HASH in the environment).
   let html = '';

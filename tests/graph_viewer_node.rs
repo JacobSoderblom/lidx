@@ -836,6 +836,16 @@ const LEVELS_FILES: &[(&str, &str)] = &[
     ),
     ("core/corelib/gamma/c.py", "def c():\n    return 1\n"),
     (
+        "core/corelib/gamma/hub.py",
+        concat!(
+            "class Hub:\n",
+            "    def first(self):\n        return self.second() + self.third() + self.fourth()\n\n",
+            "    def second(self):\n        return self.third() + self.fourth()\n\n",
+            "    def third(self):\n        return self.fourth()\n\n",
+            "    def fourth(self):\n        return 1\n",
+        ),
+    ),
+    (
         "core/corelib/delta/d.py",
         "from corelib.alpha.a import a\nfrom corelib.gamma.c import c\n\n\ndef d():\n    return a() + c()\n",
     ),
@@ -1191,4 +1201,124 @@ fn files_without_symbols_share_one_box() {
             .any(|i| i["type"] == "orow" && i["name"] == "README.md"),
         "{r}"
     );
+}
+
+/// Labels on the sheet (stub labels and link labels) sit in free space:
+/// inside the view, off every box, tag and header, and off one another.
+fn assert_labels_clear(r: &Value) {
+    let l = &r["labels"];
+    let v = &l["view"];
+    let (x0, y0, x1, y1) = (
+        v["x0"].as_f64().unwrap(),
+        v["y0"].as_f64().unwrap(),
+        v["x1"].as_f64().unwrap(),
+        v["y1"].as_f64().unwrap(),
+    );
+    let rect = |b: &Value| -> [f64; 4] {
+        let a = b
+            .as_array()
+            .unwrap_or_else(|| panic!("a label was dropped: {r}"));
+        [0, 1, 2, 3].map(|i| a[i].as_f64().unwrap())
+    };
+    let over =
+        |a: &[f64; 4], b: &[f64; 4]| a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
+    let obst: Vec<[f64; 4]> = l["obstacles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(rect)
+        .collect();
+    let mut boxes: Vec<(String, [f64; 4])> = Vec::new();
+    for key in ["stubs", "links"] {
+        for s in l[key].as_array().unwrap() {
+            boxes.push((s["text"].as_str().unwrap().to_string(), rect(&s["box"])));
+        }
+    }
+    for (i, (t, b)) in boxes.iter().enumerate() {
+        assert!(
+            b[0] >= x0 - 0.01 && b[2] <= x1 + 0.01 && b[1] >= y0 - 0.01 && b[3] <= y1 + 0.01,
+            "{t} {b:?} is outside the view: {r}"
+        );
+        for o in &obst {
+            assert!(!over(b, o), "{t} {b:?} sits on a box or tag {o:?}: {r}");
+        }
+        for (u, c) in &boxes[i + 1..] {
+            assert!(!over(b, c), "{t} {b:?} sits on the label {u} {c:?}: {r}");
+        }
+    }
+}
+
+/// With a folder open deeper in, the stub labels next to the sibling tags
+/// of the levels above are placed in free space, not over the tags.
+#[test]
+fn stub_labels_keep_off_the_tags_of_the_levels_above() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-lbltags-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-labels", "corelib,corelib/alpha/,,,1.6,,");
+    assert!(!r["labels"]["stubs"].as_array().unwrap().is_empty(), "{r}");
+    assert_labels_clear(&r);
+}
+
+/// With no room for labels beside a side (the left edge at the view's, or
+/// a panel narrowing the stage to just past the right edge), the labels
+/// are placed elsewhere, never dropped.
+#[test]
+fn stub_labels_without_room_beside_a_side_are_placed_elsewhere() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-lblroom-", ZOOM_FILES);
+    let p = page(&root, &db, &[]);
+    // The API's file at scale 2: its stub to the worker leaves on the left.
+    let probe = run(&p, "zoom-labels", "orders-api,orders_api/main.py,,,2,,,");
+    let sides: Vec<&str> = probe["labels"]["stubs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["side"].as_str().unwrap())
+        .collect();
+    assert!(sides.contains(&"l"), "{probe}");
+    // Its left edge 12 px into the view: no room beside it.
+    let r = run(&p, "zoom-labels", "orders-api,orders_api/main.py,,,2,,,12");
+    assert_labels_clear(&r);
+    // A panel beside the stage, the file's right edge 24 px from it.
+    let lv = &probe["level"];
+    let right = lv["x"].as_f64().unwrap() + lv["w"].as_f64().unwrap();
+    let r = run(
+        &p,
+        "zoom-labels",
+        &format!(
+            "orders-api,orders_api/main.py,,{},2,,,",
+            (right + 24.0).round()
+        ),
+    );
+    assert_labels_clear(&r);
+}
+
+/// In an open file, the labels of the calls between a class's members are
+/// whole (not cut by the class box), inside the view and apart.
+#[test]
+fn link_labels_in_a_file_are_whole_and_apart() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-lbllinks-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(
+        &p,
+        "zoom-labels",
+        "corelib,corelib/gamma/hub.py,corelib/gamma/hub.py#corelib.gamma.hub.Hub.first,,,,",
+    );
+    let links = r["labels"]["links"].as_array().unwrap();
+    assert!(
+        links.len() >= 3,
+        "the selected method's calls are labelled: {r}"
+    );
+    assert_labels_clear(&r);
 }

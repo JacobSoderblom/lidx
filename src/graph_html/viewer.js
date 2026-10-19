@@ -4703,7 +4703,7 @@
   function buildZlinks() {
     var z = zdata(), map = new Map(), out = [];
     // Stubs are re-made with the links: one under the pointer is no longer known.
-    ast.zlinks = out; ast.stubs = []; ast.zhstub = null;
+    ast.zlinks = out; ast.stubs = []; ast.zhstub = null; ast.zlabelled = [];
     if (!z || !ast.open.size) return;
     z.edges.forEach(function (e) {
       var ua = endUnit(z, e.a), ub = endUnit(z, e.b);
@@ -4796,6 +4796,9 @@
     return placeStubs(list, v);
   }
   var STUBS_PER_SIDE = 8, STUB_ROOM = 36;
+  // Per open level and side ('<unit><side>'), fewer stubs where their labels
+  // found no free room: the lightest fold into "+N more".
+  ast.stubCap = {};
   // Stubs sit on the side of the open level facing their target, spread
   // along the part of that edge in view, and stay in view while the level does.
   function placeStubs(list, v) {
@@ -4818,16 +4821,17 @@
     Object.keys(bySide).forEach(function (key) {
       var group = bySide[key], A = group[0].box, side = group[0].side, horiz = side === 't' || side === 'b';
       // Past a handful on one side, the lightest share one stub: "+N more".
-      if (group.length > STUBS_PER_SIDE) {
+      var cap = Math.min(STUBS_PER_SIDE, ast.stubCap[key] || Infinity);
+      if (group.length > cap) {
         group.sort(function (a, b) { return b.w - a.w || a.ox - b.ox; });
-        var rest = group.slice(STUBS_PER_SIDE - 1), more = { u: rest[0].u, target: null, more: rest.length, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code', box: A, tbox: null, side: side, ox: Infinity };
+        var rest = group.slice(cap - 1), more = { u: rest[0].u, target: null, more: rest.length, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code', box: A, tbox: null, side: side, ox: Infinity };
         rest.forEach(function (s) {
           more.out = more.out || s.out; more.inn = more.inn || s.inn; more.w += s.w;
           Object.keys(s.kinds).forEach(function (kk) { more.kinds[kk] = (more.kinds[kk] || 0) + s.kinds[kk]; });
           s.members.forEach(function (it) { if (more.members.indexOf(it) < 0) more.members.push(it); });
           s.links.forEach(function (i) { if (more.links.indexOf(i) < 0) more.links.push(i); });
         });
-        group = group.slice(0, STUBS_PER_SIDE - 1).concat([more]);
+        group = group.slice(0, cap - 1).concat([more]);
       }
       group.sort(function (a, b) { return a.ox - b.ox || b.w - a.w; });
       // The visible stretch of the edge, or all of it when none is visible.
@@ -4867,8 +4871,8 @@
     var n = it.node;
     return { x1: A.x + 20 + textWidth('▾ ' + n.name, '700 12.5px ' + MONO, 7.6) + 8 + textWidth(itemCounts(n), '11px ' + SANS, 6.2) + 8, y1: A.y + ZFRAME_HEAD };
   }
-  function stubName(s) {
-    if (!s.target) return '+' + fmt(s.more) + ' more';
+  function stubName(s, short) {
+    if (!s.target) return '+' + fmt(s.more) + (short ? '' : ' more');
     return s.label || targetName(s);
   }
   function targetName(s) {
@@ -4890,9 +4894,11 @@
     return text.length * perChar;
   }
   function labelWidth(text) { return textWidth(text, '700 11px ' + SANS, 6.55) + text.length * 0.25; }
-  function stubText(s) {
-    var t = s.target, hidden = !!t && t.card !== undefined && !ast.pos['u' + t.card];
-    return (s.out && s.inn ? '⇄ ' : s.out ? '→ ' : '← ') + stubName(s) + ' ×' + fmt(s.w) + (hidden ? ' (hidden)' : '');
+  // `n`: the name cut to n characters, for a label short of room.
+  function stubText(s, n) {
+    var t = s.target, hidden = !!t && t.card !== undefined && !ast.pos['u' + t.card], name = stubName(s, n && n < 14);
+    if (n) { if (s.target && name.length > n) name = name.slice(0, n - 1) + '…'; hidden = false; }
+    return (s.out && s.inn ? '⇄ ' : s.out ? '→ ' : '← ') + name + ' ×' + fmt(s.w) + (hidden ? ' (hidden)' : '');
   }
   function endBox(r) {
     if (r.card !== undefined) { var p = ast.pos['u' + r.card]; return p ? { x: p.x, y: p.y, w: p.w, h: p.h } : null; }
@@ -5035,7 +5041,8 @@
         v.k < zRendered.k * 1.8 && v.k > zRendered.k / 1.8) { renderStubs(); return; }
     var R = viewRect(Math.max(300, (stage.getBoundingClientRect().width || 1400) * 0.5));
     zRendered = R;
-    var shown = 0, clip = '';
+    var shown = 0, clip = '', obst = [];
+    var hole = function (x, y, w, h) { clip += rectD(x, y, w, h); obst.push([x, y, x + w, y + h]); };
     ast.open.forEach(function (uid) {
       var el = appsCards.querySelector('[data-zin="' + uid + '"]'), items = ast.zitems[uid], o = zorigin(uid), P = ast.pos['u' + uid];
       if (!items || !o) return;
@@ -5043,15 +5050,15 @@
       // Lines are cut out of the card's header, every box drawn and each
       // open level's header: they run between boxes, never across a face
       // or a title, and a box under a line still takes the pointer.
-      if (P) clip += rectD(P.x, P.y, P.w, ZHEAD - 10);
+      if (P) hole(P.x, P.y, P.w, ZHEAD - 10);
       items.list.forEach(function (it) {
         var sel = ast.zsel && ast.zsel.u === uid && ast.zsel.id === it.id;
         if (!sel && (cap <= 0 || !hitRect({ x: o.x + it.x, y: o.y + it.y, w: it.w, h: it.h }, R))) return;
         // Text under 4 px is noise: far out, boxes only.
         if (R.k < 0.18 && it.type === 'row' && !sel) return;
         html += itemHtml(uid, it, R.k < 0.3);
-        if (it.type === 'frame') clip += rectD(o.x + it.x, o.y + it.y, it.w, ZFRAME_HEAD - 2);
-        else if (!isRow(it)) clip += rectD(o.x + it.x, o.y + it.y, it.w, it.h);
+        if (it.type === 'frame') hole(o.x + it.x, o.y + it.y, it.w, ZFRAME_HEAD - 2);
+        else if (!isRow(it)) hole(o.x + it.x, o.y + it.y, it.w, it.h);
         cap--; shown++;
       });
       if (items.empty) html = '<p class="zempty">No files with symbols here.</p>';
@@ -5059,6 +5066,14 @@
     });
     ast.zshown = shown;
     ast.zclip = clip;
+    // What a label may not sit on: those boxes, tags and headers, and the
+    // closed cards on the sheet.
+    Object.keys(ast.pos).forEach(function (key) {
+      if (key.charAt(0) === 'u' && ast.open.has(+key.slice(1))) return;
+      var p = ast.pos[key];
+      obst.push([p.x, p.y, p.x + p.w, p.y + p.h]);
+    });
+    ast.zobst = obst;
     renderZlinks(R);
   }
   function rectD(x, y, w, h) { return 'M' + r1(x) + ' ' + r1(y) + 'h' + r1(w) + 'v' + r1(h) + 'h' + r1(-w) + 'Z'; }
@@ -5079,10 +5094,10 @@
   function renderZlinks(R) {
     if (!zedges) return;
     var v = stubView();
-    ast.stubs = zstubs(v);
+    var labels = fitStubLabels(v, true);
     ast.zlineKey = lineKey();
     var many = ast.zlinks.length > 120, svg = '';
-    ast.zdrawn = 0;
+    ast.zdrawn = 0; ast.zlabelled = [];
     ast.zlinks.forEach(function (l, i) {
       var g = l.g;
       if (!l.line || !g || !hitRect(l.bb, R)) return;
@@ -5092,15 +5107,14 @@
       ast.zdrawn++;
       svg += '<g class="zl conn f-' + l.fam + (on ? ' on' : '') + (cross ? ' cross named' : '') + (many ? ' many' : '') + '" data-zl="' + i + '" style="--w:' + r1(w) + '">' +
         '<path class="ln" d="' + curveD(g) + '" stroke-width="' + r1(w) + '"/><path class="ah" d="' + arrowAt(g, 6) + '"/>' +
-        '<path class="hit" d="' + curveD(g) + '"/>' +
-        (on || cross ? '<text class="lbl" x="' + r1(bez(g.x1, g.c1x, g.c2x, g.x2, 0.5)) + '" y="' + r1(bez(g.y1, g.c1y, g.c2y, g.y2, 0.5)) + '" text-anchor="middle" dy="0.35em">' +
-          esc(zkindsLabel(l.kinds)) + '</text>' : '') + '</g>';
+        '<path class="hit" d="' + curveD(g) + '"/></g>';
+      if (on || cross) ast.zlabelled.push(i);
     });
     zedges.setAttribute('width', String(Math.max(1, ast.sheet ? ast.sheet.width : 1)));
     zedges.setAttribute('height', String(Math.max(1, ast.sheet ? ast.sheet.height : 1)));
     // Everything outside the cut-outs: even-odd, the boxes are holes.
     zedges.innerHTML = '<defs><clipPath id="zclip"><path clip-rule="evenodd" d="M-100000 -100000H100000V100000H-100000Z' + (ast.zclip || '') + '"/></clipPath></defs>' +
-      '<g class="zlg" clip-path="url(#zclip)">' + svg + '</g><g class="zsg">' + stubsSvg(v) + '</g>';
+      '<g class="zlg" clip-path="url(#zclip)">' + svg + '</g><g class="zsg">' + labels + '</g>';
     zedges.classList.toggle('hasfocus', !!(ast.zsel || ast.zhover || ast.zhstub !== null));
   }
   // Which cross-card links are lines in this view: when it changes, the lines are re-drawn.
@@ -5114,32 +5128,167 @@
     var v = stubView();
     ast.stubs = zstubs(v);
     if (!g || lineKey() !== ast.zlineKey) { renderZlinks(zRendered || viewRect(600)); return; }
-    g.innerHTML = stubsSvg(v);
+    g.innerHTML = labelsSvg(v);
+    // A label with no free room after a pan: fold stubs once the view rests.
+    if (ast.stubs.some(function (s) { return s.lfail; })) {
+      clearTimeout(stubFoldTimer);
+      stubFoldTimer = setTimeout(function () { var g2 = zedges.querySelector('.zsg'), v2 = stubView(); if (g2) g2.innerHTML = fitStubLabels(v2, false); }, 140);
+    }
   }
-  function stubsSvg(v) {
-    var placed = [], svg = '', k = v.k || 1, L = 16;
+  var stubFoldTimer = null;
+  // The stubs and every label, folding the lightest stubs of a side into
+  // "+N more" while a label there finds no free room. `fresh` starts again
+  // from the full count per side.
+  function fitStubLabels(v, fresh) {
+    if (fresh) ast.stubCap = {};
+    var html = '', done = {};
+    for (var pass = 0; pass < 16; pass++) {
+      ast.stubs = zstubs(v);
+      html = labelsSvg(v);
+      var count = {}, worst = null;
+      ast.stubs.forEach(function (s) { var key = s.u + s.side; count[key] = (count[key] || 0) + 1; });
+      ast.stubs.forEach(function (s) {
+        var key = s.u + s.side;
+        if (s.lfail && count[key] > 1 && !done[key] && (!worst || count[key] > count[worst])) worst = key;
+      });
+      if (!worst) break;
+      var was = count[worst], now = Math.max(1, Math.floor(was / 2));
+      ast.stubCap[worst] = now;
+      if (now <= 1) done[worst] = true;
+    }
+    return html;
+  }
+  // The labels over the sheet: the drawn links' (focused or crossing cards),
+  // then the stubs', each in free space and clear of the others.
+  function labelsSvg(v) {
+    var k = v.k || 1, placed = [], obst = (ast.zobst || []).filter(function (o) { return o[0] < v.x1 && o[2] > v.x0 && o[1] < v.y1 && o[3] > v.y0; });
+    var svg = '', out = [];
+    // The stubs' ports and short lines are kept clear too.
+    obst = obst.slice();
+    ast.stubs.forEach(function (st0) {
+      if (!st0.box || st0.x === undefined) return;
+      var nx = st0.side === 'l' ? -1 : st0.side === 'r' ? 1 : 0, ny = st0.side === 't' ? -1 : st0.side === 'b' ? 1 : 0;
+      var ex = st0.x + nx * 13, ey = st0.y + ny * 13;
+      obst.push([st0.x - 5, st0.y - 5, st0.x + 5, st0.y + 5]);
+      obst.push([Math.min(st0.x, ex) - 1.5, Math.min(st0.y, ey) - 1.5, Math.max(st0.x, ex) + 1.5, Math.max(st0.y, ey) + 1.5]);
+    });
+    (ast.zlabelled || []).forEach(function (i) {
+      var l = ast.zlinks[i], g = l && l.g;
+      if (!g) return;
+      var full = zkindsLabel(l.kinds), kinds = Object.keys(l.kinds), th = 15;
+      var mx = bez(g.x1, g.c1x, g.c2x, g.x2, 0.5), my = bez(g.y1, g.c1y, g.c2y, g.y2, 0.5);
+      // Short of room, the heaviest kind alone.
+      var spot = labelSpot(function (n) {
+        if (n > 1 || (n === 1 && kinds.length < 2)) return null;
+        var t = n ? full.split(' · ')[0] + ' …' : full, w = textWidth(t, '600 11px ' + SANS, 6.3) + 8;
+        return { text: t, tw: w, prefs: [[mx - w / 2, my - th / 2]] };
+      }, mx, my, th, v, obst, placed);
+      var box = spot.box, text = spot.text;
+      placed.push(box);
+      out.push({ i: i, text: text, box: box, at: [mx, my] });
+      svg += '<g class="zlbl' + (zlinkOn(l) ? ' on' : '') + '">' + leader(mx, my, box) + '<rect class="lbg" x="' + r1(box[0]) + '" y="' + r1(box[1]) + '" width="' + r1(box[2] - box[0]) +
+        '" height="' + r1(box[3] - box[1]) + '" rx="3"/><text class="lbl" x="' + r1((box[0] + box[2]) / 2) + '" y="' + r1(box[3] - 4) + '" text-anchor="middle">' + esc(text) + '</text></g>';
+    });
+    ast.zlinkLabels = out;
+    return '<g class="zll">' + svg + '</g>' + stubsSvg(v, obst, placed);
+  }
+  // A spot for a tw x th label: the first free one of `prefs` (top-left
+  // corners), else the free one nearest (ax, ay). Free: in
+  // the view, off every box, tag and header, clear of the labels placed.
+  // With nothing free, the first preference pulled into the view: a label
+  // is moved, never dropped.
+  // With `strict`, the leader from the anchor to the spot crosses no box
+  // either (other than one the anchor is on).
+  function freeSpot(prefs, ax, ay, tw, th, v, obst, placed, strict) {
+    var vm = 4 / (v.k || 1);
+    var x0 = v.x0 + vm, y0 = v.y0 + vm, x1 = v.x1 - vm, y1 = v.y1 - vm;
+    var crossable = strict ? obst.filter(function (o) { return !(ax >= o[0] && ax <= o[2] && ay >= o[1] && ay <= o[3]); }) : null;
+    if (!obst.occ) obst.occ = occupancy(v, obst);
+    var occ = obst.occ;
+    function free(c) {
+      if (c[0] < x0 || c[2] > x1 || c[1] < y0 || c[3] > y1) return false;
+      for (var i = 0; i < placed.length; i++) { var q = placed[i]; if (c[0] < q[2] + 2 && c[2] + 2 > q[0] && c[1] < q[3] + 2 && c[3] + 2 > q[1]) return false; }
+      if (occupied(occ, c)) return false;
+      if (crossable) {
+        var px = Math.max(c[0], Math.min(ax, c[2])), py = Math.max(c[1], Math.min(ay, c[3]));
+        for (var m = 0; m < crossable.length; m++) if (segHits(ax, ay, px, py, crossable[m])) return false;
+      }
+      return true;
+    }
+    for (var p = 0; p < prefs.length; p++) { var c0 = [prefs[p][0], prefs[p][1], prefs[p][0] + tw, prefs[p][1] + th]; if (free(c0)) return c0; }
+    // Spots on a grid over the view, in square rings out from the anchor.
+    var gw = x1 - x0 - tw, gh = y1 - y0 - th;
+    if (gw < 0 || gh < 0) return null;
+    var step = Math.max(6, Math.sqrt(gw * gh / 5000)), ni = Math.floor(gw / step), nj = Math.floor(gh / step);
+    var ia = Math.round((ax - tw / 2 - x0) / step), ja = Math.round((ay - th / 2 - y0) / step);
+    var at = function (i, j) {
+      if (i < 0 || j < 0 || i > ni || j > nj) return null;
+      var c = [x0 + i * step, y0 + j * step, x0 + i * step + tw, y0 + j * step + th];
+      return free(c) ? c : null;
+    };
+    // A clear leader is looked for near the anchor only.
+    var maxD = Math.max(ni, nj) + Math.max(Math.abs(ia), Math.abs(ja));
+    if (strict) maxD = Math.min(maxD, 40);
+    for (var d = 0; d <= maxD; d++) {
+      for (var e = -d; e <= d; e++) {
+        var c = at(ia + e, ja - d) || at(ia + e, ja + d) || at(ia - d, ja + e) || at(ia + d, ja + e);
+        if (c) return c;
+      }
+    }
+    return null;
+  }
+  // A label's spot: its full text where there is room, else a shorter one,
+  // else (nothing free) its first spot pulled into the view; never dropped.
+  // `variant(n)` gives the text for try n (0 the full one) and its prefs,
+  // or null for none.
+  function labelSpot(variant, ax, ay, th, v, obst, placed) {
+    var first = null, tried = {}, list = [];
+    for (var n = 0; n < 6; n++) {
+      var x = variant(n);
+      if (!x || tried[x.text]) continue;
+      tried[x.text] = true;
+      if (!first) first = x;
+      list.push(x);
+    }
+    // A leader clear of the boxes first, then any free spot.
+    for (var pass = 0; pass < 2; pass++) {
+      for (var i = 0; i < list.length; i++) {
+        var c = freeSpot(list[i].prefs, ax, ay, list[i].tw, th, v, obst, placed, pass === 0);
+        if (c) return { box: c, text: list[i].text };
+      }
+    }
+    var vm = 4 / (v.k || 1), p = first.prefs[0];
+    var fx = Math.max(v.x0 + vm, Math.min(p[0], v.x1 - vm - first.tw)), fy = Math.max(v.y0 + vm, Math.min(p[1], v.y1 - vm - th));
+    return { box: [fx, fy, fx + first.tw, fy + th], text: first.text, fail: true };
+  }
+  function stubsSvg(v, obst, placed) {
+    var svg = '', k = v.k || 1, L = 16;
     ast.stubs.forEach(function (s, i) {
       if (!s.box || s.x === undefined) return;
       var on = stubOn(s, i), text = stubText(s);
       var nx = s.side === 'l' ? -1 : s.side === 'r' ? 1 : 0, ny = s.side === 't' ? -1 : s.side === 'b' ? 1 : 0;
       var ex = s.x + nx * L, ey = s.y + ny * L;
       // The label beside the stub's end, else stepped outward and along the
-      // edge until it clears the others, always inside the view.
-      var tw = labelWidth(text) + 10, th = 16, box = null;
-      var bx0 = nx < 0 ? ex - 4 - tw : nx > 0 ? ex + 4 : ex - tw / 2, by0 = ny < 0 ? ey - 2 - th : ny > 0 ? ey + 2 : ey - th / 2;
-      var vm = 4 / k;
-      search:
-      for (var row = 0; row < 6; row++) {
-        for (var j = 0; j < 5; j++) {
-          var sh = j === 0 ? 0 : (j % 2 ? 1 : -1) * Math.ceil(j / 2);
-          var cx = bx0 + (ny ? sh * (tw / 2 + 6) : nx * row * 24), cy = by0 + (ny ? ny * row * (th + 2) : sh * (th + 2));
-          var cand = [cx, cy, cx + tw, cy + th];
-          if (cand[0] < v.x0 + vm || cand[2] > v.x1 - vm || cand[1] < v.y0 + vm || cand[3] > v.y1 - vm) continue;
-          if (!placed.some(function (q) { return cand[0] < q[2] + 2 && cand[2] + 2 > q[0] && cand[1] < q[3] + 2 && cand[3] + 2 > q[1]; })) { box = cand; break search; }
+      // edge, else the nearest free space (a leader runs to it): never over
+      // a box, a tag or another label, always inside the view.
+      // Short of room, the target's name is cut (the tooltip has it whole).
+      var th = 16, cuts = [0, 24, 14, 8, 5, 3];
+      var spot = labelSpot(function (n) {
+        var t = n ? stubText(s, cuts[n]) : text;
+        var tw = labelWidth(t) + 10, prefs = [];
+        var bx0 = nx < 0 ? ex - 4 - tw : nx > 0 ? ex + 4 : ex - tw / 2, by0 = ny < 0 ? ey - 2 - th : ny > 0 ? ey + 2 : ey - th / 2;
+        for (var row = 0; row < 6; row++) {
+          for (var j = 0; j < 5; j++) {
+            var sh = j === 0 ? 0 : (j % 2 ? 1 : -1) * Math.ceil(j / 2);
+            prefs.push([bx0 + (ny ? sh * (tw / 2 + 6) : nx * row * 24), by0 + (ny ? ny * row * (th + 2) : sh * (th + 2))]);
+          }
         }
-      }
-      if (box) placed.push(box);
-      s.lbox = box;
+        return { text: t, tw: tw, prefs: prefs };
+      }, ex, ey, th, v, obst, placed);
+      var box = spot.box;
+      text = spot.text;
+      placed.push(box);
+      s.lbox = box; s.ltext = text; s.lfail = !!spot.fail;
       var w = zlinkWidth(s.w);
       svg += '<g class="zstub conn f-' + s.fam + (on ? ' on' : '') + '" data-zs="' + i + '" style="--w:' + r1(w) + '">';
       // On to the target, while hovered or selected and the target is in
@@ -5163,10 +5312,50 @@
     });
     return svg;
   }
+  // The obstacles on a grid of small cells over the view, as a summed-area
+  // table: whether a rectangle touches any is one lookup. A cell partly
+  // covered counts as covered.
+  function occupancy(v, obst) {
+    var cs = Math.max(3, Math.sqrt((v.x1 - v.x0) * (v.y1 - v.y0) / 40000)), W = Math.ceil((v.x1 - v.x0) / cs) + 1, H = Math.ceil((v.y1 - v.y0) / cs) + 1;
+    var d = new Int32Array((W + 1) * (H + 1));
+    var cx = function (x) { return Math.max(0, Math.min(W - 1, Math.floor((x - v.x0) / cs))); }, cy = function (y) { return Math.max(0, Math.min(H - 1, Math.floor((y - v.y0) / cs))); };
+    obst.forEach(function (o) {
+      if (o[2] < v.x0 || o[0] > v.x1 || o[3] < v.y0 || o[1] > v.y1) return;
+      var i0 = cx(o[0] - 1), i1 = cx(o[2] + 1), j0 = cy(o[1] - 1), j1 = cy(o[3] + 1);
+      d[j0 * (W + 1) + i0]++; d[j0 * (W + 1) + i1 + 1]--; d[(j1 + 1) * (W + 1) + i0]--; d[(j1 + 1) * (W + 1) + i1 + 1]++;
+    });
+    // Coverage from the difference marks, then the table of covered cells.
+    var sat = new Int32Array((W + 1) * (H + 1));
+    for (var j = 0; j < H; j++) {
+      for (var i = 0; i < W; i++) {
+        var k = j * (W + 1) + i;
+        if (i > 0) d[k] += d[k - 1];
+        if (j > 0) d[k] += d[k - (W + 1)];
+        if (i > 0 && j > 0) d[k] -= d[k - (W + 1) - 1];
+        sat[(j + 1) * (W + 1) + i + 1] = (d[k] > 0 ? 1 : 0) + sat[j * (W + 1) + i + 1] + sat[(j + 1) * (W + 1) + i] - sat[j * (W + 1) + i];
+      }
+    }
+    return { sat: sat, W: W, H: H, cs: cs, x0: v.x0, y0: v.y0, cx: cx, cy: cy };
+  }
+  function occupied(o, c) {
+    var i0 = o.cx(c[0]), i1 = o.cx(c[2]), j0 = o.cy(c[1]), j1 = o.cy(c[3]), w = o.W + 1, t = o.sat;
+    return t[(j1 + 1) * w + i1 + 1] - t[j0 * w + i1 + 1] - t[(j1 + 1) * w + i0] + t[j0 * w + i0] > 0;
+  }
+  // Does the segment cross the rectangle o (shrunk by a pixel)? Liang-Barsky.
+  function segHits(x1, y1, x2, y2, o) {
+    var t0 = 0, t1 = 1, dx = x2 - x1, dy = y2 - y1;
+    var ps = [-dx, dx, -dy, dy], qs = [x1 - (o[0] + 1), (o[2] - 1) - x1, y1 - (o[1] + 1), (o[3] - 1) - y1];
+    for (var i = 0; i < 4; i++) {
+      if (ps[i] === 0) { if (qs[i] < 0) return false; continue; }
+      var r = qs[i] / ps[i];
+      if (ps[i] < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
+    }
+    return t0 <= t1;
+  }
   // A thin line from a stub's end to its label when the label had to move away.
   function leader(x, y, b) {
     var px = Math.max(b[0], Math.min(x, b[2])), py = Math.max(b[1], Math.min(y, b[3]));
-    return Math.hypot(px - x, py - y) > 6 ? '<path class="ldr" d="M' + r1(x) + ' ' + r1(y) + 'L' + r1(px) + ' ' + r1(py) + '"/>' : '';
+    return Math.hypot(px - x, py - y) > 6 ? '<path class="ldr" clip-path="url(#zclip)" d="M' + r1(x) + ' ' + r1(y) + 'L' + r1(px) + ' ' + r1(py) + '"/>' : '';
   }
   // Hovering a stub lights up the boxes its links come from (and its target).
   function markStub(i) {
@@ -6145,18 +6334,28 @@
       },
       activate: function (name, id) { var u = unitByName(name), z = ast.zitems[u]; if (!z || !z.byId[id]) return false; zactivate(u, z.byId[id]); return true; },
       status: function () { return statusEl.textContent; },
+      // Every label on the sheet and what it must keep off, in world units.
+      labels: function () {
+        renderStubs();
+        return {
+          view: stubView(), obstacles: ast.zobst || [],
+          links: (ast.zlinkLabels || []).map(function (x) { return { text: x.text, box: x.box, at: x.at }; }),
+          stubs: ast.stubs.map(function (x) { return { text: x.ltext || stubText(x), full: stubText(x), box: x.lbox || null, side: x.side, port: x.x === undefined ? null : [x.x, x.y] }; })
+        };
+      },
       // The selection panel's "‹ unit" link: back to the unit and its tree.
       panelBack: function (name) { appPanelClick({ dataset: { zunit: String(unitByName(name)) } }); return { text: panel.textContent, html: panel.innerHTML }; },
       stubCap: function (n) { STUBS_PER_SIDE = n; renderZoomView(true); },
       // The camera at scale k on the centre of a card's deepest open level, at once.
-      // With `top` (screen px) the box's top edge is put there; with `bottom`, its foot.
-      look: function (name, k, top, bottom) {
+      // With `top` (screen px) the box's top edge is put there; with `bottom`, its foot; with `left`, its left edge.
+      look: function (name, k, top, bottom, left) {
         var b = focusBoxOf(unitByName(name)), r = stageArea();
         if (!b) return false;
         stopCam();
         ast.cam.k = k; ast.cam.x = r.w / 2 - (b.x + b.w / 2) * k; ast.cam.y = r.h / 2 - (b.y + b.h / 2) * k;
         if (top !== undefined && top !== null) ast.cam.y = top - b.y * k;
         if (bottom !== undefined && bottom !== null) ast.cam.y = bottom - (b.y + b.h) * k;
+        if (left !== undefined && left !== null) ast.cam.x = left - b.x * k;
         applyAppCam(); renderZoomView(true); return true;
       },
       hoverStub: function (i) { markStub(i); return { on: ast.stubs.map(function (s, j) { return stubOn(s, j); }) }; },
