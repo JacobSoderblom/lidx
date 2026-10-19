@@ -96,6 +96,43 @@ fn shares(totals: &[usize], cap: usize) -> Vec<usize> {
     totals.iter().map(|&t| t.min(lo)).collect()
 }
 
+/// Which files are embedded: per unit, whole files in its order while its
+/// allowance lasts; then what whole files left unspent goes, a file per
+/// unit in turn, to the next file of each unit that still fits.
+fn fill(unit_files: &[Vec<usize>], sizes: &[usize], allow: &[usize], cap: usize) -> Vec<bool> {
+    let mut embedded = vec![false; sizes.len()];
+    let mut used = 0;
+    for (u, list) in unit_files.iter().enumerate() {
+        let mut left = allow[u];
+        for &fi in list {
+            if sizes[fi] <= left {
+                left -= sizes[fi];
+                used += sizes[fi];
+                embedded[fi] = true;
+            }
+        }
+    }
+    let mut spare = cap.saturating_sub(used);
+    let mut next = vec![0usize; unit_files.len()];
+    loop {
+        let mut took = false;
+        for (u, list) in unit_files.iter().enumerate() {
+            while let Some(&fi) = list.get(next[u]) {
+                next[u] += 1;
+                if !embedded[fi] && sizes[fi] <= spare {
+                    spare -= sizes[fi];
+                    embedded[fi] = true;
+                    took = true;
+                    break;
+                }
+            }
+        }
+        if !took {
+            return embedded;
+        }
+    }
+}
+
 /// The `zoom` section, and a note when `max_symbols` left symbols out.
 pub(crate) fn zoom_json(
     ctx: &Ctx,
@@ -169,23 +206,14 @@ pub(crate) fn zoom_json(
         .map(|l| l.iter().map(|&fi| by_file[fi].len()).sum())
         .collect();
     let allow = shares(&totals, max_symbols);
-    let mut embedded = vec![false; file_list.len()];
+    let sizes: Vec<usize> = by_file.iter().map(Vec::len).collect();
+    let embedded = fill(&unit_files, &sizes, &allow, max_symbols);
     let mut omitted: Vec<(usize, usize, usize)> = Vec::new();
     for (u, list) in unit_files.iter().enumerate() {
-        let mut left = allow[u];
-        let (mut lost_syms, mut lost_files) = (0, 0);
-        for &fi in list {
-            let n = by_file[fi].len();
-            if n <= left {
-                left -= n;
-                embedded[fi] = true;
-            } else {
-                lost_syms += n;
-                lost_files += 1;
-            }
-        }
+        let lost: Vec<usize> = list.iter().copied().filter(|&fi| !embedded[fi]).collect();
+        let lost_syms: usize = lost.iter().map(|&fi| sizes[fi]).sum();
         if lost_syms > 0 {
-            omitted.push((u, lost_syms, lost_files));
+            omitted.push((u, lost_syms, lost.len()));
         }
     }
 
@@ -201,7 +229,8 @@ pub(crate) fn zoom_json(
         .map(|(i, s)| (s.id, i as i64))
         .collect();
 
-    // Parents: the nearest embedded symbol up the CONTAINS chain.
+    // Parents: the nearest embedded symbol up the CONTAINS chain, in the
+    // same file (a namespace shared by several files leads elsewhere).
     let mut contains: HashMap<i64, i64> = HashMap::new();
     let mut stmt = conn.prepare(
         "SELECT source_symbol_id, target_symbol_id FROM edges
@@ -213,13 +242,17 @@ pub(crate) fn zoom_json(
         let (p, c): (i64, i64) = (r.get(0)?, r.get(1)?);
         contains.entry(c).or_insert(p);
     }
-    let parent_of = |id: i64| -> i64 {
-        let mut cur = id;
+    let parent_of = |y: &Sym| -> i64 {
+        let mut cur = y.id;
         for _ in 0..32 {
             match contains.get(&cur) {
-                Some(&p) if p != id => {
+                Some(&p) if p != y.id => {
                     if let Some(&i) = sym_ix.get(&p) {
-                        return i;
+                        return if syms[i as usize].file == y.file {
+                            i
+                        } else {
+                            -1
+                        };
                     }
                     cur = p;
                 }
@@ -334,7 +367,7 @@ pub(crate) fn zoom_json(
     let y_name: Vec<i64> = syms.iter().map(|y| s.id(&y.name)).collect();
     let y_qual: Vec<i64> = syms.iter().map(|y| s.id(&y.qual)).collect();
     let y_line: Vec<i64> = syms.iter().map(|y| y.line).collect();
-    let y_parent: Vec<i64> = syms.iter().map(|y| parent_of(y.id)).collect();
+    let y_parent: Vec<i64> = syms.iter().map(&parent_of).collect();
     let y_sig: Vec<i64> = syms
         .iter()
         .map(|y| y.sig.as_deref().map(|g| s.id(g)).unwrap_or(-1))
@@ -386,6 +419,40 @@ mod tests {
         assert_eq!(shares(&[1, 5, 10], 9), vec![1, 4, 4]);
         assert_eq!(shares(&[6, 6], 7), vec![3, 3]);
         assert_eq!(shares(&[], 5), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn whole_files_fill_the_share_and_spare_goes_round() {
+        // Unit 0: files of 2 and 2; unit 1: a file of 4; cap 4 -> shares
+        // [2, 2]. Unit 0 keeps one file; unit 1's file does not fit its
+        // share, and the 2 it leaves go to unit 0's second file.
+        let units = vec![vec![0, 1], vec![2]];
+        let sizes = [2, 2, 4];
+        let allow = shares(&[4, 4], 4);
+        assert_eq!(allow, vec![2, 2]);
+        assert_eq!(fill(&units, &sizes, &allow, 4), vec![true, true, false]);
+        // Spare is handed out a file per unit in turn, in each unit's order.
+        let units = vec![vec![0, 1], vec![2, 3]];
+        let sizes = [5, 1, 5, 1];
+        let allow = shares(&[6, 6], 4);
+        assert_eq!(allow, vec![2, 2]);
+        assert_eq!(
+            fill(&units, &sizes, &allow, 4),
+            vec![false, true, false, true]
+        );
+        let allow = shares(&[6, 6], 7);
+        assert_eq!(allow, vec![3, 3]);
+        assert_eq!(
+            fill(&units, &sizes, &allow, 7),
+            vec![true, true, false, true]
+        );
+        // Never past the cap.
+        for cap in 0..14 {
+            let allow = shares(&[6, 6], cap);
+            let e = fill(&units, &sizes, &allow, cap);
+            let used: usize = (0..4).filter(|&i| e[i]).map(|i| sizes[i]).sum();
+            assert!(used <= cap, "cap {cap}: {e:?}");
+        }
     }
 
     #[test]

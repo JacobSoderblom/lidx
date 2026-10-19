@@ -325,15 +325,27 @@ fn relations_are_aggregated_per_symbol_pair_with_exact_weights() {
 #[test]
 fn max_symbols_keeps_whole_files_and_says_what_it_left_out() {
     let (_tmp, root, db) = common::index_repo("lidx-zoom-cap-", FILES);
-    // 3 units: an even share of 3 is 1 symbol each, so only files with at
-    // most one symbol fit; shared-utils (one 4-symbol file) keeps nothing.
+    // 3 units of 2, 4 and 3 symbols, one file each. An even share of 3 is 1
+    // symbol, which no whole file fits; what that leaves goes round, and
+    // the API's 2-symbol file is the one that fits.
     let (doc, stderr) = page(&root, &db, &["--max-symbols", "3"]);
     let z = Zoom::new(&doc);
     assert_eq!(z.z["max_symbols"], 3);
     let by_unit = z.by_unit();
-    assert!(!by_unit.contains_key("shared-utils"), "{by_unit:?}");
-    let total: usize = by_unit.values().map(BTreeSet::len).sum();
-    assert!(total <= 3, "{by_unit:?}");
+    let names: Vec<(&str, Vec<&str>)> = by_unit
+        .iter()
+        .map(|(u, s)| (u.as_str(), s.iter().map(String::as_str).collect()))
+        .collect();
+    assert_eq!(
+        names,
+        [("orders-api", vec!["app", "list_orders"])],
+        "{by_unit:?}"
+    );
+    // No file is half embedded: all of its symbols, or none.
+    for (fi, f) in z.files.iter().enumerate() {
+        let n = z.syms.iter().filter(|y| y.0 == fi).count() as u64;
+        assert_eq!(n, if f.3 { f.2 } else { 0 }, "{f:?}");
+    }
     let fmt = z
         .files
         .iter()
@@ -353,18 +365,31 @@ fn max_symbols_keeps_whole_files_and_says_what_it_left_out() {
             )
         })
         .collect();
-    assert!(
-        omitted.contains(&("shared-utils".to_string(), 4, 1)),
-        "{omitted:?}"
+    let mut omitted = omitted;
+    omitted.sort();
+    assert_eq!(
+        omitted,
+        [
+            ("notify".to_string(), 3, 1),
+            ("shared-utils".to_string(), 4, 1)
+        ],
     );
-    let lost: u64 = omitted.iter().map(|o| o.1).sum();
     let note = z.z["note"].as_str().unwrap();
     assert!(
-        note.starts_with(&format!("{lost} symbols in ")) && note.contains("--max-symbols 3"),
+        note.starts_with("7 symbols in 2 files not embedded") && note.contains("--max-symbols 3"),
         "{note}"
     );
     assert!(note.contains("lidx graph --seed"), "{note}");
     assert!(stderr.contains(note), "the note is printed too: {stderr}");
+    // A budget of 5 spends all of it: the API's 2 and the worker's 3.
+    let (doc, _) = page(&root, &db, &["--max-symbols", "5"]);
+    let z5 = Zoom::new(&doc);
+    assert_eq!(z5.syms.len(), 5);
+    assert_eq!(
+        z5.by_unit().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["notify", "orders-api"]
+    );
+    assert_eq!(z5.z["omitted"].as_array().unwrap().len(), 1);
     // Edges only between what is embedded (or listed files).
     for e in &z.edges {
         assert!(e.0 < z.syms.len() as i64 && e.1 < z.syms.len() as i64);
@@ -376,6 +401,80 @@ fn seeded_and_folder_pages_carry_no_zoom_section() {
     let (_tmp, root, db) = common::index_repo("lidx-zoom-none-", FILES);
     let (doc, _) = page(&root, &db, &["--level", "module"]);
     assert!(doc["apps"].get("zoom").is_none());
+    // Asked for where it does nothing, the cap says so instead of vanishing.
+    let (_, stderr) = page(&root, &db, &["--level", "module", "--max-symbols", "10"]);
+    assert!(
+        stderr.contains("--max-symbols applies to the whole-repo app view only"),
+        "{stderr}"
+    );
+    let (_, stderr) = page(&root, &db, &["--max-symbols", "10"]);
+    assert!(!stderr.contains("applies to the whole-repo"), "{stderr}");
     let (doc, _) = page(&root, &db, &["--seed", "fmt_order", "--depth", "1"]);
     assert!(doc["apps"].get("zoom").is_none());
+}
+
+#[test]
+fn a_unit_inside_another_owns_its_own_files() {
+    let mut files: Vec<(&str, &str)> = FILES.to_vec();
+    files.push((
+        "api/plugins/pyproject.toml",
+        "[project]\nname = \"orders-plugins\"\ndependencies = [\"shared-utils\"]\n",
+    ));
+    files.push((
+        "api/plugins/orders_plugins/hook.py",
+        "from shared_utils.fmt import fmt_order\n\n\ndef hook():\n    return fmt_order(2)\n",
+    ));
+    let (_tmp, root, db) = common::index_repo("lidx-zoom-nested-", &files);
+    let (doc, _) = page(&root, &db, &[]);
+    let z = Zoom::new(&doc);
+    let by_unit = z.by_unit();
+    assert!(by_unit["orders-plugins"].contains("hook"), "{by_unit:?}");
+    assert!(!by_unit["orders-api"].contains("hook"), "{by_unit:?}");
+    let hook = z
+        .files
+        .iter()
+        .find(|f| f.1 == "api/plugins/orders_plugins/hook.py")
+        .unwrap();
+    assert_eq!(hook.0, "orders-plugins", "the innermost unit owns the file");
+    // Its call is counted once, from its own unit's symbol.
+    let w = z.weights();
+    assert_eq!(
+        w.get(&("hook".into(), "fmt_order".into(), "CALLS".into())),
+        Some(&1),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn a_method_declared_away_from_its_type_sits_in_its_own_file() {
+    let files: &[(&str, &str)] = &[
+        ("svc/go.mod", "module example.com/svc\n\ngo 1.22\n"),
+        (
+            "svc/a.go",
+            "package svc\n\ntype Store struct{}\n\nfunc (s Store) Get() int { return 1 }\n",
+        ),
+        (
+            "svc/b.go",
+            "package svc\n\nfunc (s Store) Put(v int) int { return v }\n",
+        ),
+    ];
+    let (_tmp, root, db) = common::index_repo("lidx-zoom-gomethod-", files);
+    let (doc, _) = page(&root, &db, &[]);
+    let z = Zoom::new(&doc);
+    let store = z.sym("Store");
+    let file_of = |i: i64| z.files[z.syms[i as usize].0].1.as_str();
+    let get = &z.syms[z.sym("Get") as usize];
+    assert_eq!(
+        (file_of(z.sym("Get")), get.5),
+        ("svc/a.go", store),
+        "{:?}",
+        z.syms
+    );
+    let put = &z.syms[z.sym("Put") as usize];
+    assert_eq!(file_of(z.sym("Put")), "svc/b.go");
+    assert_eq!(
+        put.5, -1,
+        "not parented to a symbol in another file: {:?}",
+        z.syms
+    );
 }

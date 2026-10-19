@@ -261,6 +261,12 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
         (graph, apps)
     };
     let (graph, apps) = graph;
+    if opts.max_symbols.is_some() && apps.get("zoom").is_none() {
+        warnings.push(
+            "--max-symbols applies to the whole-repo app view only (its cards zoom down to symbols); ignored here"
+                .to_string(),
+        );
+    }
     if let Some(k) = &kinds {
         scope_parts.push(format!("kinds {}", k.join(",")));
     }
