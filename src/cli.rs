@@ -175,6 +175,12 @@ pub enum Command {
         /// notes what was left out.
         #[arg(long)]
         max_nodes: Option<usize>,
+        /// Cap on the symbols the app view embeds so its cards open in place
+        /// down to classes, methods and functions (default 60000). Whole
+        /// files are kept per app, shared out evenly; the page and stderr say
+        /// how many were left out.
+        #[arg(long)]
+        max_symbols: Option<usize>,
         /// Node granularity. Default: symbol with --seed/--diff, app (an
         /// architecture diagram of applications, libraries and infra)
         /// otherwise.

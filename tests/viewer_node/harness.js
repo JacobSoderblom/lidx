@@ -43,7 +43,15 @@ function element(id) {
   e.id = id;
   e.hidden = false;
   e.textContent = id === 'lidx-graph-data' ? data : '';
-  e.innerHTML = '';
+  // innerHTML keeps a plain-text copy, so panel text can be read back.
+  let html = '';
+  Object.defineProperty(e, 'innerHTML', {
+    get() { return html; },
+    set(v) {
+      html = String(v);
+      e.textContent = html.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    },
+  });
   e.style = {};
   e.dataset = {};
   e.classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
@@ -72,6 +80,9 @@ const sandbox = {
   matchMedia: () => ({ matches: false, addEventListener() {} }),
   addEventListener: () => {},
   devicePixelRatio: 1,
+  // HASH=... starts the page at that URL fragment (the zoom state).
+  location: { hash: process.env.HASH || '', pathname: '/page.html', search: '' },
+  history: { replaceState(_s, _t, url) { sandbox.location.hash = String(url).charAt(0) === '#' ? String(url) : ''; } },
   navigator: {},
   localStorage: { getItem: () => null, setItem: () => {} },
   Blob: function () {},
@@ -132,6 +143,43 @@ if (scenario === 'focus') {
   out = { before, after: g.apps().links, cards: g.apps().cards };
 } else if (scenario === 'colour') {
   out = { colorBy: g.colorBy(), level: g.level() };
+} else if (scenario === 'zoom-drill') {
+  // Open a card, then a file, select a method, and back out with Escape.
+  const z = g.zoom, steps = {};
+  z.expand(arg); flush(20);
+  steps.top = { items: z.items(arg), crumbs: z.crumbs(), hash: z.hash() };
+  const file = z.items(arg).find((i) => i.type === 'dir');
+  steps.dirOpened = z.open(arg, file.name); flush(20);
+  steps.dir = { items: z.items(arg), crumbs: z.crumbs() };
+  const f = z.items(arg).find((i) => i.type === 'file');
+  steps.fileOpened = z.open(arg, file.name + f.name); flush(20);
+  steps.file = { items: z.items(arg), links: z.links(), crumbs: z.crumbs(), rendered: z.rendered() };
+  z.select(arg, file.name + f.name + '#render'); flush(10);
+  steps.selected = { sel: z.selected(), panel: g.panelText(), hash: z.hash() };
+  z.escape(); flush(10);
+  steps.esc1 = z.crumbs();
+  z.escape(); flush(10); z.escape(); flush(10);
+  steps.esc3 = { open: z.open_cards(), crumbs: z.crumbs() };
+  out = steps;
+} else if (scenario === 'zoom-two') {
+  // Two cards open down to files: the bus link joins the two functions.
+  const z = g.zoom, [a, af, b, bf] = arg.split(',');
+  z.open(a, af); flush(10);
+  const closed = { links: z.links(), ports: z.ports() };
+  z.open(b, bf); flush(10);
+  out = { closed, open: z.open_cards(), links: z.links(), ports: z.ports() };
+} else if (scenario === 'zoom-tree') {
+  // The panel tree filtered, then a click on a match.
+  const z = g.zoom, [unit, filter] = arg.split(',');
+  g.selectUnit(unit); flush(5);
+  const all = z.tree(unit, '');
+  const rows = z.tree(unit, filter);
+  const hit = rows.filter((r) => r.hit).pop();
+  z.treeGo(unit, hit.id); flush(20);
+  out = { all, rows, crumbs: z.crumbs(), sel: z.selected(), panel: g.panelText(), hash: z.hash() };
+} else if (scenario === 'zoom-hash') {
+  // The page opened at a URL fragment (HASH in the environment).
+  out = { open: g.zoom.open_cards(), crumbs: g.zoom.crumbs(), sel: g.zoom.selected(), panel: g.panelText() };
 } else {
   throw new Error('unknown scenario ' + scenario);
 }

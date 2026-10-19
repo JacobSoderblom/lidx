@@ -2228,7 +2228,8 @@
       selected: st.selected, mode: st.mode, hops: st.hops, pathTo: st.pathTo,
       isolate: st.isolate ? Array.from(st.isolate) : null, revealed: Array.from(st.revealed),
       showNonCode: st.showNonCode, showExternal: st.showExternal, showEndpoints: st.showEndpoints, showTests: st.showTests,
-      level: st.level, aSel: ast.selected, aOpen: Array.from(ast.open)
+      level: st.level, aSel: ast.selected, aOpen: Array.from(ast.open),
+      zpath: JSON.parse(JSON.stringify(ast.zpath)), zsel: ast.zsel, zfocus: ast.zfocus
     };
   }
   function pushHistory() {
@@ -2240,7 +2241,10 @@
   function restore(s) {
     if (s.level === 'app') {
       ast.selected = s.aSel; ast.selConn = null; ast.open = new Set(s.aOpen || []);
+      ast.zpath = s.zpath || {}; ast.zsel = s.zsel || null; ast.zfocus = s.zfocus === undefined ? null : s.zfocus; ast.zlink = null;
+      ast.zitems = {};
       if (st.level !== 'app') setLevel('app', true); else { renderApps(true); renderPanel(); }
+      writeHash();
       return;
     }
     if (st.level === 'app') setLevel('folder', true);
@@ -3411,6 +3415,7 @@
   Object.keys(APP_FAM).forEach(function (f) { ast.on[f] = true; });
   var appsEl = document.getElementById('apps'), appsWorld = document.getElementById('apps-world');
   var appsSvg = document.getElementById('apps-edges'), appsCards = document.getElementById('apps-cards');
+  var zedges = document.getElementById('apps-zedges');
   var FILE_NODE = new Map();
   N.forEach(function (n) { if (n.file && !FILE_NODE.has(n.file)) FILE_NODE.set(n.file, n.i); });
 
@@ -3471,9 +3476,11 @@
       return '<i style="background:' + esc(langColor(l)) + '"></i>' + esc(langName(l));
     }).join(' ');
     var kind = unitKind(u) + (u.kind === 'infra' && u.why ? ' · ' + u.why : '');
+    if (open && zoomable(u)) return zoomCardHtml(u, cls, kind, u.kind !== 'infra' ? dots : '');
     var html = '<article role="listitem" class="' + cls + '" data-key="u' + u.id + '" tabindex="0" title="' + esc(u.root) + '" aria-expanded="' + open + '" aria-label="' +
       esc(u.name + ', ' + unitKind(u) + (langs.length ? ', ' + langs.map(langName).join(' and ') : '')) + '">';
     html += '<div class="k"><span>' + esc(kind) + '</span>' + (u.kind !== 'infra' && dots ? '<span class="lg">' + dots + '</span>' : '') + '</div>';
+    if (zoomable(u) && u.files) html += '<button type="button" class="zexp" data-zexp="' + u.id + '" aria-label="Expand ' + esc(u.name) + ' in place" title="Expand in place: folders, files, symbols (Enter)">Expand</button>';
     html += '<h3>' + esc(u.name) + '</h3>';
     // The path is in the tooltip and the panel: on the sheet it costs a line
     // per card and says less than the name.
@@ -3535,6 +3542,7 @@
   // Measured size, or an estimate when the page is not laid out (headless
   // checks, a hidden stage).
   function cardSize(key, el) {
+    if (key.charAt(0) === 'u' && ast.open.has(+key.slice(1)) && zoomable(AU[+key.slice(1)])) return zcardSize(+key.slice(1));
     if (el && el.offsetWidth > 0) return { w: el.offsetWidth, h: el.offsetHeight };
     if (key.charAt(0) === 'p') return { w: 150, h: 40 };
     var u = AU[+key.slice(1)], open = ast.open.has(u.id);
@@ -3620,9 +3628,10 @@
       function flush() {
         if (!row.length) return;
         rows.push({ keys: row, w: rw, y: y });
-        var rh = 0;
-        row.forEach(function (k) { rh = Math.max(rh, sizes[k].h); });
-        row.forEach(function (k) { P[k] = { x: 0, y: y, w: sizes[k].w, h: sizes[k].h, row: rowIdx, band: b }; });
+        var rh = 0, padT = 0;
+        row.forEach(function (k) { padT = Math.max(padT, sizes[k].padT || 0); });
+        row.forEach(function (k) { rh = Math.max(rh, padT + sizes[k].h + (sizes[k].padB || 0)); });
+        row.forEach(function (k) { P[k] = { x: 0, y: y + padT, w: sizes[k].w, h: sizes[k].h, row: rowIdx, band: b }; });
         rowIdx++;
         y += rh + GAP_ROW;
         row = []; rw = 0;
@@ -3733,6 +3742,9 @@
     Array.prototype.forEach.call(appsCards.querySelectorAll('[data-key]'), function (el) { els[el.dataset.key] = el; });
     var sizes = {};
     keys.forEach(function (k) { sizes[k] = cardSize(k, els[k]); });
+    keys.forEach(function (k) {
+      if (els[k] && els[k].classList.contains('zoomed')) { els[k].style.width = sizes[k].w + 'px'; els[k].style.height = sizes[k].h + 'px'; }
+    });
     var conns = buildConns();
     var lay = layoutApps(keys, sizes, conns);
     routeConns(conns, lay.P);
@@ -3770,7 +3782,9 @@
       // labels always show; the rest on hover or selection.
       var named = c.fam === 'http' || c.fam === 'rpc' || c.fam === 'bus' || c.fam === 'declares' || c.fam === 'deploys';
       var quiet = ast.quiet[c.fam] && c.parts.every(function (j) { return ast.quiet[AE[j].family]; });
-      svg += '<g class="conn f-' + c.fam + (named ? ' named' : '') + (quiet ? ' quiet' : '') + '" data-conn="' + c.i + '" style="--w:' + r1(w) + '">' +
+      // Next to an open card its own links, ending at its edge, say more.
+      var under = c.a.charAt(0) === 'u' && c.b.charAt(0) === 'u' && (ast.open.has(+c.a.slice(1)) || ast.open.has(+c.b.slice(1))) && !!ZR;
+      svg += '<g class="conn f-' + c.fam + (named && !under ? ' named' : '') + (quiet ? ' quiet' : '') + (under ? ' under' : '') + '" data-conn="' + c.i + '" style="--w:' + r1(w) + '">' +
         '<path class="ln" d="' + c.d + '" stroke-width="' + r1(w) + '"/><path class="ah" d="' + c.ah + '"/>' +
         '<path class="hit" d="' + c.d + '"/><text class="lbl" x="' + r1(c.mx) + '" y="' + r1(c.my) + '" text-anchor="middle" dy="0.35em">' +
         esc(c.text) + '</text></g>';
@@ -3780,9 +3794,13 @@
     appsSvg.innerHTML = svg;
     var shown = conns.filter(function (c) { return !c.skip && !(ast.quiet[c.fam] && c.parts.every(function (j) { return ast.quiet[AE[j].family]; })); }).length;
     appsEl.classList.toggle('few', shown <= 16);
+    buildZlinks();
+    zRendered = null;
     updateAppEmphasis();
     if (!keepCam || !ast.userMoved) fitApps();
     else applyAppCam();
+    renderZoomView(true);
+    renderAppCrumbs();
     empty.hidden = keys.length > 0;
     if (!keys.length) {
       emptyText.innerHTML = '<strong>No applications to show.</strong> Every unit here is a test, example, docs or tooling folder; show them from the legend.';
@@ -3792,6 +3810,7 @@
   }
   function applyAppCam() {
     appsWorld.style.transform = 'translate(' + r1(ast.cam.x) + 'px,' + r1(ast.cam.y) + 'px) scale(' + ast.cam.k + ')';
+    if (ast.open.size) requestZoomView();
     setStatus();
   }
   function fitApps() {
@@ -3801,7 +3820,7 @@
     var full = lay.width + LANE_W;
     var phone = w < 760;
     var k = Math.min(1, (w - (phone ? 16 : 40)) / Math.max(1, full), phone ? 1 : (h - 40) / Math.max(1, lay.height));
-    k = Math.max(0.2, k);
+    k = Math.max(ast.open.size ? 0.05 : 0.2, k);
     ast.cam.k = k;
     ast.cam.x = Math.round((w - full * k) / 2 + LANE_W * k);
     ast.cam.y = Math.round(phone ? 12 : Math.max(20, (h - lay.height * k) / 2));
@@ -3809,7 +3828,7 @@
     applyAppCam();
   }
   function zoomApps(px, py, f) {
-    var k = Math.max(0.15, Math.min(3, ast.cam.k * f));
+    var k = Math.max(0.05, Math.min(3, ast.cam.k * f));
     ast.cam.x = px - (px - ast.cam.x) * (k / ast.cam.k);
     ast.cam.y = py - (py - ast.cam.y) * (k / ast.cam.k);
     ast.cam.k = k;
@@ -3839,6 +3858,9 @@
   function selectUnit(key, centre) {
     ast.selected = key;
     ast.selConn = null;
+    ast.zlink = null;
+    if (!key) ast.zsel = null;
+    ast.zpanelUnit = key && key.charAt(0) === 'u' ? +key.slice(1) : null;
     updateAppEmphasis();
     renderPanel();
     var u = key && key.charAt(0) === 'u' ? AU[+key.slice(1)] : null;
@@ -3852,12 +3874,14 @@
     }
   }
   function selectConn(i) {
+    ast.zlink = null;
     ast.selConn = i;
     ast.selected = null;
     updateAppEmphasis();
     renderPanel();
   }
   function toggleOpen(id) {
+    if (zoomable(AU[id])) { if (ast.open.has(id)) zoomClose(id); else zoomOpen(id, []); return; }
     pushHistory();
     if (ast.open.has(id)) ast.open.delete(id); else ast.open.add(id);
     renderApps(true);
@@ -3947,13 +3971,16 @@
     html += '<dl class="facts"><dt>What</dt><dd>' + esc(u.why) + '</dd>';
     html += '<dt>Where</dt><dd><code>' + esc(u.root) + '</code></dd>';
     if (u.langs.length) html += '<dt>Languages</dt><dd>' + esc(u.langs.slice(0, 5).map(function (l) { return langName(l[0]) + ' ' + fmt(l[1]); }).join(', ')) + '</dd>';
-    html += '<dt>Size</dt><dd>' + esc(plural(u.files, 'file', 'files') + ' · ' + plural(u.symbols, 'symbol', 'symbols')) + '</dd>';
+    var sizeRoot = zoomable(u) ? ztree(u.id).root : null;
+    html += '<dt>Size</dt><dd>' + esc(sizeRoot ? plural(sizeRoot.files, 'file', 'files') + ' · ' + plural(sizeRoot.syms, 'symbol', 'symbols') : plural(u.files, 'file', 'files') + ' · ' + plural(u.symbols, 'symbol', 'symbols')) + '</dd>';
     if (u.manifests.length) html += '<dt>Manifests</dt><dd>' + u.manifests.map(function (m) { return '<code>' + esc(m) + '</code>'; }).join('<br>') + '</dd>';
     if (u.dockerfiles.length) html += '<dt>Built by</dt><dd>' + u.dockerfiles.map(function (m) { return '<code>' + esc(m) + '</code>'; }).join('<br>') + '</dd>';
     if (u.entries.length) html += '<dt>Commands</dt><dd>' + esc(u.entries.join(', ')) + '</dd>';
     html += '</dl>';
-    html += '<div class="actions"><button type="button" data-act="aopen">' + (ast.open.has(u.id) ? 'Close card' : 'Open card into folders') + '</button>' +
+    html += '<div class="actions"><button type="button" data-act="aopen">' + (ast.open.has(u.id) ? 'Collapse card' : zoomable(u) ? 'Expand in place' : 'Open card into folders') + '</button>' +
       '<button type="button" data-folder="' + esc(u.dir) + '">Show in folder map</button></div>';
+    // What is inside comes first: it is how you move around an open card.
+    if (zoomable(u)) html += treeSection(u);
     var inn = AE.filter(function (e) { return e.to === u.id; }), out = AE.filter(function (e) { return e.from === u.id; });
     var byW = function (a, b) { return APP_FAM[a.family].rank - APP_FAM[b.family].rank || b.weight - a.weight; };
     inn.sort(byW); out.sort(byW);
@@ -3983,7 +4010,7 @@
             p[1].map(function (n) { return '<li class="loc" style="padding:2px 7px;font:12px var(--mono)">' + esc(n) + '</li>'; }).join('') + '</ul></details>';
         }).join('') + '</div>';
     }
-    if (u.modules.length) {
+    if (!zoomable(u) && u.modules.length) {
       html += '<h3>Folders · ' + fmt(u.modules.length) + '</h3><div class="edges"><ul>' + u.modules.slice(0, 20).map(function (m) {
         return '<li><button type="button" data-folder="' + esc(m[0]) + '"><span class="nm">' + esc(relName(u, m[0])) + '</span>' +
           '<span class="loc">' + esc(plural(m[1], 'file', 'files') + ' · ' + plural(m[2], 'symbol', 'symbols')) + '</span></button></li>';
@@ -4022,16 +4049,27 @@
   function renderAppPanel() {
     var c = ast.selConn !== null ? ast.conns[ast.selConn] : null;
     var k = ast.selected;
-    if (!c && !k) { panel.hidden = true; return; }
+    if (!c && !k && !ast.zlink && !ast.zsel) { panel.hidden = true; return; }
     panel.hidden = false;
-    panel.innerHTML = c ? connPanel(c) : k.charAt(0) === 'p' ? chipPanel(+k.slice(1)) : unitPanel(AU[+k.slice(1)]);
+    if (ast.zlink) panel.innerHTML = zlinkPanel(ast.zlink);
+    else if (c) panel.innerHTML = connPanel(c);
+    else if (ast.zsel && (ast.zpanelUnit === null || ast.zpanelUnit === undefined)) panel.innerHTML = zitemPanel(ast.zsel.u, ast.zsel.id);
+    else if (!k) { panel.hidden = true; return; }
+    else panel.innerHTML = k.charAt(0) === 'p' ? chipPanel(+k.slice(1)) : unitPanel(AU[+k.slice(1)]);
+    renderTree();
   }
   function appPanelClick(b) {
     if (b.dataset.unit !== undefined) { var id = +b.dataset.unit; revealUnit(id); selectUnit('u' + id, true); return true; }
     if (b.dataset.file !== undefined) { jumpToFile(b.dataset.file); return true; }
     if (b.dataset.folder !== undefined) { openFolder(b.dataset.folder); return true; }
     if (b.dataset.alist) { ast.lists.add(b.dataset.alist); renderPanel(); return true; }
-    if (b.dataset.act === 'aclose') { selectUnit(null); appsEl.focus(); return true; }
+    if (b.dataset.act === 'aclose') { ast.zsel = null; ast.zlink = null; ast.zpanelUnit = null; selectUnit(null); renderZoomView(true); writeHash(); appsEl.focus(); return true; }
+    if (b.dataset.zend !== undefined) { var end = +b.dataset.zend, z = zdata(); ast.zlink = null; ast.zpanelUnit = null; zoomReveal(endUnit(z, end), end >= 0 ? 's' + end : 'f' + (-1 - end)); return true; }
+    if (b.dataset.zunit !== undefined) { ast.zpanelUnit = +b.dataset.zunit; ast.zlink = null; ast.selected = 'u' + b.dataset.zunit; renderPanel(); writeHash(); return true; }
+    if (b.dataset.zcopy !== undefined) { copyText(zdata().syms[+b.dataset.zcopy].qual); return true; }
+    if (b.dataset.tgo !== undefined) { treeGo(+panel.querySelector('[data-vtree]').dataset.vtree, b.dataset.tgo); return true; }
+    if (b.dataset.ttog !== undefined) { treeToggle(b.dataset.ttog); return true; }
+    if (b.dataset.zopen !== undefined) { var zu = +b.dataset.zu; zoomOpen(zu, zchain(zu, b.dataset.zopen)); return true; }
     if (b.dataset.act === 'aopen' && ast.selected) { toggleOpen(+ast.selected.slice(1)); renderPanel(); return true; }
     return false;
   }
@@ -4067,7 +4105,7 @@
       keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="' + esc(theme.paper) + '" stroke="' + esc(theme.ink) + '" stroke-width="1.6"/>') + '<span>application: something you deploy or run</span>' +
       keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="' + esc(theme['paper-2']) + '" stroke="' + esc(theme['ink-3']) + '"/>') + '<span>library or shared code</span>' +
       keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="none" stroke="' + esc(theme['ink-3']) + '" stroke-dasharray="3 2"/>') + '<span>infrastructure or data</span>' +
-      '</div><p class="hint">Double-click a card to open its folders.</p></details>';
+      '</div><p class="hint">' + (ZR ? 'Scroll into a card, or double-click it, to open its folders, files and symbols in place.' : 'Double-click a card to open its folders.') + '</p></details>';
     // Notes about the folder graph (dispatch hops, trims) do not apply here.
     legend.innerHTML = html;
   }
@@ -4098,8 +4136,10 @@
   if (appsEl) {
     appsEl.addEventListener('pointerdown', function (ev) {
       appPointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
-      if (ev.target.closest('.card') || ev.target.closest('.hit')) return;
-      appDrag = { x: ev.clientX, y: ev.clientY, cx: ast.cam.x, cy: ast.cam.y, moved: false, pinch: null };
+      var onCard = ev.target.closest('.card');
+      // An open card fills the view: it pans like the paper, except on its controls.
+      if ((onCard && !onCard.classList.contains('zoomed')) || ev.target.closest('.hit') || ev.target.closest('.zh button, .zfh button')) return;
+      appDrag = { x: ev.clientX, y: ev.clientY, cx: ast.cam.x, cy: ast.cam.y, moved: false, pinch: null, bg: !onCard };
       if (appPointers.size === 2) {
         var p = Array.from(appPointers.values());
         appDrag.pinch = { d: Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]), k: ast.cam.k };
@@ -4117,24 +4157,30 @@
           return;
         }
         var dx = ev.clientX - appDrag.x, dy = ev.clientY - appDrag.y;
-        if (Math.abs(dx) + Math.abs(dy) > 3) appDrag.moved = true;
+        if (Math.abs(dx) + Math.abs(dy) > 3) { appDrag.moved = true; ast.dragged = true; }
+        if (!appDrag.moved) return;
         ast.cam.x = appDrag.cx + dx; ast.cam.y = appDrag.cy + dy; ast.userMoved = true;
         applyAppCam();
         return;
       }
       var hit = ev.target.closest('.hit');
       if (hit) {
-        var c = ast.conns[+hit.parentNode.dataset.conn], r2 = stage.getBoundingClientRect();
-        showTooltip(connTooltip(c), ev.clientX - r2.left, ev.clientY - r2.top);
+        var r2 = stage.getBoundingClientRect();
+        if (hit.parentNode.dataset.zl !== undefined) showTooltip(zlinkTooltip(ast.zlinks[+hit.parentNode.dataset.zl]), ev.clientX - r2.left, ev.clientY - r2.top);
+        else showTooltip(connTooltip(ast.conns[+hit.parentNode.dataset.conn]), ev.clientX - r2.left, ev.clientY - r2.top);
       } else hideTooltip();
+      var zi = ev.target.closest('.zi');
+      var hv = zi ? itemFromEl(zi) : null, hk = hv && hv.it ? { u: hv.u, id: hv.it.id } : null;
+      if ((hk ? hk.u + hk.id : '') !== (ast.zhover ? ast.zhover.u + ast.zhover.id : '')) { ast.zhover = hk; if (zRendered) renderZlinks(zRendered); }
     });
     var endAppPointer = function (ev) {
       appPointers.delete(ev.pointerId);
       if (!appDrag) return;
-      var wasDrag = appDrag.moved;
+      var wasDrag = appDrag.moved, appDrag0 = appDrag;
       appDrag = null;
+      if (wasDrag) setTimeout(function () { ast.dragged = false; }, 0);
       appsEl.classList.remove('dragging');
-      if (!wasDrag && ev.type === 'pointerup' && (ast.selected || ast.selConn !== null)) { selectUnit(null); }
+      if (!wasDrag && ev.type === 'pointerup' && appDrag0.bg && (ast.selected || ast.selConn !== null || ast.zsel || ast.zlink)) { selectUnit(null); renderZoomView(true); writeHash(); }
     };
     appsEl.addEventListener('pointerup', endAppPointer);
     appsEl.addEventListener('pointercancel', endAppPointer);
@@ -4142,18 +4188,32 @@
     appsEl.addEventListener('wheel', function (ev) {
       ev.preventDefault();
       var r = appsEl.getBoundingClientRect();
-      zoomApps(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0018)));
+      var f = Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0018));
+      if (zAnim) { cancelAnimationFrame(zAnim); zAnim = null; }
+      zoomApps(ev.clientX - r.left, ev.clientY - r.top, f);
+      semanticWheel(ev.clientX - r.left, ev.clientY - r.top, f);
     }, { passive: false });
     appsEl.addEventListener('click', function (ev) {
+      if (ast.dragged) return;
       var b = ev.target.closest('button');
+      if (b && b.dataset.zexp !== undefined) { zoomOpen(+b.dataset.zexp, []); return; }
+      if (b && b.dataset.zup !== undefined) { var uu = +b.dataset.zu; zoomTo(uu, (ast.zpath[uu] || []).indexOf(b.dataset.zup)); return; }
+      if (b && b.dataset.zcrumb !== undefined) { zoomTo(+b.dataset.zcrumb, +b.dataset.depth); return; }
       if (b && appPanelClick(b)) return;
       if (b && b.dataset.closeCard !== undefined) { toggleOpen(+b.dataset.closeCard); return; }
+      var zi = ev.target.closest('.zi');
+      if (zi) { var h = itemFromEl(zi); if (h && h.it) zselect(h.u, h.it.id); return; }
       var hit = ev.target.closest('.hit');
+      if (hit && hit.parentNode.dataset.zl !== undefined) { ast.zlink = ast.zlinks[+hit.parentNode.dataset.zl]; ast.selConn = null; renderPanel(); return; }
       if (hit) { selectConn(+hit.parentNode.dataset.conn); return; }
+      if (ev.target.closest('.card.zoomed')) return;
       var card = ev.target.closest('.card');
       if (card) selectUnit(card.dataset.key, false);
     });
     appsEl.addEventListener('dblclick', function (ev) {
+      var zi = ev.target.closest('.zi');
+      if (zi) { var h = itemFromEl(zi); if (h) zactivate(h.u, h.it); return; }
+      if (ev.target.closest('.card.zoomed')) return;
       var card = ev.target.closest('.card');
       if (!card || ev.target.closest('button') || card.dataset.key.charAt(0) !== 'u') return;
       toggleOpen(+card.dataset.key.slice(1));
@@ -4184,9 +4244,30 @@
   // Arrow keys move between cards in that direction; Enter opens a card.
   function appKey(ev) {
     var k = ev.key, cur = ast.selected && ast.pos[ast.selected] ? ast.selected : null;
-    if (k === 'Escape') { if (ast.selected || ast.selConn !== null) selectUnit(null); return; }
+    if (k === 'Escape') {
+      if (ast.zlink) { ast.zlink = null; renderPanel(); return; }
+      // One level out of the card in focus, then the card itself.
+      var fu = ast.zsel ? ast.zsel.u : ast.zfocus;
+      if (fu !== null && fu !== undefined && ast.open.has(fu)) {
+        if (ast.zsel && !(ast.zpath[fu] || []).length) { ast.zsel = null; renderZoomView(true); renderPanel(); writeHash(); var ce = cardEl('u' + fu); if (ce) ce.focus(); return; }
+        zoomOut(fu); return;
+      }
+      if (ast.selected || ast.selConn !== null) selectUnit(null);
+      return;
+    }
     if (!appsEl.contains(ev.target) && ev.target !== document.body) return;
     var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (arrows[k] && !ev.shiftKey && ast.zsel && zarrow(arrows[k][0], arrows[k][1])) { ev.preventDefault(); return; }
+    if (k === 'Enter' && ast.zsel && ast.zitems[ast.zsel.u]) { ev.preventDefault(); zactivate(ast.zsel.u, ast.zitems[ast.zsel.u].byId[ast.zsel.id]); return; }
+    // Into an open card with the arrows: its first box.
+    if (arrows[k] && !ev.shiftKey && cur && cur.charAt(0) === 'u' && ast.open.has(+cur.slice(1)) && ast.zitems[+cur.slice(1)] && ast.zitems[+cur.slice(1)].list.length) {
+      ev.preventDefault();
+      var zu = +cur.slice(1), zl = ast.zitems[zu].list, path = ast.zpath[zu] || [];
+      var deep = path.length ? path[path.length - 1] : null;
+      var first = zl.find(function (it) { return it.type !== 'frame' && (deep ? it.parent === deep : it.depth === 0); }) || zl[0];
+      zselect(zu, first.id);
+      return;
+    }
     if (arrows[k]) {
       ev.preventDefault();
       if (!cur || ev.shiftKey) {
@@ -4208,6 +4289,1095 @@
     if (k === '+' || k === '=') { zoomApps(W / 2, H / 2, 1.25); return; }
     if (k === '-' || k === '_') { zoomApps(W / 2, H / 2, 0.8); return; }
     if (k === 'f' || k === 'F' || k === '0') { fitApps(); }
+  }
+
+  // ------------------------------------------------------ app view zoom
+  // Semantic zoom: a card opens in place into its folders, a folder into its
+  // files, a file into its symbols (classes with their members, free
+  // functions, constants). One open path per card (the breadcrumb); several
+  // cards can be open at once. Relations are drawn between whatever is
+  // visible at that depth, aggregated with weights; links to other units end
+  // at the card's edge, named, and go on to that card when it is shown.
+  // Only the items in view are in the DOM.
+  var ZR = APPS && APPS.zoom ? APPS.zoom : null;
+  var ZD = null;
+  var ZPAD = 12, ZHEAD = 84, ZGAP = 12;
+  var ZBOX = { w: 196, h: 42 }, ZLEAF = { w: 236, h: 52 }, ZCONT_W = 300, ZROW = 20, ZSYM_HEAD = 44, ZFRAME_HEAD = 28, ZFRAME_PAD = 10;
+  var KIND_GLYPH = {
+    class: 'C', struct: 'S', interface: 'I', trait: 'T', enum: 'E', record: 'R', type: 'T', method: 'm', function: 'ƒ',
+    const: 'K', static: 'K', field: 'f', property: 'p', variable: 'v', var: 'v', enum_value: 'e', message: 'M', service: 'S', rpc: 'r',
+    impl: 'i', table: 't', procedure: 'P', resource: 'r', param: 'a'
+  };
+  ast.zpath = {};      // unit id -> [tree node ids] opened below the card
+  ast.zsel = null;     // { u, id } selected inside an open card
+  ast.zfocus = null;   // unit id the breadcrumb follows
+  ast.zitems = {};     // unit id -> { list, byId, w, h }
+  ast.zlinks = [];
+  ast.ports = [];
+  ast.treeQ = {};      // unit id -> tree filter text
+  ast.treeOpen = new Set();
+  var zRendered = null, zRaf = 0, zCooldown = 0, zAnim = null;
+  var ZLINK_CAP = 600;
+
+  function zoomable(u) { return !!ZR && !!u; }
+  // Decode the columnar section once, on first use.
+  function zdata() {
+    if (ZD || !ZR) return ZD;
+    var s = ZR.s, nf = ZR.f_path.length, ny = ZR.y_file.length;
+    var files = new Array(nf), syms = new Array(ny);
+    for (var f = 0; f < nf; f++) {
+      files[f] = { i: f, unit: ZR.f_unit[f], path: s[ZR.f_path[f]], lang: s[ZR.f_lang[f]], syms: ZR.f_syms[f], emb: !!ZR.f_emb[f], top: [] };
+    }
+    for (var y = 0; y < ny; y++) {
+      syms[y] = {
+        i: y, file: ZR.y_file[y], kind: s[ZR.y_kind[y]], name: s[ZR.y_name[y]], qual: s[ZR.y_qual[y]], line: ZR.y_line[y],
+        parent: ZR.y_parent[y], sig: ZR.y_sig[y] >= 0 ? s[ZR.y_sig[y]] : null, kids: []
+      };
+    }
+    syms.forEach(function (y) {
+      if (y.parent >= 0 && syms[y.parent].file === y.file) syms[y.parent].kids.push(y.i);
+      else { y.parent = -1; files[y.file].top.push(y.i); }
+    });
+    var e = ZR.e, edges = [], bf = ZR.bridge_from || 0;
+    for (var j = 0; j * 4 < e.length; j++) {
+      edges.push({ a: e[j * 4], b: e[j * 4 + 1], kind: s[e[j * 4 + 2]], w: e[j * 4 + 3], keys: j >= bf ? ZR.keys[j - bf] || [] : null });
+    }
+    var omitted = {};
+    (ZR.omitted || []).forEach(function (o) { omitted[o[0]] = { syms: o[1], files: o[2] }; });
+    ZD = { files: files, syms: syms, edges: edges, trees: {}, omitted: omitted };
+    return ZD;
+  }
+  function endUnit(z, end) { return end >= 0 ? z.files[z.syms[end].file].unit : z.files[-1 - end].unit; }
+
+  // A unit's tree: folders (single-child chains merged), files, symbols.
+  // Node ids: 'u<id>' root, 'd<id>:<rel>' folder, 'f<i>' file, 's<i>' symbol.
+  function ztree(uid) {
+    var z = zdata();
+    if (!z) return null;
+    if (z.trees[uid]) return z.trees[uid];
+    var u = AU[uid], nodes = {}, rel = {};
+    var root = { id: 'u' + uid, type: 'unit', name: u.name, kids: [], parent: null, files: 0, syms: 0, rel: '' };
+    nodes[root.id] = root;
+    function dir(path) {
+      var id = 'd' + uid + ':' + path;
+      if (nodes[id]) return nodes[id];
+      var cut = path.slice(0, -1).lastIndexOf('/');
+      var parent = cut < 0 ? root : dir(path.slice(0, cut + 1));
+      var n = { id: id, type: 'dir', name: path.slice(cut + 1), kids: [], parent: parent, files: 0, syms: 0, rel: path };
+      nodes[id] = n; parent.kids.push(n);
+      return n;
+    }
+    z.files.forEach(function (f) {
+      if (f.unit !== uid) return;
+      var r = u.dir && f.path.indexOf(u.dir) === 0 ? f.path.slice(u.dir.length) : f.path;
+      var cut = r.lastIndexOf('/');
+      var parent = cut < 0 ? root : dir(r.slice(0, cut + 1));
+      var n = { id: 'f' + f.i, type: 'file', name: r.slice(cut + 1), kids: [], parent: parent, file: f, files: 1, syms: f.syms, rel: r };
+      nodes[n.id] = n; parent.kids.push(n);
+    });
+    // Merge a folder holding only one folder into it: src/main/java/ is one box.
+    function merge(n) {
+      n.kids.forEach(merge);
+      n.kids = n.kids.map(function (k) {
+        while (k.type === 'dir' && k.kids.length === 1 && k.kids[0].type === 'dir') {
+          var only = k.kids[0];
+          rel[k.rel] = only;
+          only.name = k.name + only.name; only.parent = k.parent;
+          delete nodes[k.id];
+          k = only;
+        }
+        return k;
+      });
+    }
+    merge(root);
+    function sum(n) {
+      if (n.type === 'file') return;
+      n.kids.forEach(function (k) { sum(k); n.files += k.files; n.syms += k.syms; });
+      n.kids.sort(function (a, b) { return (a.type === 'file') - (b.type === 'file') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); });
+    }
+    sum(root);
+    Object.keys(nodes).forEach(function (id) { if (nodes[id].type === 'dir') rel[nodes[id].rel] = nodes[id]; });
+    var t = { root: root, nodes: nodes, rel: rel, uid: uid };
+    z.trees[uid] = t;
+    return t;
+  }
+  // Tree node for an id, symbols included.
+  function znode(uid, id) {
+    var t = ztree(uid);
+    if (!t) return null;
+    if (t.nodes[id]) return t.nodes[id];
+    if (id.charAt(0) === 's') {
+      var y = zdata().syms[+id.slice(1)];
+      if (y && zdata().files[y.file].unit === uid) return symNode(y);
+    }
+    return null;
+  }
+  function symNode(y) {
+    return { id: 's' + y.i, type: 'sym', name: y.name, sym: y, kids: y.kids, fileId: 'f' + y.file };
+  }
+  // Ancestors of a node from the card down (the card itself excluded).
+  function zchain(uid, id) {
+    var z = zdata(), t = ztree(uid), out = [];
+    if (!t) return out;
+    var n = t.nodes[id];
+    if (!n && id.charAt(0) === 's') {
+      var y = z.syms[+id.slice(1)];
+      while (y.parent >= 0) y = z.syms[y.parent];
+      n = t.nodes['f' + y.file];
+    }
+    for (; n && n.type !== 'unit'; n = n.parent) out.unshift(n.id);
+    return out;
+  }
+  function openable(n) { return n && (n.type === 'dir' || (n.type === 'file' && n.file.emb && n.file.top.length > 0)); }
+
+  // ----- layout of an open card: shelves of boxes, the open one in place.
+  function zmeasure(uid, n, depth) {
+    var path = ast.zpath[uid] || [];
+    var openId = path[depth];
+    var kids;
+    if (n.type === 'file') kids = n.file.top.map(function (i) { return symNode(zdata().syms[i]); });
+    else kids = n.kids;
+    // Above the deepest open level, the boxes beside the path shrink to
+    // name tags: context, not content.
+    var compact = depth < path.length;
+    var lays = kids.map(function (k) {
+      if (k.type === 'sym') return symLay(k);
+      if (k.id === openId && openable(k)) return frameLay(uid, k, depth + 1);
+      if (compact) return { node: k, w: Math.min(190, Math.max(70, k.name.length * 7.4 + 22)), h: 24, compact: true };
+      return { node: k, w: ZBOX.w, h: ZBOX.h, kids: [] };
+    });
+    return shelf(lays);
+  }
+  function frameLay(uid, n, depth) {
+    var inner = zmeasure(uid, n, depth);
+    return { node: n, frame: true, w: Math.max(ZBOX.w, inner.w + 2 * ZFRAME_PAD), h: inner.h + ZFRAME_HEAD + ZFRAME_PAD, inner: inner };
+  }
+  function symRows(y, depth, out) {
+    y.kids.forEach(function (i) {
+      var k = zdata().syms[i];
+      out.push({ sym: k, depth: depth });
+      if (depth < 4) symRows(k, depth + 1, out);
+    });
+    return out;
+  }
+  function symLay(n) {
+    var rows = symRows(n.sym, 0, []);
+    if (!rows.length) return { node: n, w: ZLEAF.w, h: ZLEAF.h, rows: rows };
+    return { node: n, w: ZCONT_W, h: ZSYM_HEAD + rows.length * ZROW + 6, rows: rows };
+  }
+  // Pack boxes into rows about as wide as they are tall overall.
+  function shelf(lays) {
+    if (!lays.length) return { w: ZBOX.w, h: 34, place: [], empty: true };
+    var area = 0, widest = 0;
+    lays.forEach(function (l) { area += (l.w + ZGAP) * (l.h + ZGAP); widest = Math.max(widest, l.w); });
+    var target = Math.max(widest, Math.min(9000, Math.sqrt(area * 1.9)));
+    var x = 0, y = 0, rowH = 0, w = 0, place = [];
+    lays.forEach(function (l) {
+      if (x > 0 && x + l.w > target) { y += rowH + ZGAP; x = 0; rowH = 0; }
+      place.push({ lay: l, x: x, y: y });
+      x += l.w + ZGAP; rowH = Math.max(rowH, l.h); w = Math.max(w, x - ZGAP);
+    });
+    return { w: w, h: y + rowH, place: place };
+  }
+  // Flatten to items with offsets from the card's content origin.
+  function zflatten(uid) {
+    var t = ztree(uid);
+    var top = zmeasure(uid, t.root, 0);
+    var list = [], byId = {};
+    function add(it) { it.k = list.length; list.push(it); if (!byId[it.id]) byId[it.id] = it; return it; }
+    function walk(sh, ox, oy, depth, parentId) {
+      sh.place.forEach(function (p) {
+        var l = p.lay, x = ox + p.x, y = oy + p.y, n = l.node;
+        if (l.frame) {
+          add({ id: n.id, type: 'frame', node: n, x: x, y: y, w: l.w, h: l.h, depth: depth, parent: parentId });
+          walk(l.inner, x + ZFRAME_PAD, y + ZFRAME_HEAD, depth + 1, n.id);
+        } else if (n.type === 'sym') {
+          add({ id: n.id, type: 'sym', node: n, x: x, y: y, w: l.w, h: l.h, depth: depth, parent: parentId, rows: l.rows.length });
+          l.rows.forEach(function (r, i) {
+            add({ id: 's' + r.sym.i, type: 'row', sym: r.sym, x: x + 4, y: y + ZSYM_HEAD + i * ZROW, w: l.w - 8, h: ZROW, depth: depth + 1, indent: r.depth, parent: n.id });
+          });
+        } else {
+          add({ id: n.id, type: n.type, node: n, x: x, y: y, w: l.w, h: l.h, depth: depth, parent: parentId, compact: !!l.compact });
+        }
+      });
+    }
+    walk(top, 0, 0, 0, t.root.id);
+    var z = { list: list, byId: byId, w: top.w, h: top.h, empty: !!top.empty };
+    ast.zitems[uid] = z;
+    return z;
+  }
+  function zcardSize(uid) {
+    var z = zflatten(uid);
+    // Room above and below for the names of links that leave the card.
+    return { w: Math.max(360, z.w + 2 * ZPAD), h: ZHEAD + z.h + ZPAD + (zdata().omitted[uid] ? 22 : 0), padT: 40, padB: 70 };
+  }
+  function zorigin(uid) {
+    var p = ast.pos['u' + uid];
+    return p ? { x: p.x + ZPAD, y: p.y + ZHEAD } : null;
+  }
+  function itemBox(uid, it) {
+    var o = zorigin(uid);
+    return o ? { x: o.x + it.x, y: o.y + it.y, w: it.w, h: it.h } : null;
+  }
+
+  // ----- what an edge end is drawn as: the deepest visible box holding it.
+  function zrep(end) {
+    var z = zdata(), uid = endUnit(z, end);
+    if (!ast.open.has(uid)) return { card: uid };
+    var items = ast.zitems[uid];
+    if (!items) return { card: uid };
+    var id, fileIx;
+    if (end >= 0) {
+      id = 's' + end;
+      if (items.byId[id]) return { u: uid, it: items.byId[id] };
+      fileIx = z.syms[end].file;
+    } else fileIx = -1 - end;
+    var t = ztree(uid), n = t.nodes['f' + fileIx];
+    for (; n; n = n.parent) {
+      if (n.type === 'unit') return { u: uid, it: null };
+      if (items.byId[n.id]) return { u: uid, it: items.byId[n.id] };
+    }
+    return { u: uid, it: null };
+  }
+  function repKey(r) { return r.card !== undefined ? 'u' + r.card : r.it ? r.u + ':' + r.it.k : r.u + ':root'; }
+  // Is item `a` inside item `b` (or the same) in one open card?
+  function within(uid, a, b) {
+    var items = ast.zitems[uid];
+    for (var it = a; it; it = it.parent && items.byId[it.parent]) { if (it === b) return true; if (!it.parent || it.parent === it.id) break; }
+    return false;
+  }
+  function inFocus(r) {
+    if (r.card !== undefined || !r.it) return false;
+    var path = ast.zpath[r.u] || [];
+    if (!path.length) return true;
+    var items = ast.zitems[r.u], deep = items.byId[path[path.length - 1]];
+    return !!deep && r.it !== deep && within(r.u, r.it, deep);
+  }
+  function zfam(kind) {
+    if (kind === 'VIA_RPC' || kind === 'DECLARES_RPC') return 'rpc';
+    if (kind === 'VIA_HTTP') return 'http';
+    if (kind === 'VIA_BUS') return 'bus';
+    if (kind === 'VIA_CONFIG') return 'config';
+    if (kind === 'IMPLEMENTS' || kind === 'EXTENDS') return 'depends';
+    return 'code';
+  }
+  var ZKIND_WORD = {
+    CALLS: 'calls', USES: 'uses', IMPORTS: 'imports', IMPORTS_FILE: 'imports', REFERENCES: 'references', IMPLEMENTS: 'implements',
+    EXTENDS: 'extends', XREF: 'refers to', CONFIG_BIND: 'binds config', VIA_RPC: 'RPC', VIA_HTTP: 'HTTP', VIA_BUS: 'message bus',
+    VIA_CONFIG: 'reads config', DECLARES_RPC: 'declares RPC', DISPATCH: 'dispatches', MODULE_EXPORT: 'exports'
+  };
+  function zkindsLabel(kinds) {
+    return Object.keys(kinds).sort(function (a, b) { return kinds[b] - kinds[a]; }).map(function (k) {
+      return (ZKIND_WORD[k] || k.toLowerCase()) + ' ×' + fmt(kinds[k]);
+    }).join(' · ');
+  }
+  // Links at the current depth of every open card.
+  function buildZlinks() {
+    var z = zdata(), map = new Map(), out = [], ports = new Map();
+    ast.zlinks = out; ast.ports = [];
+    if (!z || !ast.open.size) return;
+    z.edges.forEach(function (e) {
+      var ua = endUnit(z, e.a), ub = endUnit(z, e.b);
+      if (!ast.open.has(ua) && !ast.open.has(ub)) return;
+      var A = zrep(e.a), B = zrep(e.b);
+      if (A.card !== undefined && B.card !== undefined) return;
+      var ka = repKey(A), kb = repKey(B);
+      if (ka === kb) return;
+      if (A.u !== undefined && A.u === B.u && A.it && B.it && (within(A.u, A.it, B.it) || within(A.u, B.it, A.it))) return;
+      if ((A.u !== undefined && !A.it) || (B.u !== undefined && !B.it)) return;
+      // The current depth: at least one end inside a card's deepest open level.
+      if (!inFocus(A) && !inFocus(B)) return;
+      var k = ka + '>' + kb, l = map.get(k);
+      if (!l) { l = { a: A, b: B, w: 0, kinds: {}, keys: [], fam: zfam(e.kind) }; map.set(k, l); out.push(l); }
+      l.w += e.w;
+      l.kinds[e.kind] = (l.kinds[e.kind] || 0) + e.w;
+      if (zfam(e.kind) !== 'code') l.fam = zfam(e.kind);
+      if (e.keys) e.keys.forEach(function (x) { if (l.keys.indexOf(x) < 0 && l.keys.length < 8) l.keys.push(x); });
+    });
+    // A link to a closed card ends at a port on the open card's edge.
+    out.forEach(function (l) {
+      var inner = l.a.card === undefined ? l.a : l.b, other = l.a.card !== undefined ? l.a.card : l.b.card;
+      if (other === undefined) return;
+      var outward = l.b.card !== undefined;
+      var pk = inner.u + '|' + other, p = ports.get(pk);
+      if (!p) { p = { u: inner.u, other: other, out: false, inn: false, w: 0, kinds: {}, n: 0 }; ports.set(pk, p); ast.ports.push(p); }
+      if (outward) p.out = true; else p.inn = true;
+      p.w += l.w; p.n++;
+      Object.keys(l.kinds).forEach(function (kk) { p.kinds[kk] = (p.kinds[kk] || 0) + l.kinds[kk]; });
+      l.port = p;
+    });
+    placePorts();
+    // Geometry once per layout; the heaviest first when there are too many to draw.
+    out.forEach(function (l) {
+      var g = linkGeom(l);
+      l.g = g;
+      if (!g) return;
+      l.bb = { x: Math.min(g.x1, g.x2, g.c1x, g.c2x), y: Math.min(g.y1, g.y2, g.c1y, g.c2y) };
+      l.bb.w = Math.max(g.x1, g.x2, g.c1x, g.c2x) - l.bb.x; l.bb.h = Math.max(g.y1, g.y2, g.c1y, g.c2y) - l.bb.y;
+      l.cross = l.a.u !== undefined && l.b.u !== undefined && l.a.u !== l.b.u;
+    });
+    var order = out.map(function (l, i) { return i; });
+    order.sort(function (x, y) { return (out[y].cross ? 1 : 0) - (out[x].cross ? 1 : 0) || out[y].w - out[x].w || x - y; });
+    order.forEach(function (i, r) { out[i].rank = r; });
+  }
+  function placePorts() {
+    var bySide = {};
+    ast.ports.forEach(function (p) {
+      var A = ast.pos['u' + p.u], B = ast.pos['u' + p.other];
+      var ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+      var bx = B ? B.x + B.w / 2 : ax, by = B ? B.y + B.h / 2 : A.y + A.h + 200;
+      // Ports sit on the top or bottom edge, where their names have room.
+      var side = by < ay ? 't' : 'b';
+      p.side = side; p.ox = side === 't' || side === 'b' ? bx : by;
+      (bySide[p.u + side] = bySide[p.u + side] || []).push(p);
+    });
+    Object.keys(bySide).forEach(function (k) {
+      var list = bySide[k], p0 = list[0], A = ast.pos['u' + p0.u];
+      list.sort(function (a, b) { return a.ox - b.ox || a.other - b.other; });
+      list.forEach(function (p, i) {
+        var f = (i + 1) / (list.length + 1);
+        if (p.side === 't' || p.side === 'b') { p.x = A.x + A.w * (0.08 + 0.84 * f); p.y = p.side === 't' ? A.y : A.y + A.h; }
+        else { p.y = A.y + ZHEAD + (A.h - ZHEAD) * (0.06 + 0.88 * f); p.x = p.side === 'l' ? A.x : A.x + A.w; }
+      });
+    });
+  }
+  function endBox(r) {
+    if (r.card !== undefined) { var p = ast.pos['u' + r.card]; return p ? { x: p.x, y: p.y, w: p.w, h: p.h } : null; }
+    return r.it ? itemBox(r.u, r.it) : null;
+  }
+  // A curve from box to box (or to a port point), leaving the facing sides.
+  function zcurve(A, B, rowA, rowB) {
+    var acx = A.x + A.w / 2, acy = A.y + A.h / 2, bcx = B.x + B.w / 2, bcy = B.y + B.h / 2;
+    var dx = bcx - acx, dy = bcy - acy, x1, y1, x2, y2, c1x, c1y, c2x, c2y;
+    var horiz = rowA || rowB || Math.abs(dx) > Math.abs(dy) * 1.2;
+    if (horiz) {
+      var right = dx >= 0;
+      x1 = right ? A.x + A.w : A.x; y1 = acy; x2 = right ? B.x : B.x + B.w; y2 = bcy;
+      if (rowA && rowB && Math.abs(dx) < Math.max(A.w, B.w)) { x1 = A.x + A.w; x2 = B.x + B.w; right = true; }
+      var h = Math.max(24, Math.abs(x2 - x1) * 0.4);
+      c1x = x1 + (right ? h : -h); c2x = (rowA && rowB && x2 === B.x + B.w && x1 === A.x + A.w) ? x2 + h : x2 + (right ? -h : h);
+      c1y = y1; c2y = y2;
+    } else {
+      var down = dy >= 0;
+      x1 = acx; y1 = down ? A.y + A.h : A.y; x2 = bcx; y2 = down ? B.y : B.y + B.h;
+      var v = Math.max(24, Math.abs(y2 - y1) * 0.4);
+      c1x = x1; c2x = x2; c1y = y1 + (down ? v : -v); c2y = y2 + (down ? -v : v);
+    }
+    return { x1: x1, y1: y1, x2: x2, y2: y2, c1x: c1x, c1y: c1y, c2x: c2x, c2y: c2y };
+  }
+  function curveD(g) {
+    return 'M' + r1(g.x1) + ' ' + r1(g.y1) + 'C' + r1(g.c1x) + ' ' + r1(g.c1y) + ' ' + r1(g.c2x) + ' ' + r1(g.c2y) + ' ' + r1(g.x2) + ' ' + r1(g.y2);
+  }
+  function arrowAt(g, s) {
+    var tx = g.x2 - g.c2x, ty = g.y2 - g.c2y, len = Math.hypot(tx, ty) || 1;
+    tx /= len; ty /= len;
+    var bx = g.x2 - tx * s, by = g.y2 - ty * s, nx = -ty * s * 0.55, ny = tx * s * 0.55;
+    return 'M' + r1(g.x2) + ' ' + r1(g.y2) + 'L' + r1(bx + nx) + ' ' + r1(by + ny) + 'L' + r1(bx - nx) + ' ' + r1(by - ny) + 'Z';
+  }
+  function linkGeom(l) {
+    var A = endBox(l.a), B = endBox(l.b);
+    if (!A || !B) return null;
+    var rowA = l.a.it && l.a.it.type === 'row', rowB = l.b.it && l.b.it.type === 'row';
+    if (l.port) {
+      var P = { x: l.port.x - 1, y: l.port.y - 1, w: 2, h: 2 };
+      if (l.a.card !== undefined) A = P; else B = P;
+    }
+    return zcurve(A, B, rowA, rowB);
+  }
+
+  // ----- DOM for an open card: header, then the items in view.
+  function zcrumbs(uid) {
+    var u = AU[uid], path = ast.zpath[uid] || [];
+    var html = '<button type="button" data-zcrumb="' + uid + '" data-depth="0"' + (path.length ? '' : ' aria-current="location"') + '>' + esc(u.name) + '</button>';
+    path.forEach(function (id, i) {
+      var n = znode(uid, id);
+      if (!n) return;
+      html += '<span class="sep" aria-hidden="true">›</span><button type="button" data-zcrumb="' + uid + '" data-depth="' + (i + 1) + '"' +
+        (i === path.length - 1 ? ' aria-current="location"' : '') + '>' + esc(n.name) + '</button>';
+    });
+    return html;
+  }
+  function zoomCardHtml(u, cls, kind, dots) {
+    var om = zdata().omitted[u.id];
+    var html = '<article role="listitem" class="' + cls + ' zoomed" data-key="u' + u.id + '" tabindex="0" aria-expanded="true" aria-label="' +
+      esc(u.name + ', ' + unitKind(u) + ', open') + '" title="' + esc(u.root) + '">';
+    html += '<div class="zh"><div class="k"><span>' + esc(kind) + '</span>' + (dots ? '<span class="lg">' + dots + '</span>' : '') + '</div>';
+    var root = ztree(u.id).root;
+    html += '<div class="zt"><h3>' + esc(u.name) + '</h3><span class="zn">' + esc(plural(root.files, 'file', 'files') + ' · ' + plural(root.syms, 'symbol', 'symbols')) + '</span>' +
+      '<span class="zact"><button type="button" data-folder="' + esc(u.dir) + '" title="Show in the folder map">Folder map</button>' +
+      '<button type="button" class="zclose" data-close-card="' + u.id + '" aria-label="Collapse ' + esc(u.name) + '" title="Collapse (Esc)">Collapse</button></span></div>';
+    html += (ast.zpath[u.id] || []).length ? '<nav class="zcrumbs" aria-label="Path in ' + esc(u.name) + '">' + zcrumbs(u.id) + '</nav></div>'
+      : '<p class="zhint">Scroll into a folder or file, or double-click it, to open it. Esc goes back up.</p></div>';
+    html += '<div class="zin" data-zin="' + u.id + '"></div>';
+    if (om) html += '<p class="zom">' + esc(plural(om.syms, 'symbol', 'symbols') + ' in ' + plural(om.files, 'file', 'files') + ' not embedded (--max-symbols ' + fmt(ZR.max_symbols) + '); see the panel') + '</p>';
+    return html + '</article>';
+  }
+  function glyph(kind) { return KIND_GLYPH[kind] || (kind ? kind.charAt(0) : '·'); }
+  function itemHtml(uid, it, far) {
+    var sel = ast.zsel && ast.zsel.u === uid && ast.zsel.id === it.id;
+    var st0 = 'transform:translate(' + r1(it.x) + 'px,' + r1(it.y) + 'px);width:' + r1(it.w) + 'px;height:' + r1(it.h) + 'px';
+    var base = ' data-zu="' + uid + '" data-zk="' + it.k + '" tabindex="-1" style="' + st0 + '"';
+    var cls = 'zi z-' + it.type + (sel ? ' zsel' : '');
+    if (it.type === 'row') {
+      var y = it.sym;
+      return '<button type="button" class="' + cls + '"' + base + ' title="' + esc(y.kind + ' ' + y.qual + (y.sig ? '\n' + y.sig : '')) + '">' +
+        '<span class="g" style="margin-left:' + (it.indent * 12) + 'px">' + esc(glyph(y.kind)) + '</span><span class="nm">' + esc(y.name) + '</span>' +
+        (y.sig ? '<span class="sg">' + esc(y.sig) + '</span>' : '') + '</button>';
+    }
+    if (it.type === 'sym') {
+      var s = it.node.sym;
+      // Far out a box carries its name only: thousands stay cheap to draw.
+      if (far) return '<div class="' + cls + (it.rows ? ' has-rows' : '') + '"' + base.replace('tabindex="-1"', 'tabindex="-1" role="button"') + ' title="' + esc(s.kind + ' ' + s.qual) + '"><div class="nm">' + esc(s.name) + '</div></div>';
+      return '<div class="' + cls + (it.rows ? ' has-rows' : '') + '"' + base.replace('tabindex="-1"', 'tabindex="-1" role="button"') + ' title="' + esc(s.kind + ' ' + s.qual + (s.sig ? '\n' + s.sig : '')) + '">' +
+        '<div class="zk"><span>' + esc(s.kind) + '</span>' + (it.rows ? '<span class="n">' + fmt(it.rows) + '</span>' : '') + '</div>' +
+        // A box with members lists them under its name; its signature is in the tooltip.
+        '<div class="nm">' + esc(s.name) + '</div>' + (s.sig && !it.rows ? '<div class="sg">' + esc(s.sig) + '</div>' : '') + '</div>';
+    }
+    var n = it.node, counts;
+    if (n.type === 'file') {
+      var f = n.file;
+      counts = (f.emb ? plural(f.syms, 'symbol', 'symbols') : plural(f.syms, 'symbol', 'symbols') + ', not embedded') + ' · ' + langName(f.lang);
+    } else counts = plural(n.files, 'file', 'files') + ' · ' + plural(n.syms, 'symbol', 'symbols');
+    if (it.type === 'frame') {
+      return '<div class="' + cls + ' f-' + n.type + '"' + base + '><div class="zfh"><button type="button" class="zup" data-zu="' + uid + '" data-zup="' + esc(n.id) +
+        '" title="Close ' + esc(n.name) + '" aria-label="Close ' + esc(n.name) + '">' + esc(n.name) + '</button><span class="n">' + esc(counts) + '</span></div></div>';
+    }
+    var can = openable(n);
+    if (it.compact) {
+      return '<div class="' + cls + ' compact' + (can ? '' : ' leafbox') + '"' + base.replace('tabindex="-1"', 'tabindex="-1" role="button"') + ' title="' + esc((n.rel || n.name) + ' · ' + counts) + '">' +
+        '<span class="nm">' + esc(n.name) + '</span></div>';
+    }
+    return '<div class="' + cls + (can ? '' : ' leafbox') + '"' + base.replace('tabindex="-1"', 'tabindex="-1" role="button"') + ' title="' + esc(n.rel || n.name) +
+      (can ? '. Double-click or Enter to open' : '') + '">' +
+      '<div class="nm">' + esc(n.name) + '</div><div class="n">' + esc(counts) + '</div></div>';
+  }
+  function viewRect(margin) {
+    var r = stage.getBoundingClientRect(), k = ast.cam.k || 1, m = (margin || 0) / k;
+    return { x0: -ast.cam.x / k - m, y0: -ast.cam.y / k - m, x1: (r.width - ast.cam.x) / k + m, y1: (r.height - ast.cam.y) / k + m, k: k };
+  }
+  function hitRect(a, b) { return a.x < b.x1 && a.x + a.w > b.x0 && a.y < b.y1 && a.y + a.h > b.y0; }
+  // The items and links in (and around) the view. Re-rendered when the view
+  // leaves the rendered region or the zoom changes a lot.
+  function renderZoomView(force) {
+    zRaf = 0;
+    if (!ast.open.size || st.level !== 'app') { if (zedges) zedges.innerHTML = ''; zRendered = null; return; }
+    var v = viewRect(0);
+    if (!force && zRendered && v.x0 >= zRendered.x0 && v.y0 >= zRendered.y0 && v.x1 <= zRendered.x1 && v.y1 <= zRendered.y1 &&
+        v.k < zRendered.k * 1.8 && v.k > zRendered.k / 1.8) return;
+    var R = viewRect(Math.max(300, (stage.getBoundingClientRect().width || 1400) * 0.5));
+    zRendered = R;
+    var shown = 0;
+    ast.open.forEach(function (uid) {
+      var el = appsCards.querySelector('[data-zin="' + uid + '"]'), items = ast.zitems[uid], o = zorigin(uid);
+      if (!items || !o) return;
+      var html = '', cap = 3000;
+      items.list.forEach(function (it) {
+        var sel = ast.zsel && ast.zsel.u === uid && ast.zsel.id === it.id;
+        if (!sel && (cap <= 0 || !hitRect({ x: o.x + it.x, y: o.y + it.y, w: it.w, h: it.h }, R))) return;
+        // Text under 4 px is noise: far out, boxes only.
+        if (R.k < 0.18 && it.type === 'row' && !sel) return;
+        html += itemHtml(uid, it, R.k < 0.3);
+        cap--; shown++;
+      });
+      if (items.empty) html = '<p class="zempty">No files with symbols here.</p>';
+      if (el) el.innerHTML = html;
+    });
+    ast.zshown = shown;
+    renderZlinks(R);
+  }
+  function requestZoomView() { if (!zRaf) zRaf = requestAnimationFrame(function () { renderZoomView(false); }); }
+  function zlinkWidth(w) { return Math.min(4.5, 0.9 + Math.log2(Math.max(1, w)) * 0.5); }
+  function zlinkOn(l) {
+    var s = ast.zsel, h = ast.zhover;
+    var touches = function (r, sel) { return sel && r.u === sel.u && r.it && r.it.id === sel.id; };
+    return touches(l.a, s) || touches(l.b, s) || touches(l.a, h) || touches(l.b, h);
+  }
+  function renderZlinks(R) {
+    if (!zedges) return;
+    var many = ast.zlinks.length > 120, svg = '';
+    ast.zdrawn = 0;
+    ast.zlinks.forEach(function (l, i) {
+      var g = l.g;
+      if (!g || !hitRect(l.bb, R)) return;
+      var on = zlinkOn(l), w = zlinkWidth(l.w), cross = l.cross;
+      // Past the cap only the heaviest are drawn, and whatever touches the focus.
+      if (!on && l.rank >= ZLINK_CAP) return;
+      ast.zdrawn++;
+      svg += '<g class="zl conn f-' + l.fam + (on ? ' on' : '') + (cross ? ' cross named' : '') + (many ? ' many' : '') + '" data-zl="' + i + '" style="--w:' + r1(w) + '">' +
+        '<path class="ln" d="' + curveD(g) + '" stroke-width="' + r1(w) + '"/>' +
+        (l.port && l.b.card === undefined ? '' : '<path class="ah" d="' + arrowAt(g, 6) + '"/>') +
+        '<path class="hit" d="' + curveD(g) + '"/>' +
+        (on || cross ? '<text class="lbl" x="' + r1(bez(g.x1, g.c1x, g.c2x, g.x2, 0.5)) + '" y="' + r1(bez(g.y1, g.c1y, g.c2y, g.y2, 0.5)) + '" text-anchor="middle" dy="0.35em">' +
+          esc(zkindsLabel(l.kinds)) + '</text>' : '') + '</g>';
+    });
+    // Ports: where links leave an open card, named; on to the card if shown.
+    var placed = [];
+    ast.ports.forEach(function (p, i) {
+      var o = AU[p.other], B = ast.pos['u' + p.other], text = (p.out && p.inn ? '⇄ ' : p.out ? '→ ' : '← ') + o.name + ' ×' + fmt(p.w);
+      var anchor = p.side === 'l' ? 'end' : p.side === 'r' ? 'start' : 'middle';
+      var lx = p.x + (p.side === 'l' ? -8 : p.side === 'r' ? 8 : 0), ly = p.y + (p.side === 't' ? -9 : p.side === 'b' ? 16 : -7);
+      // Labels along one edge step outward until they clear each other.
+      var tw = text.length * 6.6 + 8, box = null;
+      for (var row = 0; row < 5; row++) {
+        var dy = (p.side === 't' ? -1 : 1) * row * 15, x0 = anchor === 'end' ? lx - tw : anchor === 'start' ? lx : lx - tw / 2;
+        var cand = [x0, ly + dy - 11, x0 + tw, ly + dy + 3];
+        if (!placed.some(function (q) { return cand[0] < q[2] && cand[2] > q[0] && cand[1] < q[3] && cand[3] > q[1]; })) { box = cand; ly += dy; break; }
+      }
+      if (box) placed.push(box);
+      svg += '<g class="zport conn f-' + (Object.keys(p.kinds).some(function (k) { return zfam(k) !== 'code' && zfam(k) !== 'depends'; }) ? 'rpc' : 'code') + '" data-zport="' + i + '">';
+      if (B) {
+        var g = zcurve({ x: p.x - 1, y: p.y - 1, w: 2, h: 2 }, { x: B.x, y: B.y, w: B.w, h: B.h }, false, false);
+        if (!p.out) g = zcurve({ x: B.x, y: B.y, w: B.w, h: B.h }, { x: p.x - 1, y: p.y - 1, w: 2, h: 2 }, false, false);
+        svg += '<path class="ln on-card" d="' + curveD(g) + '" stroke-width="' + r1(zlinkWidth(p.w)) + '"/>' + (p.out && p.inn ? '' : '<path class="ah" d="' + arrowAt(g, 6) + '"/>');
+      }
+      svg += '<circle class="pt" cx="' + r1(p.x) + '" cy="' + r1(p.y) + '" r="4"/>' + (box ? '<text class="plbl" x="' + r1(lx) + '" y="' + r1(ly) + '" text-anchor="' + anchor + '">' +
+        esc(text) + (B ? '' : ' (hidden)') + '</text>' : '') + '<title>' + esc(text + ': ' + zkindsLabel(p.kinds)) + '</title></g>';
+    });
+    zedges.setAttribute('width', String(Math.max(1, ast.sheet ? ast.sheet.width : 1)));
+    zedges.setAttribute('height', String(Math.max(1, ast.sheet ? ast.sheet.height : 1)));
+    zedges.innerHTML = svg;
+    zedges.classList.toggle('hasfocus', !!(ast.zsel || ast.zhover));
+  }
+
+  // ----- state changes
+  function zoomOpen(uid, path, opts) {
+    opts = opts || {};
+    if (!opts.noHistory) pushHistory();
+    ast.open.add(uid);
+    ast.zpath[uid] = (path || []).slice();
+    ast.zfocus = uid;
+    if (opts.sel !== undefined) ast.zsel = opts.sel;
+    renderApps(true);
+    renderPanel();
+    renderAppCrumbs();
+    var target = opts.sel ? (ast.zitems[uid] && ast.zitems[uid].byId[opts.sel.id]) : null;
+    var deepest = ast.zpath[uid].length ? ast.zitems[uid].byId[ast.zpath[uid][ast.zpath[uid].length - 1]] : null;
+    if (opts.fit !== false) {
+      if (target) fitItem(uid, target, deepest);
+      else if (deepest) fitBox(itemBox(uid, deepest), 0.9);
+      else fitBox(ast.pos['u' + uid], 0.9);
+    }
+    zCooldown = performance.now() + 450;
+    writeHash();
+    // Focus lost with the re-rendered card goes back to it.
+    var ae = document.activeElement;
+    if (!ae || ae === document.body) { var ce0 = cardEl('u' + uid); if (ce0 && ce0.focus) ce0.focus({ preventScroll: true }); }
+    var lbl = (ast.zpath[uid].length ? znode(uid, ast.zpath[uid][ast.zpath[uid].length - 1]).name : AU[uid].name);
+    live.textContent = 'Opened ' + lbl;
+  }
+  function zoomClose(uid, opts) {
+    opts = opts || {};
+    if (!opts.noHistory) pushHistory();
+    ast.open.delete(uid);
+    delete ast.zpath[uid];
+    delete ast.zitems[uid];
+    if (ast.zsel && ast.zsel.u === uid) ast.zsel = null;
+    if (ast.zfocus === uid) ast.zfocus = ast.open.size ? Array.from(ast.open).pop() : null;
+    renderApps(true);
+    renderPanel();
+    renderAppCrumbs();
+    if (opts.fit !== false) fitBox(ast.pos['u' + uid], 0.5);
+    zCooldown = performance.now() + 450;
+    writeHash();
+    var el = cardEl('u' + uid);
+    if (el && opts.focus !== false) el.focus();
+    live.textContent = 'Collapsed ' + AU[uid].name;
+  }
+  // Up to `depth` levels of the card's path stay open.
+  function zoomTo(uid, depth, opts) {
+    var path = (ast.zpath[uid] || []).slice(0, depth);
+    if (ast.zsel && ast.zsel.u === uid) {
+      // Drop a selection that the closed levels now hide.
+      var chain = zchain(uid, ast.zsel.id), sn = znode(uid, ast.zsel.id);
+      if (!sn || (sn.type === 'sym' ? chain.length : chain.length - 1) > depth) ast.zsel = null;
+    }
+    zoomOpen(uid, path, opts);
+  }
+  // One level out: the deepest open folder or file, else the card.
+  function zoomOut(uid) {
+    if (uid === null || uid === undefined) return false;
+    var path = ast.zpath[uid];
+    if (!path) return false;
+    if (path.length) zoomTo(uid, path.length - 1);
+    else zoomClose(uid);
+    return true;
+  }
+  // Show a node: open the card down to it and select it.
+  function zoomReveal(uid, id) {
+    var n = znode(uid, id);
+    if (!n) return false;
+    revealUnit(uid);
+    var chain = zchain(uid, id);
+    var path = n.type === 'sym' ? chain : openable(n) ? chain : chain.slice(0, -1);
+    zoomOpen(uid, path, { sel: { u: uid, id: id } });
+    ast.selected = 'u' + uid;
+    renderPanel();
+    return true;
+  }
+  function zselect(uid, id) {
+    ast.zsel = id ? { u: uid, id: id } : null;
+    ast.zfocus = uid;
+    ast.selected = 'u' + uid; ast.selConn = null; ast.zpanelUnit = null; ast.zlink = null;
+    updateAppEmphasis();
+    renderZoomView(true);
+    renderPanel();
+    writeHash();
+    var it = id && ast.zitems[uid] && ast.zitems[uid].byId[id];
+    if (it) {
+      var el = appsCards.querySelector('[data-zu="' + uid + '"][data-zk="' + it.k + '"]');
+      if (el && el.focus) el.focus({ preventScroll: true });
+      var n = it.type === 'row' ? it.sym : it.node.sym || it.node;
+      live.textContent = (n.kind || n.type) + ' ' + n.name + ' selected';
+    }
+  }
+  function zactivate(uid, it) {
+    if (!it) return;
+    if (it.type === 'frame') { zoomTo(uid, (ast.zpath[uid] || []).indexOf(it.id)); return; }
+    if ((it.type === 'dir' || it.type === 'file') && openable(it.node)) {
+      zoomOpen(uid, zchain(uid, it.id));
+      return;
+    }
+    zselect(uid, it.id);
+  }
+  // Fit onto a selected item: a member row is shown in its class box, at a
+  // reading scale, never as a strip filling the screen.
+  function fitItem(uid, target, deepest) {
+    if (target.type !== 'row') { fitBox(itemBox(uid, target), 0.8, deepest ? itemBox(uid, deepest) : null); return; }
+    var box = itemBox(uid, ast.zitems[uid].byId[target.parent] || target), row = itemBox(uid, target);
+    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
+    var k = Math.max(0.3, Math.min(1.3, w * 0.7 / box.w, h * 0.85 / box.h));
+    animateCam({ k: k, x: w / 2 - (box.x + box.w / 2) * k, y: box.h * k > h * 0.9 ? h / 2 - (row.y + row.h / 2) * k : h / 2 - (box.y + box.h / 2) * k });
+  }
+  // Animated camera fit onto a world box.
+  function fitBox(b, frac, ctx) {
+    if (!b) return;
+    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
+    var k = Math.max(0.15, Math.min(1.4, Math.min(w * frac / Math.max(1, b.w), h * frac / Math.max(1, b.h))));
+    if (ctx) {
+      // A box inside an open file: the file around it, while it stays readable.
+      var kc = Math.min(w * 0.9 / Math.max(1, ctx.w), h * 0.9 / Math.max(1, ctx.h));
+      k = Math.max(Math.min(k, kc), Math.min(k, 0.7));
+    }
+    var to = { k: k, x: w / 2 - (b.x + b.w / 2) * k, y: h / 2 - (b.y + b.h / 2) * k };
+    // A tall box starts at its top.
+    if (b.h * k > h * 0.95) to.y = 24 - b.y * k;
+    animateCam(to);
+  }
+  function animateCam(to) {
+    var from = { k: ast.cam.k, x: ast.cam.x, y: ast.cam.y }, t0 = performance.now(), dur = REDUCE ? 0 : 280;
+    ast.userMoved = true;
+    if (zAnim) cancelAnimationFrame(zAnim);
+    function step(now) {
+      var t = dur ? Math.min(1, ((now || performance.now()) - t0) / dur) : 1, e = 1 - Math.pow(1 - t, 3);
+      // Interpolate the scale in log space so the zoom feels even.
+      ast.cam.k = Math.exp(Math.log(from.k) + (Math.log(to.k) - Math.log(from.k)) * e);
+      ast.cam.x = from.x + (to.x - from.x) * e; ast.cam.y = from.y + (to.y - from.y) * e;
+      applyAppCam();
+      zAnim = t < 1 ? requestAnimationFrame(step) : null;
+    }
+    if (!dur) { step(); return; }
+    zAnim = requestAnimationFrame(step);
+  }
+  // Wheel past a threshold opens what is under the pointer, or closes the
+  // deepest open level once it is small on screen.
+  function semanticWheel(px, py, f) {
+    if (!ZR || performance.now() < zCooldown) return;
+    var r = stage.getBoundingClientRect(), k = ast.cam.k;
+    var wx = (px - ast.cam.x) / k, wy = (py - ast.cam.y) / k;
+    var hit = zhitAt(wx, wy);
+    if (f > 1) {
+      if (hit && hit.card !== undefined && !ast.open.has(hit.card)) {
+        var P = ast.pos['u' + hit.card];
+        if (P.w * k > r.width * 0.42 || P.h * k > r.height * 0.6) zoomOpen(hit.card, []);
+      } else if (hit && hit.it && (hit.it.type === 'dir' || hit.it.type === 'file') && openable(hit.it.node)) {
+        if (hit.it.w * k > r.width * 0.3 || hit.it.h * k > r.height * 0.4) zoomOpen(hit.u, zchain(hit.u, hit.it.id));
+      }
+      return;
+    }
+    var uid = hit && hit.u !== undefined ? hit.u : ast.zfocus;
+    if (uid === null || uid === undefined || !ast.open.has(uid)) return;
+    var path = ast.zpath[uid] || [], box;
+    if (path.length) box = itemBox(uid, ast.zitems[uid].byId[path[path.length - 1]]);
+    else box = ast.pos['u' + uid];
+    if (box && box.w * k < r.width * 0.22 && box.h * k < r.height * 0.22) zoomOut(uid);
+  }
+  // The deepest thing at a world point: an item of an open card, else a card.
+  function zhitAt(wx, wy) {
+    var best = null;
+    Object.keys(ast.pos).forEach(function (key) {
+      if (key.charAt(0) !== 'u') return;
+      var p = ast.pos[key];
+      if (wx < p.x || wy < p.y || wx > p.x + p.w || wy > p.y + p.h) return;
+      var uid = +key.slice(1);
+      best = { card: uid };
+      var items = ast.zitems[uid], o = zorigin(uid);
+      if (!ast.open.has(uid) || !items) return;
+      best = { u: uid, it: null };
+      items.list.forEach(function (it) {
+        var x = o.x + it.x, y = o.y + it.y;
+        if (wx >= x && wy >= y && wx <= x + it.w && wy <= y + it.h && (!best.it || it.depth >= best.it.depth)) best.it = it;
+      });
+    });
+    return best;
+  }
+  function itemFromEl(el) {
+    var uid = +el.dataset.zu, items = ast.zitems[uid];
+    return items ? { u: uid, it: items.list[+el.dataset.zk] } : null;
+  }
+  // Arrow keys move between the boxes of the open level in that direction.
+  function zarrow(dx, dy) {
+    var s = ast.zsel;
+    if (!s || !ast.zitems[s.u]) return false;
+    var items = ast.zitems[s.u], cur = items.byId[s.id];
+    if (!cur) return false;
+    var best = null, bestS = Infinity;
+    items.list.forEach(function (it) {
+      if (it === cur || it.type === 'frame') return;
+      var ox = it.x + it.w / 2 - (cur.x + cur.w / 2), oy = it.y + it.h / 2 - (cur.y + cur.h / 2);
+      var along = ox * dx + oy * dy;
+      if (along <= 1) return;
+      var sc = along + 2.5 * Math.abs(ox * dy + oy * dx);
+      if (sc < bestS) { bestS = sc; best = it; }
+    });
+    if (!best) return true;
+    zselect(s.u, best.id);
+    var b = itemBox(s.u, best), r = stage.getBoundingClientRect(), k = ast.cam.k;
+    var x0 = b.x * k + ast.cam.x, y0 = b.y * k + ast.cam.y;
+    if (x0 < 20 || y0 < 20 || x0 + b.w * k > r.width - 20 || y0 + b.h * k > r.height - 20) {
+      ast.cam.x += r.width / 2 - (x0 + b.w * k / 2); ast.cam.y += r.height / 2 - (y0 + b.h * k / 2); applyAppCam();
+    }
+    return true;
+  }
+
+  // ----- breadcrumb in the header: Apps › card › folder › file
+  function renderAppCrumbs() {
+    if (st.level !== 'app') return;
+    var uid = ast.zfocus;
+    if (uid === null || uid === undefined || !ast.open.has(uid)) { crumbs.innerHTML = ''; crumbs.hidden = true; return; }
+    crumbs.hidden = false;
+    crumbs.innerHTML = '<button type="button" data-zall="1" title="Collapse every card">Apps</button><span class="sep" aria-hidden="true">›</span>' +
+      zcrumbs(uid).replace(/<span class="sep" aria-hidden="true">›<\/span>/g, '<span class="sep" aria-hidden="true">›</span>');
+  }
+  crumbs.addEventListener('click', function (ev) {
+    if (st.level !== 'app') return;
+    var b = ev.target.closest('button');
+    if (!b) return;
+    ev.stopPropagation();
+    if (b.dataset.zall) { pushHistory(); Array.from(ast.open).forEach(function (uid) { zoomClose(uid, { noHistory: true, fit: false, focus: false }); }); fitApps(); return; }
+    if (b.dataset.zcrumb !== undefined) zoomTo(+b.dataset.zcrumb, +b.dataset.depth);
+  }, true);
+
+  // ----- panels for what is selected inside a card
+  function symLinks(uid, sym, outward) {
+    var z = zdata(), rows = [];
+    z.edges.forEach(function (e) {
+      if (outward ? e.a !== sym : e.b !== sym) return;
+      var o = outward ? e.b : e.a;
+      rows.push({ end: o, kind: e.kind, w: e.w });
+    });
+    rows.sort(function (a, b) { return b.w - a.w; });
+    return rows;
+  }
+  function endName(end) {
+    var z = zdata();
+    return end >= 0 ? z.syms[end].name : z.files[-1 - end].path.split('/').pop();
+  }
+  function endLoc(end) {
+    var z = zdata();
+    if (end >= 0) { var y = z.syms[end]; return z.files[y.file].path + ':' + y.line; }
+    return z.files[-1 - end].path;
+  }
+  function endRows(list, limit) {
+    var z = zdata();
+    return '<div class="edges"><ul>' + list.slice(0, limit).map(function (r) {
+      var uo = endUnit(z, r.end);
+      return '<li><button type="button" data-zend="' + r.end + '"><span class="nm">' + esc(endName(r.end)) +
+        '<span class="w"> · ' + esc((ZKIND_WORD[r.kind] || r.kind.toLowerCase()) + (r.w > 1 ? ' ×' + fmt(r.w) : '')) + '</span></span>' +
+        '<span class="loc">' + esc(AU[uo].name + ' · ' + endLoc(r.end)) + '</span></button></li>';
+    }).join('') + '</ul>' + (list.length > limit ? '<div class="more">and ' + fmt(list.length - limit) + ' more</div>' : '') + '</div>';
+  }
+  function zitemPanel(uid, id) {
+    var z = zdata(), n = znode(uid, id), u = AU[uid];
+    if (!n) return unitPanel(u);
+    var html = '<div class="panel-head"><h2>' + esc(n.name) + ' <span class="kind">' + esc(n.type === 'sym' ? n.sym.kind : n.type === 'dir' ? 'folder' : 'file') + '</span></h2>' +
+      '<button type="button" data-act="aclose" aria-label="Close details">×</button></div>';
+    html += '<p class="lead"><button type="button" class="linkish" data-zunit="' + uid + '">‹ ' + esc(u.name) + '</button> · ' + esc(unitKind(u)) + '</p>';
+    if (n.type === 'sym') {
+      var y = n.sym, f = z.files[y.file];
+      html += '<div class="qual"><code>' + esc(y.qual) + '</code><button type="button" data-zcopy="' + y.i + '" title="Copy qualname">Copy</button></div>';
+      html += '<dl class="facts"><dt>Location</dt><dd><code>' + esc(f.path + ':' + y.line) + '</code></dd><dt>Language</dt><dd>' + esc(langName(f.lang)) + '</dd>';
+      if (y.parent >= 0) html += '<dt>In</dt><dd><button type="button" class="linkish" data-zend="' + y.parent + '">' + esc(z.syms[y.parent].name) + '</button></dd>';
+      if (y.kids.length) html += '<dt>Members</dt><dd>' + fmt(y.kids.length) + '</dd>';
+      html += '</dl>';
+      if (y.sig) html += '<pre class="sig">' + esc(y.sig) + '</pre>';
+      var outs = symLinks(uid, y.i, true), ins = symLinks(uid, y.i, false);
+      if (outs.length) html += '<h3>Uses · ' + fmt(outs.length) + '</h3>' + endRows(outs, 30);
+      if (ins.length) html += '<h3>Used by · ' + fmt(ins.length) + '</h3>' + endRows(ins, 30);
+      if (!outs.length && !ins.length) html += '<p class="more">No relations to other embedded symbols.</p>';
+      html += '<p class="more">Its full neighbourhood, callers and callees across the repo:</p><p class="cmd">lidx graph --seed ' + esc(shellQuote(y.qual)) + '</p>';
+      return html;
+    }
+    html += '<dl class="facts"><dt>Path</dt><dd><code>' + esc((u.dir || '') + (n.rel || '')) + '</code></dd>';
+    if (n.type === 'file') {
+      html += '<dt>Language</dt><dd>' + esc(langName(n.file.lang)) + '</dd><dt>Symbols</dt><dd>' + fmt(n.file.syms) + (n.file.emb ? '' : ', not embedded') + '</dd></dl>';
+      if (!n.file.emb) html += '<p class="more">This file\'s symbols were left out by --max-symbols ' + fmt(ZR.max_symbols) + '. Regenerate with a higher --max-symbols to zoom into it.</p>';
+    } else html += '<dt>Holds</dt><dd>' + esc(plural(n.files, 'file', 'files') + ' · ' + plural(n.syms, 'symbol', 'symbols')) + '</dd></dl>';
+    if (openable(n)) html += '<div class="actions"><button type="button" data-zopen="' + esc(n.id) + '" data-zu="' + uid + '">Open ' + esc(n.type === 'dir' ? 'folder' : 'file') + '</button></div>';
+    return html;
+  }
+
+  // ----- the panel's tree of everything in a unit, filtered, virtualised
+  var TREE_ROW = 24, TREE_H = 384;
+  function treeRows(uid) {
+    var t = ztree(uid), z = zdata();
+    if (!t) return [];
+    var q = (ast.treeQ[uid] || '').trim().toLowerCase(), rows = [];
+    if (!q) {
+      (function walk(n, depth) {
+        var kids = n.type === 'file' ? n.file.top.map(function (i) { return symNode(z.syms[i]); }) : n.type === 'sym' ? n.sym.kids.map(function (i) { return symNode(z.syms[i]); }) : n.kids;
+        kids.forEach(function (k) {
+          var hasKids = k.type === 'dir' || (k.type === 'file' && k.file.top.length) || (k.type === 'sym' && k.sym.kids.length);
+          var open = ast.treeOpen.has(uid + ':' + k.id);
+          rows.push({ node: k, depth: depth, kids: hasKids, open: open });
+          if (hasKids && open) walk(k, depth + 1);
+        });
+      })(t.root, 0);
+      return rows;
+    }
+    // Matches and the folders, files and classes around them.
+    var keep = new Set(), match = new Set();
+    function mark(id) {
+      for (var c = zchain(uid, id), i = 0; i < c.length; i++) keep.add(c[i]);
+      keep.add(id);
+    }
+    Object.keys(t.nodes).forEach(function (id) {
+      var n = t.nodes[id];
+      if (n.type !== 'unit' && (n.rel || n.name).toLowerCase().indexOf(q) >= 0) { match.add(id); mark(id); }
+    });
+    z.syms.forEach(function (y) {
+      if (z.files[y.file].unit !== uid) return;
+      if (y.name.toLowerCase().indexOf(q) >= 0 || y.qual.toLowerCase().indexOf(q) >= 0) {
+        match.add('s' + y.i); mark('s' + y.i);
+        for (var p = y.parent; p >= 0; p = z.syms[p].parent) keep.add('s' + p);
+      }
+    });
+    (function walk(n, depth) {
+      var kids = n.type === 'file' ? n.file.top.map(function (i) { return symNode(z.syms[i]); }) : n.type === 'sym' ? n.sym.kids.map(function (i) { return symNode(z.syms[i]); }) : n.kids;
+      kids.forEach(function (k) {
+        if (!keep.has(k.id)) return;
+        rows.push({ node: k, depth: depth, kids: false, open: true, hit: match.has(k.id) });
+        walk(k, depth + 1);
+      });
+    })(t.root, 0);
+    rows.forEach(function (r, i) { r.kids = i + 1 < rows.length && rows[i + 1].depth > r.depth; });
+    return rows;
+  }
+  function treeSection(u) {
+    var t = ztree(u.id);
+    if (!t) return '';
+    var om = zdata().omitted[u.id];
+    var html = '<h3>Inside · ' + esc(plural(t.root.files, 'file', 'files') + ' · ' + plural(t.root.syms, 'symbol', 'symbols')) + '</h3>';
+    if (om) html += '<p class="more">' + esc(plural(om.syms, 'symbol', 'symbols') + ' in ' + plural(om.files, 'file', 'files') + ' not embedded (--max-symbols ' + fmt(ZR.max_symbols) +
+      '). Run lidx graph --max-symbols ' + Math.max(ZR.max_symbols * 2, ZR.max_symbols + om.syms) + ' to include them, or lidx graph --seed <qualname> for one symbol.') + '</p>';
+    html += '<label class="sr-only" for="tree-q">Filter ' + esc(u.name) + '</label><input id="tree-q" class="tree-q" type="search" autocomplete="off" spellcheck="false" placeholder="Filter folders, files and symbols" data-tree="' + u.id + '" value="' + esc(ast.treeQ[u.id] || '') + '">';
+    html += '<div class="vtree" role="tree" aria-label="Folders, files and symbols in ' + esc(u.name) + '" data-vtree="' + u.id + '"><div class="vt-pad"><div class="vt-rows"></div></div></div><p class="more vt-count"></p>';
+    return html;
+  }
+  var treeCache = { uid: null, q: null, rows: [] };
+  function treeData(uid) {
+    var q = ast.treeQ[uid] || '', key = q + '|' + ast.treeOpen.size;
+    if (treeCache.uid !== uid || treeCache.key !== key) treeCache = { uid: uid, key: key, rows: treeRows(uid) };
+    return treeCache.rows;
+  }
+  function renderTree(scrollTo) {
+    var box = panel.querySelector ? panel.querySelector('[data-vtree]') : null;
+    if (!box) return;
+    var uid = +box.dataset.vtree, rows = treeData(uid);
+    var pad = box.querySelector('.vt-pad'), list = box.querySelector('.vt-rows');
+    var h = Math.min(TREE_H, Math.max(TREE_ROW, rows.length * TREE_ROW));
+    box.style.height = h + 'px';
+    pad.style.height = rows.length * TREE_ROW + 'px';
+    if (scrollTo !== undefined && scrollTo >= 0) {
+      var top = scrollTo * TREE_ROW;
+      if (top < box.scrollTop || top > box.scrollTop + h - TREE_ROW) box.scrollTop = Math.max(0, top - h / 2);
+    }
+    var first = Math.max(0, Math.floor(box.scrollTop / TREE_ROW) - 8), last = Math.min(rows.length, first + Math.ceil(h / TREE_ROW) + 16);
+    var cur = ast.zsel && ast.zsel.u === uid ? ast.zsel.id : null, html = '', filtered = !!(ast.treeQ[uid] || '').trim();
+    for (var i = first; i < last; i++) {
+      var r = rows[i], n = r.node, kind = n.type === 'sym' ? n.sym.kind : n.type === 'dir' ? 'folder' : 'file';
+      var meta = n.type === 'sym' ? ':' + n.sym.line : n.type === 'dir' ? fmt(n.syms) : n.file.emb ? fmt(n.file.syms) : fmt(n.file.syms) + ' not embedded';
+      html += '<div class="vt-row' + (r.hit ? ' hit' : '') + (n.id === cur ? ' cur' : '') + '" role="treeitem" aria-level="' + (r.depth + 1) + '"' +
+        (r.kids ? ' aria-expanded="' + r.open + '"' : '') + ' style="padding-left:' + (4 + r.depth * 14) + 'px">' +
+        (r.kids && !filtered ? '<button type="button" class="tw" data-ttog="' + esc(n.id) + '" tabindex="-1" aria-label="' + (r.open ? 'Collapse ' : 'Expand ') + esc(n.name) + '">' + (r.open ? '▾' : '▸') + '</button>'
+          : '<span class="tw" aria-hidden="true">' + (r.kids ? '▾' : '') + '</span>') +
+        '<button type="button" class="tn" data-tgo="' + esc(n.id) + '" data-ti="' + i + '"><span class="g">' + esc(n.type === 'sym' ? glyph(kind) : n.type === 'dir' ? '▭' : '▤') + '</span>' +
+        '<span class="nm">' + esc(n.name) + '</span><span class="loc">' + esc(meta) + '</span></button></div>';
+    }
+    list.style.transform = 'translateY(' + first * TREE_ROW + 'px)';
+    list.innerHTML = html;
+    var count = panel.querySelector('.vt-count');
+    if (count) count.textContent = ast.treeQ[uid] ? plural(rows.filter(function (r) { return r.hit; }).length, 'match', 'matches') : '';
+  }
+  var treeTimer = null;
+  panel.addEventListener('input', function (ev) {
+    var t = ev.target;
+    if (!t || !t.dataset || t.dataset.tree === undefined) return;
+    ast.treeQ[+t.dataset.tree] = t.value;
+    clearTimeout(treeTimer);
+    treeTimer = setTimeout(function () { var b = panel.querySelector('[data-vtree]'); if (b) b.scrollTop = 0; renderTree(); writeHash(); }, 90);
+  });
+  panel.addEventListener('scroll', function (ev) {
+    if (ev.target && ev.target.classList && ev.target.classList.contains('vtree')) renderTree();
+  }, true);
+  panel.addEventListener('keydown', function (ev) {
+    var b = ev.target.closest ? ev.target.closest('.tn') : null;
+    if (ev.target.classList && ev.target.classList.contains('tree-q') && ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      var f = panel.querySelector('.vt-row .tn');
+      if (f) f.focus();
+      return;
+    }
+    if (!b) return;
+    var i = +b.dataset.ti, rows = treeData(+panel.querySelector('[data-vtree]').dataset.vtree), r = rows[i];
+    var go = function (j) {
+      if (j < 0 || j >= rows.length) return;
+      renderTree(j);
+      var nb = panel.querySelector('.tn[data-ti="' + j + '"]');
+      if (nb) nb.focus();
+    };
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); go(i + 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); if (i === 0) { var q = panel.querySelector('.tree-q'); if (q) q.focus(); } else go(i - 1); }
+    else if ((ev.key === 'ArrowRight' && r && r.kids && !r.open) || (ev.key === 'ArrowLeft' && r && r.kids && r.open)) {
+      ev.preventDefault(); treeToggle(r.node.id); go(i);
+    }
+  });
+  function treeToggle(id) {
+    var box = panel.querySelector('[data-vtree]');
+    if (!box) return;
+    var key = box.dataset.vtree + ':' + id;
+    if (ast.treeOpen.has(key)) ast.treeOpen.delete(key); else ast.treeOpen.add(key);
+    treeCache.uid = null;
+    renderTree();
+  }
+  // Click in the tree: zoom the sheet to the entry; the panel stays.
+  function treeGo(uid, id) {
+    var keep = ast.selected;
+    zoomReveal(uid, id);
+    ast.selected = keep || 'u' + uid;
+    ast.zpanelUnit = uid;
+    renderPanel();
+    var rows = treeData(uid);
+    for (var i = 0; i < rows.length; i++) if (rows[i].node.id === id) { renderTree(i); break; }
+  }
+
+  // ----- URL hash: #zoom=<unit>/<path>,...&sel=<unit>/<id>&panel=<unit>&filter=<text>
+  function unitByName(name) { for (var i = 0; i < AU.length; i++) if (AU[i].name === name) return AU[i].id; return -1; }
+  function nodeRef(uid, id) {
+    var n = znode(uid, id);
+    if (!n) return '';
+    if (n.type === 'sym') return zdata().files[n.sym.file].path.slice((AU[uid].dir || '').length) + '#' + n.sym.qual;
+    return n.rel;
+  }
+  function nodeFromRef(uid, ref) {
+    var t = ztree(uid), z = zdata();
+    if (!t) return null;
+    var hashAt = ref.indexOf('#');
+    if (hashAt >= 0) {
+      var fileRel = ref.slice(0, hashAt), q = ref.slice(hashAt + 1), fn = null;
+      Object.keys(t.nodes).forEach(function (id) { if (t.nodes[id].type === 'file' && t.nodes[id].rel === fileRel) fn = t.nodes[id]; });
+      if (!fn) return null;
+      var hit = null;
+      z.syms.forEach(function (y) { if (!hit && y.file === fn.file.i && (y.qual === q || y.name === q)) hit = 's' + y.i; });
+      return hit;
+    }
+    if (t.rel[ref]) return t.rel[ref].id;
+    var found = null;
+    Object.keys(t.nodes).forEach(function (id) { if (t.nodes[id].rel === ref) found = id; });
+    return found;
+  }
+  function writeHash() {
+    var hist = window.history, loc = window.location;
+    if (!ZR || !hist || !hist.replaceState || !loc) return;
+    var parts = [];
+    var z = [];
+    ast.open.forEach(function (uid) {
+      var path = ast.zpath[uid] || [];
+      z.push(encodeURIComponent(AU[uid].name) + (path.length ? '/' + encodeURIComponent(nodeRef(uid, path[path.length - 1])) : ''));
+    });
+    if (z.length) parts.push('zoom=' + z.join(','));
+    if (ast.zsel) parts.push('sel=' + encodeURIComponent(AU[ast.zsel.u].name) + '/' + encodeURIComponent(nodeRef(ast.zsel.u, ast.zsel.id)));
+    if (ast.selected && ast.selected.charAt(0) === 'u') {
+      var pu = +ast.selected.slice(1);
+      parts.push('panel=' + encodeURIComponent(AU[pu].name));
+      if (ast.treeQ[pu]) parts.push('filter=' + encodeURIComponent(ast.treeQ[pu]));
+    }
+    try { hist.replaceState(null, '', parts.length ? '#' + parts.join('&') : loc.pathname + loc.search); } catch (e) { /* file: pages may refuse */ }
+  }
+  function readHash() {
+    var h = ((window.location && window.location.hash) || '').replace(/^#/, '');
+    if (!ZR || !h) return false;
+    var p = {};
+    h.split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) p[kv.slice(0, i)] = kv.slice(i + 1); });
+    var applied = false, lastU = null;
+    (p.zoom ? p.zoom.split(',') : []).forEach(function (entry) {
+      var i = entry.indexOf('/'), name = decodeURIComponent(i >= 0 ? entry.slice(0, i) : entry), uid = unitByName(name);
+      if (uid < 0) return;
+      revealUnit(uid);
+      var ref = i >= 0 ? decodeURIComponent(entry.slice(i + 1)) : '', id = ref ? nodeFromRef(uid, ref) : null;
+      var path = id ? zchain(uid, id) : [];
+      if (id && !openable(znode(uid, id)) && znode(uid, id).type !== 'sym') path = path.slice(0, -1);
+      ast.open.add(uid); ast.zpath[uid] = path; ast.zfocus = uid; lastU = uid; applied = true;
+    });
+    if (p.sel) {
+      var j = p.sel.indexOf('/'), su = unitByName(decodeURIComponent(p.sel.slice(0, j)));
+      if (su >= 0) {
+        var sid = nodeFromRef(su, decodeURIComponent(p.sel.slice(j + 1)));
+        if (sid) {
+          var chain = zchain(su, sid), n = znode(su, sid);
+          ast.open.add(su);
+          if (!ast.zpath[su] || ast.zpath[su].length < chain.length - 1) ast.zpath[su] = n.type === 'sym' ? chain : chain.slice(0, -1);
+          ast.zsel = { u: su, id: sid }; ast.zfocus = su; lastU = su; applied = true;
+        }
+      }
+    }
+    if (p.panel) {
+      var pu = unitByName(decodeURIComponent(p.panel));
+      if (pu >= 0) { ast.selected = 'u' + pu; ast.zpanelUnit = pu; applied = true; if (p.filter) ast.treeQ[pu] = decodeURIComponent(p.filter); }
+    }
+    ast.hashFocus = lastU;
+    return applied;
+  }
+
+  function zendLabel(r) {
+    if (r.card !== undefined) return AU[r.card].name;
+    var it = r.it;
+    if (!it) return AU[r.u].name;
+    return it.type === 'row' ? it.sym.name : it.node.name;
+  }
+  function zlinkTooltip(l) {
+    if (!l) return '';
+    var html = '<div class="t-kind">' + esc(zendLabel(l.a)) + ' → ' + esc(zendLabel(l.b)) + '</div><div><b>' + esc(zkindsLabel(l.kinds)) + '</b></div>';
+    if (l.keys.length) html += '<span class="t-ev">' + esc(l.keys.map(keyName).join(', ')) + '</span>';
+    if (l.port) html += '<div class="t-dim">' + esc(AU[l.port.other].name) + ' is closed: the link ends at the card edge</div>';
+    return html;
+  }
+  function zlinkPanel(l) {
+    var html = '<div class="panel-head"><h2>' + esc(zendLabel(l.a)) + ' → ' + esc(zendLabel(l.b)) + '</h2>' +
+      '<button type="button" data-act="aclose" aria-label="Close details">×</button></div>';
+    html += '<p class="lead">' + esc(zkindsLabel(l.kinds)) + '</p>';
+    if (l.keys.length) html += '<h3>Through</h3><div class="edges"><ul>' + l.keys.map(function (k) { return '<li class="loc" style="padding:2px 7px;font:12px var(--mono)">' + esc(keyName(k)) + '</li>'; }).join('') + '</ul></div>';
+    // The stored edges behind it, end to end.
+    var z = zdata(), rows = [], ka = repKey(l.a), kb = repKey(l.b);
+    z.edges.forEach(function (e) {
+      if (rows.length > 60) return;
+      var A = zrep(e.a), B = zrep(e.b);
+      if (repKey(A) === ka && repKey(B) === kb) rows.push(e);
+    });
+    html += '<h3>Edges · ' + fmt(rows.length) + (rows.length > 60 ? '+' : '') + '</h3><div class="edges"><ul>' + rows.slice(0, 60).map(function (e) {
+      return '<li><button type="button" data-zend="' + e.a + '"><span class="nm">' + esc(endName(e.a)) + ' → ' + esc(endName(e.b)) +
+        '<span class="w"> · ' + esc((ZKIND_WORD[e.kind] || e.kind.toLowerCase()) + (e.w > 1 ? ' ×' + fmt(e.w) : '')) + '</span></span><span class="loc">' + esc(endLoc(e.a)) + '</span></button></li>';
+    }).join('') + '</ul></div>';
+    return html;
   }
 
   // ------------------------------------------------------------- levels
@@ -4233,13 +5403,16 @@
     graphOnly.forEach(function (el) { el.hidden = app; });
     crumbs.hidden = app;
     hideTooltip();
+    if (!app && zedges) zedges.innerHTML = '';
     if (app) {
       empty.hidden = true;
       sim.running = false;
       renderApps(ast.built);
+      renderAppCrumbs();
     } else {
       empty.hidden = true;
       ensureGraphBooted();
+      renderCrumbs();
       if (!fromHistory) {
         var d = l === 'file' ? Infinity : FOLDER_DEPTH;
         if (was === 'app' && ((d === Infinity) === (st.depth === Infinity))) { resize(); if (!st.userMoved) fit(true); }
@@ -4301,7 +5474,10 @@
   function setStatus() {
     if (st.level === 'app') {
       statusEl.textContent = plural(Object.keys(ast.pos).length, 'card', 'cards') + ' · ' +
-        plural(ast.conns.filter(function (c) { return !c.skip; }).length, 'link', 'links') + ' · ' + Math.round(ast.cam.k * 100) + '%';
+        plural(ast.conns.filter(function (c) { return !c.skip; }).length, 'link', 'links') +
+        (ast.open.size ? ' · ' + plural(ast.open.size, 'card', 'cards') + ' open, ' + plural(ast.zlinks.length, 'inner link', 'inner links') +
+          (ast.zlinks.length > ZLINK_CAP ? ' (' + fmt(ZLINK_CAP) + ' heaviest drawn)' : '') : ZR ? ' · scroll into a card to open it' : '') +
+        ' · ' + Math.round(ast.cam.k * 100) + '%';
       return;
     }
     var running = sim.running ? 'laying out · ' : '';
@@ -4363,8 +5539,40 @@
   // A repository that is one unit opens its card: one closed box says
   // nothing the header does not.
   var shownUnits = AU.filter(function (u) { return !u.hidden; });
-  if (shownUnits.length === 1) ast.open.add(shownUnits[0].id);
+  // A malformed fragment (bad percent-encoding) is ignored, not fatal.
+  var fromHash = false;
+  try { fromHash = st.level === 'app' && readHash(); } catch (e) { fromHash = false; }
+  if (!fromHash && shownUnits.length === 1) { ast.open.add(shownUnits[0].id); ast.zpath[shownUnits[0].id] = []; ast.zfocus = shownUnits[0].id; }
   if (st.level === 'app') setLevel('app', true);
+  if (fromHash) {
+    // Straight to the state the link names, without animating.
+    var hf = ast.hashFocus, savedReduce = REDUCE;
+    REDUCE = true;
+    // The panel first, so the fit below sees the stage it leaves.
+    renderPanel();
+    onResize();
+    if (ast.zsel && ast.zitems[ast.zsel.u] && ast.zitems[ast.zsel.u].byId[ast.zsel.id]) {
+      var zp = ast.zpath[ast.zsel.u], deepIt = zp.length ? ast.zitems[ast.zsel.u].byId[zp[zp.length - 1]] : null;
+      fitItem(ast.zsel.u, ast.zitems[ast.zsel.u].byId[ast.zsel.id], deepIt);
+    } else if (ast.open.size > 1) {
+      // Several open cards: their deepest open levels, together.
+      var ub = null;
+      ast.open.forEach(function (uid) {
+        var p = ast.zpath[uid] || [], b = p.length ? itemBox(uid, ast.zitems[uid].byId[p[p.length - 1]]) : ast.pos['u' + uid];
+        if (!b) return;
+        if (!ub) ub = { x: b.x, y: b.y, x2: b.x + b.w, y2: b.y + b.h };
+        else { ub.x = Math.min(ub.x, b.x); ub.y = Math.min(ub.y, b.y); ub.x2 = Math.max(ub.x2, b.x + b.w); ub.y2 = Math.max(ub.y2, b.y + b.h); }
+      });
+      if (ub) fitBox({ x: ub.x, y: ub.y, w: ub.x2 - ub.x, h: ub.y2 - ub.y }, 0.94); else fitApps();
+    }
+    else if (hf !== null && hf !== undefined && ast.open.has(hf)) {
+      var hp = ast.zpath[hf], hb = hp.length ? itemBox(hf, ast.zitems[hf].byId[hp[hp.length - 1]]) : ast.pos['u' + hf];
+      fitBox(hb, 0.9);
+    }
+    REDUCE = savedReduce;
+    renderZoomView(true);
+    renderPanel();
+  }
   else { ensureGraphBooted(); updateLevelButtons(); }
   setStatus();
   // Exposed for automated checks (headless screenshots, tests).
@@ -4421,6 +5629,50 @@
       renderApps(true); renderLegend();
     },
     panelText: function () { return panel.hidden ? '' : panel.textContent; },
+    // Semantic zoom: open cards, what each shows, the links drawn.
+    zoom: {
+      expand: function (name) { var id = unitByName(name); if (id < 0) return false; revealUnit(id); zoomOpen(id, ast.zpath[id] || []); return true; },
+      // Open `name` down to the folder or file at `rel` (relative to the unit).
+      open: function (name, rel) {
+        var id = unitByName(name), nid = id >= 0 ? nodeFromRef(id, rel) : null;
+        if (!nid) return false;
+        zoomOpen(id, zchain(id, nid)); return true;
+      },
+      reveal: function (name, ref) { var id = unitByName(name), nid = id >= 0 ? nodeFromRef(id, ref) : null; return nid ? zoomReveal(id, nid) : false; },
+      escape: function () { appKey({ key: 'Escape', target: document.body, preventDefault: function () {} }); },
+      crumb: function (name, depth) { zoomTo(unitByName(name), depth); },
+      open_cards: function () { return Array.from(ast.open).map(function (u) { return AU[u].name; }); },
+      path: function (name) { var id = unitByName(name); return (ast.zpath[id] || []).map(function (n) { return znode(id, n).name; }); },
+      crumbs: function () { var u = ast.zfocus; return u === null || u === undefined || !ast.open.has(u) ? [] : [AU[u].name].concat((ast.zpath[u] || []).map(function (n) { return znode(u, n).name; })); },
+      items: function (name) {
+        var id = unitByName(name), z = ast.zitems[id];
+        return z ? z.list.map(function (it) {
+          var n = it.type === 'row' ? it.sym : it.node.sym || it.node;
+          return { type: it.type, name: n.name, kind: n.kind || n.type, sig: n.sig || null, line: n.line || null, depth: it.depth };
+        }) : [];
+      },
+      rendered: function () { return ast.zshown || 0; },
+      // Cost of one re-render after panning by (dx, dy) screen pixels.
+      panMs: function (dx, dy) { ast.cam.x -= dx; ast.cam.y -= dy; applyAppCam(); var t = performance.now(); renderZoomView(true); return performance.now() - t; },
+      links: function () {
+        return ast.zlinks.map(function (l) {
+          var side = function (r) { return r.card !== undefined ? { unit: AU[r.card].name, card: true } : { unit: AU[r.u].name, name: zendLabel(r), type: r.it.type, ref: nodeRef(r.u, r.it.id) }; };
+          return { from: side(l.a), to: side(l.b), weight: l.w, kinds: l.kinds, keys: l.keys, port: l.port ? AU[l.port.other].name : null };
+        });
+      },
+      ports: function () { return ast.ports.map(function (p) { return { unit: AU[p.u].name, other: AU[p.other].name, out: p.out, weight: p.w, shown: !!ast.pos['u' + p.other] }; }); },
+      selected: function () { var s = ast.zsel; if (!s) return null; var n = znode(s.u, s.id); return { unit: AU[s.u].name, name: n.name, type: n.type }; },
+      select: function (name, ref) { var id = unitByName(name), nid = nodeFromRef(id, ref); if (nid) zselect(id, nid); return !!nid; },
+      tree: function (name, filter) {
+        var id = unitByName(name);
+        ast.treeQ[id] = filter || '';
+        treeCache.uid = null;
+        return treeRows(id).map(function (r) { return { name: r.node.name, type: r.node.type, depth: r.depth, hit: !!r.hit, id: r.node.id }; });
+      },
+      treeGo: function (name, id) { treeGo(unitByName(name), id); },
+      hash: function () { return window.location ? window.location.hash : ''; },
+      omitted: function () { return zdata() ? zdata().omitted : {}; }
+    },
     back: goBack,
     selected: function () { return st.selected; },
     // A qualname drawn inside a folder the visible budget folded, if any.

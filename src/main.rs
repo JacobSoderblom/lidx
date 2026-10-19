@@ -167,6 +167,7 @@ fn main() -> Result<()> {
             kinds,
             lang,
             max_nodes,
+            max_symbols,
             level,
             diff,
             module_depth,
@@ -185,6 +186,7 @@ fn main() -> Result<()> {
                 kinds: (!kinds.is_empty()).then_some(kinds),
                 languages: (!lang.is_empty()).then_some(lang),
                 max_nodes,
+                max_symbols,
                 level: level.as_deref().map(|l| match l {
                     "symbol" => graph_html::Level::Symbol,
                     "file" => graph_html::Level::File,

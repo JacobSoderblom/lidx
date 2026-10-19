@@ -481,6 +481,107 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
   .card, .apps-edges .conn { transition: none; }
 }
 
+/* ------------------------------------------------------- app view zoom */
+/* An open card is a sheet of drawings: folders and files as lighter
+   sheets inside it, an open one framed, symbols as index cards with their
+   members listed. Each level one step further into the paper. */
+.apps-edges.zedges { z-index: 2; }
+.apps-edges .conn.under .ln { opacity: 0.28; }
+.apps-edges .conn.under .ah { opacity: 0.28; }
+.apps-edges .conn.under .lbl { display: none !important; }
+/* Inner links read as a light wash until a box is in focus. */
+.zedges .zl:not(.on):not(.cross) { opacity: 0.4; }
+.zedges .zl.many:not(.on):not(.cross) { opacity: 0.2; }
+.zedges.hasfocus .zl:not(.on) { opacity: 0.08; }
+.zedges .zl .lbl { display: none; }
+.zedges .zl.on .lbl, .zedges .zl.cross .lbl { display: block; }
+.zedges .zl.on .ln { stroke: var(--focus); }
+.zedges .zl.on .ah { fill: var(--focus); }
+.zedges .zport .ln { fill: none; stroke: var(--c); stroke-dasharray: 2 4; opacity: 0.7; }
+.zedges .zport .ah { fill: var(--c); opacity: 0.7; }
+.zedges .zport .pt { fill: var(--paper); stroke: var(--c); stroke-width: 1.6; }
+.zedges .zport .plbl { font: 700 11px var(--sans); letter-spacing: 0.02em; fill: var(--ink); paint-order: stroke; stroke: var(--canvas); stroke-width: 4px; stroke-linejoin: round; }
+.card .zexp {
+  position: absolute; bottom: 6px; right: 6px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink-2); border-radius: 5px;
+  font-size: 11.5px; padding: 1px 8px; min-height: 22px; opacity: 0; transition: opacity 0.15s;
+}
+.card:hover .zexp, .card:focus-within .zexp, .card.sel .zexp { opacity: 1; }
+.card .zexp:hover { color: var(--ink); border-color: var(--ink-3); }
+.card.zoomed { padding: 0; cursor: grab; box-sizing: border-box; }
+.card.zoomed.sel { box-shadow: 0 0 0 3px var(--focus-soft); }
+.card.zoomed .zh { position: absolute; left: 0; top: 0; right: 0; height: 74px; padding: 9px 12px 0; border-bottom: 1px solid var(--rule); }
+.card.zoomed .zt { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.card.zoomed .zt h3 { margin: 2px 0 0; font-size: 16px; }
+.card.zoomed .zn { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.card.zoomed .zact { margin-left: auto; display: flex; gap: 6px; }
+.card.zoomed .zact button, .card.zoomed .zcrumbs button { border: 1px solid var(--rule); background: var(--paper); border-radius: 5px; padding: 1px 8px; min-height: 22px; font-size: 12px; color: var(--ink-2); }
+.card.zoomed .zact button:hover { color: var(--ink); border-color: var(--ink-3); }
+.card.zoomed .zcrumbs { display: flex; align-items: center; gap: 3px; margin-top: 5px; font-size: 12px; white-space: nowrap; overflow: hidden; }
+.card.zoomed .zcrumbs button { border-color: transparent; background: none; padding: 0 4px; font: 12px var(--mono); }
+.card.zoomed .zcrumbs button:hover { border-color: var(--rule); color: var(--ink); }
+.card.zoomed .zcrumbs button[aria-current="location"] { color: var(--ink); font-weight: 700; }
+.card.zoomed .zcrumbs .sep { color: var(--ink-3); }
+.card.zoomed .zhint { margin: 7px 0 0; font-size: 12px; color: var(--ink-3); }
+.zin { position: absolute; left: 12px; top: 84px; }
+.zom { position: absolute; left: 12px; right: 12px; bottom: 2px; margin: 0; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zempty { margin: 8px 0; color: var(--ink-3); font-size: 13px; }
+.zi { position: absolute; left: 0; top: 0; box-sizing: border-box; color: var(--ink); font-size: 12px; line-height: 1.3; cursor: pointer; overflow: hidden; }
+.zi:focus { outline: none; }
+.zi:focus-visible, .zi.zsel { box-shadow: 0 0 0 2px var(--focus); z-index: 1; }
+.zi .zk { display: flex; gap: 6px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+.zi .zk .n { margin-left: auto; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.zi .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zi .n { color: var(--ink-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.zi .sg { font: 11px var(--mono); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.z-dir, .z-file { padding: 6px 9px; border: 1px solid var(--ink-3); border-radius: 3px; background: var(--paper-2); }
+.z-file { background: var(--paper); border-style: solid; border-color: var(--rule); border-left: 3px solid var(--ink-3); }
+.z-dir .nm, .z-file .nm { font: 600 12.5px var(--mono); }
+.z-dir:hover, .z-file:hover { border-color: var(--ink); }
+.zi.compact { padding: 3px 8px; display: flex; align-items: center; }
+.zi.compact .nm { font: 500 12px var(--mono); }
+.z-dir.leafbox, .z-file.leafbox { cursor: default; opacity: 0.75; }
+.z-frame { border: 1px solid var(--ink-3); border-radius: 4px; background: var(--paper-2); cursor: grab; overflow: visible; }
+.z-frame.f-file { background: var(--paper-3); }
+.z-frame .zfh { display: flex; align-items: baseline; gap: 8px; height: 26px; padding: 4px 8px 0; }
+.z-frame .zup { border: 0; background: none; padding: 0 2px; font: 700 12.5px var(--mono); color: var(--ink); border-radius: 3px; }
+.z-frame .zup::before { content: "▾ "; color: var(--ink-3); }
+.z-frame .zup:hover, .z-frame .zup:focus-visible { background: var(--paper); }
+.z-sym { padding: 5px 9px; border: 1px solid var(--ink-3); border-radius: 3px; background: var(--paper); }
+.z-sym.has-rows { border-color: var(--ink); border-width: 1.2px; }
+.z-sym .nm { font-size: 13px; }
+.z-row {
+  display: flex; align-items: baseline; gap: 6px; padding: 0 5px; border: 0; background: none; text-align: left;
+  font: inherit; font-size: 12px; color: var(--ink); white-space: nowrap; border-radius: 3px;
+}
+.z-row:hover { background: var(--paper-2); }
+.z-row .g, .vt-row .g { flex: none; width: 13px; text-align: center; font: 600 10.5px var(--mono); color: var(--ink-3); }
+.z-row .nm { font-weight: 500; flex: none; max-width: 60%; }
+.z-row .sg { flex: 1; min-width: 0; }
+.panel .tree-q {
+  width: 100%; box-sizing: border-box; margin: 4px 0 6px; padding: 5px 9px; border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--paper); color: var(--ink); font: inherit; font-size: 13px;
+}
+.panel .tree-q:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+.panel .vtree { position: relative; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); }
+.panel .vt-pad { position: relative; }
+.panel .vt-rows { position: absolute; left: 0; right: 0; top: 0; }
+.panel .vt-row { display: flex; align-items: center; height: 24px; box-sizing: border-box; }
+.panel .vt-row .tw { flex: none; width: 18px; height: 22px; border: 0; background: none; padding: 0; color: var(--ink-3); font-size: 11px; }
+.panel .vt-row .tn {
+  flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; height: 22px; border: 0; background: none; text-align: left;
+  border-radius: 4px; padding: 0 6px 0 2px; font-size: 12.5px; color: var(--ink);
+}
+.panel .vt-row .tn:hover, .panel .vt-row .tn:focus-visible { background: var(--paper-2); }
+.panel .vt-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel .vt-row .loc { margin-left: auto; color: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.panel .vt-row.hit .nm { font-weight: 700; }
+.panel .vt-row.cur .tn { background: var(--focus-soft); }
+.panel .linkish { border: 0; background: none; padding: 0; color: var(--ink); text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; font: inherit; }
+.panel .linkish:hover { text-decoration-color: var(--ink); }
+@media (prefers-reduced-motion: reduce) {
+  .card .zexp { transition: none; }
+}
+
 /* ------------------------------------------------------------ phone */
 @media (max-width: 760px) {
   .bar { padding: 8px 16px 6px; gap: 6px 8px; }

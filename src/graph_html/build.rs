@@ -1209,6 +1209,8 @@ pub(crate) struct RepoRow {
     pub src_path: String,
     pub src_qual: String,
     pub src_line: i64,
+    pub src_id: i64,
+    pub tgt_id: Option<i64>,
     pub tgt_path: Option<String>,
     pub tgt_lang: Option<String>,
     pub tgt_qual: Option<String>,
@@ -1260,7 +1262,8 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
     let sql = format!(
         "SELECT e.kind, sf.path, tf.path, tf.language, ts.qualname, e.target_qualname,
                 e.evidence_snippet, e.evidence_start_line, ef.path,
-                CASE WHEN e.kind = 'XREF' THEN e.detail END, ss.qualname, ss.start_line
+                CASE WHEN e.kind = 'XREF' THEN e.detail END, ss.qualname, ss.start_line,
+                ss.id, ts.id
          FROM edges e
          JOIN symbols ss ON e.source_symbol_id = ss.id
          JOIN files sf ON ss.file_id = sf.id
@@ -1315,6 +1318,8 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
             ev_file: r.get(8)?,
             src_qual: r.get(10)?,
             src_line: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
+            src_id: r.get(12)?,
+            tgt_id: r.get(13)?,
         });
     }
     Ok(out)

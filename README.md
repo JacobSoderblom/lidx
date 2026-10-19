@@ -168,9 +168,18 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
   "calls ×N", "RPC ×N", "publishes to topic X", "reads secret X",
   "references" and "deploys". Test projects, examples, docs and tooling
   start hidden. Click a card for every route, topic and key with the
-  symbols behind it; double-click to open it into its folders. The
-  Apps / Folders / Files switch (and `--level module|file`) gives the
-  folder map, which drills down to files.
+  symbols behind it. Scroll into a card (or double-click it) to open it in
+  place: its folders, then a folder's files, then a file's classes with
+  their methods, functions and constants, each with its signature and
+  `file:line`. The calls, uses and bridges between whatever is shown are
+  drawn with weights; links to another app end at the card's edge, named,
+  and run on to that card. Several cards can be open at once, so a client's
+  RPC call reaches the server method. Scroll out, `Esc` or the breadcrumb
+  goes back up, and the panel lists everything inside a unit in a
+  filterable tree. The URL fragment keeps what is open. `--max-symbols`
+  (default 60000) caps the symbols embedded for this, whole files per
+  unit; the page and stderr say what was left out. The Apps / Folders /
+  Files switch (and `--level module|file`) gives the folder map.
 - `--seed <qualname or query>` (repeatable), `--depth`, `--direction up|down|both`,
   `--kinds CALLS,USES`, `--lang`, `--max-nodes` (a cap on every node in the
   page, halo and externals included): a symbol neighbourhood plus
