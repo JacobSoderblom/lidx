@@ -246,3 +246,57 @@ fn the_app_sheet_layers_by_role_and_switches_to_folders() {
     let c = run(&p, "colour", "");
     assert_eq!(c["colorBy"], "app", "{c}");
 }
+
+/// A code link no manifest declares is a resolver guess: off the sheet
+/// until the legend turns guesses on.
+#[test]
+fn guessed_code_links_start_hidden_on_the_app_sheet() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-viewer-guesses-",
+        &[
+            (
+                "core/Core.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+            ),
+            (
+                "core/Repo.cs",
+                "namespace Core\n{\n    public class Repo\n    {\n        public int Load() { return 1; }\n    }\n}\n",
+            ),
+            (
+                "extra/Extra.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+            ),
+            (
+                "extra/Extra.cs",
+                "using Core;\n\nnamespace Extra\n{\n    public class Helper\n    {\n        public int Run() { return new Repo().Load(); }\n    }\n}\n",
+            ),
+        ],
+    );
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "guesses", "");
+    let key = |name: &str| -> Value {
+        r["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("no card {name}: {r}"))["key"]
+            .clone()
+    };
+    let (extra, core) = (key("Extra"), key("Core"));
+    let drawn = |links: &Value| -> Vec<String> {
+        links
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["from"] == extra && l["to"] == core)
+            .map(|l| l["family"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(drawn(&r["before"]), Vec::<String>::new(), "{r}");
+    assert_eq!(drawn(&r["after"]), vec!["code".to_string()], "{r}");
+}

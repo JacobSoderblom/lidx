@@ -503,6 +503,17 @@ fn crates_go_mains_and_tauri_apps() {
             "[package]\nname = \"core-lib\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\n",
         ),
         ("crates/core-lib/src/lib.rs", "pub fn run() {}\n"),
+        (
+            "crates/multi/Cargo.toml",
+            "[package]\nname = \"multi\"\nversion = \"0.1.0\"\n",
+        ),
+        ("crates/multi/src/bin/one.rs", "fn main() {}\n"),
+        (
+            "crates/client/Cargo.toml",
+            "[package]\nname = \"client\"\nversion = \"0.1.0\"\n",
+        ),
+        ("crates/client/src/lib.rs", "pub fn get() {}\n"),
+        ("crates/client/src/bin/test_server.rs", "fn main() {}\n"),
         ("go/go.mod", "module example.com/scan\n\ngo 1.22\n"),
         (
             "go/cmd/scan/main.go",
@@ -531,6 +542,16 @@ fn crates_go_mains_and_tauri_apps() {
         kinds.get("tool").map(String::as_str),
         Some("cli"),
         "{kinds:?}"
+    );
+    assert_eq!(
+        kinds.get("multi").map(String::as_str),
+        Some("cli"),
+        "a crate with only src/bin/ is a binary: {kinds:?}"
+    );
+    assert_eq!(
+        kinds.get("client").map(String::as_str),
+        Some("lib"),
+        "a test server in src/bin/ makes no binary: {kinds:?}"
     );
     assert_eq!(
         kinds.get("core-lib").map(String::as_str),
@@ -577,4 +598,103 @@ fn crates_go_mains_and_tauri_apps() {
         )),
         "the main package depends on its module: {links:?}"
     );
+}
+
+/// A workspace root whose `dev` runs its members is not an app; a
+/// ProjectReference written with backslashes and another case still finds
+/// its project; an image named only by a shared last segment (`api`)
+/// deploys nothing, while a full name deploys exactly its app; a
+/// `setup.py` that mentions `__name__` first still has its own name.
+#[test]
+fn workspace_roots_path_case_and_ambiguous_images() {
+    let files: &[(&str, &str)] = &[
+        (
+            "package.json",
+            "{ \"name\": \"mono\", \"private\": true, \"workspaces\": [\"apps/*\"], \"scripts\": { \"dev\": \"turbo run dev\" } }\n",
+        ),
+        (
+            "scripts/release.ts",
+            "export function release() {\n  return 1;\n}\n",
+        ),
+        (
+            "apps/web/package.json",
+            "{ \"name\": \"web\", \"scripts\": { \"dev\": \"vite\" }, \"dependencies\": { \"react\": \"18.0.0\" } }\n",
+        ),
+        (
+            "apps/web/src/main.ts",
+            "export function boot() {\n  return 1;\n}\n",
+        ),
+        (
+            "src/Shop.Api/Shop.Api.csproj",
+            concat!(
+                "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n",
+                "  <ItemGroup>\n",
+                "    <ProjectReference Include=\"..\\..\\Libs\\core\\Core.csproj\" />\n",
+                "  </ItemGroup>\n",
+                "</Project>\n",
+            ),
+        ),
+        (
+            "src/Shop.Api/Program.cs",
+            "using Core;\n\nnamespace Shop.Api\n{\n    public class P\n    {\n        public int Main() { return new Repo().Load(); }\n    }\n}\n",
+        ),
+        (
+            "src/Billing.Api/Billing.Api.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n</Project>\n",
+        ),
+        (
+            "src/Billing.Api/Program.cs",
+            "namespace Billing.Api\n{\n    public class P\n    {\n        public void Main() { }\n    }\n}\n",
+        ),
+        (
+            "libs/Core/Core.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+        ),
+        (
+            "libs/Core/Repo.cs",
+            "namespace Core\n{\n    public class Repo\n    {\n        public int Load() { return 1; }\n    }\n}\n",
+        ),
+        (
+            "deploy/a/api.yaml",
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      containers:\n        - name: api\n          image: registry.example.com/api:1\n",
+        ),
+        (
+            "deploy/b/billing.yaml",
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: billing\nspec:\n  template:\n    spec:\n      containers:\n        - name: billing\n          image: registry.example.com/billing-api:1\n",
+        ),
+        (
+            "py/setup.py",
+            "if __name__ == \"__main__\":\n    pass\n\nsetup(name=\"py-tools\", version=\"1.0\")\n",
+        ),
+        ("py/py_tools/core.py", "def run():\n    return 1\n"),
+    ];
+    let (_tmp, root, db) = common::index_repo("lidx-apps-edges-", files);
+    let doc = page(&root, &db, &[]);
+    let a = Apps { doc: &doc };
+    let kinds = a.kinds();
+    let expected: BTreeMap<String, String> = [
+        ("web", "ui"),
+        ("Shop.Api", "api"),
+        ("Billing.Api", "api"),
+        ("Core", "lib"),
+        ("py-tools", "lib"),
+        ("deploy/a", "infra"),
+        ("deploy/b", "infra"),
+        ("scripts/", "loose"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    assert_eq!(kinds, expected, "the turbo root is no unit of its own");
+    assert_eq!(a.owner_of("scripts/release.ts"), "scripts/");
+
+    let s = |x: &str| x.to_string();
+    let expected: BTreeSet<(String, String, String, u64, bool)> = [
+        (s("Shop.Api"), s("Core"), s("depends"), 1, true),
+        (s("Shop.Api"), s("Core"), s("code"), 2, true),
+        (s("deploy/b"), s("Billing.Api"), s("deploys"), 1, true),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(a.links(), expected);
 }

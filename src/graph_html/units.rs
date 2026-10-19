@@ -488,6 +488,8 @@ struct Repo<'a> {
     indexed_dirs: HashSet<String>,
     /// Directories with an indexed code file below.
     code_dirs: HashSet<String>,
+    /// Directories with a `src/bin/` file (crates with binaries).
+    bin_dirs: HashSet<String>,
 }
 
 impl Repo<'_> {
@@ -546,8 +548,25 @@ fn detect_with_disk(root: &Path, disk: HashSet<String>, indexed: &[(String, Stri
             }
         }
     }
+    // From the index too: the walk skips `bin/` folders (.NET output),
+    // which holds a crate's `src/bin/`. Test servers there
+    // (`src/bin/test_server.rs`) make no binary of the crate.
+    let bin_dirs: HashSet<String> = disk
+        .iter()
+        .chain(indexed.iter().map(|(p, _)| p))
+        .filter(|p| !has_word(&tokens(stem(p)), TEST_WORDS))
+        .filter_map(|p| {
+            let at = if p.starts_with("src/bin/") {
+                0
+            } else {
+                p.find("/src/bin/")? + 1
+            };
+            Some(p[..at].to_string())
+        })
+        .collect();
     let repo = Repo {
         root,
+        bin_dirs,
         disk,
         indexed,
         indexed_dirs,
@@ -1176,7 +1195,8 @@ struct PackageJson {
     path: String,
     text: String,
     name: Option<String>,
-    scripts: BTreeSet<String>,
+    /// Script name -> command.
+    scripts: BTreeMap<String, String>,
     deps: BTreeSet<String>,
     dev_deps: BTreeSet<String>,
     /// Dependencies by spec (`file:`, `link:`, `workspace:`).
@@ -1217,7 +1237,7 @@ impl PackageJson {
             path: path.to_string(),
             text: text.to_string(),
             name,
-            scripts: keys("scripts").into_keys().collect(),
+            scripts: keys("scripts"),
             deps: deps.into_keys().collect(),
             dev_deps: dev.into_keys().collect(),
             specs,
@@ -1295,9 +1315,15 @@ impl PackageJson {
     }
 
     fn into_unit(self, dir: &str, workspace_root: bool, docker: bool, tauri: bool) -> Option<Unit> {
+        // A workspace root's `dev` that runs every member (`turbo run dev`)
+        // starts the members, not the root.
         let start = ["start", "dev", "serve"]
             .iter()
-            .find(|s| self.scripts.contains(**s))
+            .find(|s| {
+                self.scripts
+                    .get(**s)
+                    .is_some_and(|cmd| !(workspace_root && runs_workspace(cmd)))
+            })
             .copied();
         let framework_dep = self
             .deps
@@ -1353,6 +1379,48 @@ impl PackageJson {
         self.add_deps(&mut u, dir);
         Some(u)
     }
+}
+
+/// Whether a script command runs the scripts of a workspace's members
+/// (`turbo run dev`, `pnpm -r dev`, `npm run dev --workspaces`).
+fn runs_workspace(cmd: &str) -> bool {
+    const RUNNERS: &[&str] = &[
+        "turbo",
+        "lerna",
+        "nx",
+        "rush",
+        "wireit",
+        "npm-run-all",
+        "run-p",
+        "run-s",
+        "concurrently",
+    ];
+    const FLAGS: &[&str] = &[
+        "-r",
+        "--recursive",
+        "--filter",
+        "-f",
+        "-w",
+        "-ws",
+        "--workspace",
+        "--workspaces",
+        "workspace",
+        "workspaces",
+    ];
+    let words: Vec<String> = cmd
+        .split(|c: char| c.is_whitespace() || matches!(c, '&' | ';' | '|'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    words.iter().enumerate().any(|(i, w)| {
+        RUNNERS.contains(&w.as_str())
+            || (matches!(w.as_str(), "npm" | "pnpm" | "yarn")
+                && words[i + 1..].iter().any(|f| {
+                    FLAGS.contains(&f.as_str())
+                        || f.starts_with("--filter=")
+                        || f.starts_with("--workspace=")
+                }))
+    })
 }
 
 const FRAMEWORKS: &[&str] = &[
@@ -1520,15 +1588,25 @@ fn pyproject_unit(dir: &str, path: &str, text: &str) -> Option<Unit> {
 }
 
 fn setup_py_unit(dir: &str, path: &str, text: &str) -> Unit {
+    // `name="x"` as a whole keyword: not the `name` in `__name__` or
+    // `package_name = ...`.
     let quoted_after = |key: &str| -> Option<String> {
-        let at = text.find(key)? + key.len();
-        let rest = text[at..].trim_start().strip_prefix('=')?.trim_start();
-        let q = rest.chars().next()?;
-        if q != '"' && q != '\'' {
-            return None;
-        }
-        let end = rest[1..].find(q)?;
-        Some(rest[1..1 + end].to_string())
+        text.match_indices(key).find_map(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                return None;
+            }
+            let rest = text[at + key.len()..]
+                .trim_start()
+                .strip_prefix('=')?
+                .trim_start();
+            let q = rest.chars().next()?;
+            if q != '"' && q != '\'' {
+                return None;
+            }
+            let end = rest[1..].find(q)?;
+            Some(rest[1..1 + end].to_string())
+        })
     };
     let name = quoted_after("name").unwrap_or_else(|| {
         dir.trim_end_matches('/')
@@ -1582,11 +1660,7 @@ fn cargo_unit(repo: &Repo, dir: &str, path: &str, text: &str) -> Option<Unit> {
                 .collect()
         })
         .unwrap_or_default();
-    let main = repo.disk.contains(&format!("{dir}src/main.rs"))
-        || repo
-            .disk
-            .iter()
-            .any(|p| p.starts_with(&format!("{dir}src/bin/")));
+    let main = repo.disk.contains(&format!("{dir}src/main.rs")) || repo.bin_dirs.contains(dir);
     let mut deps: Vec<(String, toml::Value)> = Vec::new();
     for section in ["dependencies", "build-dependencies"] {
         if let Some(t) = table.get(section).and_then(|v| v.as_table()) {
@@ -1840,7 +1914,18 @@ pub fn resolve_deps(units: &[Unit]) -> Vec<(usize, usize, Evidence)> {
             by_name.entry(n.clone()).or_default().push(i);
         }
     }
-    let owners = Owners::new(units);
+    // Paths compare without case: Windows tools write `..\Libs\core\Core.csproj`
+    // for `libs/Core/Core.csproj`.
+    let mut by_manifest: HashMap<String, usize> = HashMap::new();
+    let mut by_root: HashMap<String, usize> = HashMap::new();
+    for (i, u) in units.iter().enumerate() {
+        for m in &u.manifests {
+            by_manifest.entry(m.to_lowercase()).or_insert(i);
+        }
+        if u.file_roots.is_empty() {
+            by_root.entry(u.root.to_lowercase()).or_insert(i);
+        }
+    }
     let mut out = BTreeSet::new();
     for (i, u) in units.iter().enumerate() {
         for (dep, ev) in &u.deps {
@@ -1854,16 +1939,26 @@ pub fn resolve_deps(units: &[Unit]) -> Vec<(usize, usize, Evidence)> {
                     by_name.get(&key).cloned().unwrap_or_default()
                 }
                 DepRef::Path(p) => {
-                    // A manifest file names its unit; a directory its owner.
-                    let by_manifest = units.iter().position(|t| t.manifests.contains(p));
+                    // A manifest file names its unit; a directory the unit
+                    // rooted there, else the project around it. A path no
+                    // project holds (a missing or skipped one) links
+                    // nothing, not the repository root or a loose folder.
+                    let p = p.to_lowercase();
+                    let dir = if p.ends_with('/') || p.is_empty() {
+                        p.clone()
+                    } else {
+                        format!("{p}/")
+                    };
                     by_manifest
+                        .get(&p)
+                        .copied()
                         .or_else(|| {
-                            let dir = if p.ends_with('/') || p.is_empty() {
-                                p.clone()
-                            } else {
-                                format!("{p}/")
-                            };
-                            owners.owner(&dir)
+                            ancestors(&dir).find_map(|a| {
+                                let &t = by_root.get(a)?;
+                                let ok =
+                                    a == dir || (!a.is_empty() && !units[t].manifests.is_empty());
+                                Some(ok.then_some(t))
+                            })?
                         })
                         .into_iter()
                         .collect()
@@ -1897,6 +1992,21 @@ pub fn external_packages(units: &[Unit]) -> Vec<BTreeSet<String>> {
         .collect()
 }
 
+/// The names a unit goes by in full: its name, package names, and the
+/// folders of its root and Dockerfiles (normalised).
+fn full_names(u: &Unit) -> BTreeSet<String> {
+    let base = |d: &str| norm(d.trim_end_matches('/').rsplit('/').next().unwrap_or(""));
+    let mut out: BTreeSet<String> = [norm(&u.name), base(&u.root)].into();
+    out.extend(
+        u.names
+            .iter()
+            .map(|(_, n)| norm(n.rsplit('/').next().unwrap_or(n))),
+    );
+    out.extend(u.dockerfiles.iter().map(|d| base(dir_of(d))));
+    out.remove("");
+    out
+}
+
 /// `infra -> app` deployments: an image (or compose build directory) that
 /// names an app. Evidence is the line that names it.
 pub fn deployments(units: &[Unit]) -> Vec<(usize, usize, Evidence)> {
@@ -1907,14 +2017,21 @@ pub fn deployments(units: &[Unit]) -> Vec<(usize, usize, Evidence)> {
             let targets: Vec<usize> = if let Some(dir) = image.strip_prefix("dir:") {
                 owners.owner(dir).into_iter().collect()
             } else {
-                units
+                let mut t: Vec<usize> = units
                     .iter()
                     .enumerate()
                     .filter(|(_, t)| {
                         t.kind != Kind::Infra && !t.kind.hidden() && t.aliases.contains(image)
                     })
                     .map(|(j, _)| j)
-                    .collect()
+                    .collect();
+                // Image `api` matches every `*.Api` project by its last
+                // segment: when several match, keep the ones it names in
+                // full (name or folder), and none when it names none.
+                if t.len() > 1 {
+                    t.retain(|&j| full_names(&units[j]).contains(image));
+                }
+                t
             };
             for t in targets {
                 if t != i && units[t].kind != Kind::Infra {
@@ -1963,6 +2080,15 @@ mod tests {
             xml_attr(r#"<Project Sdk="Microsoft.NET.Sdk.Web">"#, "Sdk"),
             Some("Microsoft.NET.Sdk.Web")
         );
+        assert!(runs_workspace("turbo run dev"));
+        assert!(runs_workspace("npx turbo dev --parallel"));
+        assert!(runs_workspace("pnpm -r --parallel dev"));
+        assert!(runs_workspace("npm run dev -w apps/web"));
+        assert!(runs_workspace("yarn workspace web dev"));
+        assert!(runs_workspace("pnpm --filter=web dev"));
+        assert!(!runs_workspace("vite"));
+        assert!(!runs_workspace("next dev"));
+        assert!(!runs_workspace("node server.js && npm run watch"));
         let ancestors: Vec<&str> = ancestors("a/b/c.rs").collect();
         assert_eq!(ancestors, ["a/b/", "a/", ""]);
     }

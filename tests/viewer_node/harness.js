@@ -125,6 +125,11 @@ if (scenario === 'focus') {
   g.setLevel('folder');
   flush(50);
   out = { level, sheet, selected, after: g.level(), visible: g.visible() };
+} else if (scenario === 'guesses') {
+  const before = g.apps().links;
+  g.toggleApps('undeclared', true);
+  flush(10);
+  out = { before, after: g.apps().links, cards: g.apps().cards };
 } else if (scenario === 'colour') {
   out = { colorBy: g.colorBy(), level: g.level() };
 } else {
