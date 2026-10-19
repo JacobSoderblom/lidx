@@ -403,7 +403,8 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
   font-size: 11px; color: var(--ink-3); min-height: 20px; vertical-align: 1px;
 }
 .legend .quiet-btn[aria-pressed="true"] { color: var(--ink); border-color: var(--ink-3); }
-.apps.focus .apps-edges .conn:not(.on) { opacity: 0.13; }
+/* Around a selected card its own links stand out; the zoom layer has its own focus. */
+.apps.focus .apps-edges:not(.zedges) .conn:not(.on) { opacity: 0.13; }
 .apps-edges .conn.on .ln { stroke-width: calc(var(--w) * 1px + 0.8px); }
 .f-code { --c: var(--edge); }
 .f-depends .ln { stroke-dasharray: 6 4; } .f-depends { --c: var(--edge-3); }
@@ -493,8 +494,6 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .zedges .zl:not(.on):not(.cross) { opacity: 0.4; }
 .zedges .zl.many:not(.on):not(.cross) { opacity: 0.2; }
 .zedges.hasfocus .zl:not(.on) { opacity: 0.08; }
-.zedges .zl .lbl { display: none; }
-.zedges .zl.on .lbl, .zedges .zl.cross .lbl { display: block; }
 .zedges .zl.on .ln { stroke: var(--focus); }
 .zedges .zl.on .ah { fill: var(--focus); }
 /* Stubs: where an open level's links to one target leave it, bundled. */
@@ -510,7 +509,15 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .zedges .zstub.on .ln, .zedges .zstub.on .ln.on-card { stroke: var(--focus); opacity: 1; }
 .zedges .zstub.on .ah { fill: var(--focus); opacity: 1; }
 .zedges .zstub.on .pt { stroke: var(--focus); }
-.zedges.hasfocus .zstub:not(.on) { opacity: 0.35; }
+/* Out of focus a stub fades, its label stays readable. */
+.zedges.hasfocus .zstub:not(.on) .ln, .zedges.hasfocus .zstub:not(.on) .ah, .zedges.hasfocus .zstub:not(.on) .pt, .zedges.hasfocus .zstub:not(.on) .ldr { opacity: 0.3; }
+.zedges.hasfocus .zstub:not(.on) .plbl { fill: var(--ink-2); }
+/* Link labels: placed in free space over the sheet, a leader to their line when moved. */
+.zedges .zll .lbl { display: block; stroke: none; fill: var(--ink-2); }
+.zedges .zll .lbg { fill: var(--canvas); opacity: 0.94; }
+.zedges .zll .ldr { fill: none; stroke: var(--ink-3); stroke-width: 1; opacity: 0.6; }
+.zedges .zlbl.on .lbl { fill: var(--ink); }
+.zedges.hasfocus .zlbl:not(.on) { opacity: 0.3; }
 .zi.zhl { box-shadow: 0 0 0 2px var(--focus); background: var(--focus-soft); z-index: 1; }
 .card .zexp {
   position: absolute; bottom: 6px; right: 6px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink-2); border-radius: 5px;
@@ -550,8 +557,19 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .z-dir:hover, .z-file:hover { border-color: var(--ink); }
 .zi.compact { padding: 3px 8px; display: flex; align-items: center; }
 .zi.compact .nm { font: 500 12px var(--mono); }
-.z-dir.leafbox, .z-file.leafbox { cursor: default; opacity: 0.75; }
+/* Boxes are opaque: links run between them, never across their faces. */
+.z-dir.leafbox, .z-file.leafbox { cursor: default; color: var(--ink-2); border-color: var(--rule); }
+.z-dir.leafbox .nm, .z-file.leafbox .nm { color: var(--ink-2); }
+.z-others { padding: 6px 9px; border: 1px dashed var(--ink-3); border-radius: 3px; background: var(--paper); }
+.z-others:hover { border-color: var(--ink); }
+.z-others .nm { font: 600 12.5px var(--sans); color: var(--ink-2); }
+.z-others .tw { display: inline-block; width: 10px; color: var(--ink-3); font-size: 10.5px; }
+.z-others.compact .nm { font: 500 12px var(--sans); }
 .z-frame { border: 1px solid var(--ink-3); border-radius: 4px; background: var(--paper-2); cursor: grab; overflow: visible; }
+/* A selected (or hovered-to) open level stays under the boxes it holds,
+   and a box's lines (a class's members, the other files) over the box. */
+.zi.z-frame.zsel, .zi.z-frame.zhl, .zi.z-frame:focus-visible { z-index: auto; }
+.zi.z-row { z-index: 2; }
 .z-frame.f-file { background: var(--paper-3); }
 .z-frame .zfh { display: flex; align-items: baseline; gap: 8px; height: 26px; padding: 4px 8px 0; }
 .z-frame .zup { border: 0; background: none; padding: 0 2px; font: 700 12.5px var(--mono); color: var(--ink); border-radius: 3px; }

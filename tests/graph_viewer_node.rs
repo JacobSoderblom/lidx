@@ -722,12 +722,24 @@ fn the_panel_tree_filters_and_zooms_to_an_entry() {
         serde_json::json!(["shared-utils", "shared_utils/", "fmt.py"])
     );
     assert_eq!(r["sel"]["name"], "width");
+    // The panel shows the symbol, as a click on its box does.
+    let panel = r["panel"].as_str().unwrap();
     assert!(
-        r["panel"].as_str().unwrap().contains("Inside"),
-        "the panel keeps the tree: {r}"
+        panel.contains("shared_utils.fmt.Formatter.width") && panel.contains("Location"),
+        "the symbol's own panel: {r}"
     );
+    assert!(!panel.contains("Inside"), "not the unit's tree: {r}");
     let hash = r["hash"].as_str().unwrap();
     assert!(hash.contains("filter=wid"), "{hash}");
+    assert!(!hash.contains("panel="), "{hash}");
+    // Back to the unit: the tree, its filter kept.
+    let back = &r["back"];
+    assert!(back["text"].as_str().unwrap().contains("Inside"), "{r}");
+    assert!(
+        back["html"].as_str().unwrap().contains("value=\"wid\""),
+        "{r}"
+    );
+    assert!(r["backHash"].as_str().unwrap().contains("panel="), "{r}");
     let again = run_at(&p, "zoom-hash", "", hash);
     assert_eq!(
         again["open"],
@@ -736,6 +748,13 @@ fn the_panel_tree_filters_and_zooms_to_an_entry() {
     );
     assert_eq!(again["crumbs"], r["crumbs"], "{again}");
     assert_eq!(again["sel"]["name"], "width", "{again}");
+    assert!(
+        again["panel"]
+            .as_str()
+            .unwrap()
+            .contains("shared_utils.fmt.Formatter.width"),
+        "{again}"
+    );
 }
 
 /// File names and signatures are data: a crafted one is drawn as text on
@@ -795,4 +814,511 @@ fn crafted_names_and_fragments_render_as_text() {
         "the filter stays in its attribute: {html}"
     );
     assert!(!html.contains("<img"), "{html}");
+}
+
+/// A library with four folders that call each other, and files without
+/// symbols beside them.
+const LEVELS_FILES: &[(&str, &str)] = &[
+    (
+        "core/pyproject.toml",
+        "[project]\nname = \"corelib\"\ndependencies = [\"pydantic\"]\n",
+    ),
+    ("core/corelib/__init__.py", ""),
+    ("core/corelib/README.md", "Plain words, no headings.\n"),
+    ("core/corelib/NOTES.md", "More words, no headings.\n"),
+    (
+        "core/corelib/alpha/a.py",
+        "from corelib.beta.b import b\n\n\ndef a():\n    return b()\n",
+    ),
+    (
+        "core/corelib/beta/b.py",
+        "from corelib.gamma.c import c\n\n\ndef b():\n    return c()\n",
+    ),
+    ("core/corelib/gamma/c.py", "def c():\n    return 1\n"),
+    (
+        "core/corelib/gamma/hub.py",
+        concat!(
+            "class Hub:\n",
+            "    def first(self):\n        return self.second() + self.third() + self.fourth()\n\n",
+            "    def second(self):\n        return self.third() + self.fourth()\n\n",
+            "    def third(self):\n        return self.fourth()\n\n",
+            "    def fourth(self):\n        return 1\n",
+        ),
+    ),
+    (
+        "core/corelib/delta/d.py",
+        "from corelib.alpha.a import a\nfrom corelib.gamma.c import c\n\n\ndef d():\n    return a() + c()\n",
+    ),
+];
+
+/// Parses the `M x y h w v h h -w Z` cut-outs of the link layer's clip path.
+fn clip_holes(svg: &str) -> Vec<[f64; 4]> {
+    let at = svg
+        .find("<clipPath id=\"zclip\">")
+        .unwrap_or_else(|| panic!("no clip path on the link layer: {svg}"));
+    let rest = &svg[at..];
+    let d0 = rest.find(" d=\"").unwrap() + 4;
+    let d = &rest[d0..d0 + rest[d0..].find('"').unwrap()];
+    let mut holes = Vec::new();
+    for part in d.split('M').skip(2) {
+        let nums: Vec<f64> = part
+            .split(['h', 'v', 'Z', ' '])
+            .filter(|t| !t.is_empty())
+            .map(|t| t.parse().unwrap())
+            .collect();
+        holes.push([nums[0], nums[1], nums[2], nums[3]]);
+    }
+    holes
+}
+
+/// Link lines never sit over a box: every drawn box is cut out of the clip
+/// path the lines and their hit areas are drawn through, so a box's centre
+/// takes the pointer (click, double-click, hover) and no line crosses its
+/// face. The lines stay interactive between the boxes.
+#[test]
+fn link_hit_areas_never_cover_a_box() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-clip-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-clip", "corelib,corelib/");
+    let svg = r["svg"].as_str().unwrap();
+    let lines = r["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["line"] == true)
+        .count();
+    assert!(lines >= 3, "folder-to-folder lines are drawn: {r}");
+    // Every hit area is inside the clipped group.
+    let group = svg
+        .find("<g class=\"zlg\" clip-path=\"url(#zclip)\">")
+        .unwrap_or_else(|| panic!("the lines are not clipped: {svg}"));
+    let end = svg.find("<g class=\"zsg\">").unwrap();
+    assert!(
+        svg[group..end].matches("class=\"hit\"").count() >= lines,
+        "{svg}"
+    );
+    assert!(
+        !svg[..group].contains("class=\"hit\"") && !svg[end..].contains("class=\"hit\""),
+        "{svg}"
+    );
+    assert!(svg.contains("clip-rule=\"evenodd\""), "{svg}");
+    let holes = clip_holes(svg);
+    let boxes = r["boxes"].as_array().unwrap();
+    assert!(boxes.len() >= 4, "{r}");
+    for b in boxes {
+        let (x, y, w, h) = (
+            b["x"].as_f64().unwrap(),
+            b["y"].as_f64().unwrap(),
+            b["w"].as_f64().unwrap(),
+            b["h"].as_f64().unwrap(),
+        );
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        let covered = holes
+            .iter()
+            .filter(|o| cx > o[0] && cx < o[0] + o[2] && cy > o[1] && cy < o[1] + o[3])
+            .count();
+        assert_eq!(
+            covered, 1,
+            "the centre of {b} is cut out of the link layer: {holes:?}"
+        );
+        assert!(
+            holes.iter().any(|o| (o[0] - x).abs() < 0.11
+                && (o[1] - y).abs() < 0.11
+                && (o[2] - w).abs() < 0.11
+                && (o[3] - h).abs() < 0.11),
+            "the whole face of {b} is cut out: {holes:?}"
+        );
+    }
+}
+
+/// The top search finds the symbols and files embedded for the zoom, ranked
+/// by how well the name matches, and picking one opens its card down to
+/// it, selected, with its panel.
+#[test]
+fn the_search_finds_embedded_symbols_and_opens_them() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-search-", ZOOM_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-search", "Formatter;fmt;width");
+    let formatter = &r["results"][0];
+    assert_eq!(formatter[0]["type"], "symbol", "{r}");
+    assert_eq!(formatter[0]["name"], "Formatter", "{r}");
+    assert_eq!(formatter[0]["kind"], "class", "{r}");
+    assert_eq!(formatter[0]["unit"], "shared-utils", "{r}");
+    // `fmt`: names starting with it before names that only contain it.
+    let fmt: Vec<(&str, &str)> = r["results"][1]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| (x["type"].as_str().unwrap(), x["name"].as_str().unwrap()))
+        .collect();
+    let at = |n: &str| {
+        fmt.iter()
+            .position(|x| x.1 == n)
+            .unwrap_or_else(|| panic!("{n} not listed: {fmt:?}"))
+    };
+    assert!(
+        at("fmt_order") < at("Formatter"),
+        "a name prefix before a match inside: {fmt:?}"
+    );
+    assert!(fmt.len() <= 40, "{fmt:?}");
+    // A method found by name, not only its file.
+    let width = &r["results"][2];
+    assert_eq!(width[0]["name"], "width", "{r}");
+    assert_eq!(width[0]["qual"], "shared_utils.fmt.Formatter.width", "{r}");
+    assert_eq!(r["level"], "app", "{r}");
+    assert_eq!(
+        r["crumbs"],
+        serde_json::json!(["shared-utils", "shared_utils/", "fmt.py"]),
+        "{r}"
+    );
+    assert_eq!(r["sel"]["name"], "width", "{r}");
+    let panel = r["panel"].as_str().unwrap();
+    assert!(
+        panel.contains("shared_utils.fmt.Formatter.width"),
+        "the symbol's panel: {panel}"
+    );
+    assert!(panel.contains("shared/shared_utils/fmt.py:9"), "{panel}");
+}
+
+/// A scroll that opens a folder ends with the folder framed, not zoomed on
+/// past it to the clamp; Fit then frames the open folder again however far
+/// in the camera went.
+#[test]
+fn a_wheel_open_settles_on_the_level_and_fit_frames_it() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-wheel-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-wheel", "corelib,corelib/");
+    assert_eq!(
+        r["crumbs"],
+        serde_json::json!(["corelib", "corelib/"]),
+        "the folder opened: {r}"
+    );
+    let k = r["settled"]["k"].as_f64().unwrap();
+    assert!(
+        k <= 1.4 + 1e-9,
+        "settled on the folder, not zoomed past it: {r}"
+    );
+    let fits = |l: &Value| {
+        let (x, y, w, h) = (
+            l["x"].as_f64().unwrap(),
+            l["y"].as_f64().unwrap(),
+            l["w"].as_f64().unwrap(),
+            l["h"].as_f64().unwrap(),
+        );
+        x >= -0.5 && y >= -0.5 && x + w <= 1400.5 && y + h <= 900.5
+    };
+    assert!(fits(&r["level"]), "the open folder is in view: {r}");
+    let fit = r["fit"]["k"].as_f64().unwrap();
+    assert!((fit - k).abs() < 1e-6, "Fit frames the open folder: {r}");
+    assert!(fits(&r["fitLevel"]), "{r}");
+}
+
+/// Camera fits use the part of the stage that can be seen: a panel opening
+/// beside the stage as the camera moves, or laid over its foot on a phone,
+/// does not hide part of what the fit framed.
+#[test]
+fn fits_leave_out_the_side_panel() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-panelfit-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-panel-fit", "corelib,corelib/");
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    let level = &r["level"];
+    assert!(
+        f(level, "x") + f(level, "w") <= 1028.5,
+        "the folder ends before the panel: {r}"
+    );
+    for k in ["k", "x", "y"] {
+        assert!(
+            (f(&r["moved"], k) - f(&r["refit"], k)).abs() < 0.5,
+            "the moving fit was made again for the narrower stage ({k}): {r}"
+        );
+    }
+    let sheet = &r["sheet"];
+    assert!(
+        f(sheet, "y") + f(sheet, "h") <= 500.5,
+        "a phone's panel over the stage is left out too: {r}"
+    );
+    let mid = f(sheet, "y") + f(sheet, "h") / 2.0;
+    assert!((mid - 250.0).abs() < 60.0, "{r}");
+}
+
+/// Stub ports keep off an open level's title, and stub labels off the
+/// status line at the stage's foot.
+#[test]
+fn stubs_keep_off_the_title_and_the_status_line() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-stubui-", ZOOM_FILES);
+    let p = page(&root, &db, &[]);
+    let f = |v: &Value, i: usize| v[i].as_f64().unwrap();
+    // The file's top edge just above the view: the ports are pushed down,
+    // below its header rather than through its title.
+    let r = run(
+        &p,
+        "zoom-stubs-ui",
+        "shared-utils,shared_utils/fmt.py,2,30,",
+    );
+    let tops: Vec<&Value> = r["stubs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["side"] == "t")
+        .collect();
+    assert!(!tops.is_empty(), "{r}");
+    for s in tops {
+        let (port, b, head) = (&s["port"], &s["box"], &s["head"]);
+        let (px, py) = (f(port, 0), f(port, 1));
+        let top = b["y"].as_f64().unwrap();
+        let (hx, hy) = (head["x1"].as_f64().unwrap(), head["y1"].as_f64().unwrap());
+        let in_band = py > top - 4.0 && py < hy - 0.5;
+        assert!(
+            !(in_band && px - 4.0 < hx),
+            "port {port} over the title (ends {hx}, {hy}): {s}"
+        );
+        if py > top + 0.5 {
+            assert!(py >= hy - 1e-6, "pushed down, below the header: {s}");
+        }
+    }
+    // The file's foot just above the status line: the labels stay clear of it.
+    let r = run(
+        &p,
+        "zoom-stubs-ui",
+        "orders-api,orders_api/main.py,1.2,,830",
+    );
+    let (k, cy) = (
+        r["cam"]["k"].as_f64().unwrap(),
+        r["cam"]["y"].as_f64().unwrap(),
+    );
+    let bottoms: Vec<&Value> = r["stubs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["side"] == "b")
+        .collect();
+    assert!(!bottoms.is_empty(), "{r}");
+    for s in bottoms {
+        let l = &s["label"];
+        assert!(l.is_array(), "labelled: {s}");
+        assert!(
+            f(l, 3) * k + cy <= 900.0 - 36.0 + 0.5,
+            "label over the status line: {s} {r}"
+        );
+    }
+}
+
+/// Files without symbols at one level share an "N other files" box, after
+/// the folders and code files; it lists them when clicked and folds again.
+#[test]
+fn files_without_symbols_share_one_box() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-others-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-others", "corelib,corelib/,corelib/alpha/");
+    let shown = |items: &Value| -> Vec<(String, String)> {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["depth"] == 1)
+            .map(|i| {
+                (
+                    i["type"].as_str().unwrap().to_string(),
+                    i["name"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let before = shown(&r["before"]);
+    let last = before.last().unwrap();
+    assert_eq!(last.0, "others", "one box for them, last: {before:?}");
+    assert!(last.1.ends_with("other files"), "{before:?}");
+    for f in ["README.md", "NOTES.md"] {
+        assert!(
+            !before.iter().any(|x| x.1 == f),
+            "{f} has no box of its own: {before:?}"
+        );
+    }
+    assert_eq!(
+        before.iter().filter(|x| x.0 == "dir").count(),
+        4,
+        "the four folders: {before:?}"
+    );
+    let listed: Vec<String> = r["listed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["type"] == "orow")
+        .map(|i| i["name"].as_str().unwrap().to_string())
+        .collect();
+    for f in ["README.md", "NOTES.md"] {
+        assert!(
+            listed.iter().any(|x| x == f),
+            "listed once open: {listed:?}"
+        );
+    }
+    assert!(r["panel"].as_str().unwrap().contains("README.md"), "{r}");
+    assert!(
+        !r["folded"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["type"] == "orow"),
+        "folded again: {r}"
+    );
+    // Deeper in it is a name tag; activating it goes back up to its level, listed.
+    assert_eq!(r["tag"]["type"], "others", "{r}");
+    assert_eq!(
+        r["backUp"]["crumbs"],
+        serde_json::json!(["corelib", "corelib/"]),
+        "{r}"
+    );
+    assert!(
+        r["backUp"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["type"] == "orow" && i["name"] == "README.md"),
+        "{r}"
+    );
+}
+
+/// Labels on the sheet (stub labels and link labels) sit in free space:
+/// inside the view, off every box, tag and header, and off one another.
+fn assert_labels_clear(r: &Value) {
+    let l = &r["labels"];
+    let v = &l["view"];
+    let (x0, y0, x1, y1) = (
+        v["x0"].as_f64().unwrap(),
+        v["y0"].as_f64().unwrap(),
+        v["x1"].as_f64().unwrap(),
+        v["y1"].as_f64().unwrap(),
+    );
+    let rect = |b: &Value| -> [f64; 4] {
+        let a = b
+            .as_array()
+            .unwrap_or_else(|| panic!("a label was dropped: {r}"));
+        [0, 1, 2, 3].map(|i| a[i].as_f64().unwrap())
+    };
+    let over =
+        |a: &[f64; 4], b: &[f64; 4]| a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
+    let obst: Vec<[f64; 4]> = l["obstacles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(rect)
+        .collect();
+    let mut boxes: Vec<(String, [f64; 4])> = Vec::new();
+    for key in ["stubs", "links"] {
+        for s in l[key].as_array().unwrap() {
+            boxes.push((s["text"].as_str().unwrap().to_string(), rect(&s["box"])));
+        }
+    }
+    for (i, (t, b)) in boxes.iter().enumerate() {
+        assert!(
+            b[0] >= x0 - 0.01 && b[2] <= x1 + 0.01 && b[1] >= y0 - 0.01 && b[3] <= y1 + 0.01,
+            "{t} {b:?} is outside the view: {r}"
+        );
+        for o in &obst {
+            assert!(!over(b, o), "{t} {b:?} sits on a box or tag {o:?}: {r}");
+        }
+        for (u, c) in &boxes[i + 1..] {
+            assert!(!over(b, c), "{t} {b:?} sits on the label {u} {c:?}: {r}");
+        }
+    }
+}
+
+/// With a folder open deeper in, the stub labels next to the sibling tags
+/// of the levels above are placed in free space, not over the tags.
+#[test]
+fn stub_labels_keep_off_the_tags_of_the_levels_above() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-lbltags-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-labels", "corelib,corelib/alpha/,,,1.6,,");
+    assert!(!r["labels"]["stubs"].as_array().unwrap().is_empty(), "{r}");
+    assert_labels_clear(&r);
+}
+
+/// With no room for labels beside a side (the left edge at the view's, or
+/// a panel narrowing the stage to just past the right edge), the labels
+/// are placed elsewhere, never dropped.
+#[test]
+fn stub_labels_without_room_beside_a_side_are_placed_elsewhere() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-lblroom-", ZOOM_FILES);
+    let p = page(&root, &db, &[]);
+    // The API's file at scale 2: its stub to the worker leaves on the left.
+    let probe = run(&p, "zoom-labels", "orders-api,orders_api/main.py,,,2,,,");
+    let sides: Vec<&str> = probe["labels"]["stubs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["side"].as_str().unwrap())
+        .collect();
+    assert!(sides.contains(&"l"), "{probe}");
+    // Its left edge 12 px into the view: no room beside it.
+    let r = run(&p, "zoom-labels", "orders-api,orders_api/main.py,,,2,,,12");
+    assert_labels_clear(&r);
+    // A panel beside the stage, the file's right edge 24 px from it.
+    let lv = &probe["level"];
+    let right = lv["x"].as_f64().unwrap() + lv["w"].as_f64().unwrap();
+    let r = run(
+        &p,
+        "zoom-labels",
+        &format!(
+            "orders-api,orders_api/main.py,,{},2,,,",
+            (right + 24.0).round()
+        ),
+    );
+    assert_labels_clear(&r);
+}
+
+/// In an open file, the labels of the calls between a class's members are
+/// whole (not cut by the class box), inside the view and apart.
+#[test]
+fn link_labels_in_a_file_are_whole_and_apart() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-lbllinks-", LEVELS_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(
+        &p,
+        "zoom-labels",
+        "corelib,corelib/gamma/hub.py,corelib/gamma/hub.py#corelib.gamma.hub.Hub.first,,,,",
+    );
+    let links = r["labels"]["links"].as_array().unwrap();
+    assert!(
+        links.len() >= 3,
+        "the selected method's calls are labelled: {r}"
+    );
+    assert_labels_clear(&r);
 }

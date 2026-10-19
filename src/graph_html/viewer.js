@@ -2229,7 +2229,7 @@
       isolate: st.isolate ? Array.from(st.isolate) : null, revealed: Array.from(st.revealed),
       showNonCode: st.showNonCode, showExternal: st.showExternal, showEndpoints: st.showEndpoints, showTests: st.showTests,
       level: st.level, aSel: ast.selected, aOpen: Array.from(ast.open),
-      zpath: JSON.parse(JSON.stringify(ast.zpath)), zsel: ast.zsel, zfocus: ast.zfocus
+      zpath: JSON.parse(JSON.stringify(ast.zpath)), zsel: ast.zsel, zfocus: ast.zfocus, zpanel: ast.zpanelUnit
     };
   }
   function pushHistory() {
@@ -2242,6 +2242,7 @@
     if (s.level === 'app') {
       ast.selected = s.aSel; ast.selConn = null; ast.open = new Set(s.aOpen || []);
       ast.zpath = s.zpath || {}; ast.zsel = s.zsel || null; ast.zfocus = s.zfocus === undefined ? null : s.zfocus; ast.zlink = null;
+      ast.zpanelUnit = s.zpanel === undefined ? null : s.zpanel;
       ast.zitems = {};
       if (st.level !== 'app') setLevel('app', true); else { renderApps(true); renderPanel(); }
       writeHash();
@@ -2738,15 +2739,16 @@
     var q = search.value.trim().toLowerCase();
     results = []; active = -1;
     if (!q) { closeList(); return; }
-    var scored = [];
+    var scored = [], onSheet = st.level === 'app';
+    // On the sheet, the symbols and files embedded for the zoom come first:
+    // picking one opens its card down to it. A folder-map node they stand
+    // for is not listed twice.
+    var zq = HAS_APPS && ZR ? zoomMatches(q) : null;
+    if (zq) zq.forEach(function (m) { scored.push([m[0] + (onSheet ? -0.5 : 0.25), m[1], m[2]]); });
     N.forEach(function (n) {
-      var nm = n.name.toLowerCase(), qn = n.qual.toLowerCase(), s;
-      if (nm === q) s = 0;
-      else if (nm.indexOf(q) === 0) s = 1;
-      else if (qn.slice(-q.length) === q) s = 2;
-      else if (nm.indexOf(q) >= 0) s = 3;
-      else if (qn.indexOf(q) >= 0) s = 4;
-      else return;
+      if (zq && onSheet && (zq.quals.has(n.qual) || (n.kind === 'file' && zq.paths.has(n.file || n.qual)))) return;
+      var s = matchTier(n.name.toLowerCase(), n.qual.toLowerCase(), q);
+      if (s < 0) return;
       if (has(n, F.halo) || has(n, F.scope_out)) s += 0.5;
       scored.push([s, n.qual.length, n]);
     });
@@ -2760,8 +2762,45 @@
       });
     }
     scored.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
-    results = scored.slice(0, 40).map(function (s) { return s[2]; });
+    results = scored.slice(0, SEARCH_CAP).map(function (s) { return s[2]; });
     renderList();
+  }
+  var SEARCH_CAP = 40;
+  // 0 exact name, 1 name prefix, 2 qualname suffix, 3 in the name, 4 in the
+  // qualname; -1 no match.
+  function matchTier(nm, qn, q) {
+    if (nm === q) return 0;
+    if (nm.indexOf(q) === 0) return 1;
+    if (qn.slice(-q.length) === q) return 2;
+    if (nm.indexOf(q) >= 0) return 3;
+    if (qn.indexOf(q) >= 0) return 4;
+    return -1;
+  }
+  // Types before their members, members before fields: a class named in the
+  // query outranks the methods that share its prefix.
+  var KIND_BIAS = { class: 0, struct: 0, interface: 0, trait: 0, enum: 0, record: 0, type: 0, service: 0, message: 0, table: 0,
+    function: 0.1, method: 0.15, rpc: 0.15, procedure: 0.15, impl: 0.2 };
+  // Embedded zoom symbols and files matching `q`, as [score, tiebreak, result],
+  // with the qualnames and paths they cover.
+  function zoomMatches(q) {
+    var z = zdata(), out = [];
+    out.quals = new Set(); out.paths = new Set();
+    if (!z) return out;
+    z.syms.forEach(function (y) {
+      var s = matchTier(y.name.toLowerCase(), y.qual.toLowerCase(), q);
+      if (s < 0) return;
+      var bias = KIND_BIAS[y.kind];
+      out.push([s + (bias === undefined ? 0.3 : bias) + (AU[z.files[y.file].unit].hidden ? 0.5 : 0), y.qual.length, { zsym: y.i }]);
+      out.quals.add(y.qual);
+    });
+    z.files.forEach(function (f) {
+      var base = f.path.slice(f.path.lastIndexOf('/') + 1).toLowerCase(), s = matchTier(base, f.path.toLowerCase(), q);
+      if (s < 0) return;
+      // A file lists after the symbols of its name: SyncService finds the class first.
+      out.push([s + 0.35 + (f.syms ? 0 : 0.3) + (AU[f.unit].hidden ? 0.5 : 0), f.path.length, { zfile: f.i }]);
+      out.paths.add(f.path);
+    });
+    return out;
   }
   function renderList() {
     if (!results.length) list.innerHTML = '<li class="empty" role="option" aria-disabled="true">No matches. Try part of a name or a folder path.</li>';
@@ -2776,6 +2815,12 @@
           return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
             '<span class="nm">' + esc(u.name) + '</span><span class="kd">' + esc(unitKind(u)) + (u.hidden ? ' · hidden' : '') + '</span>' +
             '<span class="qn">' + esc(u.root) + '</span></li>';
+        }
+        if (r.zsym !== undefined || r.zfile !== undefined) {
+          var z = zdata(), y = r.zsym !== undefined ? z.syms[r.zsym] : null, f = y ? z.files[y.file] : z.files[r.zfile];
+          return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
+            '<span class="nm">' + esc(y ? y.name : f.path.slice(f.path.lastIndexOf('/') + 1)) + '</span><span class="kd">' + esc((y ? y.kind : 'file') + ' · ' + AU[f.unit].name) + '</span>' +
+            '<span class="qn">' + esc(y ? y.qual : f.path) + '</span></li>';
         }
         var hiddenTag = V.leafTo[r.i] < 0 ? ' · hidden' : '';
         return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
@@ -2802,6 +2847,12 @@
       var el = cardEl('u' + r.unit);
       if (el) el.focus();
       selectUnit('u' + r.unit, true);
+      return;
+    }
+    if (r.zsym !== undefined || r.zfile !== undefined) {
+      if (st.level !== 'app') setLevel('app');
+      var z = zdata(), fi = r.zsym !== undefined ? z.syms[r.zsym].file : r.zfile;
+      zshow(z.files[fi].unit, r.zsym !== undefined ? 's' + r.zsym : 'f' + fi);
       return;
     }
     if (st.level === 'app') setLevel('folder');
@@ -3108,7 +3159,7 @@
     var d = currentDepth() + 1;
     applyDepth(d >= MAX_DEPTH ? Infinity : d);
   });
-  document.getElementById('fit').addEventListener('click', function () { fit(true); });
+  document.getElementById('fit').addEventListener('click', function () { if (st.level === 'app') fitCurrent(); else fit(true); });
 
   var moreBtn = document.getElementById('more'), moreMenu = document.getElementById('more-menu');
   function closeMenu() { moreMenu.hidden = true; moreBtn.setAttribute('aria-expanded', 'false'); }
@@ -3813,10 +3864,24 @@
     if (ast.open.size) requestZoomView();
     setStatus();
   }
+  // The part of the stage the sheet can be seen in: all of it, less a
+  // panel laid over it (on a phone the panel is a sheet over its foot).
+  function stageArea() {
+    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
+    if (panel && !panel.hidden && panel.getBoundingClientRect) {
+      var p = panel.getBoundingClientRect();
+      if (p.width > 0 && p.height > 0 && p.left < r.right - 1 && p.right > r.left + 1 && p.top < r.bottom - 1 && p.bottom > r.top + 1) {
+        if (p.top > r.top + 20) h = Math.max(1, p.top - r.top);
+        else if (p.left > r.left + 20) w = Math.max(1, p.left - r.left);
+      }
+    }
+    return { w: w, h: h };
+  }
   function fitApps() {
     var lay = ast.sheet;
     if (!lay) return;
-    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
+    stopCam();
+    var a = stageArea(), w = a.w, h = a.h;
     var full = lay.width + LANE_W;
     var phone = w < 760;
     var k = Math.min(1, (w - (phone ? 16 : 40)) / Math.max(1, full), phone ? 1 : (h - 40) / Math.max(1, lay.height));
@@ -3825,7 +3890,14 @@
     ast.cam.x = Math.round((w - full * k) / 2 + LANE_W * k);
     ast.cam.y = Math.round(phone ? 12 : Math.max(20, (h - lay.height * k) / 2));
     ast.userMoved = false;
+    zFit = { fn: null, at: performance.now() };
     applyAppCam();
+  }
+  // Fit frames the current state: the focused card's deepest open level,
+  // else the whole sheet.
+  function fitCurrent() {
+    var uid = ast.zfocus, b = uid !== null && uid !== undefined && ast.open.has(uid) ? focusBoxOf(uid) : null;
+    if (b) fitBox(b, 0.9); else fitApps();
   }
   function zoomApps(px, py, f) {
     var k = Math.max(0.05, Math.min(3, ast.cam.k * f));
@@ -3866,10 +3938,10 @@
     var u = key && key.charAt(0) === 'u' ? AU[+key.slice(1)] : null;
     if (u) live.textContent = u.name + ', ' + unitKind(u) + ' selected';
     if (centre && key && ast.pos[key]) {
-      var r = stage.getBoundingClientRect(), p = ast.pos[key];
+      var r = stageArea(), p = ast.pos[key];
       var cx = (p.x + p.w / 2) * ast.cam.k + ast.cam.x, cy = (p.y + p.h / 2) * ast.cam.k + ast.cam.y;
-      if (cx < 40 || cy < 40 || cx > r.width - 40 || cy > r.height - 40) {
-        ast.cam.x += r.width / 2 - cx; ast.cam.y += r.height / 2 - cy; ast.userMoved = true; applyAppCam();
+      if (!zAnim && (cx < 40 || cy < 40 || cx > r.w - 40 || cy > r.h - 40)) {
+        zFit = null; ast.cam.x += r.w / 2 - cx; ast.cam.y += r.h / 2 - cy; ast.userMoved = true; applyAppCam();
       }
     }
   }
@@ -4064,8 +4136,13 @@
     if (b.dataset.folder !== undefined) { openFolder(b.dataset.folder); return true; }
     if (b.dataset.alist) { ast.lists.add(b.dataset.alist); renderPanel(); return true; }
     if (b.dataset.act === 'aclose') { ast.zsel = null; ast.zlink = null; ast.zpanelUnit = null; selectUnit(null); renderZoomView(true); writeHash(); appsEl.focus(); return true; }
-    if (b.dataset.zend !== undefined) { var end = +b.dataset.zend, z = zdata(); ast.zlink = null; ast.zpanelUnit = null; zoomReveal(endUnit(z, end), end >= 0 ? 's' + end : 'f' + (-1 - end)); return true; }
-    if (b.dataset.zunit !== undefined) { ast.zpanelUnit = +b.dataset.zunit; ast.zlink = null; ast.selected = 'u' + b.dataset.zunit; renderPanel(); writeHash(); return true; }
+    if (b.dataset.zend !== undefined) { var end = +b.dataset.zend, z = zdata(); zshow(endUnit(z, end), end >= 0 ? 's' + end : 'f' + (-1 - end)); return true; }
+    if (b.dataset.zunit !== undefined) {
+      var pu = +b.dataset.zunit;
+      ast.zpanelUnit = pu; ast.zlink = null; ast.selected = 'u' + pu; renderPanel(); writeHash();
+      if (ast.zsel && ast.zsel.u === pu) renderTree(treeIndex(pu, ast.zsel.id));
+      return true;
+    }
     if (b.dataset.zcopy !== undefined) { copyText(zdata().syms[+b.dataset.zcopy].qual); return true; }
     if (b.dataset.tgo !== undefined) { treeGo(+panel.querySelector('[data-vtree]').dataset.vtree, b.dataset.tgo); return true; }
     if (b.dataset.ttog !== undefined) { treeToggle(b.dataset.ttog); return true; }
@@ -4159,6 +4236,7 @@
         var dx = ev.clientX - appDrag.x, dy = ev.clientY - appDrag.y;
         if (Math.abs(dx) + Math.abs(dy) > 3) { appDrag.moved = true; ast.dragged = true; }
         if (!appDrag.moved) return;
+        if (zAnim || zFit) stopCam();
         ast.cam.x = appDrag.cx + dx; ast.cam.y = appDrag.cy + dy; ast.userMoved = true;
         applyAppCam();
         return;
@@ -4188,13 +4266,20 @@
     appsEl.addEventListener('pointerup', endAppPointer);
     appsEl.addEventListener('pointercancel', endAppPointer);
     appsEl.addEventListener('pointerleave', function () { hideTooltip(); });
+    // After the wheel opens or closes a level, the rest of that gesture (a
+    // trackpad's momentum) is spent: the camera settles on the new level
+    // instead of zooming on past it.
+    var wheelHold = null;
     appsEl.addEventListener('wheel', function (ev) {
       ev.preventDefault();
+      var now = performance.now();
+      if (wheelHold && now - wheelHold.last < 240 && now - wheelHold.t0 < 1500) { wheelHold.last = now; return; }
+      wheelHold = null;
       var r = appsEl.getBoundingClientRect();
       var f = Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0018));
-      if (zAnim) { cancelAnimationFrame(zAnim); zAnim = null; }
+      stopCam();
       zoomApps(ev.clientX - r.left, ev.clientY - r.top, f);
-      semanticWheel(ev.clientX - r.left, ev.clientY - r.top, f);
+      if (semanticWheel(ev.clientX - r.left, ev.clientY - r.top, f)) wheelHold = { t0: now, last: now };
     }, { passive: false });
     appsEl.addEventListener('click', function (ev) {
       if (ast.dragged) return;
@@ -4205,7 +4290,13 @@
       if (b && appPanelClick(b)) return;
       if (b && b.dataset.closeCard !== undefined) { toggleOpen(+b.dataset.closeCard); return; }
       var zi = ev.target.closest('.zi');
-      if (zi) { var h = itemFromEl(zi); if (h && h.it) zselect(h.u, h.it.id); return; }
+      if (zi) {
+        var h = itemFromEl(zi);
+        // The "other files" box opens and folds on a click; the second click of a double-click is not a second toggle.
+        if (h && h.it && h.it.type === 'others') { if (!(ev.detail > 1)) zothersToggle(h.u, h.it.id); return; }
+        if (h && h.it) zselect(h.u, h.it.id);
+        return;
+      }
       var hit = ev.target.closest('.hit, .shit');
       if (hit && hit.parentNode.dataset.zs !== undefined) { ast.zlink = { stub: ast.stubs[+hit.parentNode.dataset.zs] }; ast.selConn = null; renderPanel(); return; }
       if (hit && hit.parentNode.dataset.zl !== undefined) { ast.zlink = ast.zlinks[+hit.parentNode.dataset.zl]; ast.selConn = null; renderPanel(); return; }
@@ -4216,7 +4307,7 @@
     });
     appsEl.addEventListener('dblclick', function (ev) {
       var zi = ev.target.closest('.zi');
-      if (zi) { var h = itemFromEl(zi); if (h) zactivate(h.u, h.it); return; }
+      if (zi) { var h = itemFromEl(zi); if (h && h.it && h.it.type !== 'others') zactivate(h.u, h.it); return; }
       if (ev.target.closest('.card.zoomed')) return;
       var card = ev.target.closest('.card');
       if (!card || ev.target.closest('button') || card.dataset.key.charAt(0) !== 'u') return;
@@ -4292,7 +4383,7 @@
     if (k === 'Enter' && cur && cur.charAt(0) === 'u') { ev.preventDefault(); toggleOpen(+cur.slice(1)); return; }
     if (k === '+' || k === '=') { zoomApps(W / 2, H / 2, 1.25); return; }
     if (k === '-' || k === '_') { zoomApps(W / 2, H / 2, 0.8); return; }
-    if (k === 'f' || k === 'F' || k === '0') { fitApps(); }
+    if (k === 'f' || k === 'F' || k === '0') { fitCurrent(); }
   }
 
   // ------------------------------------------------------ app view zoom
@@ -4313,6 +4404,8 @@
     impl: 'i', table: 't', procedure: 'P', resource: 'r', param: 'a'
   };
   ast.zpath = {};      // unit id -> [tree node ids] opened below the card
+  ast.zothers = new Set(); // '<unit>:<others id>' of the "other files" boxes shown open
+  var OTHERS_MIN = 1;
   ast.zsel = null;     // { u, id } selected inside an open card
   ast.zfocus = null;   // unit id the breadcrumb follows
   ast.zitems = {};     // unit id -> { list, byId, w, h }
@@ -4402,7 +4495,18 @@
     }
     sum(root);
     Object.keys(nodes).forEach(function (id) { if (nodes[id].type === 'dir') rel[nodes[id].rel] = nodes[id]; });
-    var t = { root: root, nodes: nodes, rel: rel, uid: uid };
+    // Files without symbols (READMEs, changelogs, empty modules) share one
+    // "N other files" box per level, after the folders and code files.
+    var others = {};
+    Object.keys(nodes).forEach(function (id) {
+      var n = nodes[id];
+      if (n.type === 'file') return;
+      var rest = n.kids.filter(function (k) { return k.type === 'file' && !k.syms; });
+      if (rest.length < OTHERS_MIN) return;
+      n.others = { id: 'o' + n.id, type: 'others', name: plural(rest.length, 'other file', 'other files'), files: rest, parent: n, rel: n.rel };
+      others[n.others.id] = n.others;
+    });
+    var t = { root: root, nodes: nodes, rel: rel, uid: uid, others: others };
     z.trees[uid] = t;
     return t;
   }
@@ -4411,6 +4515,7 @@
     var t = ztree(uid);
     if (!t) return null;
     if (t.nodes[id]) return t.nodes[id];
+    if (t.others[id]) return t.others[id];
     if (id.charAt(0) === 's') {
       var y = zdata().syms[+id.slice(1)];
       if (y && zdata().files[y.file].unit === uid) return symNode(y);
@@ -4425,6 +4530,7 @@
     var z = zdata(), t = ztree(uid), out = [];
     if (!t) return out;
     var n = t.nodes[id];
+    if (!n && t.others[id]) return zchain(uid, t.others[id].parent.id).concat([id]);
     if (!n && id.charAt(0) === 's') {
       var y = z.syms[+id.slice(1)];
       while (y.parent >= 0) y = z.syms[y.parent];
@@ -4441,12 +4547,17 @@
     var openId = path[depth];
     var kids;
     if (n.type === 'file') kids = n.file.top.map(function (i) { return symNode(zdata().syms[i]); });
+    else if (n.others) kids = n.kids.filter(function (k) { return n.others.files.indexOf(k) < 0; }).concat([n.others]);
     else kids = n.kids;
     // Above the deepest open level, the boxes beside the path shrink to
     // name tags: context, not content.
     var compact = depth < path.length;
     var lays = kids.map(function (k) {
       if (k.type === 'sym') return symLay(k);
+      if (k.type === 'others' && !compact) {
+        if (!ast.zothers.has(uid + ':' + k.id)) return { node: k, w: ZBOX.w, h: ZBOX.h, kids: [] };
+        return { node: k, w: ZCONT_W, h: ZSYM_HEAD + k.files.length * ZROW + 6, files: k.files };
+      }
       if (k.id === openId && openable(k)) return frameLay(uid, k, depth + 1);
       if (compact) return { node: k, w: Math.min(190, Math.max(70, k.name.length * 7.4 + 22)), h: 24, compact: true };
       return { node: k, w: ZBOX.w, h: ZBOX.h, kids: [] };
@@ -4496,6 +4607,11 @@
         if (l.frame) {
           add({ id: n.id, type: 'frame', node: n, x: x, y: y, w: l.w, h: l.h, depth: depth, parent: parentId });
           walk(l.inner, x + ZFRAME_PAD, y + ZFRAME_HEAD, depth + 1, n.id);
+        } else if (l.files) {
+          add({ id: n.id, type: 'others', node: n, x: x, y: y, w: l.w, h: l.h, depth: depth, parent: parentId, open: true });
+          l.files.forEach(function (f, i) {
+            add({ id: f.id, type: 'orow', node: f, x: x + 4, y: y + ZSYM_HEAD + i * ZROW, w: l.w - 8, h: ZROW, depth: depth + 1, indent: 0, parent: n.id });
+          });
         } else if (n.type === 'sym') {
           add({ id: n.id, type: 'sym', node: n, x: x, y: y, w: l.w, h: l.h, depth: depth, parent: parentId, rows: l.rows.length });
           l.rows.forEach(function (r, i) {
@@ -4541,6 +4657,8 @@
     for (; n; n = n.parent) {
       if (n.type === 'unit') return { u: uid, it: null };
       if (items.byId[n.id]) return { u: uid, it: items.byId[n.id] };
+      // A file without symbols is drawn in its level's "other files" box.
+      if (n.type === 'file' && !n.syms && n.parent && n.parent.others && items.byId[n.parent.others.id]) return { u: uid, it: items.byId[n.parent.others.id] };
     }
     return { u: uid, it: null };
   }
@@ -4585,7 +4703,7 @@
   function buildZlinks() {
     var z = zdata(), map = new Map(), out = [];
     // Stubs are re-made with the links: one under the pointer is no longer known.
-    ast.zlinks = out; ast.stubs = []; ast.zhstub = null;
+    ast.zlinks = out; ast.stubs = []; ast.zhstub = null; ast.zlabelled = [];
     if (!z || !ast.open.size) return;
     z.edges.forEach(function (e) {
       var ua = endUnit(z, e.a), ub = endUnit(z, e.b);
@@ -4677,12 +4795,16 @@
     });
     return placeStubs(list, v);
   }
-  var STUBS_PER_SIDE = 8;
+  var STUBS_PER_SIDE = 8, STUB_ROOM = 36;
+  // Per open level and side ('<unit><side>'), fewer stubs where their labels
+  // found no free room: the lightest fold into "+N more".
+  ast.stubCap = {};
   // Stubs sit on the side of the open level facing their target, spread
   // along the part of that edge in view, and stay in view while the level does.
   function placeStubs(list, v) {
-    // m: room kept to the view's edge; mv: room for the stub and a label row.
-    var bySide = {}, m = 30 / (v.k || 1), mv = 48 / (v.k || 1), out = [];
+    // m: room kept to the view's edge; mv: room for the stub and a label row
+    // (STUB_ROOM world units: a 16-unit stub, a 16-unit label, gaps).
+    var bySide = {}, m = 30 / (v.k || 1), mv = STUB_ROOM + 6 / (v.k || 1), out = [];
     list.forEach(function (s) {
       var A = focusBoxOf(s.u), B = endBox(s.target);
       s.box = A; s.tbox = B;
@@ -4699,16 +4821,17 @@
     Object.keys(bySide).forEach(function (key) {
       var group = bySide[key], A = group[0].box, side = group[0].side, horiz = side === 't' || side === 'b';
       // Past a handful on one side, the lightest share one stub: "+N more".
-      if (group.length > STUBS_PER_SIDE) {
+      var cap = Math.min(STUBS_PER_SIDE, ast.stubCap[key] || Infinity);
+      if (group.length > cap) {
         group.sort(function (a, b) { return b.w - a.w || a.ox - b.ox; });
-        var rest = group.slice(STUBS_PER_SIDE - 1), more = { u: rest[0].u, target: null, more: rest.length, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code', box: A, tbox: null, side: side, ox: Infinity };
+        var rest = group.slice(cap - 1), more = { u: rest[0].u, target: null, more: rest.length, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code', box: A, tbox: null, side: side, ox: Infinity };
         rest.forEach(function (s) {
           more.out = more.out || s.out; more.inn = more.inn || s.inn; more.w += s.w;
           Object.keys(s.kinds).forEach(function (kk) { more.kinds[kk] = (more.kinds[kk] || 0) + s.kinds[kk]; });
           s.members.forEach(function (it) { if (more.members.indexOf(it) < 0) more.members.push(it); });
           s.links.forEach(function (i) { if (more.links.indexOf(i) < 0) more.links.push(i); });
         });
-        group = group.slice(0, STUBS_PER_SIDE - 1).concat([more]);
+        group = group.slice(0, cap - 1).concat([more]);
       }
       group.sort(function (a, b) { return a.ox - b.ox || b.w - a.w; });
       // The visible stretch of the edge, or all of it when none is visible.
@@ -4719,6 +4842,19 @@
       else if (side === 'b') at = Math.max(Math.min(A.y + A.h, v.y1 - mv), A.y);
       else if (side === 'l') at = Math.min(Math.max(A.x, v.x0 + m), A.x + A.w);
       else at = Math.max(Math.min(A.x + A.w, v.x1 - m), A.x);
+      // Ports keep off the level's title: on its top edge they start right
+      // of it (or sit just above the edge when the title fills it); pushed
+      // down by the view they go below the header, not through it.
+      var head = side === 't' ? headBand(group[0].u, A) : null, lift = 0;
+      if (head) {
+        if (at > A.y + 0.5 && at < head.y1) at = head.y1;
+        if (at < head.y1) {
+          var from = Math.max(lo, head.x1);
+          // Room for the ports right of the title, a port's width apart; else above the edge.
+          if (hi - from >= Math.max(40, (group.length + 1) * 16)) lo = from; else lift = 7;
+        }
+      }
+      at -= lift;
       group.forEach(function (s, i) {
         var f = (i + 1) / (group.length + 1), along = lo + (hi - lo) * f;
         if (horiz) { s.x = along; s.y = at; } else { s.x = at; s.y = along; }
@@ -4727,8 +4863,16 @@
     });
     return out;
   }
-  function stubName(s) {
-    if (!s.target) return '+' + fmt(s.more) + ' more';
+  // A level's header: where its title text ends and its header band ends.
+  function headBand(uid, A) {
+    var it = focusItem(uid);
+    if (!it) return { x1: A.x, y1: A.y + ZHEAD - 10 };
+    if (it.type !== 'frame') return null;
+    var n = it.node;
+    return { x1: A.x + 20 + textWidth('▾ ' + n.name, '700 12.5px ' + MONO, 7.6) + 8 + textWidth(itemCounts(n), '11px ' + SANS, 6.2) + 8, y1: A.y + ZFRAME_HEAD };
+  }
+  function stubName(s, short) {
+    if (!s.target) return '+' + fmt(s.more) + (short ? '' : ' more');
     return s.label || targetName(s);
   }
   function targetName(s) {
@@ -4738,20 +4882,23 @@
     return t.u !== s.u ? AU[t.u].name + ' › ' + nm : nm;
   }
   var measureCtx = null;
-  function labelWidth(text) {
+  function textWidth(text, font, perChar) {
     try {
       if (!measureCtx) { var cv = document.createElement('canvas'); measureCtx = cv && cv.getContext ? cv.getContext('2d') : false; }
       if (measureCtx && measureCtx.measureText) {
-        measureCtx.font = '700 11px ' + SANS;
+        measureCtx.font = font;
         var w = measureCtx.measureText(text).width;
-        if (w > 0) return w + text.length * 0.25;
+        if (w > 0) return w;
       }
     } catch (e) { /* no canvas: estimate */ }
-    return text.length * 6.8;
+    return text.length * perChar;
   }
-  function stubText(s) {
-    var t = s.target, hidden = !!t && t.card !== undefined && !ast.pos['u' + t.card];
-    return (s.out && s.inn ? '⇄ ' : s.out ? '→ ' : '← ') + stubName(s) + ' ×' + fmt(s.w) + (hidden ? ' (hidden)' : '');
+  function labelWidth(text) { return textWidth(text, '700 11px ' + SANS, 6.55) + text.length * 0.25; }
+  // `n`: the name cut to n characters, for a label short of room.
+  function stubText(s, n) {
+    var t = s.target, hidden = !!t && t.card !== undefined && !ast.pos['u' + t.card], name = stubName(s, n && n < 14);
+    if (n) { if (s.target && name.length > n) name = name.slice(0, n - 1) + '…'; hidden = false; }
+    return (s.out && s.inn ? '⇄ ' : s.out ? '→ ' : '← ') + name + ' ×' + fmt(s.w) + (hidden ? ' (hidden)' : '');
   }
   function endBox(r) {
     if (r.card !== undefined) { var p = ast.pos['u' + r.card]; return p ? { x: p.x, y: p.y, w: p.w, h: p.h } : null; }
@@ -4789,7 +4936,7 @@
   function linkGeom(l) {
     var A = endBox(l.a), B = endBox(l.b);
     if (!A || !B) return null;
-    var rowA = l.a.it && l.a.it.type === 'row', rowB = l.b.it && l.b.it.type === 'row';
+    var rowA = !!l.a.it && isRow(l.a.it), rowB = !!l.b.it && isRow(l.b.it);
     return zcurve(A, B, rowA, rowB);
   }
 
@@ -4821,6 +4968,8 @@
     return html + '</article>';
   }
   function glyph(kind) { return KIND_GLYPH[kind] || (kind ? kind.charAt(0) : '·'); }
+  // A line inside a box: a member of a class, a file of an "other files" box.
+  function isRow(it) { return it.type === 'row' || it.type === 'orow'; }
   function itemHtml(uid, it, far) {
     var sel = ast.zsel && ast.zsel.u === uid && ast.zsel.id === it.id;
     var st0 = 'transform:translate(' + r1(it.x) + 'px,' + r1(it.y) + 'px);width:' + r1(it.w) + 'px;height:' + r1(it.h) + 'px';
@@ -4841,11 +4990,20 @@
         // A box with members lists them under its name; its signature is in the tooltip.
         '<div class="nm">' + esc(s.name) + '</div>' + (s.sig && !it.rows ? '<div class="sg">' + esc(s.sig) + '</div>' : '') + '</div>';
     }
-    var n = it.node, counts;
-    if (n.type === 'file') {
-      var f = n.file;
-      counts = (f.emb ? plural(f.syms, 'symbol', 'symbols') : plural(f.syms, 'symbol', 'symbols') + ', not embedded') + ' · ' + langName(f.lang);
-    } else counts = plural(n.files, 'file', 'files') + ' · ' + plural(n.syms, 'symbol', 'symbols');
+    if (it.type === 'orow') {
+      var of = it.node;
+      return '<button type="button" class="' + cls + ' z-row"' + base + ' title="' + esc(of.rel + ' · ' + itemCounts(of)) + '">' +
+        '<span class="g">▤</span><span class="nm">' + esc(of.name) + '</span><span class="sg">' + esc(langName(of.file.lang)) + '</span></button>';
+    }
+    if (it.type === 'others') {
+      var on = it.node, names = on.files.map(function (f) { return f.name; });
+      var attrs = base.replace('tabindex="-1"', 'tabindex="-1" role="button" aria-expanded="' + !!it.open + '"');
+      if (it.compact) return '<div class="' + cls + ' compact"' + attrs + ' title="' + esc(names.join(', ')) + '"><span class="nm">' + esc(on.name) + '</span></div>';
+      return '<div class="' + cls + (it.open ? ' open' : '') + '"' + attrs + ' title="' + esc((it.open ? 'Click to fold: ' : 'Click to list: ') + names.join(', ')) + '">' +
+        '<div class="nm"><span class="tw" aria-hidden="true">' + (it.open ? '▾' : '▸') + '</span> ' + esc(on.name) + '</div>' +
+        '<div class="n">' + esc(it.open ? 'no symbols' : names.join(', ')) + '</div></div>';
+    }
+    var n = it.node, counts = itemCounts(n);
     if (it.type === 'frame') {
       return '<div class="' + cls + ' f-' + n.type + '"' + base + '><div class="zfh"><button type="button" class="zup" data-zu="' + uid + '" data-zup="' + esc(n.id) +
         '" title="Close ' + esc(n.name) + '" aria-label="Close ' + esc(n.name) + '">' + esc(n.name) + '</button><span class="n">' + esc(counts) + '</span></div></div>';
@@ -4859,10 +5017,19 @@
       (can ? '. Double-click or Enter to open' : '') + '">' +
       '<div class="nm">' + esc(n.name) + '</div><div class="n">' + esc(counts) + '</div></div>';
   }
-  function viewRect(margin) {
-    var r = stage.getBoundingClientRect(), k = ast.cam.k || 1, m = (margin || 0) / k;
-    return { x0: -ast.cam.x / k - m, y0: -ast.cam.y / k - m, x1: (r.width - ast.cam.x) / k + m, y1: (r.height - ast.cam.y) / k + m, k: k };
+  // What a folder or file box says under its name.
+  function itemCounts(n) {
+    if (n.type !== 'file') return plural(n.files, 'file', 'files') + ' · ' + plural(n.syms, 'symbol', 'symbols');
+    var f = n.file;
+    return plural(f.syms, 'symbol', 'symbols') + (f.emb ? '' : ', not embedded') + ' · ' + langName(f.lang);
   }
+  function viewRect(margin) {
+    var a = stageArea(), k = ast.cam.k || 1, m = (margin || 0) / k;
+    return { x0: -ast.cam.x / k - m, y0: -ast.cam.y / k - m, x1: (a.w - ast.cam.x) / k + m, y1: (a.h - ast.cam.y) / k + m, k: k };
+  }
+  // The view stubs and their labels keep to: clear of the status line.
+  var STATUS_ROOM = 36;
+  function stubView() { var v = viewRect(0); v.y1 -= STATUS_ROOM / v.k; return v; }
   function hitRect(a, b) { return a.x < b.x1 && a.x + a.w > b.x0 && a.y < b.y1 && a.y + a.h > b.y0; }
   // The items and links in (and around) the view. Re-rendered when the view
   // leaves the rendered region or the zoom changes a lot.
@@ -4874,25 +5041,42 @@
         v.k < zRendered.k * 1.8 && v.k > zRendered.k / 1.8) { renderStubs(); return; }
     var R = viewRect(Math.max(300, (stage.getBoundingClientRect().width || 1400) * 0.5));
     zRendered = R;
-    var shown = 0;
+    var shown = 0, clip = '', obst = [];
+    var hole = function (x, y, w, h) { clip += rectD(x, y, w, h); obst.push([x, y, x + w, y + h]); };
     ast.open.forEach(function (uid) {
-      var el = appsCards.querySelector('[data-zin="' + uid + '"]'), items = ast.zitems[uid], o = zorigin(uid);
+      var el = appsCards.querySelector('[data-zin="' + uid + '"]'), items = ast.zitems[uid], o = zorigin(uid), P = ast.pos['u' + uid];
       if (!items || !o) return;
       var html = '', cap = 3000;
+      // Lines are cut out of the card's header, every box drawn and each
+      // open level's header: they run between boxes, never across a face
+      // or a title, and a box under a line still takes the pointer.
+      if (P) hole(P.x, P.y, P.w, ZHEAD - 10);
       items.list.forEach(function (it) {
         var sel = ast.zsel && ast.zsel.u === uid && ast.zsel.id === it.id;
         if (!sel && (cap <= 0 || !hitRect({ x: o.x + it.x, y: o.y + it.y, w: it.w, h: it.h }, R))) return;
         // Text under 4 px is noise: far out, boxes only.
         if (R.k < 0.18 && it.type === 'row' && !sel) return;
         html += itemHtml(uid, it, R.k < 0.3);
+        if (it.type === 'frame') hole(o.x + it.x, o.y + it.y, it.w, ZFRAME_HEAD - 2);
+        else if (!isRow(it)) hole(o.x + it.x, o.y + it.y, it.w, it.h);
         cap--; shown++;
       });
       if (items.empty) html = '<p class="zempty">No files with symbols here.</p>';
       if (el) el.innerHTML = html;
     });
     ast.zshown = shown;
+    ast.zclip = clip;
+    // What a label may not sit on: those boxes, tags and headers, and the
+    // closed cards on the sheet.
+    Object.keys(ast.pos).forEach(function (key) {
+      if (key.charAt(0) === 'u' && ast.open.has(+key.slice(1))) return;
+      var p = ast.pos[key];
+      obst.push([p.x, p.y, p.x + p.w, p.y + p.h]);
+    });
+    ast.zobst = obst;
     renderZlinks(R);
   }
+  function rectD(x, y, w, h) { return 'M' + r1(x) + ' ' + r1(y) + 'h' + r1(w) + 'v' + r1(h) + 'h' + r1(-w) + 'Z'; }
   function requestZoomView() { if (!zRaf) zRaf = requestAnimationFrame(function () { renderZoomView(false); }); }
   function zlinkWidth(w) { return Math.min(4.5, 0.9 + Math.log2(Math.max(1, w)) * 0.5); }
   function touches(r, sel) { return !!sel && r.u === sel.u && !!r.it && r.it.id === sel.id; }
@@ -4909,11 +5093,11 @@
   // follow the view, on every move.
   function renderZlinks(R) {
     if (!zedges) return;
-    var v = viewRect(0);
-    ast.stubs = zstubs(v);
+    var v = stubView();
+    var labels = fitStubLabels(v, true);
     ast.zlineKey = lineKey();
     var many = ast.zlinks.length > 120, svg = '';
-    ast.zdrawn = 0;
+    ast.zdrawn = 0; ast.zlabelled = [];
     ast.zlinks.forEach(function (l, i) {
       var g = l.g;
       if (!l.line || !g || !hitRect(l.bb, R)) return;
@@ -4923,13 +5107,14 @@
       ast.zdrawn++;
       svg += '<g class="zl conn f-' + l.fam + (on ? ' on' : '') + (cross ? ' cross named' : '') + (many ? ' many' : '') + '" data-zl="' + i + '" style="--w:' + r1(w) + '">' +
         '<path class="ln" d="' + curveD(g) + '" stroke-width="' + r1(w) + '"/><path class="ah" d="' + arrowAt(g, 6) + '"/>' +
-        '<path class="hit" d="' + curveD(g) + '"/>' +
-        (on || cross ? '<text class="lbl" x="' + r1(bez(g.x1, g.c1x, g.c2x, g.x2, 0.5)) + '" y="' + r1(bez(g.y1, g.c1y, g.c2y, g.y2, 0.5)) + '" text-anchor="middle" dy="0.35em">' +
-          esc(zkindsLabel(l.kinds)) + '</text>' : '') + '</g>';
+        '<path class="hit" d="' + curveD(g) + '"/></g>';
+      if (on || cross) ast.zlabelled.push(i);
     });
     zedges.setAttribute('width', String(Math.max(1, ast.sheet ? ast.sheet.width : 1)));
     zedges.setAttribute('height', String(Math.max(1, ast.sheet ? ast.sheet.height : 1)));
-    zedges.innerHTML = '<g class="zlg">' + svg + '</g><g class="zsg">' + stubsSvg(v) + '</g>';
+    // Everything outside the cut-outs: even-odd, the boxes are holes.
+    zedges.innerHTML = '<defs><clipPath id="zclip"><path clip-rule="evenodd" d="M-100000 -100000H100000V100000H-100000Z' + (ast.zclip || '') + '"/></clipPath></defs>' +
+      '<g class="zlg" clip-path="url(#zclip)">' + svg + '</g><g class="zsg">' + labels + '</g>';
     zedges.classList.toggle('hasfocus', !!(ast.zsel || ast.zhover || ast.zhstub !== null));
   }
   // Which cross-card links are lines in this view: when it changes, the lines are re-drawn.
@@ -4940,41 +5125,177 @@
   }
   function renderStubs() {
     var g = zedges && zedges.querySelector ? zedges.querySelector('.zsg') : null;
-    var v = viewRect(0);
+    var v = stubView();
     ast.stubs = zstubs(v);
     if (!g || lineKey() !== ast.zlineKey) { renderZlinks(zRendered || viewRect(600)); return; }
-    g.innerHTML = stubsSvg(v);
+    g.innerHTML = labelsSvg(v);
+    // A label with no free room after a pan: fold stubs once the view rests.
+    if (ast.stubs.some(function (s) { return s.lfail; })) {
+      clearTimeout(stubFoldTimer);
+      stubFoldTimer = setTimeout(function () { var g2 = zedges.querySelector('.zsg'), v2 = stubView(); if (g2) g2.innerHTML = fitStubLabels(v2, false); }, 140);
+    }
   }
-  function stubsSvg(v) {
-    var placed = [], svg = '', k = v.k || 1, L = 16;
+  var stubFoldTimer = null;
+  // The stubs and every label, folding the lightest stubs of a side into
+  // "+N more" while a label there finds no free room. `fresh` starts again
+  // from the full count per side.
+  function fitStubLabels(v, fresh) {
+    if (fresh) ast.stubCap = {};
+    var html = '', done = {};
+    for (var pass = 0; pass < 16; pass++) {
+      ast.stubs = zstubs(v);
+      html = labelsSvg(v);
+      var count = {}, worst = null;
+      ast.stubs.forEach(function (s) { var key = s.u + s.side; count[key] = (count[key] || 0) + 1; });
+      ast.stubs.forEach(function (s) {
+        var key = s.u + s.side;
+        if (s.lfail && count[key] > 1 && !done[key] && (!worst || count[key] > count[worst])) worst = key;
+      });
+      if (!worst) break;
+      var was = count[worst], now = Math.max(1, Math.floor(was / 2));
+      ast.stubCap[worst] = now;
+      if (now <= 1) done[worst] = true;
+    }
+    return html;
+  }
+  // The labels over the sheet: the drawn links' (focused or crossing cards),
+  // then the stubs', each in free space and clear of the others.
+  function labelsSvg(v) {
+    var k = v.k || 1, placed = [], obst = (ast.zobst || []).filter(function (o) { return o[0] < v.x1 && o[2] > v.x0 && o[1] < v.y1 && o[3] > v.y0; });
+    var svg = '', out = [];
+    // The stubs' ports and short lines are kept clear too.
+    obst = obst.slice();
+    ast.stubs.forEach(function (st0) {
+      if (!st0.box || st0.x === undefined) return;
+      var nx = st0.side === 'l' ? -1 : st0.side === 'r' ? 1 : 0, ny = st0.side === 't' ? -1 : st0.side === 'b' ? 1 : 0;
+      var ex = st0.x + nx * 13, ey = st0.y + ny * 13;
+      obst.push([st0.x - 5, st0.y - 5, st0.x + 5, st0.y + 5]);
+      obst.push([Math.min(st0.x, ex) - 1.5, Math.min(st0.y, ey) - 1.5, Math.max(st0.x, ex) + 1.5, Math.max(st0.y, ey) + 1.5]);
+    });
+    (ast.zlabelled || []).forEach(function (i) {
+      var l = ast.zlinks[i], g = l && l.g;
+      if (!g) return;
+      var full = zkindsLabel(l.kinds), kinds = Object.keys(l.kinds), th = 15;
+      var mx = bez(g.x1, g.c1x, g.c2x, g.x2, 0.5), my = bez(g.y1, g.c1y, g.c2y, g.y2, 0.5);
+      // Short of room, the heaviest kind alone.
+      var spot = labelSpot(function (n) {
+        if (n > 1 || (n === 1 && kinds.length < 2)) return null;
+        var t = n ? full.split(' · ')[0] + ' …' : full, w = textWidth(t, '600 11px ' + SANS, 6.3) + 8;
+        return { text: t, tw: w, prefs: [[mx - w / 2, my - th / 2]] };
+      }, mx, my, th, v, obst, placed);
+      var box = spot.box, text = spot.text;
+      placed.push(box);
+      out.push({ i: i, text: text, box: box, at: [mx, my] });
+      svg += '<g class="zlbl' + (zlinkOn(l) ? ' on' : '') + '">' + leader(mx, my, box) + '<rect class="lbg" x="' + r1(box[0]) + '" y="' + r1(box[1]) + '" width="' + r1(box[2] - box[0]) +
+        '" height="' + r1(box[3] - box[1]) + '" rx="3"/><text class="lbl" x="' + r1((box[0] + box[2]) / 2) + '" y="' + r1(box[3] - 4) + '" text-anchor="middle">' + esc(text) + '</text></g>';
+    });
+    ast.zlinkLabels = out;
+    return '<g class="zll">' + svg + '</g>' + stubsSvg(v, obst, placed);
+  }
+  // A spot for a tw x th label: the first free one of `prefs` (top-left
+  // corners), else the free one nearest (ax, ay). Free: in
+  // the view, off every box, tag and header, clear of the labels placed.
+  // With nothing free, the first preference pulled into the view: a label
+  // is moved, never dropped.
+  // With `strict`, the leader from the anchor to the spot crosses no box
+  // either (other than one the anchor is on).
+  function freeSpot(prefs, ax, ay, tw, th, v, obst, placed, strict) {
+    var vm = 4 / (v.k || 1);
+    var x0 = v.x0 + vm, y0 = v.y0 + vm, x1 = v.x1 - vm, y1 = v.y1 - vm;
+    var crossable = strict ? obst.filter(function (o) { return !(ax >= o[0] && ax <= o[2] && ay >= o[1] && ay <= o[3]); }) : null;
+    if (!obst.occ) obst.occ = occupancy(v, obst);
+    var occ = obst.occ;
+    function free(c) {
+      if (c[0] < x0 || c[2] > x1 || c[1] < y0 || c[3] > y1) return false;
+      for (var i = 0; i < placed.length; i++) { var q = placed[i]; if (c[0] < q[2] + 2 && c[2] + 2 > q[0] && c[1] < q[3] + 2 && c[3] + 2 > q[1]) return false; }
+      if (occupied(occ, c)) return false;
+      if (crossable) {
+        var px = Math.max(c[0], Math.min(ax, c[2])), py = Math.max(c[1], Math.min(ay, c[3]));
+        for (var m = 0; m < crossable.length; m++) if (segHits(ax, ay, px, py, crossable[m])) return false;
+      }
+      return true;
+    }
+    for (var p = 0; p < prefs.length; p++) { var c0 = [prefs[p][0], prefs[p][1], prefs[p][0] + tw, prefs[p][1] + th]; if (free(c0)) return c0; }
+    // Spots on a grid over the view, in square rings out from the anchor.
+    var gw = x1 - x0 - tw, gh = y1 - y0 - th;
+    if (gw < 0 || gh < 0) return null;
+    var step = Math.max(6, Math.sqrt(gw * gh / 5000)), ni = Math.floor(gw / step), nj = Math.floor(gh / step);
+    var ia = Math.round((ax - tw / 2 - x0) / step), ja = Math.round((ay - th / 2 - y0) / step);
+    var at = function (i, j) {
+      if (i < 0 || j < 0 || i > ni || j > nj) return null;
+      var c = [x0 + i * step, y0 + j * step, x0 + i * step + tw, y0 + j * step + th];
+      return free(c) ? c : null;
+    };
+    // A clear leader is looked for near the anchor only.
+    var maxD = Math.max(ni, nj) + Math.max(Math.abs(ia), Math.abs(ja));
+    if (strict) maxD = Math.min(maxD, 40);
+    for (var d = 0; d <= maxD; d++) {
+      for (var e = -d; e <= d; e++) {
+        var c = at(ia + e, ja - d) || at(ia + e, ja + d) || at(ia - d, ja + e) || at(ia + d, ja + e);
+        if (c) return c;
+      }
+    }
+    return null;
+  }
+  // A label's spot: its full text where there is room, else a shorter one,
+  // else (nothing free) its first spot pulled into the view; never dropped.
+  // `variant(n)` gives the text for try n (0 the full one) and its prefs,
+  // or null for none.
+  function labelSpot(variant, ax, ay, th, v, obst, placed) {
+    var first = null, tried = {}, list = [];
+    for (var n = 0; n < 6; n++) {
+      var x = variant(n);
+      if (!x || tried[x.text]) continue;
+      tried[x.text] = true;
+      if (!first) first = x;
+      list.push(x);
+    }
+    // A leader clear of the boxes first, then any free spot.
+    for (var pass = 0; pass < 2; pass++) {
+      for (var i = 0; i < list.length; i++) {
+        var c = freeSpot(list[i].prefs, ax, ay, list[i].tw, th, v, obst, placed, pass === 0);
+        if (c) return { box: c, text: list[i].text };
+      }
+    }
+    var vm = 4 / (v.k || 1), p = first.prefs[0];
+    var fx = Math.max(v.x0 + vm, Math.min(p[0], v.x1 - vm - first.tw)), fy = Math.max(v.y0 + vm, Math.min(p[1], v.y1 - vm - th));
+    return { box: [fx, fy, fx + first.tw, fy + th], text: first.text, fail: true };
+  }
+  function stubsSvg(v, obst, placed) {
+    var svg = '', k = v.k || 1, L = 16;
     ast.stubs.forEach(function (s, i) {
       if (!s.box || s.x === undefined) return;
       var on = stubOn(s, i), text = stubText(s);
       var nx = s.side === 'l' ? -1 : s.side === 'r' ? 1 : 0, ny = s.side === 't' ? -1 : s.side === 'b' ? 1 : 0;
       var ex = s.x + nx * L, ey = s.y + ny * L;
       // The label beside the stub's end, else stepped outward and along the
-      // edge until it clears the others, always inside the view.
-      var tw = labelWidth(text) + 10, th = 16, box = null;
-      var bx0 = nx < 0 ? ex - 4 - tw : nx > 0 ? ex + 4 : ex - tw / 2, by0 = ny < 0 ? ey - 2 - th : ny > 0 ? ey + 2 : ey - th / 2;
-      var vm = 4 / k;
-      search:
-      for (var row = 0; row < 6; row++) {
-        for (var j = 0; j < 5; j++) {
-          var sh = j === 0 ? 0 : (j % 2 ? 1 : -1) * Math.ceil(j / 2);
-          var cx = bx0 + (ny ? sh * (tw / 2 + 6) : nx * row * 24), cy = by0 + (ny ? ny * row * (th + 2) : sh * (th + 2));
-          var cand = [cx, cy, cx + tw, cy + th];
-          if (cand[0] < v.x0 + vm || cand[2] > v.x1 - vm || cand[1] < v.y0 + vm || cand[3] > v.y1 - vm) continue;
-          if (!placed.some(function (q) { return cand[0] < q[2] + 2 && cand[2] + 2 > q[0] && cand[1] < q[3] + 2 && cand[3] + 2 > q[1]; })) { box = cand; break search; }
+      // edge, else the nearest free space (a leader runs to it): never over
+      // a box, a tag or another label, always inside the view.
+      // Short of room, the target's name is cut (the tooltip has it whole).
+      var th = 16, cuts = [0, 24, 14, 8, 5, 3];
+      var spot = labelSpot(function (n) {
+        var t = n ? stubText(s, cuts[n]) : text;
+        var tw = labelWidth(t) + 10, prefs = [];
+        var bx0 = nx < 0 ? ex - 4 - tw : nx > 0 ? ex + 4 : ex - tw / 2, by0 = ny < 0 ? ey - 2 - th : ny > 0 ? ey + 2 : ey - th / 2;
+        for (var row = 0; row < 6; row++) {
+          for (var j = 0; j < 5; j++) {
+            var sh = j === 0 ? 0 : (j % 2 ? 1 : -1) * Math.ceil(j / 2);
+            prefs.push([bx0 + (ny ? sh * (tw / 2 + 6) : nx * row * 24), by0 + (ny ? ny * row * (th + 2) : sh * (th + 2))]);
+          }
         }
-      }
-      if (box) placed.push(box);
+        return { text: t, tw: tw, prefs: prefs };
+      }, ex, ey, th, v, obst, placed);
+      var box = spot.box;
+      text = spot.text;
+      placed.push(box);
+      s.lbox = box; s.ltext = text; s.lfail = !!spot.fail;
       var w = zlinkWidth(s.w);
       svg += '<g class="zstub conn f-' + s.fam + (on ? ' on' : '') + '" data-zs="' + i + '" style="--w:' + r1(w) + '">';
       // On to the target, while hovered or selected and the target is in
       // view: one line for the whole bundle.
       if (on && s.tbox && boxInView(s.tbox, v)) {
         var g = s.out ? zcurve({ x: ex - 1, y: ey - 1, w: 2, h: 2 }, s.tbox, false, false) : zcurve(s.tbox, { x: ex - 1, y: ey - 1, w: 2, h: 2 }, false, false);
-        svg += '<path class="ln on-card" d="' + curveD(g) + '" stroke-width="' + r1(w) + '"/>' + (s.out && s.inn ? '' : '<path class="ah" d="' + arrowAt(g, 6) + '"/>');
+        svg += '<path class="ln on-card" clip-path="url(#zclip)" d="' + curveD(g) + '" stroke-width="' + r1(w) + '"/>' + (s.out && s.inn ? '' : '<path class="ah" d="' + arrowAt(g, 6) + '"/>');
       } else if (!(s.out && s.inn)) {
         var gs = s.out ? { x1: s.x, y1: s.y, x2: ex, y2: ey, c1x: s.x, c1y: s.y, c2x: s.x, c2y: s.y } : { x1: ex, y1: ey, x2: s.x, y2: s.y, c1x: ex, c1y: ey, c2x: ex, c2y: ey };
         svg += '<path class="ah" d="' + arrowAt(gs, 6) + '"/>';
@@ -4983,15 +5304,58 @@
         '<circle class="pt" cx="' + r1(s.x) + '" cy="' + r1(s.y) + '" r="4"/>' +
         (box ? leader(ex, ey, box) + '<rect class="pbg" x="' + r1(box[0]) + '" y="' + r1(box[1]) + '" width="' + r1(box[2] - box[0]) + '" height="' + r1(box[3] - box[1]) + '" rx="3"/>' +
           '<text class="plbl" x="' + r1((box[0] + box[2]) / 2) + '" y="' + r1(box[3] - 4.5) + '" text-anchor="middle">' + esc(text) + '</text>' : '') +
-        '<rect class="shit" x="' + r1(Math.min(s.x, ex, box ? box[0] : ex) - 4) + '" y="' + r1(Math.min(s.y, ey, box ? box[1] : ey) - 4) + '" width="' +
-        r1(Math.max(s.x, ex, box ? box[2] : ex) - Math.min(s.x, ex, box ? box[0] : ex) + 8) + '" height="' + r1(Math.max(s.y, ey, box ? box[3] : ey) - Math.min(s.y, ey, box ? box[1] : ey) + 8) + '"/></g>';
+        // Pointed at by its label (or, unlabelled, its short line): a stub
+        // pinned inside a level that runs past the view never takes the
+        // pointer from the boxes under its port.
+        (box ? '<rect class="shit" x="' + r1(box[0] - 2) + '" y="' + r1(box[1] - 2) + '" width="' + r1(box[2] - box[0] + 4) + '" height="' + r1(box[3] - box[1] + 4) + '"/>'
+          : '<rect class="shit" x="' + r1(Math.min(s.x, ex) - 4) + '" y="' + r1(Math.min(s.y, ey) - 4) + '" width="' + r1(Math.abs(ex - s.x) + 8) + '" height="' + r1(Math.abs(ey - s.y) + 8) + '"/>') + '</g>';
     });
     return svg;
+  }
+  // The obstacles on a grid of small cells over the view, as a summed-area
+  // table: whether a rectangle touches any is one lookup. A cell partly
+  // covered counts as covered.
+  function occupancy(v, obst) {
+    var cs = Math.max(3, Math.sqrt((v.x1 - v.x0) * (v.y1 - v.y0) / 40000)), W = Math.ceil((v.x1 - v.x0) / cs) + 1, H = Math.ceil((v.y1 - v.y0) / cs) + 1;
+    var d = new Int32Array((W + 1) * (H + 1));
+    var cx = function (x) { return Math.max(0, Math.min(W - 1, Math.floor((x - v.x0) / cs))); }, cy = function (y) { return Math.max(0, Math.min(H - 1, Math.floor((y - v.y0) / cs))); };
+    obst.forEach(function (o) {
+      if (o[2] < v.x0 || o[0] > v.x1 || o[3] < v.y0 || o[1] > v.y1) return;
+      var i0 = cx(o[0] - 1), i1 = cx(o[2] + 1), j0 = cy(o[1] - 1), j1 = cy(o[3] + 1);
+      d[j0 * (W + 1) + i0]++; d[j0 * (W + 1) + i1 + 1]--; d[(j1 + 1) * (W + 1) + i0]--; d[(j1 + 1) * (W + 1) + i1 + 1]++;
+    });
+    // Coverage from the difference marks, then the table of covered cells.
+    var sat = new Int32Array((W + 1) * (H + 1));
+    for (var j = 0; j < H; j++) {
+      for (var i = 0; i < W; i++) {
+        var k = j * (W + 1) + i;
+        if (i > 0) d[k] += d[k - 1];
+        if (j > 0) d[k] += d[k - (W + 1)];
+        if (i > 0 && j > 0) d[k] -= d[k - (W + 1) - 1];
+        sat[(j + 1) * (W + 1) + i + 1] = (d[k] > 0 ? 1 : 0) + sat[j * (W + 1) + i + 1] + sat[(j + 1) * (W + 1) + i] - sat[j * (W + 1) + i];
+      }
+    }
+    return { sat: sat, W: W, H: H, cs: cs, x0: v.x0, y0: v.y0, cx: cx, cy: cy };
+  }
+  function occupied(o, c) {
+    var i0 = o.cx(c[0]), i1 = o.cx(c[2]), j0 = o.cy(c[1]), j1 = o.cy(c[3]), w = o.W + 1, t = o.sat;
+    return t[(j1 + 1) * w + i1 + 1] - t[j0 * w + i1 + 1] - t[(j1 + 1) * w + i0] + t[j0 * w + i0] > 0;
+  }
+  // Does the segment cross the rectangle o (shrunk by a pixel)? Liang-Barsky.
+  function segHits(x1, y1, x2, y2, o) {
+    var t0 = 0, t1 = 1, dx = x2 - x1, dy = y2 - y1;
+    var ps = [-dx, dx, -dy, dy], qs = [x1 - (o[0] + 1), (o[2] - 1) - x1, y1 - (o[1] + 1), (o[3] - 1) - y1];
+    for (var i = 0; i < 4; i++) {
+      if (ps[i] === 0) { if (qs[i] < 0) return false; continue; }
+      var r = qs[i] / ps[i];
+      if (ps[i] < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
+    }
+    return t0 <= t1;
   }
   // A thin line from a stub's end to its label when the label had to move away.
   function leader(x, y, b) {
     var px = Math.max(b[0], Math.min(x, b[2])), py = Math.max(b[1], Math.min(y, b[3]));
-    return Math.hypot(px - x, py - y) > 6 ? '<path class="ldr" d="M' + r1(x) + ' ' + r1(y) + 'L' + r1(px) + ' ' + r1(py) + '"/>' : '';
+    return Math.hypot(px - x, py - y) > 6 ? '<path class="ldr" clip-path="url(#zclip)" d="M' + r1(x) + ' ' + r1(y) + 'L' + r1(px) + ' ' + r1(py) + '"/>' : '';
   }
   // Hovering a stub lights up the boxes its links come from (and its target).
   function markStub(i) {
@@ -5075,11 +5439,25 @@
     var n = znode(uid, id);
     if (!n) return false;
     revealUnit(uid);
+    // A file without symbols is listed in its folder's "other files" box.
+    if (n.type === 'file' && !n.syms && n.parent && n.parent.others) ast.zothers.add(uid + ':' + n.parent.others.id);
     var chain = zchain(uid, id);
     var path = n.type === 'sym' ? chain : openable(n) ? chain : chain.slice(0, -1);
     zoomOpen(uid, path, { sel: { u: uid, id: id } });
     ast.selected = 'u' + uid;
     renderPanel();
+    return true;
+  }
+  // Open a card down to a node, select it and show the node's own panel.
+  function zshow(uid, id) {
+    ast.zlink = null; ast.selConn = null; ast.zpanelUnit = null;
+    if (!zoomReveal(uid, id)) return false;
+    ast.zpanelUnit = null;
+    renderPanel();
+    writeHash();
+    var it = ast.zitems[uid] && ast.zitems[uid].byId[id];
+    var el = it ? appsCards.querySelector('[data-zu="' + uid + '"][data-zk="' + it.k + '"]') : null;
+    if (el && el.focus) el.focus({ preventScroll: true });
     return true;
   }
   function zselect(uid, id) {
@@ -5101,40 +5479,80 @@
   function zactivate(uid, it) {
     if (!it) return;
     if (it.type === 'frame') { zoomTo(uid, (ast.zpath[uid] || []).indexOf(it.id)); return; }
+    if (it.type === 'others') { zothersToggle(uid, it.id); return; }
     if ((it.type === 'dir' || it.type === 'file') && openable(it.node)) {
       zoomOpen(uid, zchain(uid, it.id));
       return;
     }
     zselect(uid, it.id);
   }
+  // List or fold a level's "other files" box; it stays selected.
+  function zothersToggle(uid, id) {
+    var key = uid + ':' + id, it0 = ast.zitems[uid] && ast.zitems[uid].byId[id];
+    // A name tag above the deepest open level: back up to its level, listed.
+    if (it0 && it0.compact) {
+      var holder = znode(uid, id).parent;
+      ast.zothers.add(key);
+      zoomTo(uid, holder.type === 'unit' ? 0 : zchain(uid, holder.id).length, { sel: { u: uid, id: id } });
+      return;
+    }
+    if (ast.zothers.has(key)) ast.zothers.delete(key); else ast.zothers.add(key);
+    ast.zsel = { u: uid, id: id }; ast.zfocus = uid; ast.zlink = null; ast.zpanelUnit = null;
+    ast.selected = 'u' + uid; ast.selConn = null;
+    renderApps(true);
+    renderPanel();
+    writeHash();
+    var it = ast.zitems[uid] && ast.zitems[uid].byId[id];
+    var el = it ? appsCards.querySelector('[data-zu="' + uid + '"][data-zk="' + it.k + '"]') : null;
+    if (el && el.focus) el.focus({ preventScroll: true });
+    live.textContent = znode(uid, id).name + (ast.zothers.has(key) ? ' listed' : ' folded');
+  }
   // Fit onto a selected item: a member row is shown in its class box, at a
   // reading scale, never as a strip filling the screen.
   function fitItem(uid, target, deepest) {
-    if (target.type !== 'row') { fitBox(itemBox(uid, target), 0.8, deepest ? itemBox(uid, deepest) : null); return; }
+    if (!isRow(target)) { fitBox(itemBox(uid, target), 0.8, deepest ? itemBox(uid, deepest) : null); return; }
     var box = itemBox(uid, ast.zitems[uid].byId[target.parent] || target), row = itemBox(uid, target);
-    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
-    var k = Math.max(0.3, Math.min(1.3, w * 0.7 / box.w, h * 0.85 / box.h));
-    animateCam({ k: k, x: w / 2 - (box.x + box.w / 2) * k, y: box.h * k > h * 0.9 ? h / 2 - (row.y + row.h / 2) * k : h / 2 - (box.y + box.h / 2) * k });
+    var to = function () {
+      var a = stageArea(), w = a.w, h = a.h;
+      var k = Math.max(0.3, Math.min(1.3, w * 0.7 / box.w, h * 0.85 / box.h));
+      return { k: k, x: w / 2 - (box.x + box.w / 2) * k, y: box.h * k > h * 0.9 ? h / 2 - (row.y + row.h / 2) * k : h / 2 - (box.y + box.h / 2) * k };
+    };
+    animateCam(to(), to);
   }
-  // Animated camera fit onto a world box.
+  // Animated camera fit onto a world box, in the visible part of the stage.
   function fitBox(b, frac, ctx) {
     if (!b) return;
-    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
-    var k = Math.max(0.15, Math.min(1.4, Math.min(w * frac / Math.max(1, b.w), h * frac / Math.max(1, b.h))));
-    if (ctx) {
-      // A box inside an open file: the file around it, while it stays readable.
-      var kc = Math.min(w * 0.9 / Math.max(1, ctx.w), h * 0.9 / Math.max(1, ctx.h));
-      k = Math.max(Math.min(k, kc), Math.min(k, 0.7));
-    }
-    var to = { k: k, x: w / 2 - (b.x + b.w / 2) * k, y: h / 2 - (b.y + b.h / 2) * k };
-    // A tall box starts at its top, with room above for the stubs on its edge.
-    if (b.h * k > h * 0.95) to.y = 56 - b.y * k;
-    animateCam(to);
+    var to = function () {
+      // Room above and below the box for the stubs on its edges and their
+      // labels, and at the foot for the status line.
+      var a = stageArea(), w = a.w, h = a.h, padT = 52, padB = 52 + STATUS_ROOM, hv = Math.max(h * 0.5, h - padT - padB);
+      if (hv === h * 0.5) { padT = h * 0.25; padB = h * 0.25; }
+      var k = Math.max(0.15, Math.min(1.4, Math.min(w * frac / Math.max(1, b.w), hv / Math.max(1, b.h))));
+      if (ctx) {
+        // A box inside an open file: the file around it, while it stays readable.
+        var kc = Math.min(w * 0.9 / Math.max(1, ctx.w), hv / Math.max(1, ctx.h));
+        k = Math.max(Math.min(k, kc), Math.min(k, 0.7));
+      }
+      var t = { k: k, x: w / 2 - (b.x + b.w / 2) * k, y: padT + hv / 2 - (b.y + b.h / 2) * k };
+      // A tall box starts at its top, below the room for the stubs on its edge.
+      if (b.h * k > hv) t.y = padT + 4 - b.y * k;
+      return t;
+    };
+    animateCam(to(), to);
   }
-  function animateCam(to) {
+  // The fit last made, to be made again when the stage changes size under
+  // it (a panel opening as the camera moves): { fn, at }, fn null for the
+  // whole sheet.
+  var zFit = null;
+  function stopCam() {
+    if (zAnim) { cancelAnimationFrame(zAnim); zAnim = null; }
+    zFit = null;
+  }
+  function animateCam(to, refit) {
     var from = { k: ast.cam.k, x: ast.cam.x, y: ast.cam.y }, t0 = performance.now(), dur = REDUCE ? 0 : 280;
     ast.userMoved = true;
     if (zAnim) cancelAnimationFrame(zAnim);
+    zFit = refit ? { fn: refit, at: t0 } : null;
     function step(now) {
       var t = dur ? Math.min(1, ((now || performance.now()) - t0) / dur) : 1, e = 1 - Math.pow(1 - t, 3);
       // Interpolate the scale in log space so the zoom feels even.
@@ -5148,26 +5566,28 @@
   }
   // Wheel past a threshold opens what is under the pointer, or closes the
   // deepest open level once it is small on screen.
+  // True when it opened or closed a level.
   function semanticWheel(px, py, f) {
-    if (!ZR || performance.now() < zCooldown) return;
-    var r = stage.getBoundingClientRect(), k = ast.cam.k;
+    if (!ZR || performance.now() < zCooldown) return false;
+    var a = stageArea(), r = { width: a.w, height: a.h }, k = ast.cam.k;
     var wx = (px - ast.cam.x) / k, wy = (py - ast.cam.y) / k;
     var hit = zhitAt(wx, wy);
     if (f > 1) {
       if (hit && hit.card !== undefined && !ast.open.has(hit.card)) {
         var P = ast.pos['u' + hit.card];
-        if (P.w * k > r.width * 0.42 || P.h * k > r.height * 0.6) zoomOpen(hit.card, []);
+        if (P.w * k > r.width * 0.42 || P.h * k > r.height * 0.6) { zoomOpen(hit.card, []); return true; }
       } else if (hit && hit.it && (hit.it.type === 'dir' || hit.it.type === 'file') && openable(hit.it.node)) {
-        if (hit.it.w * k > r.width * 0.3 || hit.it.h * k > r.height * 0.4) zoomOpen(hit.u, zchain(hit.u, hit.it.id));
+        if (hit.it.w * k > r.width * 0.3 || hit.it.h * k > r.height * 0.4) { zoomOpen(hit.u, zchain(hit.u, hit.it.id)); return true; }
       }
-      return;
+      return false;
     }
     var uid = hit && hit.u !== undefined ? hit.u : ast.zfocus;
-    if (uid === null || uid === undefined || !ast.open.has(uid)) return;
+    if (uid === null || uid === undefined || !ast.open.has(uid)) return false;
     var path = ast.zpath[uid] || [], box;
     if (path.length) box = itemBox(uid, ast.zitems[uid].byId[path[path.length - 1]]);
     else box = ast.pos['u' + uid];
-    if (box && box.w * k < r.width * 0.22 && box.h * k < r.height * 0.22) zoomOut(uid);
+    if (box && box.w * k < r.width * 0.22 && box.h * k < r.height * 0.22) { zoomOut(uid); return true; }
+    return false;
   }
   // The deepest thing at a world point: an item of an open card, else a card.
   function zhitAt(wx, wy) {
@@ -5209,10 +5629,10 @@
     });
     if (!best) return true;
     zselect(s.u, best.id);
-    var b = itemBox(s.u, best), r = stage.getBoundingClientRect(), k = ast.cam.k;
+    var b = itemBox(s.u, best), r = stageArea(), k = ast.cam.k;
     var x0 = b.x * k + ast.cam.x, y0 = b.y * k + ast.cam.y;
-    if (x0 < 20 || y0 < 20 || x0 + b.w * k > r.width - 20 || y0 + b.h * k > r.height - 20) {
-      ast.cam.x += r.width / 2 - (x0 + b.w * k / 2); ast.cam.y += r.height / 2 - (y0 + b.h * k / 2); applyAppCam();
+    if (x0 < 20 || y0 < 20 || x0 + b.w * k > r.w - 20 || y0 + b.h * k > r.h - 20) {
+      stopCam(); ast.cam.x += r.w / 2 - (x0 + b.w * k / 2); ast.cam.y += r.h / 2 - (y0 + b.h * k / 2); applyAppCam();
     }
     return true;
   }
@@ -5267,7 +5687,7 @@
   function zitemPanel(uid, id) {
     var z = zdata(), n = znode(uid, id), u = AU[uid];
     if (!n) return unitPanel(u);
-    var html = '<div class="panel-head"><h2>' + esc(n.name) + ' <span class="kind">' + esc(n.type === 'sym' ? n.sym.kind : n.type === 'dir' ? 'folder' : 'file') + '</span></h2>' +
+    var html = '<div class="panel-head"><h2>' + esc(n.name) + ' <span class="kind">' + esc(n.type === 'sym' ? n.sym.kind : n.type === 'dir' ? 'folder' : n.type === 'others' ? 'files without symbols' : 'file') + '</span></h2>' +
       '<button type="button" data-act="aclose" aria-label="Close details">×</button></div>';
     html += '<p class="lead"><button type="button" class="linkish" data-zunit="' + uid + '">‹ ' + esc(u.name) + '</button> · ' + esc(unitKind(u)) + '</p>';
     if (n.type === 'sym') {
@@ -5284,6 +5704,12 @@
       if (!outs.length && !ins.length) html += '<p class="more">No relations to other embedded symbols.</p>';
       html += '<p class="more">Its full neighbourhood, callers and callees across the repo:</p><p class="cmd">lidx graph --seed ' + esc(shellQuote(y.qual)) + '</p>';
       return html;
+    }
+    if (n.type === 'others') {
+      html += '<dl class="facts"><dt>In</dt><dd><code>' + esc((u.dir || '') + (n.rel || '') || './') + '</code></dd></dl>';
+      return html + '<div class="edges"><ul>' + n.files.map(function (f) {
+        return '<li><button type="button" data-zend="' + (-1 - f.file.i) + '"><span class="nm">' + esc(f.name) + '</span><span class="loc">' + esc(langName(f.file.lang)) + '</span></button></li>';
+      }).join('') + '</ul></div>';
     }
     html += '<dl class="facts"><dt>Path</dt><dd><code>' + esc((u.dir || '') + (n.rel || '')) + '</code></dd>';
     if (n.type === 'file') {
@@ -5427,15 +5853,14 @@
     treeCache.uid = null;
     renderTree();
   }
-  // Click in the tree: zoom the sheet to the entry; the panel stays.
-  function treeGo(uid, id) {
-    var keep = ast.selected;
-    zoomReveal(uid, id);
-    ast.selected = keep || 'u' + uid;
-    ast.zpanelUnit = uid;
-    renderPanel();
+  // Click in the tree: zoom the sheet to the entry and show its panel, as a
+  // click on its box does. The panel's "‹ unit" link goes back to the tree,
+  // its filter kept and the entry in view.
+  function treeGo(uid, id) { zshow(uid, id); }
+  function treeIndex(uid, id) {
     var rows = treeData(uid);
-    for (var i = 0; i < rows.length; i++) if (rows[i].node.id === id) { renderTree(i); break; }
+    for (var i = 0; i < rows.length; i++) if (rows[i].node.id === id) return i;
+    return -1;
   }
 
   // ----- URL hash: #zoom=<unit>/<path>,...&sel=<unit>/<id>&panel=<unit>&filter=<text>
@@ -5444,6 +5869,7 @@
     var n = znode(uid, id);
     if (!n) return '';
     if (n.type === 'sym') return zdata().files[n.sym.file].path.slice((AU[uid].dir || '').length) + '#' + n.sym.qual;
+    if (n.type === 'others') return n.rel + '*';
     return n.rel;
   }
   function nodeFromRef(uid, ref) {
@@ -5457,6 +5883,10 @@
       var hit = null;
       z.syms.forEach(function (y) { if (!hit && y.file === fn.file.i && (y.qual === q || y.name === q)) hit = 's' + y.i; });
       return hit;
+    }
+    if (ref.charAt(ref.length - 1) === '*') {
+      var holder = ref === '*' ? t.root : t.rel[ref.slice(0, -1)];
+      return holder && holder.others ? holder.others.id : null;
     }
     if (t.rel[ref]) return t.rel[ref].id;
     var found = null;
@@ -5476,7 +5906,8 @@
     if (ast.zsel) parts.push('sel=' + encodeURIComponent(AU[ast.zsel.u].name) + '/' + encodeURIComponent(nodeRef(ast.zsel.u, ast.zsel.id)));
     if (ast.selected && ast.selected.charAt(0) === 'u') {
       var pu = +ast.selected.slice(1);
-      parts.push('panel=' + encodeURIComponent(AU[pu].name));
+      // The unit's panel, unless a selection inside it shows its own.
+      if (!ast.zsel || (ast.zpanelUnit !== null && ast.zpanelUnit !== undefined)) parts.push('panel=' + encodeURIComponent(AU[pu].name));
       if (ast.treeQ[pu]) parts.push('filter=' + encodeURIComponent(ast.treeQ[pu]));
     }
     try { hist.replaceState(null, '', parts.length ? '#' + parts.join('&') : loc.pathname + loc.search); } catch (e) { /* file: pages may refuse */ }
@@ -5514,6 +5945,9 @@
     if (p.panel) {
       var pu = unitByName(dec(p.panel));
       if (pu >= 0) { ast.selected = 'u' + pu; ast.zpanelUnit = pu; applied = true; if (p.filter) ast.treeQ[pu] = dec(p.filter); }
+    } else if (p.filter && ast.zsel) {
+      // A selection's panel over a filtered tree: the filter waits behind "‹ unit".
+      ast.selected = 'u' + ast.zsel.u; ast.treeQ[ast.zsel.u] = dec(p.filter);
     }
     ast.hashFocus = lastU;
     return applied;
@@ -5705,7 +6139,11 @@
   function onResize() {
     var w = stage.getBoundingClientRect().width;
     if (st.level === 'app') {
-      if (!ast.sheet || !lastStageW) fitApps();
+      // A fit still moving (or just made) is made again for the new size:
+      // a panel that opened with it does not hide part of what it framed.
+      var refit = zFit && (zAnim || performance.now() - zFit.at < 600) ? zFit : null;
+      if (!ast.sheet || !lastStageW || (refit && !refit.fn)) fitApps();
+      else if (refit) animateCam(refit.fn(), refit.fn);
       else { ast.cam.x += (w - lastStageW) / 2; applyAppCam(); }
     } else resize();
     lastStageW = w;
@@ -5862,20 +6300,62 @@
           return {
             unit: AU[s.u].name, at: f ? f.node.name : null, side: s.side, target: stubName(s), targetUnit: t ? AU[t.card !== undefined ? t.card : t.u].name : null,
             targetCard: !!t && t.card !== undefined, out: s.out, inn: s.inn, weight: s.w, kinds: s.kinds, keys: s.keys,
-            members: s.members.map(function (it) { return it.type === 'row' ? it.sym.name : it.node.name; }).sort(), text: stubText(s)
+            members: s.members.map(function (it) { return it.type === 'row' ? it.sym.name : it.node.name; }).sort(), text: stubText(s),
+            // World geometry: the port, its label, the level's box and header.
+            port: s.x === undefined ? null : [s.x, s.y], label: s.lbox || null, box: s.box || null, head: s.box ? headBand(s.u, s.box) : null
           };
         });
       },
       // Lines and stubs as drawn, after moving the camera by (dx, dy) screen pixels.
       pan: function (dx, dy) { ast.cam.x -= dx; ast.cam.y -= dy; applyAppCam(); renderZoomView(true); },
-      fitAll: function () { if (zAnim) { cancelAnimationFrame(zAnim); zAnim = null; } fitApps(); renderZoomView(true); },
+      fitAll: function () { fitApps(); renderZoomView(true); },
+      // What the Fit button frames, at once.
+      fit: function () { var red = REDUCE; REDUCE = true; fitCurrent(); REDUCE = red; renderZoomView(true); return { k: ast.cam.k, x: ast.cam.x, y: ast.cam.y }; },
+      cam: function () { return { k: ast.cam.k, x: ast.cam.x, y: ast.cam.y }; },
+      // A card's deepest open level (or the card), on screen.
+      focusScreen: function (name) {
+        var b = focusBoxOf(unitByName(name));
+        return b ? { x: b.x * ast.cam.k + ast.cam.x, y: b.y * ast.cam.k + ast.cam.y, w: b.w * ast.cam.k, h: b.h * ast.cam.k } : null;
+      },
+      // An item of an open card on screen, by tree id or name.
+      itemScreen: function (name, key) {
+        var id = unitByName(name), z = ast.zitems[id], o = zorigin(id);
+        var it = z && (z.byId[key] || z.list.find(function (x) { return (isRow(x) ? (x.sym || x.node).name : x.node.name) === key; }));
+        return it ? { id: it.id, x: (o.x + it.x) * ast.cam.k + ast.cam.x, y: (o.y + it.y) * ast.cam.k + ast.cam.y, w: it.w * ast.cam.k, h: it.h * ast.cam.k } : null;
+      },
+      // The boxes drawn (world), and the cut-out path the lines are clipped to.
+      boxes: function () {
+        var out = [];
+        ast.open.forEach(function (uid) {
+          var z = ast.zitems[uid], o = zorigin(uid);
+          if (z && o) z.list.forEach(function (it) { if (it.type !== 'frame' && !isRow(it)) out.push({ unit: AU[uid].name, type: it.type, name: it.node.name, x: o.x + it.x, y: o.y + it.y, w: it.w, h: it.h }); });
+        });
+        return out;
+      },
+      activate: function (name, id) { var u = unitByName(name), z = ast.zitems[u]; if (!z || !z.byId[id]) return false; zactivate(u, z.byId[id]); return true; },
+      status: function () { return statusEl.textContent; },
+      // Every label on the sheet and what it must keep off, in world units.
+      labels: function () {
+        renderStubs();
+        return {
+          view: stubView(), obstacles: ast.zobst || [],
+          links: (ast.zlinkLabels || []).map(function (x) { return { text: x.text, box: x.box, at: x.at }; }),
+          stubs: ast.stubs.map(function (x) { return { text: x.ltext || stubText(x), full: stubText(x), box: x.lbox || null, side: x.side, port: x.x === undefined ? null : [x.x, x.y] }; })
+        };
+      },
+      // The selection panel's "‹ unit" link: back to the unit and its tree.
+      panelBack: function (name) { appPanelClick({ dataset: { zunit: String(unitByName(name)) } }); return { text: panel.textContent, html: panel.innerHTML }; },
       stubCap: function (n) { STUBS_PER_SIDE = n; renderZoomView(true); },
       // The camera at scale k on the centre of a card's deepest open level, at once.
-      look: function (name, k) {
-        var b = focusBoxOf(unitByName(name)), r = stage.getBoundingClientRect();
+      // With `top` (screen px) the box's top edge is put there; with `bottom`, its foot; with `left`, its left edge.
+      look: function (name, k, top, bottom, left) {
+        var b = focusBoxOf(unitByName(name)), r = stageArea();
         if (!b) return false;
-        if (zAnim) { cancelAnimationFrame(zAnim); zAnim = null; }
-        ast.cam.k = k; ast.cam.x = r.width / 2 - (b.x + b.w / 2) * k; ast.cam.y = r.height / 2 - (b.y + b.h / 2) * k;
+        stopCam();
+        ast.cam.k = k; ast.cam.x = r.w / 2 - (b.x + b.w / 2) * k; ast.cam.y = r.h / 2 - (b.y + b.h / 2) * k;
+        if (top !== undefined && top !== null) ast.cam.y = top - b.y * k;
+        if (bottom !== undefined && bottom !== null) ast.cam.y = bottom - (b.y + b.h) * k;
+        if (left !== undefined && left !== null) ast.cam.x = left - b.x * k;
         applyAppCam(); renderZoomView(true); return true;
       },
       hoverStub: function (i) { markStub(i); return { on: ast.stubs.map(function (s, j) { return stubOn(s, j); }) }; },
@@ -5893,6 +6373,20 @@
       omitted: function () { return zdata() ? zdata().omitted : {}; }
     },
     back: goBack,
+    // The search box: what a query lists, and picking one of them.
+    search: function (q) {
+      search.value = q;
+      runSearch();
+      var z = zdata();
+      return results.map(function (r) {
+        if (r.zsym !== undefined) { var y = z.syms[r.zsym]; return { type: 'symbol', name: y.name, kind: y.kind, qual: y.qual, unit: AU[z.files[y.file].unit].name }; }
+        if (r.zfile !== undefined) { var f = z.files[r.zfile]; return { type: 'file', name: f.path.slice(f.path.lastIndexOf('/') + 1), qual: f.path, unit: AU[f.unit].name }; }
+        if (r.unit !== undefined) return { type: 'unit', name: AU[r.unit].name };
+        if (r.group) return { type: 'folder', name: r.group };
+        return { type: 'node', name: r.name, kind: r.kind, qual: r.qual };
+      });
+    },
+    choose: function (i) { choose(i); },
     selected: function () { return st.selected; },
     // A qualname drawn inside a folder the visible budget folded, if any.
     foldedSample: function () {
