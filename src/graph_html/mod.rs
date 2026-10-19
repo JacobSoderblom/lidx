@@ -9,6 +9,7 @@ pub mod apps;
 pub mod build;
 pub mod doc;
 pub mod units;
+pub mod zoom;
 
 pub use build::{Direction, Level};
 pub use doc::Counts;
@@ -30,6 +31,8 @@ const JS: &str = include_str!("viewer.js");
 pub const DEFAULT_MAX_SYMBOLS: usize = 500;
 /// Default `--max-nodes` for a file/module graph (leaves).
 pub const DEFAULT_MAX_LEAVES: usize = 5_000;
+/// Default `--max-symbols`: symbols embedded for zooming into app cards.
+pub const DEFAULT_MAX_ZOOM_SYMBOLS: usize = 60_000;
 
 #[derive(Clone, Debug)]
 pub struct GraphOptions {
@@ -40,6 +43,9 @@ pub struct GraphOptions {
     pub kinds: Option<Vec<String>>,
     pub languages: Option<Vec<String>>,
     pub max_nodes: Option<usize>,
+    /// Symbols embedded for the app view's zoom. `None`:
+    /// [`DEFAULT_MAX_ZOOM_SYMBOLS`].
+    pub max_symbols: Option<usize>,
     /// `None`: `symbol` with seeds or a diff, `app` without.
     pub level: Option<Level>,
     /// Git revision to diff the working tree against.
@@ -61,6 +67,7 @@ impl Default for GraphOptions {
             kinds: None,
             languages: None,
             max_nodes: None,
+            max_symbols: None,
             level: None,
             diff: None,
             module_depth: 0,
@@ -215,7 +222,7 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
             scope_parts.push(format!("{} level", level.as_str()));
             build::aggregate_symbol_graph(&ctx, graph, level)
         };
-        let apps = apps::apps_json(&ctx, repo_root, &graph, None, None);
+        let apps = apps::apps_json(&ctx, repo_root, &graph, None, None, None)?;
         (graph, apps)
     } else {
         if level == Level::Symbol {
@@ -244,10 +251,22 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
             &files,
             &rows,
         )?;
-        let apps = apps::apps_json(&ctx, repo_root, &graph, Some(&files), Some(&rows));
+        // The sheet's cards open in place down to symbols.
+        let zoom =
+            (level == Level::App).then(|| opts.max_symbols.unwrap_or(DEFAULT_MAX_ZOOM_SYMBOLS));
+        let apps = apps::apps_json(&ctx, repo_root, &graph, Some(&files), Some(&rows), zoom)?;
+        if let Some(note) = apps.pointer("/zoom/note").and_then(Value::as_str) {
+            warnings.push(note.to_string());
+        }
         (graph, apps)
     };
     let (graph, apps) = graph;
+    if opts.max_symbols.is_some() && apps.get("zoom").is_none() {
+        warnings.push(
+            "--max-symbols applies to the whole-repo app view only (its cards zoom down to symbols); ignored here"
+                .to_string(),
+        );
+    }
     if let Some(k) = &kinds {
         scope_parts.push(format!("kinds {}", k.join(",")));
     }

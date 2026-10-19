@@ -43,7 +43,15 @@ function element(id) {
   e.id = id;
   e.hidden = false;
   e.textContent = id === 'lidx-graph-data' ? data : '';
-  e.innerHTML = '';
+  // innerHTML keeps a plain-text copy, so panel text can be read back.
+  let html = '';
+  Object.defineProperty(e, 'innerHTML', {
+    get() { return html; },
+    set(v) {
+      html = String(v);
+      e.textContent = html.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    },
+  });
   e.style = {};
   e.dataset = {};
   e.classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
@@ -51,7 +59,9 @@ function element(id) {
   e.setAttribute = () => {};
   e.getAttribute = () => null;
   e.removeAttribute = () => {};
-  e.querySelector = () => null;
+  // An open card's item layer is looked up by selector: give it an element
+  // of its own so what is drawn there can be read back.
+  e.querySelector = (sel) => (/data-zin/.test(String(sel)) ? element('qs:' + sel) : null);
   e.querySelectorAll = () => [];
   e.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1400, height: 900 });
   e.getContext = () => ctx2d();
@@ -61,17 +71,23 @@ function element(id) {
   return e;
 }
 const frames = [];
+const cancelled = new Set();
+let frameId = 0;
 const sandbox = {
   console,
   performance,
   setTimeout: (fn) => { frames.push(fn); return 0; },
   clearTimeout: () => {},
-  requestAnimationFrame: (fn) => { frames.push(() => fn(performance.now())); return frames.length; },
-  cancelAnimationFrame: () => {},
+  // Cancelled frames do not run (a camera animation stopped by a later one).
+  requestAnimationFrame: (fn) => { const id = ++frameId; const f = () => { if (!cancelled.has(id)) fn(performance.now()); }; frames.push(f); return id; },
+  cancelAnimationFrame: (id) => { cancelled.add(id); },
   getComputedStyle: () => ({ getPropertyValue: () => '#808080' }),
   matchMedia: () => ({ matches: false, addEventListener() {} }),
   addEventListener: () => {},
   devicePixelRatio: 1,
+  // HASH=... starts the page at that URL fragment (the zoom state).
+  location: { hash: process.env.HASH || '', pathname: '/page.html', search: '' },
+  history: { replaceState(_s, _t, url) { sandbox.location.hash = String(url).charAt(0) === '#' ? String(url) : ''; } },
   navigator: {},
   localStorage: { getItem: () => null, setItem: () => {} },
   Blob: function () {},
@@ -132,6 +148,70 @@ if (scenario === 'focus') {
   out = { before, after: g.apps().links, cards: g.apps().cards };
 } else if (scenario === 'colour') {
   out = { colorBy: g.colorBy(), level: g.level() };
+} else if (scenario === 'zoom-drill') {
+  // Open a card, then a file, select a method, and back out with Escape.
+  const z = g.zoom, steps = {};
+  z.expand(arg); flush(20);
+  steps.top = { items: z.items(arg), crumbs: z.crumbs(), hash: z.hash(), links: z.links(), stubs: z.stubs() };
+  const file = z.items(arg).find((i) => i.type === 'dir');
+  steps.dirOpened = z.open(arg, file.name); flush(20);
+  steps.dir = { items: z.items(arg), crumbs: z.crumbs(), links: z.links(), stubs: z.stubs() };
+  const f = z.items(arg).find((i) => i.type === 'file');
+  steps.fileOpened = z.open(arg, file.name + f.name); flush(20);
+  steps.file = { items: z.items(arg), links: z.links(), stubs: z.stubs(), crumbs: z.crumbs(), rendered: z.rendered() };
+  z.select(arg, file.name + f.name + '#render'); flush(10);
+  steps.selected = { sel: z.selected(), panel: g.panelText(), hash: z.hash() };
+  z.escape(); flush(10);
+  steps.esc1 = z.crumbs();
+  z.escape(); flush(10); z.escape(); flush(10);
+  steps.esc3 = { open: z.open_cards(), crumbs: z.crumbs() };
+  out = steps;
+} else if (scenario === 'zoom-two') {
+  // Two cards open down to files: the bus link joins the two functions.
+  const z = g.zoom, [a, af, b, bf] = arg.split(',');
+  z.open(a, af); flush(10);
+  const closed = { links: z.links(), stubs: z.stubs() };
+  z.open(b, bf); flush(10);
+  // Both in view: the links run end to end.
+  z.fitAll(); flush(10);
+  const both = { links: z.links(), stubs: z.stubs() };
+  // One far out of view: they leave through stubs, one per side.
+  z.look(a, 6); flush(10);
+  const away = { links: z.links(), stubs: z.stubs() };
+  const i = away.stubs.findIndex((s) => s.unit === a && s.target.indexOf(b) === 0);
+  const hover = i >= 0 ? z.hoverStub(i) : null;
+  const panel = i >= 0 ? z.clickStub(i) : '';
+  out = { closed, open: z.open_cards(), both, away, hover, panel };
+} else if (scenario === 'zoom-cap') {
+  // Stubs per side capped: the lightest share one "+N more" stub.
+  const z = g.zoom, [unit, rel, cap] = arg.split(',');
+  z.open(unit, rel); flush(10);
+  const before = z.stubs();
+  z.stubCap(+cap);
+  out = { before, after: z.stubs() };
+} else if (scenario === 'zoom-html') {
+  // Everything drawn with a card open down to a file and a symbol selected.
+  const z = g.zoom, [unit, rel, sym] = arg.split(',');
+  z.open(unit, rel); flush(10);
+  z.select(unit, rel + '#' + sym); flush(10);
+  g.selectUnit(unit); flush(5);
+  let html = '';
+  elements.forEach((e) => { html += '\n' + e.innerHTML; });
+  out = { html, items: z.items(unit), stubs: z.stubs() };
+} else if (scenario === 'zoom-tree') {
+  // The panel tree filtered, then a click on a match.
+  const z = g.zoom, [unit, filter] = arg.split(',');
+  g.selectUnit(unit); flush(5);
+  const all = z.tree(unit, '');
+  const rows = z.tree(unit, filter);
+  const hit = rows.filter((r) => r.hit).pop();
+  z.treeGo(unit, hit.id); flush(20);
+  out = { all, rows, crumbs: z.crumbs(), sel: z.selected(), panel: g.panelText(), hash: z.hash() };
+} else if (scenario === 'zoom-hash') {
+  // The page opened at a URL fragment (HASH in the environment).
+  let html = '';
+  elements.forEach((e) => { html += '\n' + e.innerHTML; });
+  out = { open: g.zoom.open_cards(), crumbs: g.zoom.crumbs(), sel: g.zoom.selected(), panel: g.panelText(), html };
 } else {
   throw new Error('unknown scenario ' + scenario);
 }

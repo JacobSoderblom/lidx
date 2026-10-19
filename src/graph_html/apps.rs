@@ -19,6 +19,7 @@ use super::build::{
     AggInput, Ctx, Graph, Leaf, RepoFile, RepoRow, RouteCanon, derive_leaf_bridges,
 };
 use super::units::{self, Kind, Owners, Unit};
+use anyhow::Result;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -101,7 +102,7 @@ fn is_secret(key: &str) -> bool {
 
 /// Health and metrics routes every service serves: no link between two
 /// services because both answer `/health`.
-fn is_probe(key: &str) -> bool {
+pub(super) fn is_probe(key: &str) -> bool {
     let path = short_key(key).to_ascii_lowercase();
     let last = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
     path.contains("/health")
@@ -109,6 +110,23 @@ fn is_probe(key: &str) -> bool {
             last,
             "healthz" | "livez" | "readyz" | "ready" | "live" | "metrics" | "ping"
         )
+}
+
+/// Edge kinds that link two units through a shared key (route, topic,
+/// config key) rather than a resolved target.
+pub(super) fn is_key_link(kind: &str) -> bool {
+    matches!(
+        kind,
+        "HTTP_ROUTE"
+            | "RPC_IMPL"
+            | "CHANNEL_SUBSCRIBE"
+            | "CONFIG_SOURCE"
+            | "RPC_ROUTE"
+            | "CONFIG_READ"
+            | "CHANNEL_PUBLISH"
+            | "HTTP_CALL"
+            | "RPC_CALL"
+    )
 }
 
 /// The part of a key people read: `secret://db-conn` -> `db-conn`.
@@ -173,7 +191,8 @@ pub(crate) fn apps_json(
     graph: &Graph,
     files: Option<&[RepoFile]>,
     rows: Option<&[RepoRow]>,
-) -> Value {
+    max_symbols: Option<usize>,
+) -> Result<Value> {
     let mut indexed: Vec<(String, String)> = ctx
         .file_lang
         .iter()
@@ -267,19 +286,7 @@ pub(crate) fn apps_json(
                 continue;
             }
             let sym = (r.src_qual.clone(), r.src_path.clone(), r.src_line);
-            let bridge = matches!(
-                r.kind.as_str(),
-                "HTTP_ROUTE"
-                    | "RPC_IMPL"
-                    | "CHANNEL_SUBSCRIBE"
-                    | "CONFIG_SOURCE"
-                    | "RPC_ROUTE"
-                    | "CONFIG_READ"
-                    | "CHANNEL_PUBLISH"
-                    | "HTTP_CALL"
-                    | "RPC_CALL"
-            );
-            if bridge {
+            if is_key_link(&r.kind) {
                 let raw =
                     r.tq.as_deref()
                         .map(str::trim)
@@ -527,13 +534,21 @@ pub(crate) fn apps_json(
         })
         .collect();
 
-    json!({
+    let mut out = json!({
         "units": unit_values,
         "edges": edges,
         "chips": chips,
         "node_unit": node_unit,
         "links": rows.is_some(),
-    })
+    });
+    if let (Some(files), Some(rows), Some(max)) = (files, rows, max_symbols) {
+        let (zoom, note) = super::zoom::zoom_json(ctx, &owners, n, files, rows, max)?;
+        out["zoom"] = zoom;
+        if let Some(note) = note {
+            out["zoom"]["note"] = json!(note);
+        }
+    }
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
