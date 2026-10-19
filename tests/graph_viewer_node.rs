@@ -413,15 +413,44 @@ fn an_app_card_zooms_down_to_its_symbols_and_back() {
         .unwrap_or_else(|| panic!("no render -> fmt_order: {r}"));
     assert_eq!(call["weight"], 1);
     assert_eq!(call["kinds"]["CALLS"], 1);
-    // The API's call into the library ends at the card's edge, named.
-    let into = links
-        .iter()
-        .find(|l| l["from"]["unit"] == "orders-api")
-        .unwrap_or_else(|| panic!("no link from the closed API card: {r}"));
-    assert_eq!(into["from"]["card"], true);
-    assert_eq!(into["to"]["name"], "fmt_order");
-    assert_eq!(into["port"], "orders-api");
-    assert!(r["file"]["rendered"].as_u64().unwrap() >= 4, "{r}");
+    assert_eq!(call["line"], true, "inside the open file: a line");
+    // The API's use of the library (an import of the file, an import of
+    // fmt_order, a call to it) leaves every open level through one stub
+    // named for the closed card, with the same weight at each depth.
+    for (level, at, members) in [
+        ("top", Value::Null, vec!["shared_utils/"]),
+        ("dir", "shared_utils/".into(), vec!["fmt.py"]),
+        ("file", "fmt.py".into(), vec!["fmt.py", "fmt_order"]),
+    ] {
+        let stubs = r[level]["stubs"].as_array().unwrap();
+        assert_eq!(stubs.len(), 1, "{level}: {r}");
+        let s = &stubs[0];
+        assert_eq!(s["at"], at, "{level}: {s}");
+        assert_eq!(s["target"], "orders-api", "{level}: {s}");
+        assert_eq!(s["targetCard"], true, "{level}: {s}");
+        assert_eq!(
+            (&s["out"], &s["inn"]),
+            (&Value::Bool(false), &Value::Bool(true)),
+            "{level}: {s}"
+        );
+        assert_eq!(s["weight"], 3, "{level}: {s}");
+        assert_eq!(
+            s["kinds"],
+            serde_json::json!({"CALLS": 1, "IMPORTS": 1, "IMPORTS_FILE": 1}),
+            "{level}: {s}"
+        );
+        assert_eq!(s["members"], serde_json::json!(members), "{level}: {s}");
+        assert_eq!(s["text"], "← orders-api ×3", "{level}: {s}");
+        // No line runs from inside the card to the closed one.
+        for l in r[level]["links"].as_array().unwrap() {
+            if l["from"]["card"] == true || l["to"]["card"] == true {
+                assert_eq!(l["line"], false, "{level}: {l}");
+            }
+        }
+    }
+    // Two shelves above the file (compact folder tag, frames) and the file's
+    // two symbols with the class's two members.
+    assert_eq!(r["file"]["rendered"], 6, "{r}");
 
     assert_eq!(r["selected"]["sel"]["name"], "render");
     let panel = r["selected"]["panel"].as_str().unwrap();
@@ -442,8 +471,10 @@ fn an_app_card_zooms_down_to_its_symbols_and_back() {
     assert_eq!(r["esc3"]["open"], serde_json::json!([]), "{r}");
 }
 
-/// With both services open down to their files, the bus link is drawn
-/// function to function; with one closed it ends at a port named for it.
+/// With both services open down to their files and both in view, the bus
+/// links run function to function. With one closed, or out of view, they
+/// leave through one stub per target on each open file's edge, weighted
+/// and naming the boxes behind them.
 #[test]
 fn two_open_apps_show_a_cross_app_link_between_symbols() {
     if !node_available() {
@@ -457,26 +488,194 @@ fn two_open_apps_show_a_cross_app_link_between_symbols() {
         "zoom-two",
         "orders-api,orders_api/main.py,notify,notify/main.py",
     );
-    let port = r["closed"]["ports"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["other"] == "notify")
-        .unwrap_or_else(|| panic!("no port to notify: {r}"));
-    assert_eq!(port["out"], true);
-    assert_eq!(port["weight"], 2, "two topics: {r}");
-    assert_eq!(r["open"], serde_json::json!(["orders-api", "notify"]));
-    let links = r["links"].as_array().unwrap();
-    for target in ["on_created", "on_paid"] {
-        let l = links
+    let stub = |state: &str, target: &str| -> Value {
+        r[state]["stubs"]
+            .as_array()
+            .unwrap()
             .iter()
-            .find(|l| l["from"]["name"] == "list_orders" && l["to"]["name"] == target)
-            .unwrap_or_else(|| panic!("no list_orders -> {target}: {r}"));
-        assert_eq!(l["from"]["unit"], "orders-api");
-        assert_eq!(l["to"]["unit"], "notify");
-        assert_eq!(l["kinds"]["VIA_BUS"], 1, "{r}");
-        assert!(l["port"].is_null(), "drawn end to end: {r}");
+            .find(|s| s["target"] == target)
+            .cloned()
+            .unwrap_or_else(|| panic!("{state}: no stub to {target}: {r}"))
+    };
+    let closed = stub("closed", "notify");
+    assert_eq!(closed["at"], "main.py");
+    assert_eq!(closed["out"], true);
+    assert_eq!(closed["inn"], false);
+    assert_eq!(closed["weight"], 2, "two topics: {r}");
+    assert_eq!(closed["kinds"], serde_json::json!({"VIA_BUS": 2}));
+    assert_eq!(closed["members"], serde_json::json!(["list_orders"]));
+    let lib = stub("closed", "shared-utils");
+    assert_eq!(lib["weight"], 3, "{r}");
+    assert_eq!(
+        lib["members"],
+        serde_json::json!(["list_orders", "main.py"])
+    );
+    assert_eq!(r["closed"]["stubs"].as_array().unwrap().len(), 2, "{r}");
+    assert_eq!(r["open"], serde_json::json!(["orders-api", "notify"]));
+
+    let bus = |state: &str| -> Vec<(String, Value, Value)> {
+        r[state]["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["kinds"].get("VIA_BUS").is_some())
+            .map(|l| {
+                assert_eq!(l["from"]["unit"], "orders-api", "{l}");
+                assert_eq!(l["to"]["unit"], "notify", "{l}");
+                assert_eq!(l["from"]["name"], "list_orders", "{l}");
+                assert_eq!(l["kinds"], serde_json::json!({"VIA_BUS": 1}), "{l}");
+                (
+                    l["to"]["name"].as_str().unwrap().to_string(),
+                    l["weight"].clone(),
+                    l["line"].clone(),
+                )
+            })
+            .collect()
+    };
+    let t = Value::Bool(true);
+    let f = Value::Bool(false);
+    let one = Value::from(1);
+    assert_eq!(
+        bus("both"),
+        [
+            ("on_created".to_string(), one.clone(), t.clone()),
+            ("on_paid".to_string(), one.clone(), t.clone())
+        ],
+        "both in view, drawn end to end: {r}"
+    );
+    assert!(
+        r["both"]["stubs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["targetUnit"] != "notify"),
+        "{r}"
+    );
+    assert_eq!(
+        bus("away"),
+        [
+            ("on_created".to_string(), one.clone(), f.clone()),
+            ("on_paid".to_string(), one, f)
+        ],
+        "out of view, no lines: {r}"
+    );
+    let here = stub("away", "notify › main.py");
+    assert_eq!(
+        (here["unit"].as_str(), here["at"].as_str()),
+        (Some("orders-api"), Some("main.py"))
+    );
+    assert_eq!(
+        (here["out"].clone(), here["weight"].clone()),
+        (t.clone(), Value::from(2))
+    );
+    assert_eq!(here["members"], serde_json::json!(["list_orders"]));
+    let there = stub("away", "orders-api › main.py");
+    assert_eq!(
+        (there["unit"].as_str(), there["at"].as_str()),
+        (Some("notify"), Some("main.py"))
+    );
+    assert_eq!(
+        (
+            there["inn"].clone(),
+            there["out"].clone(),
+            there["weight"].clone()
+        ),
+        (t.clone(), Value::Bool(false), Value::from(2))
+    );
+    assert_eq!(
+        there["members"],
+        serde_json::json!(["on_created", "on_paid"])
+    );
+    // Hovering the stub lights it (and only it); clicking lists its edges.
+    let on = r["hover"]["on"].as_array().unwrap();
+    assert_eq!(on.iter().filter(|x| **x == t).count(), 1, "{r}");
+    let panel = r["panel"].as_str().unwrap();
+    assert!(panel.contains("Edges · 2"), "{panel}");
+    assert!(panel.contains("list_orders → on_created"), "{panel}");
+    assert!(panel.contains("list_orders → on_paid"), "{panel}");
+}
+
+/// A file using six siblings: past the per-side cap the lightest stubs on a
+/// side share one "+N more" stub, and no weight or member is lost.
+#[test]
+fn stubs_past_the_cap_share_one_and_keep_their_weight() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
     }
+    let mut files: Vec<(String, String)> = vec![(
+        "lib/pyproject.toml".into(),
+        "[project]\nname = \"hub\"\n".into(),
+    )];
+    let mut main = String::new();
+    for i in 1..=6 {
+        files.push((
+            format!("lib/hub/m{i}.py"),
+            format!("def f{i}():\n    return {i}\n"),
+        ));
+        main.push_str(&format!("from hub.m{i} import f{i}\n"));
+    }
+    main.push_str("\n\ndef run():\n");
+    for i in 1..=6 {
+        // f_i is called i times: six stubs of distinct weight.
+        for _ in 0..i {
+            main.push_str(&format!("    f{i}()\n"));
+        }
+    }
+    files.push(("lib/hub/main.py".into(), main));
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-zoomcap-", &refs);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-cap", "hub,hub/main.py,1");
+    let before = r["before"].as_array().unwrap();
+    let after = r["after"].as_array().unwrap();
+    let total = |l: &[Value]| -> u64 { l.iter().map(|s| s["weight"].as_u64().unwrap()).sum() };
+    // Each sibling m_i: the file's import of it, the import of f_i, i calls.
+    assert_eq!(before.len(), 6, "{r}");
+    for s in before {
+        let i: u64 = s["target"].as_str().unwrap()[1..2].parse().unwrap();
+        assert_eq!(s["weight"], i + 2, "{s}");
+        assert_eq!(
+            s["kinds"],
+            serde_json::json!({"CALLS": i, "IMPORTS": 1, "IMPORTS_FILE": 1}),
+            "{s}"
+        );
+    }
+    assert_eq!(total(before), 33, "{r}");
+    assert_eq!(total(after), total(before), "no weight lost: {r}");
+    let mut sides: std::collections::BTreeMap<String, Vec<&Value>> = Default::default();
+    for s in before {
+        sides
+            .entry(s["side"].as_str().unwrap().to_string())
+            .or_default()
+            .push(s);
+    }
+    for (side, group) in &sides {
+        let now: Vec<&Value> = after
+            .iter()
+            .filter(|s| s["side"] == side.as_str())
+            .collect();
+        assert_eq!(now.len(), 1, "one stub per side at cap 1: {side} {r}");
+        if group.len() == 1 {
+            assert_eq!(now[0]["target"], group[0]["target"], "{r}");
+        } else {
+            assert_eq!(now[0]["target"], format!("+{} more", group.len()), "{r}");
+            let w: u64 = group.iter().map(|s| s["weight"].as_u64().unwrap()).sum();
+            assert_eq!(now[0]["weight"], w, "{r}");
+            assert_eq!(
+                now[0]["members"],
+                serde_json::json!(["main.py", "run"]),
+                "{r}"
+            );
+        }
+    }
+    assert!(
+        sides.values().any(|g| g.len() > 1),
+        "six stubs on four sides share one: {r}"
+    );
 }
 
 /// The panel tree filters to matches and their folders and classes; a click
@@ -537,4 +736,63 @@ fn the_panel_tree_filters_and_zooms_to_an_entry() {
     );
     assert_eq!(again["crumbs"], r["crumbs"], "{again}");
     assert_eq!(again["sel"]["name"], "width", "{again}");
+}
+
+/// File names and signatures are data: a crafted one is drawn as text on
+/// the open card, in its tooltip, panel and breadcrumb, never as markup.
+/// A crafted fragment cannot inject either, and one with broken
+/// percent-encoding still opens what it names correctly.
+#[test]
+fn crafted_names_and_fragments_render_as_text() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    const EVIL: &str = "<img src=x onerror=alert(1)>";
+    let file = format!("api/orders_api/{EVIL}.py");
+    let body = "def handler(a=\"<svg onload=alert(2)>\"):\n    return a\n";
+    let mut files: Vec<(&str, &str)> = ZOOM_FILES.to_vec();
+    files.push((file.as_str(), body));
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-zoomxss-", &files);
+    let p = page(&root, &db, &[]);
+    let rel = format!("orders_api/{EVIL}.py");
+    let r = run(&p, "zoom-html", &format!("orders-api,{rel},handler"));
+    let names: Vec<&str> = r["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"handler"), "the crafted file opened: {r}");
+    let html = r["html"].as_str().unwrap();
+    assert!(
+        html.contains("&lt;img src=x onerror=alert(1)&gt;"),
+        "drawn as text"
+    );
+    assert!(
+        html.contains("&lt;svg onload=alert(2)&gt;"),
+        "the signature as text"
+    );
+    for raw in ["<img", "<svg onload"] {
+        assert!(!html.contains(raw), "{raw} reached the markup: {html}");
+    }
+
+    // The fragment: a filter that tries to close its attribute, a selection
+    // naming the crafted file, and one entry with broken encoding.
+    let hash = format!(
+        "#zoom=orders-api,%E0%A4&sel=orders-api/{}%23handler&panel=orders-api&filter=%22%3E%3Cimg%20src%3Dy%3E",
+        rel.replace('<', "%3C")
+            .replace('>', "%3E")
+            .replace(' ', "%20")
+            .replace('=', "%3D")
+    );
+    let again = run_at(&p, "zoom-hash", "", &hash);
+    assert_eq!(again["open"], serde_json::json!(["orders-api"]), "{again}");
+    assert_eq!(again["sel"]["name"], "handler", "{again}");
+    let html = again["html"].as_str().unwrap();
+    assert!(
+        html.contains("value=\"&quot;&gt;&lt;img src=y&gt;\""),
+        "the filter stays in its attribute: {html}"
+    );
+    assert!(!html.contains("<img"), "{html}");
 }

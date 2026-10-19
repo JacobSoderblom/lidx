@@ -497,10 +497,21 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .zedges .zl.on .lbl, .zedges .zl.cross .lbl { display: block; }
 .zedges .zl.on .ln { stroke: var(--focus); }
 .zedges .zl.on .ah { fill: var(--focus); }
-.zedges .zport .ln { fill: none; stroke: var(--c); stroke-dasharray: 2 4; opacity: 0.7; }
-.zedges .zport .ah { fill: var(--c); opacity: 0.7; }
-.zedges .zport .pt { fill: var(--paper); stroke: var(--c); stroke-width: 1.6; }
-.zedges .zport .plbl { font: 700 11px var(--sans); letter-spacing: 0.02em; fill: var(--ink); paint-order: stroke; stroke: var(--canvas); stroke-width: 4px; stroke-linejoin: round; }
+/* Stubs: where an open level's links to one target leave it, bundled. */
+.zedges .zstub .ln { fill: none; stroke: var(--c); opacity: 0.75; }
+.zedges .zstub .ln.on-card { stroke-dasharray: 2 4; opacity: 0.55; }
+.zedges .zstub .ah { fill: var(--c); opacity: 0.75; }
+.zedges .zstub .pt { fill: var(--paper); stroke: var(--c); stroke-width: 1.6; }
+.zedges .zstub .plbl { font: 700 11px var(--sans); fill: var(--ink); pointer-events: none; }
+.zedges .zstub .pbg { fill: var(--paper); stroke: var(--c); stroke-width: 1; opacity: 0.96; }
+.zedges .zstub.on .pbg { stroke: var(--focus); stroke-width: 1.6; }
+.zedges .zstub .ldr { fill: none; stroke: var(--c); stroke-width: 1; opacity: 0.6; }
+.zedges .zstub .shit { fill: transparent; stroke: none; pointer-events: all; cursor: pointer; }
+.zedges .zstub.on .ln, .zedges .zstub.on .ln.on-card { stroke: var(--focus); opacity: 1; }
+.zedges .zstub.on .ah { fill: var(--focus); opacity: 1; }
+.zedges .zstub.on .pt { stroke: var(--focus); }
+.zedges.hasfocus .zstub:not(.on) { opacity: 0.35; }
+.zi.zhl { box-shadow: 0 0 0 2px var(--focus); background: var(--focus-soft); z-index: 1; }
 .card .zexp {
   position: absolute; bottom: 6px; right: 6px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink-2); border-radius: 5px;
   font-size: 11.5px; padding: 1px 8px; min-height: 22px; opacity: 0; transition: opacity 0.15s;
