@@ -55,7 +55,9 @@ function element(id) {
   e.style = {};
   e.dataset = {};
   e.classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
-  e.addEventListener = () => {};
+  // Listeners are kept, so a scenario can fire wheel and click events.
+  e.listeners = {};
+  e.addEventListener = (type, fn) => { (e.listeners[type] = e.listeners[type] || []).push(fn); };
   e.setAttribute = () => {};
   e.getAttribute = () => null;
   e.removeAttribute = () => {};
@@ -63,7 +65,9 @@ function element(id) {
   // of its own so what is drawn there can be read back.
   e.querySelector = (sel) => (/data-zin/.test(String(sel)) ? element('qs:' + sel) : null);
   e.querySelectorAll = () => [];
-  e.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1400, height: 900 });
+  // A scenario may move or resize an element (a panel opening) through `rect`.
+  e.rect = null;
+  e.getBoundingClientRect = () => e.rect || { left: 0, top: 0, right: 1400, bottom: 900, width: 1400, height: 900 };
   e.getContext = () => ctx2d();
   e.offsetParent = null;
   e.focus = () => {};
@@ -73,17 +77,23 @@ function element(id) {
 const frames = [];
 const cancelled = new Set();
 let frameId = 0;
+// The page's clock: real time, plus 17 ms for every round of frames run,
+// so an animation finishes in a few rounds however fast they run.
+let clockOffset = 0;
+const clock = { now: () => performance.now() + clockOffset };
+const windowListeners = {};
 const sandbox = {
   console,
-  performance,
+  performance: clock,
   setTimeout: (fn) => { frames.push(fn); return 0; },
   clearTimeout: () => {},
   // Cancelled frames do not run (a camera animation stopped by a later one).
-  requestAnimationFrame: (fn) => { const id = ++frameId; const f = () => { if (!cancelled.has(id)) fn(performance.now()); }; frames.push(f); return id; },
+  requestAnimationFrame: (fn) => { const id = ++frameId; const f = () => { if (!cancelled.has(id)) fn(clock.now()); }; frames.push(f); return id; },
   cancelAnimationFrame: (id) => { cancelled.add(id); },
   getComputedStyle: () => ({ getPropertyValue: () => '#808080' }),
-  matchMedia: () => ({ matches: false, addEventListener() {} }),
-  addEventListener: () => {},
+  // REDUCE=1 in the environment: reduced motion, camera moves at once.
+  matchMedia: (q) => ({ matches: !!process.env.REDUCE && String(q).indexOf('reduced-motion') >= 0, addEventListener() {} }),
+  addEventListener: (type, fn) => { (windowListeners[type] = windowListeners[type] || []).push(fn); },
   devicePixelRatio: 1,
   // HASH=... starts the page at that URL fragment (the zoom state).
   location: { hash: process.env.HASH || '', pathname: '/page.html', search: '' },
@@ -111,6 +121,7 @@ vm.runInContext(script, sandbox, { filename: 'viewer.js' });
 // Let queued frames (layout, draws) run a few rounds.
 function flush(rounds) {
   for (let r = 0; r < rounds && frames.length; r++) {
+    clockOffset += 17;
     const batch = frames.splice(0, frames.length);
     batch.forEach((fn) => { try { fn(); } catch (err) { console.error(err); process.exit(2); } });
   }
@@ -207,6 +218,84 @@ if (scenario === 'focus') {
   const hit = rows.filter((r) => r.hit).pop();
   z.treeGo(unit, hit.id); flush(20);
   out = { all, rows, crumbs: z.crumbs(), sel: z.selected(), panel: g.panelText(), hash: z.hash() };
+  // Back to the unit: the tree, its filter kept.
+  out.back = z.panelBack(unit);
+  out.backHash = z.hash();
+} else if (scenario === 'zoom-clip') {
+  // A card open at a folder: the boxes drawn and the link layer over them.
+  const z = g.zoom, [unit, rel] = arg.split(',');
+  if (rel) z.open(unit, rel); else z.expand(unit);
+  flush(40);
+  out = { boxes: z.boxes(), links: z.links(), svg: elements.get('apps-zedges').innerHTML };
+} else if (scenario === 'zoom-search') {
+  // Queries in the search box, then the first result of the last one picked.
+  const qs = arg.split(';');
+  out = { results: qs.map((q) => g.search(q)) };
+  g.choose(0); flush(40);
+  const z = g.zoom;
+  out.crumbs = z.crumbs(); out.sel = z.selected(); out.panel = g.panelText(); out.level = g.level(); out.hash = z.hash();
+} else if (scenario === 'zoom-wheel') {
+  // A trackpad's scroll into a folder: wheel events a frame apart, past
+  // the point the folder opens; then zoomed in far, and Fit pressed.
+  const z = g.zoom, [unit, name] = arg.split(',');
+  z.expand(unit); flush(40);
+  const wheel = elements.get('apps').listeners.wheel[0];
+  const ks = [];
+  for (let i = 0; i < 45; i++) {
+    const b = z.itemScreen(unit, name) || z.focusScreen(unit);
+    wheel({ deltaY: -40, deltaMode: 0, clientX: b.x + b.w / 2, clientY: b.y + b.h / 2, preventDefault() {} });
+    flush(1);
+    ks.push(z.cam().k);
+  }
+  flush(40);
+  out = { ks, crumbs: z.crumbs(), settled: z.cam(), level: z.focusScreen(unit) };
+  z.look(unit, 3); flush(5);
+  elements.get('fit').listeners.click.forEach((fn) => fn({}));
+  flush(40);
+  out.fit = z.cam(); out.fitLevel = z.focusScreen(unit);
+} else if (scenario === 'zoom-panel-fit') {
+  // A folder opens and, as the camera moves, a panel takes the stage's right side.
+  const z = g.zoom, [unit, rel] = arg.split(',');
+  z.expand(unit); flush(40);
+  z.open(unit, rel); flush(2);
+  const stage = elements.get('stage');
+  stage.rect = { left: 0, top: 0, right: 1028, bottom: 900, width: 1028, height: 900 };
+  (windowListeners.resize || []).forEach((fn) => fn({}));
+  flush(40);
+  out = { moved: z.cam(), level: z.focusScreen(unit), refit: z.fit(), refitLevel: z.focusScreen(unit) };
+  // A phone: the panel is a sheet over the stage's lower part.
+  stage.rect = null;
+  g.selectUnit(unit); flush(5);
+  const panel = elements.get('panel');
+  panel.hidden = false;
+  panel.rect = { left: 0, top: 500, right: 1400, bottom: 900, width: 1400, height: 400 };
+  z.fit(); flush(5);
+  out.sheet = z.focusScreen(unit);
+} else if (scenario === 'zoom-stubs-ui') {
+  // Stubs with the open level's top edge just above the view (`top`) or
+  // its foot just above the status line (`bottom`), in screen px.
+  const z = g.zoom, [unit, rel, k, top, bottom] = arg.split(',');
+  z.open(unit, rel); flush(40);
+  z.look(unit, +k, top ? +top : null, bottom ? +bottom : null);
+  out = { stubs: z.stubs(), cam: z.cam() };
+} else if (scenario === 'zoom-others') {
+  // A folder whose files without symbols share one box; listed, then one picked.
+  const z = g.zoom, [unit, rel, deeper] = arg.split(',');
+  z.open(unit, rel); flush(40);
+  const before = z.items(unit), boxes = z.boxes();
+  const others = boxes.find((b) => b.type === 'others');
+  const id = others ? z.itemScreen(unit, others.name).id : null;
+  if (id) { z.activate(unit, id); flush(20); }
+  const listed = z.items(unit), panel = g.panelText(), hash = z.hash();
+  if (id) { z.activate(unit, id); flush(20); }
+  out = { before, listed, panel, hash, folded: z.items(unit), links: z.links() };
+  // Deeper in, the box is a name tag: activating it goes back up to its level, listed.
+  if (deeper && id) {
+    z.open(unit, deeper); flush(40);
+    const tag = z.items(unit).find((i) => i.type === 'others');
+    z.activate(unit, id); flush(40);
+    out.tag = tag; out.backUp = { crumbs: z.crumbs(), items: z.items(unit), sel: z.selected() };
+  }
 } else if (scenario === 'zoom-hash') {
   // The page opened at a URL fragment (HASH in the environment).
   let html = '';
