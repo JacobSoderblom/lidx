@@ -175,9 +175,10 @@ pub enum Command {
         /// notes what was left out.
         #[arg(long)]
         max_nodes: Option<usize>,
-        /// Node granularity. Default: symbol with --seed/--diff, module
+        /// Node granularity. Default: symbol with --seed/--diff, app (an
+        /// architecture diagram of applications, libraries and infra)
         /// otherwise.
-        #[arg(long, value_parser = ["symbol", "file", "module"])]
+        #[arg(long, value_parser = ["app", "symbol", "file", "module"])]
         level: Option<String>,
         /// Show the symbols changed against this git revision and their
         /// callers (via analyze_diff).

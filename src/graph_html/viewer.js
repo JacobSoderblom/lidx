@@ -41,6 +41,14 @@
   E.forEach(function (e) { N[e.s].out.push(e); N[e.t].inn.push(e); });
   var AGGREGATED = META.level !== 'symbol';
   var REDUCE = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  // Applications and libraries (src/graph_html/apps.rs): the units, the
+  // links between them, shared package chips and each node's unit.
+  var APPS = raw.apps || null;
+  var AU = APPS ? APPS.units : [];
+  var AE = APPS ? APPS.edges : [];
+  var CHIPS = APPS ? APPS.chips : [];
+  var NODE_UNIT = APPS ? APPS.node_unit : [];
+  var HAS_APPS = !!(APPS && APPS.links && AU.length);
 
   function has(n, f) { return (n.flags & f) !== 0; }
   function derived(e) { return (e.flags & (F.edge_derived || 0)) !== 0; }
@@ -136,6 +144,9 @@
   var BUDGET = 900; // nodes drawn at once; lower-interest folders fold past it
 
   var st = {
+    // 'app' (the architecture sheet) or 'graph' (folders, files, symbols).
+    level: HAS_APPS && META.level === 'app' ? 'app' : 'graph',
+    colorBy: SEEDED && APPS && NODE_UNIT.some(function (u) { return u >= 0; }) ? 'app' : 'lang',
     layout: TRACE ? 'layered' : 'force',
     view: 'graph',
     group: 'tree',
@@ -1576,14 +1587,14 @@
     } else if (AGGREGATED && (n.kind === 'file' || n.kind === 'module')) {
       c.beginPath();
       roundRect(c, x - r, y - r * 0.8, r * 2, r * 1.6, Math.min(4, r * 0.3));
-      c.fillStyle = langColor(n.lang);
+      c.fillStyle = nodeColor(n);
       c.fill();
       c.strokeStyle = theme['node-line'];
       c.stroke();
     } else {
       c.beginPath();
       c.arc(x, y, r, 0, Math.PI * 2);
-      c.fillStyle = langColor(n.lang);
+      c.fillStyle = nodeColor(n);
       c.fill();
       c.strokeStyle = theme['node-line'];
       c.stroke();
@@ -2216,7 +2227,8 @@
       expanded: Array.from(st.expanded), depth: st.depth, group: st.group, layout: st.layout, view: st.view,
       selected: st.selected, mode: st.mode, hops: st.hops, pathTo: st.pathTo,
       isolate: st.isolate ? Array.from(st.isolate) : null, revealed: Array.from(st.revealed),
-      showNonCode: st.showNonCode, showExternal: st.showExternal, showEndpoints: st.showEndpoints, showTests: st.showTests
+      showNonCode: st.showNonCode, showExternal: st.showExternal, showEndpoints: st.showEndpoints, showTests: st.showTests,
+      level: st.level, aSel: ast.selected, aOpen: Array.from(ast.open)
     };
   }
   function pushHistory() {
@@ -2226,6 +2238,13 @@
     updateHistoryButtons();
   }
   function restore(s) {
+    if (s.level === 'app') {
+      ast.selected = s.aSel; ast.selConn = null; ast.open = new Set(s.aOpen || []);
+      if (st.level !== 'app') setLevel('app', true); else { renderApps(true); renderPanel(); }
+      return;
+    }
+    if (st.level === 'app') setLevel('folder', true);
+    ast.open = new Set(s.aOpen || []);
     savePositions();
     st.expanded = new Set(s.expanded); st.depth = s.depth; st.group = s.group;
     st.selected = s.selected; st.mode = s.mode; st.hops = s.hops; st.pathTo = s.pathTo;
@@ -2492,6 +2511,7 @@
   }
 
   function renderPanel() {
+    if (st.level === 'app') { renderAppPanel(); return; }
     var v = selectedV(), e = st.selectedEdge;
     if (!v && !e) { panel.hidden = true; return; }
     panel.hidden = false;
@@ -2663,6 +2683,7 @@
   panel.addEventListener('click', function (ev) {
     var b = ev.target.closest('button');
     if (!b) return;
+    if (st.level === 'app' || b.dataset.unit !== undefined) { appPanelClick(b); return; }
     if (b.dataset.node !== undefined) { focusLeaf(+b.dataset.node); return; }
     if (b.dataset.vnode !== undefined) { select(V.nodes[+b.dataset.vnode].id, true); return; }
     if (b.dataset.list) { expandedLists.add(b.dataset.list); renderPanel(); return; }
@@ -2726,6 +2747,14 @@
       scored.push([s, n.qual.length, n]);
     });
     groupNames.forEach(function (g) { if (g.toLowerCase().indexOf(q) >= 0) scored.push([5, g.length, { group: g }]); });
+    if (HAS_APPS) {
+      AU.forEach(function (u) {
+        var nm = u.name.toLowerCase(), s = nm === q ? 0 : nm.indexOf(q) === 0 ? 1 : nm.indexOf(q) >= 0 ? 3 : u.root.toLowerCase().indexOf(q) >= 0 ? 4 : -1;
+        if (s < 0) return;
+        // On the sheet, units come first.
+        scored.push([s - (st.level === 'app' ? 1 : 0.25) + (u.hidden ? 0.5 : 0), u.name.length, { unit: u.id }]);
+      });
+    }
     scored.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
     results = scored.slice(0, 40).map(function (s) { return s[2]; });
     renderList();
@@ -2737,6 +2766,12 @@
         if (r.group) {
           return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
             '<span class="nm">' + esc(r.group) + '</span><span class="kd">folder</span></li>';
+        }
+        if (r.unit !== undefined) {
+          var u = AU[r.unit];
+          return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
+            '<span class="nm">' + esc(u.name) + '</span><span class="kd">' + esc(unitKind(u)) + (u.hidden ? ' · hidden' : '') + '</span>' +
+            '<span class="qn">' + esc(u.root) + '</span></li>';
         }
         var hiddenTag = V.leafTo[r.i] < 0 ? ' · hidden' : '';
         return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
@@ -2757,6 +2792,15 @@
     var r = results[i];
     if (!r) return;
     closeList();
+    if (r.unit !== undefined) {
+      if (st.level !== 'app') setLevel('app');
+      revealUnit(r.unit);
+      var el = cardEl('u' + r.unit);
+      if (el) el.focus();
+      selectUnit('u' + r.unit, true);
+      return;
+    }
+    if (st.level === 'app') setLevel('folder');
     if (r.group) {
       var opened = false;
       for (var p = parentOf(r.group); p; p = parentOf(p)) if (!st.expanded.has(p)) { if (!opened) pushHistory(); st.expanded.add(p); opened = true; }
@@ -2788,6 +2832,7 @@
   var legend = document.getElementById('legend');
   var legendOpen = { edges: true, langs: true, show: true, shapes: false, notes: true };
   function renderLegend() {
+    if (st.level === 'app') { renderAppLegend(); return; }
     // Counts cover what the scope and halo rules show.
     var fc = {}, lc = {};
     N.forEach(function (n) {
@@ -2812,6 +2857,20 @@
     if (bridges) html += '<p class="hint">Across processes, between the folders that own each side:</p>' + bridges;
     html += '<div class="row-actions"><button type="button" data-legend="all">All</button><button type="button" data-legend="calls">Calls only</button>' +
       (bridges ? '<button type="button" data-legend="bridges">Bridges + calls</button>' : '') + '</div></details>';
+    if (APPS && NODE_UNIT.some(function (u) { return u >= 0; })) {
+      html += '<details data-sec="colour" open><summary>Colour</summary><div class="row-actions" role="radiogroup" aria-label="Colour symbols by">' +
+        ['app', 'lang'].map(function (c) {
+          return '<label class="plain"><input type="radio" name="colorby" data-colorby="1" value="' + c + '"' + (st.colorBy === c ? ' checked' : '') + '><span>' +
+            (c === 'app' ? 'by app' : 'by language') + '</span><span></span></label>';
+        }).join('') + '</div>';
+      if (st.colorBy === 'app') {
+        APP_HUES.order.slice(0, 14).forEach(function (u) {
+          html += '<label class="plain" style="grid-template-columns:16px 1fr auto"><span class="dot" style="background:' + esc(appColor(u)) + '"></span><span>' +
+            esc(AU[u].name) + ' <span class="count">' + esc(unitKind(AU[u])) + '</span></span><span class="count">' + fmt(APP_HUES.counts[u]) + '</span></label>';
+        });
+      }
+      html += '</details>';
+    }
     html += '<details data-sec="langs"' + (legendOpen.langs ? ' open' : '') + '><summary>Languages</summary>';
     Object.keys(lc).concat(Object.keys(st.langOn).filter(function (l) { return st.langOn[l] === false && !lc[l]; }))
       .sort(function (a, b) { return (lc[b] || 0) - (lc[a] || 0) || (a < b ? -1 : 1); }).forEach(function (l) {
@@ -2865,6 +2924,8 @@
   }, true);
   legend.addEventListener('change', function (ev) {
     var t = ev.target;
+    if (st.level === 'app') { appLegendChange(t); return; }
+    if (t.dataset.colorby) { st.colorBy = t.value; V.nodes.forEach(function (v) { v.mix = null; }); renderLegend(); draw(); return; }
     if (t.dataset.fam) st.famOn[t.dataset.fam] = t.checked;
     else if (t.dataset.lang) st.langOn[t.dataset.lang] = t.checked;
     else if (t.dataset.toggle) st[t.dataset.toggle] = t.checked;
@@ -3008,6 +3069,9 @@
   var groupSel = { value: 'tree' };
   function applyDepth(d) {
     pushHistory();
+    depthTo(d);
+  }
+  function depthTo(d) {
     st.group = 'tree';
     savePositions();
     BUDGET = 900;
@@ -3031,6 +3095,7 @@
   function updateDepthLabel() {
     if (!depthLabel) return;
     depthLabel.textContent = st.depth === Infinity ? 'all folders' : st.depth > 0 ? 'depth ' + st.depth : 'custom';
+    updateLevelButtons();
   }
   document.getElementById('collapse-all').addEventListener('click', function () { closeMenu(); applyDepth(1); });
   document.getElementById('expand-all').addEventListener('click', function () { closeMenu(); applyDepth(Infinity); });
@@ -3136,7 +3201,9 @@
     closeMenu(); download(baseName + '.svg', new Blob([toSvg()], { type: 'image/svg+xml' }));
   });
   document.getElementById('export-json').addEventListener('click', function () {
-    closeMenu(); download(baseName + '-view.json', new Blob([JSON.stringify(toJson(), null, 1)], { type: 'application/json' }));
+    closeMenu();
+    var data = st.level === 'app' ? { repo: META.repo, commit: META.commit, units: AU.filter(unitVisible), links: AE.filter(linkVisible), chips: CHIPS } : toJson();
+    download(baseName + (st.level === 'app' ? '-apps.json' : '-view.json'), new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
   });
   // The visible subgraph: what is drawn, with the edges behind each line.
   function toJson() {
@@ -3187,7 +3254,7 @@
         out.push('<text x="' + f(v.x) + '" y="' + f(v.y + v.r * 0.78 + 14) + '" text-anchor="middle" font-weight="700" fill="' + esc(theme.ink) + '">' + esc(v.label) + '</text>');
         return;
       }
-      var fill = has(n, F.endpoint) ? theme.bridge : has(n, F.external | F.unresolved) ? theme.canvas : langColor(n.lang);
+      var fill = has(n, F.endpoint) ? theme.bridge : has(n, F.external | F.unresolved) ? theme.canvas : nodeColor(n);
       out.push('<circle cx="' + f(v.x) + '" cy="' + f(v.y) + '" r="' + f(v.r) + '" fill="' + esc(fill) + '" stroke="' + esc(theme['node-line']) + '"' +
         (v.seed ? ' stroke-width="3" style="stroke:' + esc(theme.focus) + '"' : '') + '><title>' + esc(n.qual) + '</title></circle>');
       out.push('<text x="' + f(v.x + v.r + 4) + '" y="' + f(v.y + 4) + '" fill="' + esc(theme.ink) + '">' + esc(labelText(v)) + '</text>');
@@ -3243,6 +3310,8 @@
       return;
     }
     if (ev.key === '?') { openHelp(); return; }
+    if (st.level === 'app') { appKey(ev); return; }
+    if ((ev.key === 'a' || ev.key === 'A') && HAS_APPS && !ev.shiftKey) { setLevel('app'); return; }
     if (ev.key === 'Escape') {
       if (st.picking) { st.picking = false; drawOverlay(); return; }
       if (st.isolate && !st.selected) { clearIsolate(); return; }
@@ -3285,12 +3354,943 @@
     requestDraw();
   });
 
+  // -------------------------------------------------------------- app view
+  // Applications, libraries and infrastructure as an architecture sheet:
+  // cards in bands by role (front ends, services, workers and tools,
+  // libraries, infra), dependencies flowing down, every link named in
+  // words. DOM rather than canvas: there are few cards, and each is a
+  // focusable element with real text.
+  var KIND_LABEL = {
+    ui: 'UI', desktop: 'desktop app', api: 'API', service: 'service', worker: 'worker', cli: 'CLI',
+    lib: 'library', loose: 'loose files', data: 'data', infra: 'infra', test: 'tests', example: 'example',
+    docs: 'docs', tooling: 'tooling'
+  };
+  var BANDS = [
+    { id: 'front', label: 'Front ends', kinds: { ui: 1, desktop: 1 } },
+    { id: 'svc', label: 'APIs, services, workers and tools', kinds: { api: 1, service: 1, worker: 1, cli: 1 } },
+    { id: 'lib', label: 'Libraries and shared code', kinds: { lib: 1, loose: 1 } },
+    { id: 'infra', label: 'Infrastructure and data', kinds: { infra: 1, data: 1 } },
+    { id: 'hidden', label: 'Tests, examples, docs and tooling', kinds: { test: 1, example: 1, docs: 1, tooling: 1 } },
+    { id: 'pkg', label: 'Shared external packages', kinds: {} }
+  ];
+  // Drawn connectors take the style of their most telling part.
+  var APP_FAM = {
+    http: { label: 'HTTP', rank: 0 },
+    rpc: { label: 'RPC', rank: 1 },
+    bus: { label: 'message bus', rank: 2 },
+    config: { label: 'config keys and secrets', rank: 3 },
+    declares: { label: 'proto declares RPC', rank: 4 },
+    deploys: { label: 'deploys', rank: 5 },
+    code: { label: 'calls and uses (code)', rank: 6 },
+    depends: { label: 'declared reference', rank: 7 },
+    package: { label: 'uses package', rank: 8 }
+  };
+  var APP_DASH = {
+    code: '', depends: '6 4', http: '11 3 2 3', rpc: '3 3', bus: '11 4', config: '0.5 5', declares: '2 3', deploys: '9 3', package: '1 3'
+  };
+  var APP_TOK = {
+    code: 'edge', depends: 'edge-3', http: 'bridge', rpc: 'bridge', bus: 'bridge', config: 'bridge', declares: 'edge-4', deploys: 'edge-4', package: 'ink-3'
+  };
+  var LANG_NAME = {
+    csharp: 'C#', python: 'Python', typescript: 'TypeScript', tsx: 'TSX', javascript: 'JavaScript', rust: 'Rust', go: 'Go',
+    proto: 'Protobuf', sql: 'SQL', postgres: 'PostgreSQL', bicep: 'Bicep', yaml: 'YAML', markdown: 'Markdown', lua: 'Lua'
+  };
+  var NON_CODE_LANG = { markdown: 1, yaml: 1, json: 1 };
+  var CARD_W = { app: 264, lib: 216, infra: 240, open: 344 };
+  var LANE_W = 168;
+  var ast = {
+    // Families drawn only around the card in focus: every app reads config
+    // and is deployed, so drawn always they would bury the rest. The card
+    // text says what they link to.
+    quiet: { config: true, deploys: true },
+    on: {}, showKind: { test: false, example: false, docs: false, tooling: false },
+    packages: false, undeclared: false, selected: null, selConn: null, hover: null,
+    open: new Set(), cam: { k: 1, x: 0, y: 0 }, built: false, userMoved: false,
+    pos: {}, conns: [], lists: new Set()
+  };
+  Object.keys(APP_FAM).forEach(function (f) { ast.on[f] = true; });
+  var appsEl = document.getElementById('apps'), appsWorld = document.getElementById('apps-world');
+  var appsSvg = document.getElementById('apps-edges'), appsCards = document.getElementById('apps-cards');
+  var FILE_NODE = new Map();
+  N.forEach(function (n) { if (n.file && !FILE_NODE.has(n.file)) FILE_NODE.set(n.file, n.i); });
+
+  function langName(l) { return LANG_NAME[l] || l; }
+  function unitKind(u) { return KIND_LABEL[u.kind] || u.kind; }
+  function unitVisible(u) { return !u.hidden || !!ast.showKind[u.kind]; }
+  function linkVisible(e) {
+    return ast.on[e.family] && unitVisible(AU[e.from]) && unitVisible(AU[e.to]) && (e.declared || ast.undeclared);
+  }
+  function keyName(k) { var i = k.indexOf('://'); return i >= 0 ? k.slice(i + 3) : k; }
+  function codeLangs(u) {
+    var l = u.langs.filter(function (x) { return !NON_CODE_LANG[x[0]]; });
+    return (l.length ? l : u.langs).slice(0, 2).map(function (x) { return x[0]; });
+  }
+  function exposesList(u) {
+    var x = u.exposes, out = [];
+    if (u.kind === 'infra') {
+      // Infra defines topics and routes rather than serving them.
+      var t = x.bus.total + u.consumes.topics.total;
+      if (t) out.push('defines ' + plural(t, 'topic or subscription', 'topics and subscriptions'));
+      if (x.http.total) out.push('defines ' + plural(x.http.total, 'route', 'routes'));
+      if (x.provides.total) out.push('provides ' + plural(x.provides.total, 'key or secret', 'keys and secrets'));
+      return out;
+    }
+    if (x.http.total) out.push(plural(x.http.total, 'HTTP route', 'HTTP routes'));
+    if (x.rpc.total) out.push(plural(x.rpc.total, 'RPC method', 'RPC methods') + (u.services.length ? ' in ' + plural(u.services.length, 'service', 'services') : ''));
+    if (x.bus.total) out.push('subscribes to ' + plural(x.bus.total, 'topic', 'topics'));
+    if (x.declares.total) out.push('declares ' + plural(x.declares.total, 'RPC method', 'RPC methods'));
+    if (x.provides.total) out.push('provides ' + plural(x.provides.total, 'key or secret', 'keys and secrets'));
+    if (u.entries.length) out.push('CLI ' + u.entries.slice(0, 3).join(', ') + (u.entries.length > 3 ? ' +' + (u.entries.length - 3) : ''));
+    return out;
+  }
+  function consumesList(u) {
+    var c = u.consumes, out = [];
+    if (u.kind === 'infra') {
+      if (c.secrets.total) out.push('reads ' + plural(c.secrets.total, 'secret', 'secrets'));
+      if (c.config.total) out.push('reads ' + plural(c.config.total, 'config key', 'config keys'));
+      return out;
+    }
+    if (c.config.total) out.push(plural(c.config.total, 'config key', 'config keys'));
+    if (c.secrets.total) out.push(plural(c.secrets.total, 'secret', 'secrets'));
+    if (c.topics.total) out.push('publishes to ' + plural(c.topics.total, 'topic', 'topics'));
+    var ext = c.calls.items.filter(function (it) { return it[3]; }).length;
+    if (ext) out.push('calls ' + plural(ext, 'external endpoint', 'external endpoints'));
+    return out;
+  }
+  function relName(u, p) { return u.dir && p.indexOf(u.dir) === 0 ? p.slice(u.dir.length) : p; }
+  function deploysOf(u) {
+    return AE.filter(function (e) { return e.from === u.id && e.family === 'deploys'; }).map(function (e) { return AU[e.to].name; });
+  }
+
+  function cardHtml(u) {
+    var open = ast.open.has(u.id);
+    var shape = u.app ? 'app' : (u.kind === 'infra' || u.kind === 'data') ? 'infra' : 'lib';
+    var cls = 'card ' + (shape === 'app' ? 'is-app' : shape) + (u.hidden ? ' hidden-kind' : '') + (open ? ' open' : '');
+    var langs = codeLangs(u);
+    var dots = langs.map(function (l) {
+      return '<i style="background:' + esc(langColor(l)) + '"></i>' + esc(langName(l));
+    }).join(' ');
+    var kind = unitKind(u) + (u.kind === 'infra' && u.why ? ' · ' + u.why : '');
+    var html = '<article role="listitem" class="' + cls + '" data-key="u' + u.id + '" tabindex="0" title="' + esc(u.root) + '" aria-expanded="' + open + '" aria-label="' +
+      esc(u.name + ', ' + unitKind(u) + (langs.length ? ', ' + langs.map(langName).join(' and ') : '')) + '">';
+    html += '<div class="k"><span>' + esc(kind) + '</span>' + (u.kind !== 'infra' && dots ? '<span class="lg">' + dots + '</span>' : '') + '</div>';
+    html += '<h3>' + esc(u.name) + '</h3>';
+    // The path is in the tooltip and the panel: on the sheet it costs a line
+    // per card and says less than the name.
+    if (open) html += '<div class="root">' + esc(u.root) + '</div>';
+    var ex = exposesList(u), co = consumesList(u), dep = deploysOf(u), dl = '';
+    if (ex.length) dl += '<dt>Exposes</dt><dd>' + esc(ex.join(' · ')) + '</dd>';
+    if (co.length) dl += '<dt>Uses</dt><dd>' + esc(co.join(' · ')) + '</dd>';
+    if (dep.length) dl += '<dt>Deploys</dt><dd>' + esc(dep.slice(0, 4).join(', ') + (dep.length > 4 ? ' +' + (dep.length - 4) : '')) + '</dd>';
+    if (dl) html += '<dl>' + dl + '</dl>';
+    var mods = u.modules;
+    if (open) {
+      html += '<ul class="modlist" aria-label="Folders in ' + esc(u.name) + '">' + (mods.length ? mods.map(function (m) {
+        return '<li><button type="button" data-folder="' + esc(m[0]) + '"><span>' + esc(relName(u, m[0])) + '</span><span class="n">' +
+          esc(plural(m[1], 'file', 'files')) + ' · ' + fmt(m[2]) + '</span></button></li>';
+      }).join('') : '<li class="more">All ' + esc(plural(u.files, 'file sits', 'files sit')) + ' at its root.</li>') + '</ul>';
+      html += '<div class="open-row"><button type="button" data-folder="' + esc(u.dir) + '">Open in folders</button>' +
+        '<button type="button" data-close-card="' + u.id + '">Close</button></div>';
+    } else if (mods.length) {
+      var top = mods.slice(0, 3).map(function (m) { return relName(u, m[0]); });
+      html += '<p class="mods"><b>' + esc(top.join(' · ')) + '</b>' + (mods.length > 3 ? ' +' + (mods.length - 3) : '') + '</p>';
+    }
+    html += '</article>';
+    return html;
+  }
+  function chipHtml(c, i) {
+    return '<article role="listitem" class="card chip" data-key="p' + i + '" tabindex="0" aria-label="' + esc(c.name + ', external package used by ' + plural(c.users.length, 'unit', 'units')) + '">' +
+      '<h3>' + esc(c.name) + '</h3><div class="root">' + esc(plural(c.users.length, 'user', 'users')) + '</div></article>';
+  }
+
+  // Connectors: one per ordered pair of cards, merging that pair's links.
+  function buildConns() {
+    var map = new Map(), out = [];
+    AE.forEach(function (e, i) {
+      if (!linkVisible(e)) return;
+      var k = e.from + '>' + e.to, c = map.get(k);
+      if (!c) { c = { a: 'u' + e.from, b: 'u' + e.to, parts: [] }; map.set(k, c); out.push(c); }
+      c.parts.push(i);
+    });
+    if (ast.packages) {
+      CHIPS.forEach(function (ch, ci) {
+        ch.users.forEach(function (u) { if (unitVisible(AU[u])) out.push({ a: 'u' + u, b: 'p' + ci, parts: [], pkg: ci }); });
+      });
+    }
+    out.forEach(function (c, i) {
+      c.i = i;
+      c.parts.sort(function (x, y) { return APP_FAM[AE[x].family].rank - APP_FAM[AE[y].family].rank; });
+      c.fam = c.parts.length ? AE[c.parts[0]].family : 'package';
+      c.weight = c.parts.reduce(function (m, j) { return Math.max(m, AE[j].weight); }, 1);
+      c.label = c.parts.length ? c.parts.map(function (j) { return AE[j].label; }).join(' · ') : 'uses';
+    });
+    return out;
+  }
+  function bandIndex(key) {
+    if (key.charAt(0) === 'p') return BANDS.length - 1;
+    var u = AU[+key.slice(1)];
+    for (var b = 0; b < BANDS.length; b++) if (BANDS[b].kinds[u.kind]) return b;
+    return 2;
+  }
+  // Measured size, or an estimate when the page is not laid out (headless
+  // checks, a hidden stage).
+  function cardSize(key, el) {
+    if (el && el.offsetWidth > 0) return { w: el.offsetWidth, h: el.offsetHeight };
+    if (key.charAt(0) === 'p') return { w: 150, h: 40 };
+    var u = AU[+key.slice(1)], open = ast.open.has(u.id);
+    var w = open ? CARD_W.open : u.app ? CARD_W.app : u.kind === 'infra' || u.kind === 'data' ? CARD_W.infra : CARD_W.lib;
+    var lines = 3 + exposesList(u).length + consumesList(u).length + (u.modules.length ? 1 : 0) + (open ? Math.min(14, u.modules.length) + 1 : 0);
+    return { w: w, h: 22 + lines * 17 };
+  }
+
+  // Layered layout: bands top to bottom; libraries split into rows so a
+  // library sits above the libraries it depends on; rows ordered by the
+  // barycentre of their neighbours, then wrapped to the sheet width.
+  function layoutApps(keys, sizes, conns) {
+    var band = {}, layerOf = {}, adj = {};
+    keys.forEach(function (k) { band[k] = bandIndex(k); adj[k] = []; });
+    conns.forEach(function (c) {
+      if (band[c.a] === undefined || band[c.b] === undefined) return;
+      adj[c.a].push(c.b); adj[c.b].push(c.a);
+    });
+    // Library height: 1 + the tallest library it reaches.
+    var libBand = 2, height = {};
+    function libHeight(k, seen) {
+      if (height[k] !== undefined) return height[k];
+      if (seen[k]) return 0;
+      seen[k] = 1;
+      var h = 0;
+      conns.forEach(function (c) {
+        if (c.a === k && band[c.b] === libBand && c.b !== k && c.fam !== 'package') h = Math.max(h, 1 + libHeight(c.b, seen));
+      });
+      seen[k] = 0;
+      height[k] = h;
+      return h;
+    }
+    var maxH = 0;
+    keys.forEach(function (k) { if (band[k] === libBand) maxH = Math.max(maxH, libHeight(k, {})); });
+    var layerKeys = [];
+    keys.forEach(function (k) {
+      var b = band[k];
+      var sub = b === libBand ? Math.min(3, maxH - height[k]) : 0;
+      var lk = b * 10 + Math.max(0, Math.min(sub, 9));
+      layerOf[k] = lk;
+      if (layerKeys.indexOf(lk) < 0) layerKeys.push(lk);
+    });
+    layerKeys.sort(function (a, b) { return a - b; });
+    var layers = layerKeys.map(function (lk) { return keys.filter(function (k) { return layerOf[k] === lk; }); });
+    // Initial order: apps by size, then name.
+    layers.forEach(function (L) {
+      L.sort(function (a, b) {
+        var ua = a.charAt(0) === 'u' ? AU[+a.slice(1)] : null, ub = b.charAt(0) === 'u' ? AU[+b.slice(1)] : null;
+        var sa = ua ? ua.symbols : 0, sb = ub ? ub.symbols : 0;
+        return sb - sa || (a < b ? -1 : 1);
+      });
+    });
+    var posIn = {};
+    function index() { layers.forEach(function (L) { L.forEach(function (k, i) { posIn[k] = L.length > 1 ? i / (L.length - 1) : 0.5; }); }); }
+    index();
+    for (var sweep = 0; sweep < 8; sweep++) {
+      var order = sweep % 2 ? layers.slice().reverse() : layers;
+      order.forEach(function (L) {
+        var bary = {};
+        L.forEach(function (k) {
+          var ns = adj[k].filter(function (o) { return layerOf[o] !== layerOf[k]; });
+          bary[k] = ns.length ? ns.reduce(function (s, o) { return s + posIn[o]; }, 0) / ns.length : posIn[k];
+        });
+        L.sort(function (a, b) { return bary[a] - bary[b] || posIn[a] - posIn[b]; });
+        L.forEach(function (k, i) { posIn[k] = L.length > 1 ? i / (L.length - 1) : 0.5; });
+      });
+    }
+    var GAP_X = 28, GAP_ROW = 30, GAP_LAYER = 76;
+    var sw = stage.getBoundingClientRect().width || 1400;
+    // A phone gets a narrow sheet it can scroll down; a desk a wide one.
+    var maxW = sw < 760 ? 560 : Math.max(1100, Math.min(1800, Math.round(sw * 1.3)));
+    var rows = [], P = {}, labels = [], y = 0, prevBand = -1, rowIdx = 0;
+    layers.forEach(function (L) {
+      var b = band[L[0]];
+      if (b !== prevBand) {
+        if (prevBand >= 0) y += GAP_LAYER - GAP_ROW;
+        var count = keys.filter(function (k) { return band[k] === b; }).length;
+        labels.push({ band: b, y: y, count: count });
+        prevBand = b;
+      } else y += GAP_LAYER - GAP_ROW;
+      // Wrap into rows no wider than the sheet.
+      var row = [], rw = 0;
+      function flush() {
+        if (!row.length) return;
+        rows.push({ keys: row, w: rw, y: y });
+        var rh = 0;
+        row.forEach(function (k) { rh = Math.max(rh, sizes[k].h); });
+        row.forEach(function (k) { P[k] = { x: 0, y: y, w: sizes[k].w, h: sizes[k].h, row: rowIdx, band: b }; });
+        rowIdx++;
+        y += rh + GAP_ROW;
+        row = []; rw = 0;
+      }
+      L.forEach(function (k) {
+        var w = sizes[k].w;
+        if (row.length && rw + GAP_X + w > maxW) flush();
+        rw += (row.length ? GAP_X : 0) + w;
+        row.push(k);
+      });
+      flush();
+    });
+    var sheet = rows.reduce(function (m, r) { return Math.max(m, r.w); }, 0);
+    rows.forEach(function (r) {
+      var x = Math.round((sheet - r.w) / 2);
+      r.keys.forEach(function (k) { P[k].x = x; x += P[k].w + GAP_X; });
+    });
+    return { P: P, labels: labels, width: sheet, height: Math.max(0, y - GAP_ROW) };
+  }
+
+  // Connector geometry: down between rows (bottom to top), up the other
+  // way, an arch above for cards in one row. Ports spread along each side
+  // in the order of the other ends, so lines do not cross at the card.
+  function routeConns(conns, P) {
+    var att = {};
+    conns.forEach(function (c) {
+      var A = P[c.a], B = P[c.b];
+      c.skip = !A || !B;
+      if (c.skip) return;
+      if (A.row < B.row) { c.sa = 'b'; c.sb = 't'; } else if (A.row > B.row) { c.sa = 't'; c.sb = 'b'; } else { c.sa = 't'; c.sb = 't'; }
+      (att[c.a + c.sa] = att[c.a + c.sa] || []).push({ c: c, end: 'a', ox: B.x + B.w / 2 });
+      (att[c.b + c.sb] = att[c.b + c.sb] || []).push({ c: c, end: 'b', ox: A.x + A.w / 2 });
+    });
+    Object.keys(att).forEach(function (k) {
+      var list = att[k], key = k.slice(0, -1), side = k.slice(-1), box = P[key];
+      list.sort(function (p, q) { return p.ox - q.ox; });
+      list.forEach(function (p, i) {
+        var f = (i + 1) / (list.length + 1);
+        p.c[p.end + 'x'] = box.x + box.w * (0.12 + 0.76 * f);
+        p.c[p.end + 'y'] = side === 't' ? box.y : box.y + box.h;
+      });
+    });
+    conns.forEach(function (c) {
+      if (c.skip) return;
+      var x1 = c.ax, y1 = c.ay, x2 = c.bx, y2 = c.by, c1y, c2y;
+      if (c.sa === 'b') { var d = Math.max(28, (y2 - y1) / 2); c1y = y1 + d; c2y = y2 - d; }
+      else if (c.sb === 'b') { var u = Math.max(28, (y1 - y2) / 2); c1y = y1 - u; c2y = y2 + u; }
+      else { var h = 34 + Math.abs(x2 - x1) * 0.12; c1y = y1 - h; c2y = y2 - h; }
+      c.c1y = c1y; c.c2y = c2y;
+      c.d = 'M' + r1(x1) + ' ' + r1(y1) + 'C' + r1(x1) + ' ' + r1(c1y) + ' ' + r1(x2) + ' ' + r1(c2y) + ' ' + r1(x2) + ' ' + r1(y2);
+      c.mx = 0.125 * x1 + 0.375 * x1 + 0.375 * x2 + 0.125 * x2;
+      c.my = 0.125 * y1 + 0.375 * c1y + 0.375 * c2y + 0.125 * y2;
+      // Arrowhead at the target, along the last control leg.
+      var tx = 0, ty = y2 - c2y, len = Math.abs(ty) || 1, s = 7;
+      tx /= len; ty /= len;
+      var bx = x2 - tx * s, by = y2 - ty * s, nx = -ty * s * 0.55, ny = tx * s * 0.55;
+      c.ah = 'M' + r1(x2) + ' ' + r1(y2) + 'L' + r1(bx + nx) + ' ' + r1(by + ny) + 'L' + r1(bx - nx) + ' ' + r1(by - ny) + 'Z';
+    });
+  }
+  function r1(v) { return Math.round(v * 10) / 10; }
+  // Labels go at the middle of their link unless that spot is taken by a
+  // card, a band heading or a label placed before (cross-process links
+  // first, then by weight); then a little either way along the curve.
+  function placeLabels(conns, P, headings) {
+    var boxes = Object.keys(P).map(function (k) { var p = P[k]; return [p.x - 4, p.y - 4, p.x + p.w + 4, p.y + p.h + 4]; }).concat(headings);
+    var taken = [];
+    var order = conns.filter(function (c) { return !c.skip; }).sort(function (a, b) {
+      return APP_FAM[a.fam].rank - APP_FAM[b.fam].rank || b.weight - a.weight;
+    });
+    order.forEach(function (c) {
+      var text = c.label.length > 48 ? c.label.slice(0, 47) + '…' : c.label;
+      var w = text.length * 6.3 + 6, h = 15, best = null;
+      // Along the curve first, then beside it.
+      var spots = [];
+      [0.5, 0.4, 0.6, 0.3, 0.7, 0.22, 0.78].forEach(function (t) { spots.push([t, 0]); });
+      [0.5, 0.35, 0.65].forEach(function (t) { spots.push([t, 1], [t, -1]); });
+      spots.some(function (s) {
+        var x = bez(c.ax, c.ax, c.bx, c.bx, s[0]) + s[1] * (w / 2 + 8), y = bez(c.ay, c.c1y, c.c2y, c.by, s[0]);
+        var r = [x - w / 2, y - h / 2, x + w / 2, y + h / 2];
+        var hit = function (b) { return r[0] < b[2] && r[2] > b[0] && r[1] < b[3] && r[3] > b[1]; };
+        if (!best) best = { x: x, y: y, r: r };
+        if (boxes.some(hit) || taken.some(hit)) return false;
+        best = { x: x, y: y, r: r };
+        return true;
+      });
+      c.mx = best.x; c.my = best.y; c.text = text;
+      taken.push(best.r);
+    });
+  }
+  function bez(p0, p1, p2, p3, t) {
+    var u = 1 - t;
+    return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+  }
+  function connWidth(c) { return Math.min(5, 1 + Math.log2(Math.max(1, c.weight)) * 0.55); }
+
+  function appKeys() {
+    var keys = AU.filter(unitVisible).map(function (u) { return 'u' + u.id; });
+    if (ast.packages) CHIPS.forEach(function (c, i) { keys.push('p' + i); });
+    return keys;
+  }
+  function renderApps(keepCam) {
+    ast.built = true;
+    var keys = appKeys();
+    var html = '';
+    keys.forEach(function (k) { html += k.charAt(0) === 'p' ? chipHtml(CHIPS[+k.slice(1)], +k.slice(1)) : cardHtml(AU[+k.slice(1)]); });
+    appsCards.innerHTML = html;
+    var els = {};
+    Array.prototype.forEach.call(appsCards.querySelectorAll('[data-key]'), function (el) { els[el.dataset.key] = el; });
+    var sizes = {};
+    keys.forEach(function (k) { sizes[k] = cardSize(k, els[k]); });
+    var conns = buildConns();
+    var lay = layoutApps(keys, sizes, conns);
+    routeConns(conns, lay.P);
+    placeLabels(conns, lay.P, []);
+    // Cards are new elements each render: start each where it was (no
+    // transition), then move it, so only a real move animates.
+    var prev = ast.pos || {};
+    ast.pos = lay.P; ast.conns = conns; ast.sheet = lay;
+    var at = function (p) { return 'translate(' + p.x + 'px,' + p.y + 'px)'; };
+    appsCards.classList.add('placing');
+    keys.forEach(function (k) {
+      var p = lay.P[k], el = els[k];
+      if (el && p) el.style.transform = at(prev[k] || p);
+    });
+    void appsCards.offsetWidth;
+    appsCards.classList.remove('placing');
+    keys.forEach(function (k) {
+      var p = lay.P[k], el = els[k];
+      if (el && p && prev[k]) el.style.transform = at(p);
+    });
+    // Lane titles sit in the margin, ruled across the sheet between bands,
+    // so link labels in the gaps never meet them.
+    var labels = lay.labels.map(function (l, i) {
+      var b = BANDS[l.band];
+      return (i ? '<div class="band-rule" style="transform:translate(' + (-LANE_W) + 'px,' + r1(l.y - 38) + 'px);width:' + (lay.width + LANE_W) + 'px"></div>' : '') +
+        '<div class="band-label" style="transform:translate(' + (-LANE_W) + 'px,' + l.y + 'px);width:' + (LANE_W - 28) + 'px">' + esc(b.label) +
+        '<span>' + esc(fmt(l.count)) + '</span></div>';
+    }).join('');
+    appsCards.insertAdjacentHTML('afterbegin', labels);
+    var svg = '';
+    conns.forEach(function (c) {
+      if (c.skip) return;
+      var w = connWidth(c);
+      // Cross-process links and deployments are few and say the most: their
+      // labels always show; the rest on hover or selection.
+      var named = c.fam === 'http' || c.fam === 'rpc' || c.fam === 'bus' || c.fam === 'declares' || c.fam === 'deploys';
+      var quiet = ast.quiet[c.fam] && c.parts.every(function (j) { return ast.quiet[AE[j].family]; });
+      svg += '<g class="conn f-' + c.fam + (named ? ' named' : '') + (quiet ? ' quiet' : '') + '" data-conn="' + c.i + '" style="--w:' + r1(w) + '">' +
+        '<path class="ln" d="' + c.d + '" stroke-width="' + r1(w) + '"/><path class="ah" d="' + c.ah + '"/>' +
+        '<path class="hit" d="' + c.d + '"/><text class="lbl" x="' + r1(c.mx) + '" y="' + r1(c.my) + '" text-anchor="middle" dy="0.35em">' +
+        esc(c.text) + '</text></g>';
+    });
+    appsSvg.setAttribute('width', String(Math.max(1, lay.width)));
+    appsSvg.setAttribute('height', String(Math.max(1, lay.height)));
+    appsSvg.innerHTML = svg;
+    var shown = conns.filter(function (c) { return !c.skip && !(ast.quiet[c.fam] && c.parts.every(function (j) { return ast.quiet[AE[j].family]; })); }).length;
+    appsEl.classList.toggle('few', shown <= 16);
+    updateAppEmphasis();
+    if (!keepCam || !ast.userMoved) fitApps();
+    else applyAppCam();
+    empty.hidden = keys.length > 0;
+    if (!keys.length) {
+      emptyText.innerHTML = '<strong>No applications to show.</strong> Every unit here is a test, example, docs or tooling folder; show them from the legend.';
+      document.getElementById('empty-reset').hidden = true;
+    }
+    setStatus();
+  }
+  function applyAppCam() {
+    appsWorld.style.transform = 'translate(' + r1(ast.cam.x) + 'px,' + r1(ast.cam.y) + 'px) scale(' + ast.cam.k + ')';
+    setStatus();
+  }
+  function fitApps() {
+    var lay = ast.sheet;
+    if (!lay) return;
+    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
+    var full = lay.width + LANE_W;
+    var phone = w < 760;
+    var k = Math.min(1, (w - (phone ? 16 : 40)) / Math.max(1, full), phone ? 1 : (h - 40) / Math.max(1, lay.height));
+    k = Math.max(0.2, k);
+    ast.cam.k = k;
+    ast.cam.x = Math.round((w - full * k) / 2 + LANE_W * k);
+    ast.cam.y = Math.round(phone ? 12 : Math.max(20, (h - lay.height * k) / 2));
+    ast.userMoved = false;
+    applyAppCam();
+  }
+  function zoomApps(px, py, f) {
+    var k = Math.max(0.15, Math.min(3, ast.cam.k * f));
+    ast.cam.x = px - (px - ast.cam.x) * (k / ast.cam.k);
+    ast.cam.y = py - (py - ast.cam.y) * (k / ast.cam.k);
+    ast.cam.k = k;
+    ast.userMoved = true;
+    applyAppCam();
+  }
+  function neighboursOf(key) {
+    var s = new Set([key]);
+    ast.conns.forEach(function (c) { if (c.a === key) s.add(c.b); if (c.b === key) s.add(c.a); });
+    return s;
+  }
+  function updateAppEmphasis() {
+    var key = ast.selected || ast.hover, conn = ast.selConn !== null ? ast.conns[ast.selConn] : null;
+    var near = key ? neighboursOf(key) : conn ? new Set([conn.a, conn.b]) : null;
+    appsEl.classList.toggle('focus', !!near);
+    Array.prototype.forEach.call(appsCards.querySelectorAll('[data-key]'), function (el) {
+      var k = el.dataset.key;
+      el.classList.toggle('sel', k === ast.selected);
+      el.classList.toggle('dim', !!near && !near.has(k));
+    });
+    Array.prototype.forEach.call(appsSvg.querySelectorAll('[data-conn]'), function (g) {
+      var c = ast.conns[+g.dataset.conn];
+      g.classList.toggle('on', !!c && (conn ? c === conn : !!key && (c.a === key || c.b === key)));
+    });
+  }
+  function cardEl(key) { return appsCards.querySelector('[data-key="' + key + '"]'); }
+  function selectUnit(key, centre) {
+    ast.selected = key;
+    ast.selConn = null;
+    updateAppEmphasis();
+    renderPanel();
+    var u = key && key.charAt(0) === 'u' ? AU[+key.slice(1)] : null;
+    if (u) live.textContent = u.name + ', ' + unitKind(u) + ' selected';
+    if (centre && key && ast.pos[key]) {
+      var r = stage.getBoundingClientRect(), p = ast.pos[key];
+      var cx = (p.x + p.w / 2) * ast.cam.k + ast.cam.x, cy = (p.y + p.h / 2) * ast.cam.k + ast.cam.y;
+      if (cx < 40 || cy < 40 || cx > r.width - 40 || cy > r.height - 40) {
+        ast.cam.x += r.width / 2 - cx; ast.cam.y += r.height / 2 - cy; ast.userMoved = true; applyAppCam();
+      }
+    }
+  }
+  function selectConn(i) {
+    ast.selConn = i;
+    ast.selected = null;
+    updateAppEmphasis();
+    renderPanel();
+  }
+  function toggleOpen(id) {
+    pushHistory();
+    if (ast.open.has(id)) ast.open.delete(id); else ast.open.add(id);
+    renderApps(true);
+    var el = cardEl('u' + id);
+    if (el) el.focus();
+  }
+  function revealUnit(id) {
+    var u = AU[id];
+    if (!unitVisible(u)) { ast.showKind[u.kind] = true; renderApps(true); renderLegend(); }
+  }
+  // Leave the sheet for the folder map, opened at `dir`.
+  function openFolder(dir) {
+    setLevel('folder');
+    if (dir && dir !== './') {
+      drillTo(dir);
+      var c = V.byId.get('c:' + dir);
+      if (c) select(c.id, true);
+      else {
+        var m = V.nodes.find(function (v) { return v.leaf && v.leaf.file && v.leaf.file.indexOf(dir) === 0; });
+        if (m) select(m.id, true);
+      }
+    }
+    canvas.focus();
+  }
+  function jumpToFile(file) {
+    var i = FILE_NODE.get(file);
+    if (i === undefined) {
+      // A module-level page: the folder that holds the file.
+      var best = -1;
+      N.forEach(function (n) {
+        if (n.kind === 'module' && file.indexOf(n.qual) === 0 && (best < 0 || n.qual.length > N[best].qual.length)) best = n.i;
+      });
+      if (best < 0) { toast('Not in this page: ' + file); return; }
+      i = best;
+    }
+    setLevel('folder');
+    focusLeaf(i);
+    canvas.focus();
+  }
+
+  // ------------------------------------------------------- app view panel
+  function symButtons(syms) {
+    return '<ul>' + syms.map(function (s) {
+      return '<li><button type="button" data-file="' + esc(s[1]) + '"><span class="nm">' + esc(s[0]) + '</span>' +
+        '<span class="loc">' + esc(s[1] + (s[2] ? ':' + s[2] : '')) + '</span></button></li>';
+    }).join('') + '</ul>';
+  }
+  function keySection(id, title, usage, external) {
+    if (!usage || !usage.total) return '';
+    var items = usage.items, limit = ast.lists.has(id) ? items.length : 12;
+    var html = '<h3>' + esc(title) + ' · ' + fmt(usage.total) + '</h3><div class="edges">';
+    items.slice(0, limit).forEach(function (it) {
+      html += '<details class="key"><summary>' + esc(keyName(it[0])) + (external && it[3] ? '<span class="ext">external</span>' : '') +
+        '<span class="n">' + (it[1] > 1 ? '×' + fmt(it[1]) : '') + '</span></summary>' + symButtons(it[2]) + '</details>';
+    });
+    if (items.length > limit) html += '<div class="more"><button type="button" data-alist="' + esc(id) + '">Show ' + fmt(items.length - limit) + ' more</button></div>';
+    if (usage.total > items.length) html += '<div class="more">' + fmt(usage.total - items.length) + ' more not embedded</div>';
+    return html + '</div>';
+  }
+  function famSwatch(f) {
+    return '<svg viewBox="0 0 22 10" aria-hidden="true"><line x1="1" y1="5" x2="21" y2="5" stroke="' + esc(theme[APP_TOK[f]]) +
+      '" stroke-width="2" stroke-dasharray="' + APP_DASH[f] + '" stroke-linecap="round"/></svg>';
+  }
+  // Links to shown units first; links to hidden units and resolver guesses
+  // fold under a summary.
+  function linkRows(list, other) {
+    var row = function (e) {
+      var o = AU[other(e)];
+      return '<li><button type="button" class="lrow" data-unit="' + o.id + '">' + famSwatch(e.family) +
+        '<span class="nm">' + esc(o.name) + '</span><span class="w">' + esc(e.label) + '</span></button></li>';
+    };
+    var main = list.filter(function (e) { return e.declared && unitVisible(AU[other(e)]); });
+    var rest = list.filter(function (e) { return main.indexOf(e) < 0; });
+    var html = '<ul class="unit-list">' + main.map(row).join('') + '</ul>';
+    if (rest.length) {
+      html += '<details class="rest"><summary>' + esc(plural(rest.length, 'more link', 'more links')) +
+        ' to hidden units or guessed by name</summary><ul class="unit-list">' + rest.map(function (e) {
+          var o = AU[other(e)];
+          return row(e).replace('</span></button>', (e.declared ? '' : ' · guess') + (unitVisible(o) ? '' : ' · ' + esc(unitKind(o))) + '</span></button>');
+        }).join('') + '</ul></details>';
+    }
+    return html;
+  }
+  function unitPanel(u) {
+    var html = '<div class="panel-head"><h2>' + esc(u.name) + ' <span class="kind">' + esc(unitKind(u)) + '</span></h2>' +
+      '<button type="button" data-act="aclose" aria-label="Close details">×</button></div>';
+    html += '<dl class="facts"><dt>What</dt><dd>' + esc(u.why) + '</dd>';
+    html += '<dt>Where</dt><dd><code>' + esc(u.root) + '</code></dd>';
+    if (u.langs.length) html += '<dt>Languages</dt><dd>' + esc(u.langs.slice(0, 5).map(function (l) { return langName(l[0]) + ' ' + fmt(l[1]); }).join(', ')) + '</dd>';
+    html += '<dt>Size</dt><dd>' + esc(plural(u.files, 'file', 'files') + ' · ' + plural(u.symbols, 'symbol', 'symbols')) + '</dd>';
+    if (u.manifests.length) html += '<dt>Manifests</dt><dd>' + u.manifests.map(function (m) { return '<code>' + esc(m) + '</code>'; }).join('<br>') + '</dd>';
+    if (u.dockerfiles.length) html += '<dt>Built by</dt><dd>' + u.dockerfiles.map(function (m) { return '<code>' + esc(m) + '</code>'; }).join('<br>') + '</dd>';
+    if (u.entries.length) html += '<dt>Commands</dt><dd>' + esc(u.entries.join(', ')) + '</dd>';
+    html += '</dl>';
+    html += '<div class="actions"><button type="button" data-act="aopen">' + (ast.open.has(u.id) ? 'Close card' : 'Open card into folders') + '</button>' +
+      '<button type="button" data-folder="' + esc(u.dir) + '">Show in folder map</button></div>';
+    var inn = AE.filter(function (e) { return e.to === u.id; }), out = AE.filter(function (e) { return e.from === u.id; });
+    var byW = function (a, b) { return APP_FAM[a.family].rank - APP_FAM[b.family].rank || b.weight - a.weight; };
+    inn.sort(byW); out.sort(byW);
+    var callers = inn.filter(function (e) { return e.family !== 'deploys'; }), deployers = inn.filter(function (e) { return e.family === 'deploys'; });
+    var shownN = function (list, other) { return list.filter(function (e) { return e.declared && unitVisible(AU[other(e)]); }).length; };
+    var fromOf = function (e) { return e.from; }, toOf = function (e) { return e.to; };
+    if (callers.length) html += '<h3>Used by · ' + fmt(shownN(callers, fromOf)) + '</h3>' + linkRows(callers, fromOf);
+    if (out.length) html += '<h3>Uses · ' + fmt(shownN(out, toOf)) + '</h3>' + linkRows(out, toOf);
+    if (deployers.length) html += '<h3>Deployed by</h3>' + linkRows(deployers, function (e) { return e.from; });
+    var ex = u.exposes, co = u.consumes;
+    html += keySection('http' + u.id, 'HTTP routes it serves', ex.http);
+    if (u.services.length) html += '<p class="lead">RPC services: ' + esc(u.services.slice(0, 12).join(', ') + (u.services.length > 12 ? ', +' + (u.services.length - 12) : '')) + '</p>';
+    html += keySection('rpc' + u.id, 'RPC methods it implements', ex.rpc);
+    html += keySection('bus' + u.id, 'Topics it subscribes to', ex.bus);
+    html += keySection('dec' + u.id, 'RPC methods it declares', ex.declares);
+    html += keySection('prov' + u.id, 'Keys and secrets it provides', ex.provides);
+    html += keySection('top' + u.id, 'Topics it publishes to', co.topics);
+    html += keySection('cfg' + u.id, 'Config keys it reads', co.config);
+    html += keySection('sec' + u.id, 'Secrets it reads', co.secrets);
+    html += keySection('call' + u.id, 'Endpoints it calls', co.calls, true);
+    if (u.packages.length) {
+      var names = u.packages.map(function (p) { return p[0]; });
+      html += '<h3>External packages · ' + fmt(u.packages.reduce(function (s, p) { return s + p[1].length; }, 0)) + '</h3>' +
+        '<p class="lead">Uses ' + esc(names.slice(0, 8).join(', ') + (names.length > 8 ? ', …' : '')) + '</p><div class="edges">' +
+        u.packages.map(function (p) {
+          return '<details><summary>' + esc(p[0]) + '<span class="n">' + fmt(p[1].length) + '</span></summary><ul>' +
+            p[1].map(function (n) { return '<li class="loc" style="padding:2px 7px;font:12px var(--mono)">' + esc(n) + '</li>'; }).join('') + '</ul></details>';
+        }).join('') + '</div>';
+    }
+    if (u.modules.length) {
+      html += '<h3>Folders · ' + fmt(u.modules.length) + '</h3><div class="edges"><ul>' + u.modules.slice(0, 20).map(function (m) {
+        return '<li><button type="button" data-folder="' + esc(m[0]) + '"><span class="nm">' + esc(relName(u, m[0])) + '</span>' +
+          '<span class="loc">' + esc(plural(m[1], 'file', 'files') + ' · ' + plural(m[2], 'symbol', 'symbols')) + '</span></button></li>';
+      }).join('') + '</ul></div>';
+    }
+    return html;
+  }
+  function chipPanel(ci) {
+    var c = CHIPS[ci];
+    var html = '<div class="panel-head"><h2>' + esc(c.name) + ' <span class="kind">external packages</span></h2>' +
+      '<button type="button" data-act="aclose" aria-label="Close details">×</button></div>';
+    html += '<p class="lead">Declared by ' + esc(plural(c.users.length, 'unit', 'units')) + ': ' + esc(c.packages.join(', ')) + '</p>';
+    html += '<ul class="unit-list">' + c.users.map(function (u) {
+      return '<li><button type="button" data-unit="' + u + '" style="width:100%;text-align:left;background:none;border:0;padding:4px 7px">' + esc(AU[u].name) + '</button></li>';
+    }).join('') + '</ul>';
+    return html;
+  }
+  function connPanel(c) {
+    var A = c.a.charAt(0) === 'u' ? AU[+c.a.slice(1)].name : CHIPS[+c.a.slice(1)].name;
+    var B = c.b.charAt(0) === 'u' ? AU[+c.b.slice(1)].name : CHIPS[+c.b.slice(1)].name;
+    var html = '<div class="panel-head"><h2>' + esc(A) + ' → ' + esc(B) + '</h2>' +
+      '<button type="button" data-act="aclose" aria-label="Close details">×</button></div>';
+    if (!c.parts.length) return html + '<p class="lead">' + esc(A) + ' declares packages from ' + esc(B) + '.</p>';
+    c.parts.forEach(function (j) {
+      var e = AE[j];
+      html += '<h3 style="display:flex;gap:8px;align-items:center">' + famSwatch(e.family) + esc(e.label) + '</h3>';
+      if (!e.declared) html += '<p class="lead">No manifest declares this dependency: the resolver matched these by name, so read them as guesses.</p>';
+      html += '<div class="edges"><ul>' + e.evidence.map(function (ev) {
+        return '<li><button type="button" data-file="' + esc(ev[1]) + '"><span class="nm">' + esc(ev[0]) + '</span>' +
+          '<span class="loc">' + esc(ev[1] + (ev[2] ? ':' + ev[2] : '')) + '</span></button></li>';
+      }).join('') + '</ul></div>';
+      if (e.keys.length > e.evidence.length) html += '<div class="more">and ' + fmt(e.keys.length - e.evidence.length) + ' more keys</div>';
+    });
+    return html;
+  }
+  function renderAppPanel() {
+    var c = ast.selConn !== null ? ast.conns[ast.selConn] : null;
+    var k = ast.selected;
+    if (!c && !k) { panel.hidden = true; return; }
+    panel.hidden = false;
+    panel.innerHTML = c ? connPanel(c) : k.charAt(0) === 'p' ? chipPanel(+k.slice(1)) : unitPanel(AU[+k.slice(1)]);
+  }
+  function appPanelClick(b) {
+    if (b.dataset.unit !== undefined) { var id = +b.dataset.unit; revealUnit(id); selectUnit('u' + id, true); return true; }
+    if (b.dataset.file !== undefined) { jumpToFile(b.dataset.file); return true; }
+    if (b.dataset.folder !== undefined) { openFolder(b.dataset.folder); return true; }
+    if (b.dataset.alist) { ast.lists.add(b.dataset.alist); renderPanel(); return true; }
+    if (b.dataset.act === 'aclose') { selectUnit(null); appsEl.focus(); return true; }
+    if (b.dataset.act === 'aopen' && ast.selected) { toggleOpen(+ast.selected.slice(1)); renderPanel(); return true; }
+    return false;
+  }
+
+  // ------------------------------------------------------ app view legend
+  function renderAppLegend() {
+    var fc = {};
+    AE.forEach(function (e) { if (unitVisible(AU[e.from]) && unitVisible(AU[e.to]) && (e.declared || ast.undeclared)) fc[e.family] = (fc[e.family] || 0) + 1; });
+    var html = '<details data-sec="edges"' + (legendOpen.edges ? ' open' : '') + '><summary>Links</summary>';
+    Object.keys(APP_FAM).forEach(function (f) {
+      if (f === 'package') return;
+      if (!fc[f] && ast.on[f]) return;
+      html += '<label><input type="checkbox" data-afam="' + f + '"' + (ast.on[f] ? ' checked' : '') + '>' +
+        famSwatch(f).replace('<svg ', '<svg class="key-line" ') + '<span' + (ast.on[f] ? '' : ' class="off"') + '>' + esc(APP_FAM[f].label) +
+        (f in ast.quiet ? ' <button type="button" class="quiet-btn" data-aquiet="' + f + '" aria-pressed="' + !ast.quiet[f] + '" title="Draw these links all the time, not only around the card in focus">' +
+          (ast.quiet[f] ? 'on focus' : 'always') + '</button>' : '') +
+        '</span><span class="count">' + fmt(fc[f] || 0) + '</span></label>';
+    });
+    html += '<p class="hint">“On focus” links are drawn around the card you point at.</p></details>';
+    var kinds = {};
+    AU.forEach(function (u) { if (u.hidden) kinds[u.kind] = (kinds[u.kind] || 0) + 1; });
+    var und = AE.filter(function (e) { return !e.declared && unitVisible(AU[e.from]) && unitVisible(AU[e.to]); }).length;
+    html += '<details data-sec="show"' + (legendOpen.show ? ' open' : '') + '><summary>Show</summary>';
+    [['test', 'Test projects'], ['example', 'Examples'], ['docs', 'Docs'], ['tooling', 'Tooling folders']].forEach(function (p) {
+      if (!kinds[p[0]]) return;
+      html += '<label class="plain"><input type="checkbox" data-akind="' + p[0] + '"' + (ast.showKind[p[0]] ? ' checked' : '') + '><span>' + esc(p[1]) +
+        '</span><span class="count">' + fmt(kinds[p[0]]) + '</span></label>';
+    });
+    if (CHIPS.length) html += '<label class="plain"><input type="checkbox" data-apkg="1"' + (ast.packages ? ' checked' : '') + '><span>Shared external packages</span><span class="count">' + fmt(CHIPS.length) + '</span></label>';
+    if (und) html += '<label class="plain"><input type="checkbox" data-aund="1"' + (ast.undeclared ? ' checked' : '') + '><span>Code links no manifest declares (resolver guesses)</span><span class="count">' + fmt(und) + '</span></label>';
+    html += '</details>';
+    html += '<details data-sec="shapes"' + (legendOpen.shapes ? ' open' : '') + '><summary>Cards</summary><div class="shape-key">' +
+      keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="' + esc(theme.paper) + '" stroke="' + esc(theme.ink) + '" stroke-width="1.6"/>') + '<span>application: something you deploy or run</span>' +
+      keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="' + esc(theme['paper-2']) + '" stroke="' + esc(theme['ink-3']) + '"/>') + '<span>library or shared code</span>' +
+      keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="none" stroke="' + esc(theme['ink-3']) + '" stroke-dasharray="3 2"/>') + '<span>infrastructure or data</span>' +
+      '</div><p class="hint">Double-click a card to open its folders.</p></details>';
+    // Notes about the folder graph (dispatch hops, trims) do not apply here.
+    legend.innerHTML = html;
+  }
+  if (legend) legend.addEventListener('click', function (ev) {
+    var b = ev.target.closest('button[data-aquiet]');
+    if (!b || st.level !== 'app') return;
+    ev.preventDefault();
+    ast.quiet[b.dataset.aquiet] = !ast.quiet[b.dataset.aquiet];
+    renderApps(true);
+    renderLegend();
+  });
+  function appLegendChange(t) {
+    if (t.dataset.afam) ast.on[t.dataset.afam] = t.checked;
+    else if (t.dataset.akind) ast.showKind[t.dataset.akind] = t.checked;
+    else if (t.dataset.apkg) ast.packages = t.checked;
+    else if (t.dataset.aund) ast.undeclared = t.checked;
+    else return false;
+    if (ast.selected && ast.selected.charAt(0) === 'u' && !unitVisible(AU[+ast.selected.slice(1)])) ast.selected = null;
+    ast.selConn = null;
+    renderApps(true);
+    renderLegend();
+    renderPanel();
+    return true;
+  }
+
+  // ------------------------------------------------------ app view input
+  var appDrag = null, appPointers = new Map();
+  if (appsEl) {
+    appsEl.addEventListener('pointerdown', function (ev) {
+      appPointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
+      if (ev.target.closest('.card') || ev.target.closest('.hit')) return;
+      appDrag = { x: ev.clientX, y: ev.clientY, cx: ast.cam.x, cy: ast.cam.y, moved: false, pinch: null };
+      if (appPointers.size === 2) {
+        var p = Array.from(appPointers.values());
+        appDrag.pinch = { d: Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]), k: ast.cam.k };
+      }
+      appsEl.classList.add('dragging');
+      if (appsEl.setPointerCapture) appsEl.setPointerCapture(ev.pointerId);
+    });
+    appsEl.addEventListener('pointermove', function (ev) {
+      if (appPointers.has(ev.pointerId)) appPointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
+      if (appDrag) {
+        if (appDrag.pinch && appPointers.size === 2) {
+          var p = Array.from(appPointers.values()), r = appsEl.getBoundingClientRect();
+          var d = Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]);
+          zoomApps((p[0][0] + p[1][0]) / 2 - r.left, (p[0][1] + p[1][1]) / 2 - r.top, (appDrag.pinch.k * d / appDrag.pinch.d) / ast.cam.k);
+          return;
+        }
+        var dx = ev.clientX - appDrag.x, dy = ev.clientY - appDrag.y;
+        if (Math.abs(dx) + Math.abs(dy) > 3) appDrag.moved = true;
+        ast.cam.x = appDrag.cx + dx; ast.cam.y = appDrag.cy + dy; ast.userMoved = true;
+        applyAppCam();
+        return;
+      }
+      var hit = ev.target.closest('.hit');
+      if (hit) {
+        var c = ast.conns[+hit.parentNode.dataset.conn], r2 = stage.getBoundingClientRect();
+        showTooltip(connTooltip(c), ev.clientX - r2.left, ev.clientY - r2.top);
+      } else hideTooltip();
+    });
+    var endAppPointer = function (ev) {
+      appPointers.delete(ev.pointerId);
+      if (!appDrag) return;
+      var wasDrag = appDrag.moved;
+      appDrag = null;
+      appsEl.classList.remove('dragging');
+      if (!wasDrag && ev.type === 'pointerup' && (ast.selected || ast.selConn !== null)) { selectUnit(null); }
+    };
+    appsEl.addEventListener('pointerup', endAppPointer);
+    appsEl.addEventListener('pointercancel', endAppPointer);
+    appsEl.addEventListener('pointerleave', function () { hideTooltip(); });
+    appsEl.addEventListener('wheel', function (ev) {
+      ev.preventDefault();
+      var r = appsEl.getBoundingClientRect();
+      zoomApps(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0018)));
+    }, { passive: false });
+    appsEl.addEventListener('click', function (ev) {
+      var b = ev.target.closest('button');
+      if (b && appPanelClick(b)) return;
+      if (b && b.dataset.closeCard !== undefined) { toggleOpen(+b.dataset.closeCard); return; }
+      var hit = ev.target.closest('.hit');
+      if (hit) { selectConn(+hit.parentNode.dataset.conn); return; }
+      var card = ev.target.closest('.card');
+      if (card) selectUnit(card.dataset.key, false);
+    });
+    appsEl.addEventListener('dblclick', function (ev) {
+      var card = ev.target.closest('.card');
+      if (!card || ev.target.closest('button') || card.dataset.key.charAt(0) !== 'u') return;
+      toggleOpen(+card.dataset.key.slice(1));
+    });
+    appsEl.addEventListener('mouseover', function (ev) {
+      var card = ev.target.closest('.card');
+      var k = card ? card.dataset.key : null;
+      if (k !== ast.hover) { ast.hover = k; if (!ast.selected && ast.selConn === null) updateAppEmphasis(); }
+    });
+    appsEl.addEventListener('focusin', function (ev) {
+      var card = ev.target.classList && ev.target.classList.contains('card') ? ev.target : null;
+      if (card && card.dataset.key !== ast.selected) selectUnit(card.dataset.key, true);
+    });
+  }
+  function connTooltip(c) {
+    var A = c.a.charAt(0) === 'u' ? AU[+c.a.slice(1)].name : '', B = c.b.charAt(0) === 'u' ? AU[+c.b.slice(1)].name : CHIPS[+c.b.slice(1)].name;
+    var html = '<div class="t-kind">' + esc(A) + ' → ' + esc(B) + '</div>';
+    if (!c.parts.length) return html + '<div class="t-dim">declares these packages</div>';
+    c.parts.forEach(function (j) {
+      var e = AE[j];
+      html += '<div style="margin-top:4px"><b>' + esc(e.label) + '</b>' + (e.declared ? '' : ' <span class="t-dim">(no manifest declares it)</span>') + '</div>';
+      e.evidence.slice(0, 3).forEach(function (ev) {
+        html += '<span class="t-ev">' + esc(ev[0]) + ' <span class="t-dim">' + esc(ev[1] + (ev[2] ? ':' + ev[2] : '')) + '</span></span>';
+      });
+    });
+    return html;
+  }
+  // Arrow keys move between cards in that direction; Enter opens a card.
+  function appKey(ev) {
+    var k = ev.key, cur = ast.selected && ast.pos[ast.selected] ? ast.selected : null;
+    if (k === 'Escape') { if (ast.selected || ast.selConn !== null) selectUnit(null); return; }
+    if (!appsEl.contains(ev.target) && ev.target !== document.body) return;
+    var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (arrows[k]) {
+      ev.preventDefault();
+      if (!cur || ev.shiftKey) {
+        ast.cam.x -= arrows[k][0] * 60; ast.cam.y -= arrows[k][1] * 60; ast.userMoved = true; applyAppCam(); return;
+      }
+      var a = ast.pos[cur], ax = a.x + a.w / 2, ay = a.y + a.h / 2, best = null, bestS = Infinity;
+      Object.keys(ast.pos).forEach(function (key) {
+        if (key === cur) return;
+        var p = ast.pos[key], dx = p.x + p.w / 2 - ax, dy = p.y + p.h / 2 - ay;
+        var along = dx * arrows[k][0] + dy * arrows[k][1];
+        if (along <= 1) return;
+        var s = along + 2.5 * Math.abs(dx * arrows[k][1] + dy * arrows[k][0]);
+        if (s < bestS) { bestS = s; best = key; }
+      });
+      if (best) { var el = cardEl(best); if (el) el.focus(); else selectUnit(best, true); }
+      return;
+    }
+    if (k === 'Enter' && cur && cur.charAt(0) === 'u') { ev.preventDefault(); toggleOpen(+cur.slice(1)); return; }
+    if (k === '+' || k === '=') { zoomApps(W / 2, H / 2, 1.25); return; }
+    if (k === '-' || k === '_') { zoomApps(W / 2, H / 2, 0.8); return; }
+    if (k === 'f' || k === 'F' || k === '0') { fitApps(); }
+  }
+
+  // ------------------------------------------------------------- levels
+  // Apps (the sheet above), Folders (the folder map at its starting depth)
+  // and Files (every folder open) over one page.
+  var levelSeg = document.getElementById('level-seg');
+  var lvlBtns = { app: document.getElementById('lvl-app'), folder: document.getElementById('lvl-folder'), file: document.getElementById('lvl-file') };
+  var graphOnly = Array.prototype.slice.call(document.querySelectorAll('.graph-only'));
+  var graphBooted = false, FOLDER_DEPTH = 1;
+  function updateLevelButtons() {
+    if (!lvlBtns.app) return;
+    var lv = st.level === 'app' ? 'app' : st.depth === Infinity ? 'file' : 'folder';
+    Object.keys(lvlBtns).forEach(function (k) { lvlBtns[k].setAttribute('aria-pressed', String(k === lv)); });
+  }
+  function setLevel(l, fromHistory) {
+    if (l === 'app' && !HAS_APPS) return;
+    var was = st.level;
+    if (!fromHistory && l !== (was === 'app' ? 'app' : st.depth === Infinity ? 'file' : 'folder')) pushHistory();
+    var app = l === 'app';
+    st.level = app ? 'app' : 'graph';
+    appsEl.hidden = !app;
+    stage.classList.toggle('app-mode', app);
+    graphOnly.forEach(function (el) { el.hidden = app; });
+    crumbs.hidden = app;
+    hideTooltip();
+    if (app) {
+      empty.hidden = true;
+      sim.running = false;
+      renderApps(ast.built);
+    } else {
+      empty.hidden = true;
+      ensureGraphBooted();
+      if (!fromHistory) {
+        var d = l === 'file' ? Infinity : FOLDER_DEPTH;
+        if (was === 'app' && ((d === Infinity) === (st.depth === Infinity))) { resize(); if (!st.userMoved) fit(true); }
+        else depthTo(d);
+      } else resize();
+      updateEmpty();
+    }
+    updateLevelButtons();
+    renderLegend();
+    renderPanel();
+    setHeader();
+    setStatus();
+  }
+  Object.keys(lvlBtns).forEach(function (k) { if (lvlBtns[k]) lvlBtns[k].addEventListener('click', function () { setLevel(k); }); });
+
+  // Seeded views colour symbols by the app they belong to.
+  var APP_HUES = (function () {
+    var counts = {};
+    N.forEach(function (n) { var u = NODE_UNIT[n.i]; if (u >= 0 && !has(n, F.halo)) counts[u] = (counts[u] || 0) + 1; });
+    var order = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a - b; });
+    var hue = {};
+    order.forEach(function (u, i) { hue[u] = Math.round((25 + i * 137.508) % 360); });
+    return { hue: hue, order: order.map(Number), counts: counts };
+  })();
+  function appColor(u) {
+    var h = APP_HUES.hue[u];
+    if (h === undefined) return theme['l-other'];
+    return effectiveDark() ? 'oklch(74% 0.13 ' + h + ')' : 'oklch(62% 0.15 ' + h + ')';
+  }
+  function nodeColor(n) {
+    if (st.colorBy === 'app') { var u = NODE_UNIT[n.i]; if (u >= 0) return appColor(u); }
+    return langColor(n.lang);
+  }
+
   // ----------------------------------------------------------------- header
   function setHeader() {
     document.getElementById('repo-name').textContent = META.repo;
     var c = META.counts, parts = [];
-    parts.push('<b>' + esc(META.scope) + '</b>');
-    parts.push(fmt(c.nodes) + ' nodes · ' + fmt(c.edges) + ' edges' + (c.halo_nodes ? ' · ' + fmt(c.halo_nodes) + ' outside the walk' : ''));
+    if (st.level === 'app') {
+      var by = {};
+      AU.forEach(function (u) { var g = u.app ? 'app' : u.hidden ? 'hidden' : u.kind === 'infra' || u.kind === 'data' ? 'infra' : 'lib'; by[g] = (by[g] || 0) + 1; });
+      parts.push('<b>applications and libraries</b>');
+      var counts = [];
+      if (by.app) counts.push(plural(by.app, 'app', 'apps'));
+      if (by.lib) counts.push(plural(by.lib, 'library or shared folder', 'libraries and shared folders'));
+      if (by.infra) counts.push(plural(by.infra, 'infra unit', 'infra units'));
+      parts.push(counts.join(' · ') + (by.hidden ? '<span class="long"> · ' + fmt(by.hidden) + ' tests, examples, docs and tooling hidden</span>' : ''));
+    } else {
+      parts.push('<b>' + esc(META.scope) + '</b>');
+      parts.push(fmt(c.nodes) + ' nodes · ' + fmt(c.edges) + ' edges' + (c.halo_nodes ? ' · ' + fmt(c.halo_nodes) + ' outside the walk' : ''));
+    }
     if (META.truncated) parts.push('<span class="warn">trimmed, see notes</span>');
     var when = META.generated_at ? new Date(META.generated_at * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '';
     parts.push('<span class="long">' + (META.commit ? 'commit <code>' + esc(META.commit.slice(0, 10)) + '</code> · ' : '') +
@@ -3299,6 +4299,11 @@
   }
   var statusEl = document.getElementById('status');
   function setStatus() {
+    if (st.level === 'app') {
+      statusEl.textContent = plural(Object.keys(ast.pos).length, 'card', 'cards') + ' · ' +
+        plural(ast.conns.filter(function (c) { return !c.skip; }).length, 'link', 'links') + ' · ' + Math.round(ast.cam.k * 100) + '%';
+      return;
+    }
     var running = sim.running ? 'laying out · ' : '';
     var folded = st.folded.size ? ' · ' + plural(st.folded.size, 'folder', 'folders') + ' folded to stay under ' + fmt(BUDGET) : '';
     statusEl.textContent = running + fmt(V.nodes.length) + ' shown · ' + fmt(V.edges.length) + ' lines' + folded + ' · ' + Math.round(st.cam.k * 100) + '%';
@@ -3317,28 +4322,56 @@
   if (META.collapse_modules) {
     for (var d0 = 2; d0 <= MAX_DEPTH && countDrawn(N.filter(leafVisible)) < 4; d0++) setDepth(d0);
   }
+  FOLDER_DEPTH = st.depth;
   rebuild();
+  if (HAS_APPS) {
+    levelSeg.hidden = false;
+    search.placeholder = 'Find an app, symbol, file or folder';
+  }
   applyTheme(null);
   renderCrumbs();
-  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resize).observe(stage);
-  else window.addEventListener('resize', resize);
+  // On the sheet, a panel opening or the window resizing keeps the zoom and
+  // the view's centre; only Fit (or a first look) rescales.
+  var lastStageW = stage.getBoundingClientRect().width;
+  function onResize() {
+    var w = stage.getBoundingClientRect().width;
+    if (st.level === 'app') {
+      if (!ast.sheet || !lastStageW) fitApps();
+      else { ast.cam.x += (w - lastStageW) / 2; applyAppCam(); }
+    } else resize();
+    lastStageW = w;
+  }
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(onResize).observe(stage);
+  else window.addEventListener('resize', onResize);
   resize();
-  fit(true);
   layForce.setAttribute('aria-pressed', String(st.layout === 'force'));
   layLayer.setAttribute('aria-pressed', String(st.layout === 'layered'));
   // The first layout is computed at once: a headless or background page may
-  // never run an animation frame.
-  if (st.layout === 'layered') layered(true);
-  else {
-    sim.alpha = 1;
-    if (!settleNow(REDUCE ? 4000 : 400)) startForce(sim.alpha);
+  // never run an animation frame. On the app sheet it waits until the
+  // folder map is first shown.
+  function ensureGraphBooted() {
+    if (graphBooted) return;
+    graphBooted = true;
+    resize();
+    fit(true);
+    if (st.layout === 'layered') layered(true);
+    else {
+      sim.alpha = 1;
+      if (!settleNow(REDUCE ? 4000 : 400)) startForce(sim.alpha);
+    }
   }
+  // A repository that is one unit opens its card: one closed box says
+  // nothing the header does not.
+  var shownUnits = AU.filter(function (u) { return !u.hidden; });
+  if (shownUnits.length === 1) ast.open.add(shownUnits[0].id);
+  if (st.level === 'app') setLevel('app', true);
+  else { ensureGraphBooted(); updateLevelButtons(); }
   setStatus();
   // Exposed for automated checks (headless screenshots, tests).
   window.lidxGraph = {
     nodes: N.length, edges: E.length, bootMs: Math.round(performance.now() - BOOT_T0),
     visible: function () { return V.nodes.length; },
-    settled: function () { return !sim.running && !anim; },
+    settled: function () { return st.level === 'app' || (!sim.running && !anim); },
     svg: function () { return toSvg(); },
     json: function () { return toJson(); },
     clientXY: function (id) {
@@ -3358,6 +4391,36 @@
     },
     setLayout: setLayout,
     setView: setView,
+    level: function () { return st.level === 'app' ? 'app' : st.depth === Infinity ? 'file' : 'folder'; },
+    setLevel: setLevel,
+    colorBy: function () { return st.colorBy; },
+    // The sheet: each card's band and box, and the drawn links.
+    apps: function () {
+      return {
+        cards: Object.keys(ast.pos).map(function (k) {
+          var p = ast.pos[k];
+          return { key: k, name: k.charAt(0) === 'u' ? AU[+k.slice(1)].name : CHIPS[+k.slice(1)].name, band: BANDS[p.band].id, row: p.row, x: p.x, y: p.y, w: p.w, h: p.h };
+        }),
+        links: ast.conns.filter(function (c) { return !c.skip; }).map(function (c) {
+          return { from: c.a, to: c.b, family: c.fam, label: c.label, up: c.sb === 'b' };
+        })
+      };
+    },
+    selectUnit: function (name) {
+      var u = AU.find(function (x) { return x.name === name; });
+      if (!u) return false;
+      revealUnit(u.id); selectUnit('u' + u.id, true); return true;
+    },
+    openUnit: function (name) {
+      var u = AU.find(function (x) { return x.name === name; });
+      if (u) toggleOpen(u.id);
+      return !!u;
+    },
+    toggleApps: function (what, on) {
+      if (what === 'packages') ast.packages = on; else if (what === 'undeclared') ast.undeclared = on; else ast.showKind[what] = on;
+      renderApps(true); renderLegend();
+    },
+    panelText: function () { return panel.hidden ? '' : panel.textContent; },
     back: goBack,
     selected: function () { return st.selected; },
     // A qualname drawn inside a folder the visible budget folded, if any.

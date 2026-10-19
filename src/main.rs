@@ -188,6 +188,7 @@ fn main() -> Result<()> {
                 level: level.as_deref().map(|l| match l {
                     "symbol" => graph_html::Level::Symbol,
                     "file" => graph_html::Level::File,
+                    "app" => graph_html::Level::App,
                     _ => graph_html::Level::Module,
                 }),
                 diff,

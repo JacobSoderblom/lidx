@@ -155,14 +155,28 @@ re-indexes.
 lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --depth 3 --open
 ```
 
-- No `--seed`: an overview of the whole repo that starts at the top-level
-  folders with weighted edges between them; double-click a folder (or use
-  the depth buttons) to drill down to files (`--level file` starts open).
+- No `--seed`: an architecture diagram of the repo's applications,
+  libraries and infrastructure (`--level app`, the default). Units come from
+  the manifests: .NET projects, `package.json` packages, Python projects,
+  crates, Go modules and main packages, Dockerfiles, and Kubernetes, Helm,
+  compose, Bicep and Terraform files. Files no manifest owns form a
+  `(loose)` unit per top-level folder. Cards sit in rows by role (front
+  ends; APIs, services, workers and tools; libraries; infrastructure and
+  data). Each card says what the unit exposes (HTTP routes, RPC services,
+  bus subscriptions, commands) and what it uses (config keys, secrets,
+  topics, external endpoints). Links say what they are in words, such as
+  "calls ×N", "RPC ×N", "publishes to topic X", "reads secret X",
+  "references" and "deploys". Test projects, examples, docs and tooling
+  start hidden. Click a card for every route, topic and key with the
+  symbols behind it; double-click to open it into its folders. The
+  Apps / Folders / Files switch (and `--level module|file`) gives the
+  folder map, which drills down to files.
 - `--seed <qualname or query>` (repeatable), `--depth`, `--direction up|down|both`,
   `--kinds CALLS,USES`, `--lang`, `--max-nodes` (a cap on every node in the
   page, halo and externals included): a symbol neighbourhood plus
-  a one-hop halo you can reveal node by node. A one-way trace opens in the
-  layered layout with the seed in the first column.
+  a one-hop halo you can reveal node by node, coloured by the app each
+  symbol belongs to. A one-way trace opens in the layered layout with the
+  seed in the first column.
 - `--diff <rev>`: the symbols changed against `rev` and their callers.
 - `--scope code|tests|docs|examples|all` (default `code`): files outside it
   (tests, docs, fixtures, CI tooling, vendored code) are embedded but hidden

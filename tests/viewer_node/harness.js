@@ -86,6 +86,7 @@ const sandbox = {
     addEventListener: () => {},
     activeElement: null,
     execCommand: () => false,
+    querySelectorAll: () => [],
   },
 };
 sandbox.window = sandbox;
@@ -116,6 +117,16 @@ if (scenario === 'focus') {
   out = { before, after: g.drawnAs(arg), id: g.nodeId(arg), selected: g.selected(), folded: g.folded(), visible: g.visible() };
 } else if (scenario === 'lines') {
   out = g.json().edges;
+} else if (scenario === 'apps') {
+  const level = g.level();
+  const sheet = g.apps();
+  const selected = g.selectUnit(arg);
+  flush(10);
+  g.setLevel('folder');
+  flush(50);
+  out = { level, sheet, selected, after: g.level(), visible: g.visible() };
+} else if (scenario === 'colour') {
+  out = { colorBy: g.colorBy(), level: g.level() };
 } else {
   throw new Error('unknown scenario ' + scenario);
 }
