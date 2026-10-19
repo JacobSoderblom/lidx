@@ -500,7 +500,8 @@ fn collect_grpc_servers_from_type_decl(
 
             if type_node.kind() == "struct_type"
                 && is_grpc_server_struct(type_node, source)
-                && let Some(service) = extract_grpc_service_from_server_name(&name)
+                && let Some(service) = embedded_grpc_service(type_node, source)
+                    .or_else(|| extract_grpc_service_from_server_name(&name))
             {
                 servers.insert(name, GrpcServerInfo { service });
             }
@@ -2562,7 +2563,7 @@ fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
     }
 
     // First argument should be the path
-    let raw_path = extract_string_literal(args[0], source);
+    let raw_path = route_path_literal(args[0], source);
     if raw_path.is_empty() || !raw_path.starts_with('/') {
         return edges;
     }
@@ -2581,7 +2582,19 @@ fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
         None => return edges,
     };
     let framework = detect_framework(&receiver);
-    let detail = http::build_route_detail(&method, &normalized, &raw_path, framework);
+    let mut detail = http::build_route_detail(&method, &normalized, &raw_path, framework);
+    // The handler named in place (`svc.cartHandler`, `listUsers`): the route
+    // is registered in `main`, but this function serves it.
+    if let Some(h) = args
+        .get(1)
+        .filter(|a| matches!(a.kind(), "identifier" | "selector_expression"))
+        && let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&detail)
+    {
+        let text = node_text(*h, source);
+        let name = text.rsplit('.').next().unwrap_or(&text);
+        v["handler"] = json!(name);
+        detail = v.to_string();
+    }
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
 
@@ -2653,8 +2666,12 @@ fn grpc_impl_edge(
     qualname: &str,
     receiver_type: &str,
 ) -> Option<EdgeInput> {
-    // Check if the receiver type is a known gRPC server
+    // Check if the receiver type is a known gRPC server. Only an exported
+    // method can serve an RPC; `quoteShipping` is the server's own helper.
     let server_info = ctx.grpc_servers.get(receiver_type)?;
+    if !rpc_name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
     let (raw_path, normalized) = proto::normalize_rpc_path(None, &server_info.service, rpc_name)?;
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -2682,14 +2699,18 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     let function_node = node.child_by_field_name("function")?;
     let (receiver, method_name) = split_selector_expr(function_node, source)?;
 
-    // Check if receiver is a known gRPC client
-    let client_info = ctx.grpc_clients.get(&receiver)?;
-    let (raw_path, normalized) =
-        proto::normalize_rpc_path(None, &client_info.service, &method_name)?;
+    // A known client variable, or a client made in place:
+    // `pb.NewCartServiceClient(conn).GetCart(ctx, req)`.
+    let operand = function_node.child_by_field_name("operand")?;
+    let service = match ctx.grpc_clients.get(&receiver) {
+        Some(info) => info.service.clone(),
+        None => extract_grpc_service_from_client_call(operand, source)?,
+    };
+    let (raw_path, normalized) = proto::normalize_rpc_path(None, &service, &method_name)?;
     let detail = json!({
         "framework": "grpc-go",
         "role": "client",
-        "service": client_info.service.as_str(),
+        "service": service.as_str(),
         "rpc": method_name,
         "raw": raw_path,
     })
@@ -2794,26 +2815,27 @@ fn extract_first_identifier(node: Node<'_>, source: &str) -> Option<String> {
     None
 }
 
+/// The service of a `NewXxxClient(...)` call (`pkg.NewXxxClient(conn)`), when
+/// `node` is that call itself. Only the call: in `pb.NewCartClient(c).GetCart(ctx)`
+/// the right-hand side is the RPC's *response*, not a client.
 fn extract_grpc_service_from_client_call(node: Node<'_>, source: &str) -> Option<String> {
-    if node.kind() == "call_expression" {
-        let function = node.child_by_field_name("function")?;
-        let (_receiver, method_name) = split_selector_expr(function, source)?;
-        // Check for NewXxxClient pattern
-        if method_name.starts_with("New") && method_name.ends_with("Client") {
-            let service = &method_name[3..method_name.len() - 6];
-            if !service.is_empty() {
-                return Some(service.to_string());
-            }
+    match node.kind() {
+        "expression_list" | "parenthesized_expression" => {
+            let mut cursor = node.walk();
+            let first = node.named_children(&mut cursor).next()?;
+            extract_grpc_service_from_client_call(first, source)
         }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if let Some(service) = extract_grpc_service_from_client_call(child, source) {
-            return Some(service);
+        "call_expression" => {
+            let function = node.child_by_field_name("function")?;
+            let method_name = match function.kind() {
+                "identifier" => node_text(function, source),
+                _ => split_selector_expr(function, source)?.1,
+            };
+            let service = method_name.strip_prefix("New")?.strip_suffix("Client")?;
+            (!service.is_empty()).then(|| service.to_string())
         }
+        _ => None,
     }
-    None
 }
 
 fn is_grpc_server_struct(struct_node: Node<'_>, source: &str) -> bool {
@@ -2863,6 +2885,20 @@ fn is_grpc_server_struct(struct_node: Node<'_>, source: &str) -> bool {
     }
 
     false
+}
+
+/// The service a gRPC server struct implements, from the embedded
+/// `pb.UnimplementedCheckoutServiceServer` (`CheckoutService`), so a struct
+/// named `checkoutService` still serves it.
+fn embedded_grpc_service(struct_node: Node<'_>, source: &str) -> Option<String> {
+    let text = node_text(struct_node, source);
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .filter_map(|word| {
+            let ty = word.rsplit('.').next()?;
+            let service = ty.strip_prefix("Unimplemented")?.strip_suffix("Server")?;
+            (!service.is_empty()).then(|| service.to_string())
+        })
+        .next()
 }
 
 fn extract_grpc_service_from_server_name(name: &str) -> Option<String> {
@@ -3019,6 +3055,39 @@ fn call_arguments(node: Node<'_>) -> Vec<Node<'_>> {
         args.push(child);
     }
     args
+}
+
+/// A route path argument: a string literal, or a prefix variable joined to
+/// one (`baseURL + "/cart"` -> `/cart`, `"/api" + "/x"` -> `/api/x`).
+fn route_path_literal(node: Node<'_>, source: &str) -> String {
+    let literal = |n: Node<'_>| {
+        matches!(
+            n.kind(),
+            "interpreted_string_literal" | "raw_string_literal"
+        )
+    };
+    if node.kind() == "binary_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|o| node_text(o, source) == "+")
+        && let (Some(l), Some(r)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        )
+        && literal(r)
+    {
+        let right = extract_string_literal(r, source);
+        let left = route_path_literal(l, source);
+        return if left.starts_with('/') {
+            format!("{}{right}", left.trim_end_matches('/'))
+        } else {
+            right
+        };
+    }
+    if literal(node) {
+        return extract_string_literal(node, source);
+    }
+    String::new()
 }
 
 fn extract_string_literal(node: Node<'_>, source: &str) -> String {
@@ -3463,6 +3532,88 @@ func run() {
             .collect();
         assert!(!impls.is_empty(), "should have RPC_IMPL edges");
         assert!(!calls.is_empty(), "should have RPC_CALL edges");
+    }
+
+    /// A client made in place is an RPC call, and the response it returns is
+    /// not a client: `cart.GetItems()` is a getter, not an RPC.
+    #[test]
+    fn grpc_calls_on_clients_made_in_place() {
+        let source = r#"
+package main
+
+type checkoutService struct {
+    pb.UnimplementedCheckoutServiceServer
+    cartConn *grpc.ClientConn
+}
+
+func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb.PlaceOrderResponse, error) {
+    return nil, nil
+}
+
+func (cs *checkoutService) getUserCart(ctx context.Context, id string) ([]*pb.CartItem, error) {
+    cart, err := pb.NewCartServiceClient(cs.cartConn).GetCart(ctx, &pb.GetCartRequest{UserId: id})
+    if err != nil {
+        return nil, err
+    }
+    return cart.GetItems(), nil
+}
+"#;
+        let mut extractor = GoExtractor::new().unwrap();
+        let file = extractor.extract(source, "main").unwrap();
+        let keys = |kind: &str| -> Vec<String> {
+            let mut k: Vec<String> = file
+                .edges
+                .iter()
+                .filter(|e| e.kind == kind)
+                .filter_map(|e| e.target_qualname.clone())
+                .collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(proto::RPC_CALL_KIND), vec!["/cartservice/getcart"]);
+        // The service comes from the embedded server type; the unexported
+        // helper serves nothing.
+        assert_eq!(
+            keys(proto::RPC_IMPL_KIND),
+            vec!["/checkoutservice/placeorder"]
+        );
+    }
+
+    /// `r.HandleFunc(base + "/cart", svc.viewCart)`: the route is `/cart`, and
+    /// the detail names the handler.
+    #[test]
+    fn routes_joined_to_a_prefix_name_their_handler() {
+        let source = r#"
+package main
+
+func main() {
+    r := mux.NewRouter()
+    r.HandleFunc(baseURL + "/cart", svc.viewCartHandler)
+    r.HandleFunc("/api" + "/users", listUsers)
+}
+"#;
+        let mut extractor = GoExtractor::new().unwrap();
+        let file = extractor.extract(source, "main").unwrap();
+        let routes: Vec<(String, String)> = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == http::HTTP_ROUTE_KIND)
+            .map(|e| {
+                let d: serde_json::Value =
+                    serde_json::from_str(e.detail.as_deref().unwrap()).unwrap();
+                (
+                    e.target_qualname.clone().unwrap(),
+                    d["handler"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            routes,
+            vec![
+                ("/cart".to_string(), "viewCartHandler".to_string()),
+                ("/api/users".to_string(), "listUsers".to_string()),
+            ]
+        );
     }
 
     #[test]
