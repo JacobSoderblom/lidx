@@ -270,10 +270,11 @@ fn seeded_graph_honours_depth_direction_and_kinds() {
 fn file_and_module_levels_aggregate_weighted_edges() {
     let (_tmp, root, db) = fixture("lidx-graph-levels-");
 
-    // Whole repo, file leaves that start collapsed into modules.
+    // Whole repo: the app view, over file leaves that start collapsed
+    // into modules (the page's Folders level).
     let (_, doc) = graph(&root, &db, &["--kinds", "CALLS"]);
     let d = Doc::new(&doc);
-    assert_eq!(doc["meta"]["level"], "module");
+    assert_eq!(doc["meta"]["level"], "app");
     assert_eq!(doc["meta"]["collapse_modules"], true);
     let files: BTreeSet<&str> = (0..d.nodes.len())
         .filter(|&i| d.kind(i) == "file")

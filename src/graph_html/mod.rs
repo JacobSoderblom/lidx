@@ -5,8 +5,10 @@
 //! document (see [`doc`]) inlined; it makes no network requests. The graph
 //! is read from the existing index and never re-indexed.
 
+pub mod apps;
 pub mod build;
 pub mod doc;
+pub mod units;
 
 pub use build::{Direction, Level};
 pub use doc::Counts;
@@ -38,7 +40,7 @@ pub struct GraphOptions {
     pub kinds: Option<Vec<String>>,
     pub languages: Option<Vec<String>>,
     pub max_nodes: Option<usize>,
-    /// `None`: `symbol` with seeds or a diff, `module` without.
+    /// `None`: `symbol` with seeds or a diff, `app` without.
     pub level: Option<Level>,
     /// Git revision to diff the working tree against.
     pub diff: Option<String>,
@@ -128,7 +130,12 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
     let seeded = !opts.seeds.is_empty() || diff_scope.is_some();
     let level = opts
         .level
-        .unwrap_or(if seeded { Level::Symbol } else { Level::Module });
+        .unwrap_or(if seeded { Level::Symbol } else { Level::App });
+    if seeded && level == Level::App {
+        bail!(
+            "--level app is the whole-repo overview; with --seed or --diff use --level symbol, file or module (seeds are coloured by their app)"
+        );
+    }
     let mut scope_parts: Vec<String> = Vec::new();
     let mut walk_direction = None;
     let mut warnings: Vec<String> = Vec::new();
@@ -202,25 +209,45 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
             max_nodes: opts.max_nodes.unwrap_or(DEFAULT_MAX_SYMBOLS).max(1),
         };
         let graph = build::symbol_graph(&ctx, &scope)?;
-        if level == Level::Symbol {
+        let graph = if level == Level::Symbol {
             graph
         } else {
             scope_parts.push(format!("{} level", level.as_str()));
             build::aggregate_symbol_graph(&ctx, graph, level)
-        }
+        };
+        let apps = apps::apps_json(&ctx, repo_root, &graph, None, None);
+        (graph, apps)
     } else {
         if level == Level::Symbol {
             bail!(
                 "--level symbol needs --seed or --diff: a whole-repo symbol graph is unreadable; use --level file or module"
             );
         }
-        scope_parts.push(format!("whole repo, {} level", level.as_str()));
-        build::repo_graph(
+        scope_parts.push(if level == Level::App {
+            "whole repo".to_string()
+        } else {
+            format!("whole repo, {} level", level.as_str())
+        });
+        let files = build::repo_files(&ctx)?;
+        let rows = build::repo_rows(&ctx)?;
+        // The app view sits on the module graph, so Folders and Files are
+        // one click away in the page.
+        let graph_level = if level == Level::App {
+            Level::Module
+        } else {
+            level
+        };
+        let graph = build::repo_graph_from(
             &ctx,
-            level,
+            graph_level,
             opts.max_nodes.unwrap_or(DEFAULT_MAX_LEAVES).max(1),
-        )?
+            &files,
+            &rows,
+        )?;
+        let apps = apps::apps_json(&ctx, repo_root, &graph, Some(&files), Some(&rows));
+        (graph, apps)
     };
+    let (graph, apps) = graph;
     if let Some(k) = &kinds {
         scope_parts.push(format!("kinds {}", k.join(",")));
     }
@@ -252,7 +279,8 @@ pub fn generate(repo_root: &Path, db_path: &Path, opts: &GraphOptions) -> Result
     let mut graph = graph;
     graph.notes.extend(warnings.iter().cloned());
     let counts = doc::counts(&graph);
-    let document = doc::to_json(&graph, &meta);
+    let mut document = doc::to_json(&graph, &meta);
+    document["apps"] = apps;
     let title = format!("lidx graph · {}", meta.repo);
     Ok(Generated {
         html: render_html(&title, &document)?,

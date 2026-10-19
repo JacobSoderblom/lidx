@@ -22,15 +22,20 @@
     <ul id="search-list" role="listbox" aria-label="Matching nodes" hidden></ul>
   </div>
   <div class="tools" role="toolbar" aria-label="View">
-    <div class="seg" role="group" aria-label="View">
+    <div class="seg" role="group" aria-label="Level" id="level-seg" hidden>
+      <button type="button" id="lvl-app" aria-pressed="false" title="Applications, libraries and infra (A)">Apps</button>
+      <button type="button" id="lvl-folder" aria-pressed="false" title="Folder map">Folders</button>
+      <button type="button" id="lvl-file" aria-pressed="false" title="Every folder open, down to files">Files</button>
+    </div>
+    <div class="seg graph-only" role="group" aria-label="View">
       <button type="button" id="view-graph" aria-pressed="true">Graph</button>
       <button type="button" id="view-matrix" aria-pressed="false" title="Folder-by-folder matrix (M)">Matrix</button>
     </div>
-    <div class="seg" role="group" aria-label="Layout">
+    <div class="seg graph-only" role="group" aria-label="Layout">
       <button type="button" id="lay-force" aria-pressed="true" title="Force layout (L)">Force</button>
       <button type="button" id="lay-layer" aria-pressed="false" title="Layered layout (L)">Layered</button>
     </div>
-    <div class="seg depth" role="group" aria-label="Folder depth">
+    <div class="seg depth graph-only" role="group" aria-label="Folder depth">
       <button type="button" id="depth-less" aria-label="Fewer folder levels" title="Fewer folder levels">−</button>
       <span id="depth-label" class="depth-label" aria-live="polite">folders</span>
       <button type="button" id="depth-more" aria-label="More folder levels" title="More folder levels">+</button>
@@ -44,11 +49,11 @@
       <button type="button" id="more" class="ghost" aria-haspopup="true" aria-expanded="false" aria-controls="more-menu">More</button>
       <div id="more-menu" class="menu" role="menu" hidden>
         <button type="button" role="menuitem" id="legend-toggle" aria-expanded="true" aria-controls="legend">Legend and filters</button>
-        <button type="button" role="menuitem" id="collapse-all">Collapse to top folders</button>
-        <button type="button" role="menuitem" id="expand-all">Open every folder</button>
+        <button type="button" role="menuitem" id="collapse-all" class="graph-only">Collapse to top folders</button>
+        <button type="button" role="menuitem" id="expand-all" class="graph-only">Open every folder</button>
         <hr>
-        <button type="button" role="menuitem" id="export-png">Export PNG</button>
-        <button type="button" role="menuitem" id="export-svg">Export SVG</button>
+        <button type="button" role="menuitem" id="export-png" class="graph-only">Export PNG</button>
+        <button type="button" role="menuitem" id="export-svg" class="graph-only">Export SVG</button>
         <button type="button" role="menuitem" id="export-json">Export visible subgraph (JSON)</button>
         <hr>
         <button type="button" role="menuitem" id="theme">Dark theme</button>
@@ -65,6 +70,12 @@
     <canvas id="overlay" aria-hidden="true"></canvas>
     <canvas id="minimap" aria-label="Minimap: click to move the view" role="img"></canvas>
     <div id="matrix" class="matrix" hidden></div>
+    <div id="apps" class="apps" hidden>
+      <div id="apps-world" class="apps-world">
+        <svg id="apps-edges" class="apps-edges" aria-hidden="true"></svg>
+        <div id="apps-cards" role="list" aria-label="Applications, libraries and infrastructure"></div>
+      </div>
+    </div>
     <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
     <div id="status" class="status" aria-live="off"></div>
     <div id="banner" class="banner" hidden></div>
@@ -80,6 +91,7 @@
 <dialog id="help-dialog" aria-labelledby="help-title">
   <h2 id="help-title">Keyboard and mouse</h2>
   <dl class="keys">
+    <dt>Apps view</dt><dd>Click a card for what it exposes and consumes; double-click (or <kbd>Enter</kbd>) opens it into its folders. Hover a line for its evidence.</dd>
     <dt><kbd>/</kbd></dt><dd>Find; <kbd>↑</kbd> <kbd>↓</kbd> to pick, <kbd>Enter</kbd> to go</dd>
     <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move to the neighbour in that direction; pan when nothing is selected (<kbd>Shift</kbd> always pans)</dd>
     <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Step through callers / callees of the selection</dd>

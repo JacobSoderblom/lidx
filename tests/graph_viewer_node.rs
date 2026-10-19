@@ -138,8 +138,8 @@ fn folder_bridges_in_the_viewer_count_distinct_keys() {
             ),
         ],
     );
-    // A file-level page opened at the top folders: sender/ and worker/ boxes.
-    let p = page(&root, &db, &[]);
+    // A module-level page opened at the top folders: sender/ and worker/ boxes.
+    let p = page(&root, &db, &["--level", "module"]);
     let lines = run(&p, "lines", "");
     let bus: Vec<&Value> = lines
         .as_array()
@@ -151,4 +151,152 @@ fn folder_bridges_in_the_viewer_count_distinct_keys() {
     assert_eq!(bus[0]["from"], "c:sender/");
     assert_eq!(bus[0]["to"], "c:worker/");
     assert_eq!(bus[0]["weight"], 3, "distinct keys, not 2 + 2: {lines}");
+}
+
+/// The app sheet: bands top to bottom (front ends, services, libraries,
+/// infra), declared dependencies drawn downward, tests hidden, and the
+/// Folders level one switch away. A seeded page colours by app.
+#[test]
+fn the_app_sheet_layers_by_role_and_switches_to_folders() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-viewer-apps-",
+        &[
+            (
+                "web/Web.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n  <ItemGroup>\n    <ProjectReference Include=\"..\\core\\Core.csproj\" />\n  </ItemGroup>\n</Project>\n",
+            ),
+            (
+                "web/Program.cs",
+                "using Core;\n\nnamespace Web\n{\n    public class Api\n    {\n        public int Get() { return new Repo().Load(); }\n    }\n}\n",
+            ),
+            ("web/Dockerfile", "FROM scratch\n"),
+            (
+                "core/Core.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+            ),
+            (
+                "core/Repo.cs",
+                "namespace Core\n{\n    public class Repo\n    {\n        public int Load() { return 1; }\n    }\n}\n",
+            ),
+            (
+                "ui/package.json",
+                "{ \"name\": \"ui\", \"scripts\": { \"dev\": \"vite\" }, \"dependencies\": { \"react\": \"18.0.0\" } }\n",
+            ),
+            (
+                "ui/src/app.ts",
+                "export function boot() {\n  return 1;\n}\n",
+            ),
+            (
+                "deploy/web.yaml",
+                "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  template:\n    spec:\n      containers:\n        - name: web\n          image: web:1\n",
+            ),
+            (
+                "tests/Web.Tests/Web.Tests.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <PackageReference Include=\"xunit\" Version=\"2.0.0\" />\n  </ItemGroup>\n</Project>\n",
+            ),
+            (
+                "tests/Web.Tests/T.cs",
+                "namespace Web.Tests\n{\n    public class T { }\n}\n",
+            ),
+        ],
+    );
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "apps", "Web");
+    assert_eq!(r["level"], "app", "{r}");
+    let cards = r["sheet"]["cards"].as_array().unwrap();
+    let card = |name: &str| -> &Value {
+        cards
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("no card {name}: {r}"))
+    };
+    let y = |name: &str| card(name)["y"].as_f64().unwrap();
+    assert_eq!(card("ui")["band"], "front");
+    assert_eq!(card("Web")["band"], "svc");
+    assert_eq!(card("Core")["band"], "lib");
+    assert_eq!(card("deploy")["band"], "infra");
+    assert!(
+        y("ui") < y("Web") && y("Web") < y("Core") && y("Core") < y("deploy"),
+        "{r}"
+    );
+    assert!(
+        !cards.iter().any(|c| c["name"] == "Web.Tests"),
+        "test projects start hidden: {r}"
+    );
+    let links = r["sheet"]["links"].as_array().unwrap();
+    let web_core = links
+        .iter()
+        .find(|l| l["from"] == card("Web")["key"] && l["to"] == card("Core")["key"])
+        .unwrap_or_else(|| panic!("no Web -> Core link: {r}"));
+    assert_eq!(web_core["up"], false, "dependencies flow down: {r}");
+    assert_eq!(web_core["family"], "code", "{r}");
+    assert!(
+        web_core["label"].as_str().unwrap().contains("references"),
+        "code and the declared reference share one line: {r}"
+    );
+    assert_eq!(r["selected"], true);
+    assert_eq!(r["after"], "folder", "{r}");
+    assert!(r["visible"].as_u64().unwrap() > 0, "{r}");
+
+    let p = page(&root, &db, &["--seed", "Web.Api.Get", "--depth", "1"]);
+    let c = run(&p, "colour", "");
+    assert_eq!(c["colorBy"], "app", "{c}");
+}
+
+/// A code link no manifest declares is a resolver guess: off the sheet
+/// until the legend turns guesses on.
+#[test]
+fn guessed_code_links_start_hidden_on_the_app_sheet() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-viewer-guesses-",
+        &[
+            (
+                "core/Core.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+            ),
+            (
+                "core/Repo.cs",
+                "namespace Core\n{\n    public class Repo\n    {\n        public int Load() { return 1; }\n    }\n}\n",
+            ),
+            (
+                "extra/Extra.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+            ),
+            (
+                "extra/Extra.cs",
+                "using Core;\n\nnamespace Extra\n{\n    public class Helper\n    {\n        public int Run() { return new Repo().Load(); }\n    }\n}\n",
+            ),
+        ],
+    );
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "guesses", "");
+    let key = |name: &str| -> Value {
+        r["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("no card {name}: {r}"))["key"]
+            .clone()
+    };
+    let (extra, core) = (key("Extra"), key("Core"));
+    let drawn = |links: &Value| -> Vec<String> {
+        links
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["from"] == extra && l["to"] == core)
+            .map(|l| l["family"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(drawn(&r["before"]), Vec::<String>::new(), "{r}");
+    assert_eq!(drawn(&r["after"]), vec!["code".to_string()], "{r}");
 }

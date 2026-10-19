@@ -50,6 +50,8 @@ pub enum Level {
     Symbol,
     File,
     Module,
+    /// Applications and libraries (the module graph underneath).
+    App,
 }
 
 impl Level {
@@ -58,6 +60,7 @@ impl Level {
             Level::Symbol => "symbol",
             Level::File => "file",
             Level::Module => "module",
+            Level::App => "app",
         }
     }
 }
@@ -216,7 +219,7 @@ pub enum Key {
 }
 
 /// Receiving side of a bridge pair: stored handler -> key, flows key -> handler.
-fn receiving(kind: &str) -> bool {
+pub(super) fn receiving(kind: &str) -> bool {
     matches!(
         kind,
         "CHANNEL_SUBSCRIBE" | "RPC_IMPL" | "HTTP_ROUTE" | "CONFIG_READ"
@@ -834,7 +837,7 @@ fn unresolved_node(tq: &str) -> GNode {
 
 /// Leaf of an aggregated graph.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum Leaf {
+pub(super) enum Leaf {
     File(String),
     Module(String),
     Endpoint(String),
@@ -858,16 +861,16 @@ fn external_package(qualname: &str) -> String {
 }
 
 /// One edge to aggregate: its endpoints' leaves and evidence.
-struct AggInput {
-    from: Leaf,
-    to: Leaf,
-    kind: String,
-    flags: u32,
-    ev_line: i64,
-    ev: Option<String>,
-    ev_file: String,
+pub(super) struct AggInput {
+    pub(super) from: Leaf,
+    pub(super) to: Leaf,
+    pub(super) kind: String,
+    pub(super) flags: u32,
+    pub(super) ev_line: i64,
+    pub(super) ev: Option<String>,
+    pub(super) ev_file: String,
     /// Endpoint keys a derived bridge edge goes through.
-    keys: Vec<String>,
+    pub(super) keys: Vec<String>,
 }
 
 #[derive(Default)]
@@ -1085,7 +1088,7 @@ fn receives(kind: &str) -> bool {
 /// into a pair, in the viewer into folders) counts distinct keys, not
 /// files. A leaf is never joined to itself. Derived before any
 /// `--max-nodes` trim, so a trimmed endpoint still links its owners.
-fn derive_leaf_bridges(inputs: &[AggInput]) -> Vec<AggInput> {
+pub(super) fn derive_leaf_bridges(inputs: &[AggInput]) -> Vec<AggInput> {
     let mut senders: BTreeMap<&str, BTreeSet<(&Leaf, &'static str)>> = BTreeMap::new();
     let mut receivers: BTreeMap<&str, BTreeSet<&Leaf>> = BTreeMap::new();
     let mut declarers: BTreeMap<&str, BTreeSet<&Leaf>> = BTreeMap::new();
@@ -1197,28 +1200,41 @@ pub fn aggregate_symbol_graph(ctx: &Ctx, sym: Graph, level: Level) -> Graph {
     graph
 }
 
-/// Whole-repository overview: every live file (or module) and the weighted
-/// edges between them. `max_leaves` bounds the node count: a module
-/// overview past it falls back to module leaves, a file overview keeps the
-/// most connected files.
-pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
-    let conn = ctx.db.read_conn()?;
-    let gv = ctx.graph_version;
-    let lang_clause = |alias: &str| -> String {
-        match ctx.langs() {
-            Some(langs) if !langs.is_empty() => format!(
-                " AND {alias}.language IN ({})",
-                langs
-                    .iter()
-                    .map(|l| format!("'{}'", l.replace('\'', "''")))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            _ => String::new(),
-        }
-    };
+/// A live file: path, language and symbol count.
+pub(crate) type RepoFile = (String, String, i64);
 
-    // Files and their symbol counts.
+/// One stored edge leaving a live symbol, with what is known of its target.
+pub(crate) struct RepoRow {
+    pub kind: String,
+    pub src_path: String,
+    pub src_qual: String,
+    pub src_line: i64,
+    pub tgt_path: Option<String>,
+    pub tgt_lang: Option<String>,
+    pub tgt_qual: Option<String>,
+    pub tq: Option<String>,
+    pub ev: Option<String>,
+    pub ev_line: Option<i64>,
+    pub ev_file: String,
+}
+
+fn lang_clause(ctx: &Ctx, alias: &str) -> String {
+    match ctx.langs() {
+        Some(langs) if !langs.is_empty() => format!(
+            " AND {alias}.language IN ({})",
+            langs
+                .iter()
+                .map(|l| format!("'{}'", l.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        _ => String::new(),
+    }
+}
+
+/// Live files (in `--lang`) and their symbol counts.
+pub(crate) fn repo_files(ctx: &Ctx) -> Result<Vec<RepoFile>> {
+    let conn = ctx.db.read_conn()?;
     let sql = format!(
         "SELECT f.path, f.language, COUNT(s.id)
          FROM files f
@@ -1226,34 +1242,25 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
          WHERE (f.deleted_version IS NULL OR f.deleted_version > ?1)
            AND f.language != 'external'{}
          GROUP BY f.id ORDER BY f.path",
-        lang_clause("f")
+        lang_clause(ctx, "f")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let files: Vec<(String, String, i64)> = stmt
-        .query_map([gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let files = stmt
+        .query_map([ctx.graph_version], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
+    Ok(files)
+}
 
-    let file_leaves = level == Level::File || files.len() <= max_leaves;
-    let leaf_for_file = |path: &str| -> Leaf {
-        if file_leaves {
-            Leaf::File(path.to_string())
-        } else {
-            Leaf::Module(ctx.module_of(path))
-        }
-    };
-    let mut leaves: BTreeMap<Leaf, LeafInfo> = BTreeMap::new();
-    for (path, lang, count) in &files {
-        let info = leaves.entry(leaf_for_file(path)).or_default();
-        info.in_scope |= ctx.in_scope(path);
-        info.symbols += count;
-        *info.lang_counts.entry(lang.clone()).or_default() += 1;
-    }
-
-    // Every edge leaving a live symbol, with its target's file (if any).
+/// Every edge leaving a live symbol (in `--lang`) that `--kinds` allows.
+pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
+    let conn = ctx.db.read_conn()?;
+    let gv = ctx.graph_version;
     let sql = format!(
         "SELECT e.kind, sf.path, tf.path, tf.language, ts.qualname, e.target_qualname,
                 e.evidence_snippet, e.evidence_start_line, ef.path,
-                CASE WHEN e.kind = 'XREF' THEN e.detail END
+                CASE WHEN e.kind = 'XREF' THEN e.detail END, ss.qualname, ss.start_line
          FROM edges e
          JOIN symbols ss ON e.source_symbol_id = ss.id
          JOIN files sf ON ss.file_id = sf.id
@@ -1264,43 +1271,14 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
            AND (sf.deleted_version IS NULL OR sf.deleted_version > ?1)
            AND (tf.id IS NULL OR tf.deleted_version IS NULL OR tf.deleted_version > ?1)
            AND sf.language != 'external'{}{}",
-        lang_clause("sf"),
+        lang_clause(ctx, "sf"),
         crate::db::RPC_NAME_ONLY_FILTER
     );
     let mut stmt = conn.prepare(&sql)?;
-    type Row = (
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        String,
-        Option<String>,
-    );
-    let rows: Vec<Row> = stmt
-        .query_map([gv], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                r.get(8)?,
-                r.get(9)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-
-    let mut inputs = Vec::new();
-    let mut unresolved = 0usize;
-    let mut routes = RouteCanon::default();
-    for (kind, src, tgt, tgt_lang, tgt_qual, tq, ev, ev_line, ev_file, detail) in rows {
+    let mut out = Vec::new();
+    let mut rows = stmt.query([gv])?;
+    while let Some(r) = rows.next()? {
+        let kind: String = r.get(0)?;
         let probe = Edge {
             id: 0,
             file_path: String::new(),
@@ -1308,7 +1286,7 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
             source_symbol_id: None,
             target_symbol_id: None,
             target_qualname: None,
-            detail,
+            detail: r.get(9)?,
             evidence_snippet: None,
             evidence_start_line: None,
             evidence_end_line: None,
@@ -1325,7 +1303,70 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
         if !ctx.filter.allows(&probe) {
             continue;
         }
-        let from = leaf_for_file(&src);
+        out.push(RepoRow {
+            kind,
+            src_path: r.get(1)?,
+            tgt_path: r.get(2)?,
+            tgt_lang: r.get(3)?,
+            tgt_qual: r.get(4)?,
+            tq: r.get(5)?,
+            ev: r.get(6)?,
+            ev_line: r.get(7)?,
+            ev_file: r.get(8)?,
+            src_qual: r.get(10)?,
+            src_line: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
+        });
+    }
+    Ok(out)
+}
+
+/// Whole-repository overview: every live file (or module) and the weighted
+/// edges between them. `max_leaves` bounds the node count: a module
+/// overview past it falls back to module leaves, a file overview keeps the
+/// most connected files.
+pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
+    let files = repo_files(ctx)?;
+    let rows = repo_rows(ctx)?;
+    repo_graph_from(ctx, level, max_leaves, &files, &rows)
+}
+
+pub(crate) fn repo_graph_from(
+    ctx: &Ctx,
+    level: Level,
+    max_leaves: usize,
+    files: &[RepoFile],
+    rows: &[RepoRow],
+) -> Result<Graph> {
+    let file_leaves = level == Level::File || files.len() <= max_leaves;
+    let leaf_for_file = |path: &str| -> Leaf {
+        if file_leaves {
+            Leaf::File(path.to_string())
+        } else {
+            Leaf::Module(ctx.module_of(path))
+        }
+    };
+    let mut leaves: BTreeMap<Leaf, LeafInfo> = BTreeMap::new();
+    for (path, lang, count) in files {
+        let info = leaves.entry(leaf_for_file(path)).or_default();
+        info.in_scope |= ctx.in_scope(path);
+        info.symbols += count;
+        *info.lang_counts.entry(lang.clone()).or_default() += 1;
+    }
+
+    let mut inputs = Vec::new();
+    let mut unresolved = 0usize;
+    let mut routes = RouteCanon::default();
+    for row in rows {
+        let kind = row.kind.clone();
+        let src = &row.src_path;
+        let tgt = row.tgt_path.clone();
+        let tgt_lang = row.tgt_lang.clone();
+        let tgt_qual = row.tgt_qual.clone();
+        let tq = row.tq.clone();
+        let ev = row.ev.clone();
+        let ev_line = row.ev_line;
+        let ev_file = row.ev_file.clone();
+        let from = leaf_for_file(src);
         if !leaves.contains_key(&from) {
             continue;
         }
@@ -1334,7 +1375,7 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
                 // One chip per consumer folder, not a repo-wide hub.
                 let consumer = match &from {
                     Leaf::Module(m) => m.clone(),
-                    _ => ctx.module_of(&src),
+                    _ => ctx.module_of(src),
                 };
                 let pkg = external_package(tgt_qual.as_deref().unwrap_or("?"));
                 *leaves
@@ -1355,7 +1396,7 @@ pub fn repo_graph(ctx: &Ctx, level: Level, max_leaves: usize) -> Result<Graph> {
             }
             (None, _) => match tq.as_deref().map(str::trim) {
                 Some(tq) if !tq.is_empty() && is_bridge_kind(&kind) => {
-                    Leaf::Endpoint(routes.canonical(ctx.db, gv, &kind, tq))
+                    Leaf::Endpoint(routes.canonical(ctx.db, ctx.graph_version, &kind, tq))
                 }
                 _ => {
                     unresolved += 1;

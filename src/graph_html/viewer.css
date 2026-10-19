@@ -378,6 +378,109 @@ dialog h2 { margin: 0 0 10px; font-size: 16px; }
 .keys dd { margin: 0; color: var(--ink-2); }
 dialog button { border: 1px solid var(--rule); background: var(--paper-2); border-radius: 7px; padding: 4px 14px; }
 
+/* ------------------------------------------------------------ app view */
+/* An architecture sheet: role bands ruled across the paper, apps as inked
+   cards, libraries as lighter sheets, infra as dashed outlines. Links are
+   drawn under the cards and named in words. */
+.graph-only[hidden] { display: none !important; }
+.stage.app-mode #canvas, .stage.app-mode #overlay, .stage.app-mode #minimap, .stage.app-mode .matrix { display: none; }
+.apps { position: absolute; inset: 0; overflow: hidden; touch-action: none; cursor: grab; background: var(--canvas); }
+.apps[hidden] { display: none; }
+.apps.dragging { cursor: grabbing; }
+.apps:focus-visible { outline-offset: -3px; }
+.apps-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.apps-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.apps-edges .conn { --c: var(--edge); transition: opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1); }
+.apps-edges .ln { fill: none; stroke: var(--c); stroke-linecap: round; }
+.apps-edges .ah { fill: var(--c); stroke: none; }
+.apps-edges .hit { fill: none; stroke: transparent; stroke-width: 14px; pointer-events: stroke; cursor: pointer; }
+.apps-edges .lbl { font: 600 11px var(--sans); fill: var(--ink-2); paint-order: stroke; stroke: var(--canvas); stroke-width: 4px; stroke-linejoin: round; display: none; pointer-events: none; }
+.apps.few .apps-edges .lbl, .apps-edges .conn.on .lbl, .apps-edges .conn.named .lbl { display: block; }
+.apps.focus .apps-edges .conn.named:not(.on) .lbl { display: none; }
+.apps-edges .conn.quiet:not(.on) { display: none; }
+.legend .quiet-btn {
+  margin-left: 4px; border: 1px solid var(--rule); background: var(--paper); border-radius: 999px; padding: 0 7px;
+  font-size: 11px; color: var(--ink-3); min-height: 20px; vertical-align: 1px;
+}
+.legend .quiet-btn[aria-pressed="true"] { color: var(--ink); border-color: var(--ink-3); }
+.apps.focus .apps-edges .conn:not(.on) { opacity: 0.13; }
+.apps-edges .conn.on .ln { stroke-width: calc(var(--w) * 1px + 0.8px); }
+.f-code { --c: var(--edge); }
+.f-depends .ln { stroke-dasharray: 6 4; } .f-depends { --c: var(--edge-3); }
+.f-http { --c: var(--bridge); } .f-http .ln { stroke-dasharray: 11 3 2 3; }
+.f-rpc { --c: var(--bridge); } .f-rpc .ln { stroke-dasharray: 3 3; }
+.f-bus { --c: var(--bridge); } .f-bus .ln { stroke-dasharray: 11 4; }
+.f-config { --c: var(--bridge); } .f-config .ln { stroke-dasharray: 0.5 5; }
+.f-declares { --c: var(--edge-4); } .f-declares .ln { stroke-dasharray: 2 3; }
+.f-deploys { --c: var(--edge-4); } .f-deploys .ln { stroke-dasharray: 9 3; }
+.f-package { --c: var(--ink-3); } .f-package .ln { stroke-dasharray: 1 3; }
+#apps-cards { position: absolute; left: 0; top: 0; }
+#apps-cards.placing .card { transition: none; }
+.band-label {
+  position: absolute; left: 0; top: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  line-height: 1.5; color: var(--ink-3); pointer-events: none; padding-top: 6px;
+}
+.band-label span { display: block; font-weight: 500; letter-spacing: 0.04em; font-size: 22px; line-height: 1.2; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.band-rule { position: absolute; left: 0; top: 0; height: 0; border-top: 1px solid var(--rule); pointer-events: none; }
+.card {
+  position: absolute; left: 0; top: 0; width: 264px; padding: 10px 12px 11px; cursor: pointer;
+  background: var(--paper); color: var(--ink); border: 1.5px solid var(--ink); border-radius: 4px;
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s, box-shadow 0.18s;
+}
+.card.lib { width: 216px; border: 1px solid var(--ink-3); background: var(--paper-2); }
+.card.infra { width: 240px; border: 1.2px dashed var(--ink-3); background: var(--paper); }
+.card.hidden-kind { border-style: dotted; opacity: 0.85; }
+.card.chip { width: auto; max-width: 216px; padding: 5px 10px; border-radius: 999px; border: 1px dotted var(--ink-3); background: var(--paper); }
+.card.chip h3 { font-size: 12.5px; font-weight: 600; margin: 0; }
+.card.chip .root { margin: 0; }
+.card:hover { box-shadow: 0 0 0 3px var(--paper-3); }
+.card.sel { box-shadow: 0 0 0 3px var(--focus-soft); border-color: var(--focus); border-style: solid; }
+.apps.focus .card.dim { opacity: 0.32; }
+.card .k {
+  display: flex; align-items: baseline; gap: 6px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-3); min-width: 0;
+}
+.card .k .lg { margin-left: auto; font-weight: 500; letter-spacing: 0.03em; text-transform: none; font-size: 11.5px; white-space: nowrap; }
+.card .k i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 3px; border: 1px solid var(--node-line); }
+.card h3 { margin: 3px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere; }
+.card.lib h3, .card.infra h3 { font-size: 14px; }
+.card .root { font: 11px var(--mono); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.card dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 9px; font-size: 12.5px; line-height: 1.35; }
+.card dt { color: var(--ink-3); font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding-top: 2px; }
+.card dd { margin: 0; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+.card .mods { margin: 8px 0 0; padding-top: 6px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .mods b { color: var(--ink-2); font-weight: 500; }
+.card.open { width: 344px; cursor: default; }
+.card .modlist { list-style: none; margin: 8px 0 0; padding: 6px 0 0; border-top: 1px solid var(--rule); display: grid; gap: 1px; max-height: 340px; overflow-y: auto; }
+.card .modlist button {
+  width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 8px; text-align: left; border: 0; background: none;
+  border-radius: 5px; padding: 3px 6px; font-size: 12.5px; color: var(--ink); min-height: 26px;
+}
+.card .modlist button:hover, .card .modlist button:focus-visible { background: var(--paper-2); }
+.card .modlist .n { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.card .open-row { display: flex; gap: 6px; margin-top: 8px; }
+.card .open-row button { border: 1px solid var(--rule); background: var(--paper); border-radius: 6px; padding: 2px 9px; min-height: 28px; font-size: 12.5px; color: var(--ink-2); }
+.card .open-row button:hover { color: var(--ink); border-color: var(--ink-3); }
+.panel .unit-list { list-style: none; margin: 2px 0 0; padding: 0; }
+.panel .unit-list li { margin: 0; }
+.panel .lrow {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center; width: 100%;
+  text-align: left; background: none; border: 0; border-radius: 6px; padding: 4px 7px; min-height: 30px;
+}
+.panel .lrow:hover, .panel .lrow:focus-visible { background: var(--paper-2); }
+.panel .lrow svg { width: 22px; height: 10px; }
+.panel .lrow .nm { overflow-wrap: anywhere; font-weight: 500; }
+.panel .lrow .w { color: var(--ink-3); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.panel details.rest summary { cursor: pointer; font-size: 12.5px; color: var(--ink-3); padding: 4px 7px; }
+.panel h3 svg { width: 22px; height: 10px; flex: none; }
+.panel .lead { font-size: 13px; color: var(--ink-2); margin: 6px 0; }
+.panel details.key summary { font: 12.5px var(--mono); overflow-wrap: anywhere; }
+.panel .ext { font: 600 10.5px var(--sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); margin-left: 6px; }
+.legend .key-line { width: 26px; height: 14px; }
+@media (prefers-reduced-motion: reduce) {
+  .card, .apps-edges .conn { transition: none; }
+}
+
 /* ------------------------------------------------------------ phone */
 @media (max-width: 760px) {
   .bar { padding: 8px 16px 6px; gap: 6px 8px; }
