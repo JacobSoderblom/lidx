@@ -9,6 +9,7 @@
 //! source lines from disk. It never runs anything, and nothing is
 //! repository-specific.
 
+use super::resources::{self, Decl, Wire};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -156,6 +157,11 @@ pub struct Unit {
     /// What it is, in its own words: the manifest's description, else the
     /// first sentence of the README in its folder.
     pub description: Option<String>,
+    /// Resources and workloads its files declare (infrastructure files, an
+    /// Aspire app host, a Prisma schema).
+    pub decls: Vec<Decl>,
+    /// Services its deployment files wire to each other.
+    pub wires: Vec<Wire>,
 }
 
 impl Unit {
@@ -186,6 +192,8 @@ impl Unit {
             why: why.to_string(),
             dockerfiles: Vec::new(),
             description: None,
+            decls: Vec::new(),
+            wires: Vec::new(),
         }
     }
 
@@ -280,6 +288,11 @@ fn ancestors(path: &str) -> impl Iterator<Item = &str> {
                 .map(move |(i, _)| &trimmed[..=i]),
         )
         .chain(std::iter::once(""))
+}
+
+/// [`join_rel`] for the resource scanners.
+pub fn join_rel_pub(base: &str, rel: &str) -> Option<String> {
+    join_rel(base, rel)
 }
 
 /// `base` (a directory with a trailing `/`) joined with a relative path that
@@ -1005,8 +1018,18 @@ fn detect_with_disk(root: &Path, disk: HashSet<String>, indexed: &[(String, Stri
         let mut kinds: BTreeSet<&str> = BTreeSet::new();
         for &fi in &files {
             let (path, text) = &infra_files[fi];
-            kinds.insert(infra_kind(path));
+            let kind = infra_kind_of(path, text);
+            kinds.insert(kind);
             collect_images(path, text, &mut u.images);
+            match kind {
+                "Bicep" => u.decls.extend(resources::scan_bicep(path, text)),
+                "Terraform" => u.decls.extend(resources::scan_terraform(path, text)),
+                _ => {
+                    let (d, w) = resources::scan_yaml(path, text, kind);
+                    u.decls.extend(d);
+                    u.wires.extend(w);
+                }
+            }
         }
         u.why = kinds.into_iter().collect::<Vec<_>>().join(", ");
         units.push(u);
@@ -1076,6 +1099,115 @@ fn detect_with_disk(root: &Path, disk: HashSet<String>, indexed: &[(String, Stri
         } else if has_word(&tokens(&u.root), DOCS_WORDS) && !u.kind.is_app() {
             u.kind = Kind::Docs;
             u.why = "docs".to_string();
+        }
+    }
+
+    // A Serverless Framework function's code is a service run on demand.
+    owners = Owners::new(&units);
+    let handlers: Vec<String> = units
+        .iter()
+        .filter(|u| u.kind == Kind::Infra)
+        .flat_map(|u| {
+            u.decls
+                .iter()
+                .filter(|d| d.source == "serverless" && d.what == "function")
+                .map(|d| resources::serverless_code(&d.ev.file, &d.group))
+        })
+        .collect();
+    for h in handlers {
+        if let Some(o) = owners.owner(&h) {
+            let u = &mut units[o];
+            if matches!(u.kind, Kind::Lib | Kind::Loose | Kind::Cli) {
+                u.kind = Kind::Service;
+                u.why = "Serverless function".to_string();
+            }
+        }
+    }
+    // A .NET Aspire app host: the resources it declares, the projects it
+    // runs (deployments) and which project uses which resource.
+    for u in units
+        .iter_mut()
+        .filter(|u| u.kind == Kind::Infra && u.why == "Aspire")
+    {
+        let mut files: Vec<(String, String)> = repo
+            .disk
+            .iter()
+            .filter(|p| p.starts_with(u.root.as_str()) && p.ends_with(".cs"))
+            .filter_map(|p| read_text(&repo.abs(p), MAX_MANIFEST_BYTES).map(|t| (p.clone(), t)))
+            .collect();
+        files.sort();
+        let (decls, wires, projects) = resources::scan_aspire(&u.root, &files);
+        u.decls.extend(decls);
+        u.wires.extend(wires);
+        for (name, target, ev) in projects {
+            if let Some(alias) = target.strip_prefix("alias:") {
+                u.images.push((norm(alias), ev.clone()));
+            } else if target.starts_with("dir:") {
+                u.images.push((target.clone(), ev.clone()));
+            }
+            // The name the app host gives it, for its references.
+            u.decls.push(Decl {
+                source: "aspire",
+                what: format!("project:{target}"),
+                name,
+                group: String::new(),
+                ns: None,
+                span: (ev.line, ev.line),
+                ev,
+            });
+        }
+    }
+    // Python requirements files and Prisma schemas, for the resources a
+    // unit uses.
+    owners = Owners::new(&units);
+    for u in units.iter_mut() {
+        if matches!(u.kind, Kind::Infra | Kind::Tooling) || !u.file_roots.is_empty() {
+            continue;
+        }
+        for req in ["requirements.txt", "requirements.in"] {
+            let path = format!("{}{req}", u.root);
+            if !repo.disk.contains(&path) {
+                continue;
+            }
+            let Some(text) = read_text(&repo.abs(&path), MAX_MANIFEST_BYTES) else {
+                continue;
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, raw) in lines.iter().enumerate() {
+                let l = raw.split('#').next().unwrap_or("").trim();
+                if l.is_empty() || l.starts_with('-') {
+                    continue;
+                }
+                // A locked file (pip-compile) says what pulled each package
+                // in: one only another package needs is not the unit's own.
+                let via: String = lines[i + 1..]
+                    .iter()
+                    .take_while(|c| c.trim_start().starts_with('#'))
+                    .map(|c| c.trim())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if via.contains("via") && !via.contains("-r ") && !via.contains(".in") {
+                    continue;
+                }
+                let n = pep508_name(l);
+                if !n.is_empty() {
+                    u.packages.insert(n);
+                }
+            }
+            break;
+        }
+    }
+    let mut prisma: Vec<&String> = repo
+        .disk
+        .iter()
+        .filter(|p| p.ends_with(".prisma") && !in_fixture(p))
+        .collect();
+    prisma.sort();
+    for p in prisma {
+        if let (Some(o), Some(text)) =
+            (owners.owner(p), read_text(&repo.abs(p), MAX_MANIFEST_BYTES))
+        {
+            units[o].decls.extend(resources::scan_prisma(p, &text));
         }
     }
 
@@ -1726,8 +1858,16 @@ fn dotnet_unit(repo: &Repo, proj: &str, text: &str) -> Unit {
         || repo.disk.contains(&format!("{dir}Program.fs"));
     let flag = |el: &str| xml_text(text, el).is_some_and(|v| v.eq_ignore_ascii_case("true"));
     let words = tokens(name);
+    let aspire_host = text.contains("Aspire.AppHost.Sdk")
+        || flag("IsAspireHost")
+        || packages
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("Aspire.Hosting.AppHost"));
     let (kind, why) = if test_pkg || has_word(&words, TEST_WORDS) {
         (Kind::Test, "test project".to_string())
+    } else if aspire_host {
+        // The app model: what runs and the resources it is given.
+        (Kind::Infra, "Aspire".to_string())
     } else if sdk.ends_with(".Web") || sdk.contains(".Web.") {
         (Kind::Api, sdk.clone())
     } else if sdk.ends_with(".Worker") {
@@ -2391,6 +2531,9 @@ fn is_infra(path: &str, text: &str) -> bool {
     if name.starts_with("docker-compose") || name.starts_with("compose.") {
         return true;
     }
+    if is_serverless(&name, text) || is_cloudformation(text) {
+        return true;
+    }
     if name == "chart.yaml" || name.starts_with("kustomization.") {
         return true;
     }
@@ -2409,12 +2552,38 @@ fn is_infra(path: &str, text: &str) -> bool {
     api && kind
 }
 
-fn infra_kind(path: &str) -> &'static str {
+/// A Serverless Framework service: `serverless.yml` with its functions.
+fn is_serverless(name: &str, text: &str) -> bool {
+    matches!(name, "serverless.yml" | "serverless.yaml")
+        && text.lines().any(|l| l.starts_with("functions:"))
+}
+
+/// A CloudFormation or SAM template.
+fn is_cloudformation(text: &str) -> bool {
+    text.lines().any(|l| {
+        l.starts_with("AWSTemplateFormatVersion:") || l.starts_with("Transform: AWS::Serverless")
+    })
+}
+
+fn infra_kind_of(path: &str, text: &str) -> &'static str {
+    let name = file_name(path).to_ascii_lowercase();
+    if (name.ends_with(".yaml") || name.ends_with(".yml")) && is_serverless(&name, text) {
+        return "Serverless";
+    }
+    if (name.ends_with(".yaml") || name.ends_with(".yml")) && is_cloudformation(text) {
+        return "CloudFormation";
+    }
+    infra_kind(path)
+}
+
+pub fn infra_kind(path: &str) -> &'static str {
     let name = file_name(path).to_ascii_lowercase();
     if name.ends_with(".bicep") || name.ends_with(".bicepparam") {
         "Bicep"
     } else if name.ends_with(".tf") || name.ends_with(".tfvars") {
         "Terraform"
+    } else if name.starts_with("skaffold") {
+        "Skaffold"
     } else if name.starts_with("docker-compose") || name.starts_with("compose.") {
         "compose"
     } else if name == "chart.yaml" || path.contains("/templates/") {
@@ -2455,6 +2624,11 @@ fn collect_images(path: &str, text: &str, out: &mut Vec<(String, Evidence)>) {
             out.push((format!("dir:{full}"), ev()));
         }
     }
+}
+
+/// [`image_name`] for the resource scanners.
+pub fn image_name_pub(reference: &str) -> Option<String> {
+    image_name(reference)
 }
 
 /// The normalised repository name of an image reference:

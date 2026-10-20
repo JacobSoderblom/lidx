@@ -159,17 +159,49 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
   for someone new to the repo:
   - The repo in one sentence (the README's first paragraph, else a
     manifest description, else a factual template) and its counts.
-  - A small map of at most 12 cards in lanes, laid out the same way every
-    time. Repos with two or more apps that talk across processes show the
-    apps; libraries become a "used by N apps" strip and infrastructure one
-    chip per tool. Every line has a verb and a count ("calls over HTTP ×9",
-    "calls RPC ×4", "publishes orders", "reads 3 secrets"), only for links
-    the index found on both sides. A workspace of libraries shows its
-    packages and their declared dependencies. A repo that is one unit shows
-    that unit's modules.
+  - A container-level architecture map, laid out the same way every time:
+    front ends, then services and workers (at most 12 cards), then **data
+    and messaging**, then **external systems**, with infrastructure one chip
+    per tool. Repos with two or more apps that talk across processes (or
+    meet at a shared database or broker) show the apps; libraries become a
+    "used by N apps" strip. A workspace of libraries shows its packages and
+    their declared dependencies. A repo that is one unit shows that unit's
+    modules. A single CLI with no database or broker gets no resource lane.
+  - **Resources** are cards of their own, one per technology: databases
+    (PostgreSQL, SQL Server, MongoDB, DynamoDB...), caches (Redis), search,
+    message brokers (RabbitMQ, Kafka, Azure Service Bus, SQS/SNS, Pub/Sub,
+    NATS...), secret and config stores (Key Vault, Secrets Manager, Vault,
+    SSM), object storage (S3, Blob Storage, GCS, MinIO) and external
+    systems (an SDK such as Stripe or OpenAI, or the host of an HTTP call to
+    an absolute URL no app here serves). They are found from what the repo
+    says: packages its manifests declare (`requirements.txt` included),
+    modules its code imports, Bicep, Terraform, CloudFormation/SAM,
+    Kubernetes, Helm, compose and Serverless Framework files, a .NET Aspire
+    app host's `Add*` calls, a Prisma datasource, SQL projects, and the
+    topics, secrets and SQL objects the index links to. A broker or
+    database whose technology nothing names stays a plain "message bus" or
+    "database". Each resource lists what it holds (databases, topics,
+    queues, secrets, buckets) and where it is declared; types no category
+    covers stay in their infrastructure chip's detail. Data and messaging
+    resources past 8 (external systems past 5) wait behind "+N more".
+  - Every line has a verb ("calls over HTTP ×9", "calls RPC ×4", "publishes
+    order-created", "subscribes to 3 topics", "reads/writes", "reads 4
+    secrets", "stores blobs", "calls (set in deployment)"), and a click
+    shows its evidence with `file:line`: the code (a topic at its publisher,
+    an import), the deployment wiring (compose `depends_on` and env hosts,
+    Kubernetes env values, Aspire `WithReference`), a library the app calls
+    into, or the manifest. Apps that meet only at a broker or a database are
+    drawn through it. Lines that cannot curve clear of the cards run down
+    the gaps between them.
+  - **Where it runs** (`D`) regroups the apps by the deployment that runs
+    them, framed: a Kubernetes namespace (from the manifests or a
+    kustomization), a compose file, a Helm chart, an Aspire app host, Bicep
+    or Terraform (with the container apps or functions it declares), the
+    Serverless Framework, a Dockerfile only, or nothing in the repo.
   - Every card says what it is in one sentence (manifest `description`,
     else the README in its folder, else a template such as "Go service
-    serving 11 HTTP routes; calls 4 apps over RPC").
+    serving 11 HTTP routes; calls 4 apps over RPC, uses PostgreSQL and
+    Redis").
   - **Start here**: the ways in (HTTP routes, RPC methods, bus
     subscriptions, `main` and CLI commands found for Cobra, click/typer,
     commander and System.CommandLine), the most used types, the docs to
@@ -181,12 +213,16 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
     entry point ("/cart/checkout → frontend → checkoutservice →
     cartservice"). Follow one step by step over the map with the other
     parts faded, or as a sequence diagram; steps matched by name only are
-    marked probable. With no entry points the flows start from the most
-    called functions, and the page says so.
-  - A **System tour** of about six steps (lanes, where traffic enters, one
-    request, how the apps talk, where config and secrets come from, shared
+    marked probable. Resources are steps too: a message goes publisher →
+    broker → subscriber, and a path ends at the database, store or external
+    API its last code uses. With no entry points the flows start from the
+    most called functions, and the page says so.
+  - A **System tour** of about seven steps (lanes, where traffic enters, one
+    request, how the apps talk, data and messaging: how the apps connect
+    through shared resources, where config and secrets come from, shared
     code, hotspots), and pre-computed answers under "More questions" ("Where
-    do secrets come from?", "What talks to X?", "Which apps share Y?").
+    do secrets come from?", "What uses PostgreSQL?", "What talks to X?",
+    "Which apps share Y?").
   - Click a card for its ways in, what it talks to and what calls it, key
     types and flows; click a line for the calls behind it; double-click a
     card to open it in Explore. `←` `→` step through a flow or the tour,

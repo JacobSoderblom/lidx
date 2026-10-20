@@ -9,6 +9,7 @@ pub mod apps;
 pub mod build;
 pub mod doc;
 pub mod glance;
+pub mod resources;
 pub mod units;
 pub mod zoom;
 

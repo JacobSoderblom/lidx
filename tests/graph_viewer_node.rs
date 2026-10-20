@@ -1358,7 +1358,13 @@ fn the_landing_page_shows_a_small_labelled_map() {
     assert!(cards.len() <= 12);
     assert_eq!(
         field_list(&r["cards"], "name"),
-        vec!["portal", "ingest-api", "validator", "Kubernetes manifests"]
+        vec![
+            "portal",
+            "ingest-api",
+            "validator",
+            "Kubernetes manifests",
+            "Message bus"
+        ]
     );
     assert_eq!(
         field_list(&r["lanes"], "label"),
@@ -1366,6 +1372,7 @@ fn the_landing_page_shows_a_small_labelled_map() {
             "Front ends",
             "Services",
             "Workers and tools",
+            "Data and messaging",
             "Infrastructure"
         ]
     );
@@ -1384,8 +1391,11 @@ fn the_landing_page_shows_a_small_labelled_map() {
         links,
         vec![
             ("calls over HTTP ×1".to_string(), true),
-            ("publishes fileuploaded".to_string(), true),
             ("reads config DB_PASSWORD".to_string(), true),
+            ("publishes fileuploaded".to_string(), true),
+            // A short line between two stacked cards has no room for its
+            // label; its title still says it.
+            ("subscribes to fileuploaded".to_string(), false),
         ]
     );
     // Labels keep off the cards and each other.
@@ -1404,6 +1414,7 @@ fn the_landing_page_shows_a_small_labelled_map() {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|l| l["shown"].as_bool().unwrap())
         .map(|l| rect(&l["box"]))
         .collect();
     for (i, b) in boxes.iter().enumerate() {
@@ -1429,7 +1440,7 @@ fn the_landing_page_shows_a_small_labelled_map() {
     );
     assert_eq!(
         r["tours"],
-        "ToursSystem tour 5 stepsPOST /uploads → ingest-api → validator → Kubernetes manifestsMore questions ▾"
+        "ToursSystem tour 6 stepsPOST /uploads → ingest-api → Message bus → validator → Kubernetes manifestsMore questions ▾"
     );
     // Every string reaches the page escaped.
     let html = r["html"]["cards"].as_str().unwrap();
@@ -1461,35 +1472,38 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
             (json!(0), json!(2), Value::Null),
             (json!(0), json!(1), Value::Null),
             // Past the end it stays on the last step.
-            (json!(0), json!(5), Value::Null),
-            (Value::Null, json!(5), json!("Kubernetes manifests")),
+            (json!(0), json!(6), Value::Null),
+            (Value::Null, json!(6), json!("Kubernetes manifests")),
         ],
         "{r}"
     );
     // Step 3: the symbol, its file and line, and the chain so far.
     let side = r["side"].as_str().unwrap();
     assert!(
-        side.starts_with("POST /uploads → ingest-api → validator → Kubernetes manifests3 store runs in ingest-api.ingest_api.main.storeapi/ingest_api/main.py:11"),
+        side.starts_with("POST /uploads → ingest-api → Message bus → validator → Kubernetes manifests3 store runs in ingest-api.ingest_api.main.storeapi/ingest_api/main.py:11"),
+        "{side}"
+    );
+    // The message goes to the bus, then the worker takes it off.
+    assert!(
+        side.contains(
+            "4fileuploadedMessage bus · publishes to5on_uploadedvalidator · receives the message"
+        ),
         "{side}"
     );
     assert!(
-        side.contains("4on_uploadedvalidator · sends on the bus"),
-        "{side}"
-    );
-    assert!(
-        side.contains("6config DB_PASSWORDKubernetes manifests · reads config"),
+        side.contains("7config DB_PASSWORDKubernetes manifests · reads config"),
         "{side}"
     );
     // Numbered crossings on the map, the current one marked.
     let links = r["html"]["links"].as_str().unwrap();
-    assert_eq!(links.matches("class=\"g-fl").count(), 3, "{links}");
+    assert_eq!(links.matches("class=\"g-fl").count(), 4, "{links}");
     assert!(
         links.contains("class=\"g-fl past\" data-gstep=\"1\""),
         "{links}"
     );
     assert!(links.contains("class=\"g-fl\" data-gstep=\"3\""), "{links}");
     let tours = r["html"]["tours"].as_str().unwrap();
-    assert!(tours.contains("Step 3 of 6"), "{tours}");
+    assert!(tours.contains("Step 3 of 7"), "{tours}");
 }
 
 /// The sequence view: one lane per part in the order the flow reaches it.
@@ -1504,10 +1518,16 @@ fn the_sequence_toggle_draws_the_flow_in_lanes() {
     assert_eq!(r["on"]["state"]["seq"], true);
     assert_eq!(
         r["on"]["lanes"],
-        serde_json::json!(["portal", "ingest-api", "validator", "Kubernetes manifests"])
+        serde_json::json!([
+            "portal",
+            "ingest-api",
+            "Message bus",
+            "validator",
+            "Kubernetes manifests"
+        ])
     );
     let svg = r["on"]["html"].as_str().unwrap();
-    assert_eq!(svg.matches("class=\"sq-msg").count(), 6, "{svg}");
+    assert_eq!(svg.matches("class=\"sq-msg").count(), 7, "{svg}");
     assert!(
         svg.contains("class=\"sq-msg cur\" data-gstep=\"1\""),
         "{svg}"
@@ -1516,7 +1536,7 @@ fn the_sequence_toggle_draws_the_flow_in_lanes() {
     // Off again: the map is back, the flow still open.
     assert_eq!(r["off"]["state"]["seq"], false);
     assert_eq!(r["off"]["state"]["flow"], 0);
-    assert_eq!(r["off"]["cards"], 4);
+    assert_eq!(r["off"]["cards"], 5);
 }
 
 /// The system tour runs step by step, shows its progress, and exits with
@@ -1529,7 +1549,7 @@ fn the_tour_runs_and_exits_keeping_the_selection() {
     }
     let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gtour-");
     let r = run(&p, "glance-tour", "");
-    assert_eq!(r["count"], 5);
+    assert_eq!(r["count"], 6);
     let seen = r["seen"].as_array().unwrap();
     let at: Vec<Value> = seen.iter().map(|s| s["state"]["tour"].clone()).collect();
     assert_eq!(
@@ -1541,15 +1561,16 @@ fn the_tour_runs_and_exits_keeping_the_selection() {
     );
     assert_eq!(
         seen[0]["tours"],
-        "System tourStep 1 of 5: These are the 3 apps, by role‹ BackNext ›Exit"
+        "System tourStep 1 of 6: These are the 3 apps, by role‹ BackNext ›Exit"
     );
     assert_eq!(seen[1]["state"]["sel"], "ingest-api");
+    // The worker meets the API at the bus, not on a line of its own.
     assert_eq!(
         seen[1]["state"]["dim"],
-        serde_json::json!(["Kubernetes manifests"])
+        serde_json::json!(["Kubernetes manifests", "validator"])
     );
     assert!(
-        seen[2]["side"].as_str().unwrap().starts_with("System tour · step 3 of 5Follow one requestPOST /uploads → ingest-api → validator → Kubernetes manifests: 6 steps across 4 parts."),
+        seen[2]["side"].as_str().unwrap().starts_with("System tour · step 3 of 6Follow one requestPOST /uploads → ingest-api → Message bus → validator → Kubernetes manifests: 7 steps across 5 parts."),
         "{}",
         seen[2]["side"]
     );
@@ -1620,13 +1641,15 @@ fn a_card_a_line_and_a_question_each_explain_themselves() {
     assert_eq!(r["card"]["state"]["dim"], serde_json::json!(["portal"]));
     let side = r["card"]["side"].as_str().unwrap();
     assert!(
-        side.starts_with("‹ Start herevalidator worker · PythonPython worker subscribed to 1 topic; reads 1 config key.worker/Ways in1 subscriptionbuson file-uploaded"),
+        side.starts_with("‹ Start herevalidator worker · PythonPython worker subscribed to 1 topic; reads 1 config key, uses a message bus.worker/Ways in1 subscriptionbuson file-uploaded"),
         "{side}"
     );
     assert!(
-        side.contains("Talks toKubernetes manifests reads config DB_PASSWORD"),
+        side.contains("Talks toKubernetes manifests reads config DB_PASSWORDMessage bus subscribes to fileuploaded"),
         "{side}"
     );
+    // Where it runs: the deployment that names its image.
+    assert!(side.contains("Runs inKubernetes (deploy/)"), "{side}");
     assert!(
         side.contains("Called byingest-api publishes fileuploaded"),
         "{side}"
@@ -1638,7 +1661,7 @@ fn a_card_a_line_and_a_question_each_explain_themselves() {
     assert_eq!(r["link"]["state"]["link"], 0);
     assert_eq!(
         r["link"]["state"]["dim"],
-        serde_json::json!(["Kubernetes manifests", "validator"])
+        serde_json::json!(["Kubernetes manifests", "Message bus", "validator"])
     );
     let side = r["link"]["side"].as_str().unwrap();
     assert!(
@@ -1795,21 +1818,30 @@ fn unclear_curves(cards: &Value, curves: &Value) -> Vec<String> {
     let mut bad = Vec::new();
     for c in curves.as_array().unwrap() {
         let (from, to) = (c["from"].as_str().unwrap(), c["to"].as_str().unwrap());
-        if !on_edge(bez(&c["p"], 0.0), find(from)) || !on_edge(bez(&c["p"], 1.0), find(to)) {
+        // A route down a gap is several curves end to end.
+        let segs: Vec<Value> = match c["pp"].as_array() {
+            Some(pp) => pp.clone(),
+            None => vec![c["p"].clone()],
+        };
+        if !on_edge(bez(&segs[0], 0.0), find(from))
+            || !on_edge(bez(&segs[segs.len() - 1], 1.0), find(to))
+        {
             bad.push(format!("{from}>{to} does not start and end on its cards"));
         }
-        for k in 1..100 {
-            let (x, y) = bez(&c["p"], k as f64 / 100.0);
-            if let Some((n, _)) = boxes.iter().find(|(n, b)| {
-                n != from
-                    && n != to
-                    && x > b[0] + 2.0
-                    && x < b[0] + b[2] - 2.0
-                    && y > b[1] + 2.0
-                    && y < b[1] + b[3] - 2.0
-            }) {
-                bad.push(format!("{from}>{to} through {n}"));
-                break;
+        'segs: for seg in &segs {
+            for k in 1..100 {
+                let (x, y) = bez(seg, k as f64 / 100.0);
+                if let Some((n, _)) = boxes.iter().find(|(n, b)| {
+                    n != from
+                        && n != to
+                        && x > b[0] + 2.0
+                        && x < b[0] + b[2] - 2.0
+                        && y > b[1] + 2.0
+                        && y < b[1] + b[3] - 2.0
+                }) {
+                    bad.push(format!("{from}>{to} through {n}"));
+                    break 'segs;
+                }
             }
         }
     }
@@ -1985,6 +2017,315 @@ fn a_few_lanes_of_a_few_cards_are_drawn_as_bands_at_full_scale() {
     assert_eq!(r["landing"]["cam"]["k"], 1.35, "{r}");
     assert_eq!(
         unclear_curves(&r["landing"]["cards"], &r["landing"]["curves"]),
+        Vec::<String>::new(),
+        "{r}"
+    );
+}
+
+/// The resources lane: compact resource cards under the apps, lines from
+/// the apps to them clear of every card, the two apps that meet at the
+/// broker drawn through it, on the landing page and in every flow.
+#[test]
+fn the_resources_lane_renders_and_lines_go_through_the_broker() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::STACK, "lidx-viewer-gres-");
+    let r = run(&p, "glance-landing", "");
+    assert_eq!(
+        field_list(&r["lanes"], "label"),
+        vec![
+            "Front ends",
+            "Services",
+            "Workers and tools",
+            "Data and messaging",
+            "External systems",
+            "Infrastructure"
+        ]
+    );
+    let lane_of = |n: &str| {
+        r["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("{n}: {r}"))["lane"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(lane_of("RabbitMQ"), "data");
+    assert_eq!(lane_of("api.payhub.io"), "ext");
+    let pairs: Vec<(String, String)> = r["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["from"].as_str().unwrap().to_string(),
+                l["to"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        pairs.contains(&("orders".into(), "RabbitMQ".into())),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.contains(&("worker".into(), "RabbitMQ".into())),
+        "{pairs:?}"
+    );
+    assert!(
+        !pairs.contains(&("orders".into(), "worker".into())),
+        "the direct bus line waits for a focus: {pairs:?}"
+    );
+    let html = r["html"]["cards"].as_str().unwrap();
+    assert!(html.contains("class=\"g-card g-res g-r-bus\""), "{html}");
+    assert!(html.contains("<p>1 service · used by 2 apps</p>"), "{html}");
+    let c = run(&p, "glance-curves", "");
+    assert_eq!(
+        unclear_curves(&c["landing"]["cards"], &c["landing"]["curves"]),
+        Vec::<String>::new(),
+        "{c}"
+    );
+    for f in c["flows"].as_array().unwrap() {
+        assert_eq!(
+            unclear_curves(&f["cards"], &f["curves"]),
+            Vec::<String>::new(),
+            "{f}"
+        );
+    }
+    // The flow through the broker tells each hop.
+    let fl = run(&p, "glance-flow", "0");
+    let side = fl["side"].as_str().unwrap();
+    assert!(
+        side.contains(
+            "2ordercreatedRabbitMQ · publishes to3on_createdworker · receives the message"
+        ),
+        "{side}"
+    );
+    // A resource's card: who uses it and where it is declared.
+    let s = run(&p, "glance-select", "RabbitMQ");
+    let side = s["card"]["side"].as_str().unwrap();
+    assert!(side.contains("RabbitMQ messaging"), "{side}");
+    assert!(
+        side.contains("Used byorders publishes ordercreatedworker subscribes to ordercreated"),
+        "{side}"
+    );
+    assert!(
+        side.contains("Declared indocker-compose.yml:18 mq:"),
+        "{side}"
+    );
+}
+
+/// Resources past the cap wait behind a "+N more" in their lane and come
+/// back with "show all".
+#[test]
+fn resources_past_the_cap_show_as_more_in_their_lane() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let images = [
+        "postgres",
+        "mysql",
+        "mariadb",
+        "mongo",
+        "cassandra",
+        "neo4j",
+        "redis",
+        "memcached",
+        "elasticsearch",
+        "rabbitmq",
+        "nats",
+    ];
+    let mut compose = String::from("services:\n  app:\n    build: ./app\n    depends_on:\n");
+    for i in &images {
+        compose.push_str(&format!("      - {i}\n"));
+    }
+    for i in &images {
+        compose.push_str(&format!("  {i}:\n    image: {i}:latest\n"));
+    }
+    let files: Vec<(&str, &str)> = vec![
+        ("docker-compose.yml", compose.as_str()),
+        (
+            "app/package.json",
+            "{ \"name\": \"app\", \"scripts\": { \"start\": \"node index.js\" } }\n",
+        ),
+        ("app/index.js", "function main() {}\nmain();\n"),
+    ];
+    let (_tmp, p) = glance_page(&files, "lidx-viewer-gcap-");
+    let r = run(&p, "glance-showall", "");
+    let more = |lanes: &Value| {
+        lanes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == "data")
+            .unwrap()["more"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(more(&r["before"]["lanes"]), 3, "{r}");
+    assert_eq!(more(&r["after"]["lanes"]), 0, "{r}");
+    assert_eq!(
+        r["after"]["cards"].as_u64().unwrap(),
+        r["before"]["cards"].as_u64().unwrap() + 3
+    );
+    let html = run(&p, "glance-landing", "")["html"]["cards"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        html.contains("data-gall=\"1\" title=\"Show every resource\">+3 more</button>"),
+        "{html}"
+    );
+}
+
+/// "Where it runs" regroups the apps by the deployment that runs them,
+/// frames each group, lists them in the side column, and goes back.
+#[test]
+fn the_deployment_overlay_groups_apps_by_where_they_run() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::STACK, "lidx-viewer-gdep-");
+    let r = run(&p, "glance-deploy", "");
+    assert!(
+        r["before"]["head"]
+            .as_str()
+            .unwrap()
+            .contains("data-gdeploy=\"1\" aria-pressed=\"false\""),
+        "{r}"
+    );
+    assert_eq!(r["on"]["state"]["deploy"], true);
+    assert_eq!(
+        field_list(&r["on"]["lanes"], "label"),
+        vec![
+            "Docker Compose (docker-compose.yml)",
+            "Not deployed by files in this repository",
+            "Data and messaging",
+            "External systems",
+            "Infrastructure"
+        ]
+    );
+    let html = r["on"]["html"].as_str().unwrap();
+    assert_eq!(html.matches("class=\"g-group\"").count(), 2, "{html}");
+    let side = r["on"]["side"].as_str().unwrap();
+    assert!(
+        side.starts_with("Where it runsThe apps grouped by the files that deploy them."),
+        "{side}"
+    );
+    assert!(
+        side.contains("Docker Compose (docker-compose.yml)Runs as 2 services in Docker Compose (docker-compose.yml).orders, worker"),
+        "{side}"
+    );
+    assert_eq!(
+        unclear_curves(
+            &Value::Array(r["on"]["cards"].as_array().unwrap().clone()),
+            &r["on"]["curves"]
+        ),
+        Vec::<String>::new(),
+        "{r}"
+    );
+    assert_eq!(r["off"]["state"]["deploy"], false);
+    assert_eq!(field_list(&r["off"]["lanes"], "label")[0], "Front ends");
+    // One unit's modules: nothing deploys, no toggle.
+    let (_tmp2, p2) = glance_page(common::glance_fixtures::CLI, "lidx-viewer-gdep2-");
+    let head = run(&p2, "glance-landing", "")["html"]["head"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!head.contains("data-gdeploy"), "{head}");
+}
+
+/// Resource names from infrastructure files and config reach the page as
+/// text: a compose service, a Bicep resource, a topic and an external host.
+#[test]
+fn crafted_resource_names_render_as_text() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let files: &[(&str, &str)] = &[
+        (
+            "docker-compose.yml",
+            "services:\n  app:\n    build: ./app\n    depends_on:\n      - \"<img src=x onerror=alert(1)>\"\n  \"<img src=x onerror=alert(1)>\":\n    image: postgres:16\n",
+        ),
+        (
+            "app/package.json",
+            "{ \"name\": \"app\", \"scripts\": { \"start\": \"node index.js\" } }\n",
+        ),
+        (
+            "app/index.js",
+            "function main() {\n  _bus.publish(\"</script><script>alert(2)</script>\", {});\n  return fetch(\"https://x\\\"><svg/onload=alert(3)>.evil.io/a\");\n}\nmain();\n",
+        ),
+        (
+            "infra/main.bicep",
+            "resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {\n  name: '<b onmouseover=alert(4)>vault</b>'\n}\nresource t 'Microsoft.ServiceBus/namespaces/topics@2022-10-01' = {\n  name: '<i>topic</i>'\n}\n",
+        ),
+    ];
+    let (_tmp, p) = glance_page(files, "lidx-viewer-gesc3-");
+    let r = run(&p, "glance-everything", "");
+    let html = r["html"].as_str().unwrap();
+    for bad in ["<img", "<script", "<svg", "<b ", "<i>"] {
+        assert!(!html.contains(bad), "{bad} reached the page as markup");
+    }
+    assert!(
+        html.contains("&lt;img src=x onerror=alert(1)&gt;"),
+        "the compose service is shown, escaped"
+    );
+    assert!(
+        html.contains("&lt;i&gt;topic&lt;/i&gt;"),
+        "the Bicep topic is shown, escaped"
+    );
+    // And the embedded document cannot close its script element.
+    let page = std::fs::read_to_string(&p).unwrap();
+    let start = page.find("id=\"lidx-graph-data\"").unwrap();
+    let end = start + page[start..].find("</script>").unwrap();
+    assert!(
+        !page[start..end].contains("<script"),
+        "script context escaped"
+    );
+}
+
+/// A line to a resource below a full row of cards, with a card beside its
+/// target, has no clear curve: it runs down a gap (or the gutter) and in
+/// along the gap above the target's row.
+#[test]
+fn a_line_with_no_clear_curve_runs_down_a_gap() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gvia-");
+    let card = |x: f64, y: f64| serde_json::json!({ "x": x, "y": y, "w": 196.0, "h": 98.0 });
+    let res = |x: f64, y: f64| serde_json::json!({ "x": x, "y": y, "w": 184.0, "h": 60.0 });
+    let layout = serde_json::json!({
+        "boxes": {
+            "A": card(80.0, 30.0),
+            "C1": card(80.0, 170.0), "C2": card(286.0, 170.0), "C3": card(492.0, 170.0),
+            "R": res(80.0, 330.0), "B": res(296.0, 330.0),
+        },
+        "size": { "w": 800.0, "h": 420.0 }, "from": "A", "to": "B"
+    });
+    let r = run(&p, "glance-route", &layout.to_string());
+    assert!(!r["via"].is_null(), "a route down a gap: {r}");
+    let cards: Vec<Value> = layout["boxes"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(n, v)| {
+            let mut v = v.clone();
+            v["name"] = Value::String(n.clone());
+            v
+        })
+        .collect();
+    let curves = serde_json::json!([{ "from": "A", "to": "B", "p": r["p"], "pp": r["pp"] }]);
+    assert_eq!(
+        unclear_curves(&Value::Array(cards), &curves),
         Vec::<String>::new(),
         "{r}"
     );

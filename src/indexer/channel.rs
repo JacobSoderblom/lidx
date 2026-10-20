@@ -177,6 +177,97 @@ pub fn is_subscribe_method(name: &str) -> bool {
     SUBSCRIBE_METHODS.contains(&name)
 }
 
+/// Broker SDK calls that name the topic or queue they send to or receive
+/// from, whatever the receiver is called: `(method, kind, framework,
+/// keyword)`. The topic is the keyword argument (Python), else the first
+/// argument.
+const SDK_CHANNEL_CALLS: &[(&str, &str, &str, &str)] = &[
+    // Azure Service Bus: Python, .NET, JavaScript and Go clients.
+    (
+        "get_topic_sender",
+        CHANNEL_PUBLISH_KIND,
+        "azure-service-bus",
+        "topic_name",
+    ),
+    (
+        "get_queue_sender",
+        CHANNEL_PUBLISH_KIND,
+        "azure-service-bus",
+        "queue_name",
+    ),
+    (
+        "get_subscription_receiver",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "topic_name",
+    ),
+    (
+        "get_queue_receiver",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "queue_name",
+    ),
+    (
+        "CreateSender",
+        CHANNEL_PUBLISH_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    (
+        "CreateProcessor",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    (
+        "CreateSessionProcessor",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    (
+        "CreateReceiver",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    (
+        "createSender",
+        CHANNEL_PUBLISH_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    (
+        "createReceiver",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    ("NewSender", CHANNEL_PUBLISH_KIND, "azure-service-bus", ""),
+    (
+        "NewReceiverForQueue",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    (
+        "NewReceiverForSubscription",
+        CHANNEL_SUBSCRIBE_KIND,
+        "azure-service-bus",
+        "",
+    ),
+    // Kafka (Confluent .NET client).
+    ("ProduceAsync", CHANNEL_PUBLISH_KIND, "kafka", ""),
+];
+
+/// A broker SDK call that names its topic: `(kind, framework, keyword)`.
+pub fn sdk_channel_call(method: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    SDK_CHANNEL_CALLS
+        .iter()
+        .find(|(m, _, _, _)| *m == method)
+        .map(|(_, k, f, kw)| (*k, *f, *kw))
+}
+
 /// Check if a raw topic value looks like a topic container member access.
 /// Returns the normalized channel name if it does.
 pub fn topic_from_member_access(raw: &str) -> Option<String> {

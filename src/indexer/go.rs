@@ -2739,16 +2739,21 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     let function_node = node.child_by_field_name("function")?;
     let (receiver, method_name) = split_selector_expr(function_node, source)?;
 
-    if !channel::is_bus_receiver(&receiver) {
-        return None;
-    }
-
-    let kind = if channel::is_publish_method(&method_name) {
-        channel::CHANNEL_PUBLISH_KIND
-    } else if channel::is_subscribe_method(&method_name) {
-        channel::CHANNEL_SUBSCRIBE_KIND
+    // A broker SDK call names its topic whatever the client is called.
+    let (kind, framework) = if let Some((k, f, _)) = channel::sdk_channel_call(&method_name) {
+        (k, f)
     } else {
-        return None;
+        if !channel::is_bus_receiver(&receiver) {
+            return None;
+        }
+        let kind = if channel::is_publish_method(&method_name) {
+            channel::CHANNEL_PUBLISH_KIND
+        } else if channel::is_subscribe_method(&method_name) {
+            channel::CHANNEL_SUBSCRIBE_KIND
+        } else {
+            return None;
+        };
+        (kind, "go-bus")
     };
 
     let args = call_arguments(node);
@@ -2756,9 +2761,9 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     let normalized =
         channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, "go-bus")
+        channel::build_publish_detail(&normalized, &raw_topic, framework)
     } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, "go-bus")
+        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
     };
 
     Some(EdgeInput {

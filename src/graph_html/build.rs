@@ -1218,6 +1218,8 @@ pub(crate) struct RepoRow {
     pub ev: Option<String>,
     pub ev_line: Option<i64>,
     pub ev_file: String,
+    /// The edge's detail, kept for HTTP calls: the raw URL names its host.
+    pub detail: Option<String>,
 }
 
 fn lang_clause(ctx: &Ctx, alias: &str) -> String {
@@ -1262,7 +1264,7 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
     let sql = format!(
         "SELECT e.kind, sf.path, tf.path, tf.language, ts.qualname, e.target_qualname,
                 e.evidence_snippet, e.evidence_start_line, ef.path,
-                CASE WHEN e.kind = 'XREF' THEN e.detail END, ss.qualname, ss.start_line,
+                CASE WHEN e.kind IN ('XREF', 'HTTP_CALL') THEN e.detail END, ss.qualname, ss.start_line,
                 ss.id, ts.id
          FROM edges e
          JOIN symbols ss ON e.source_symbol_id = ss.id
@@ -1282,6 +1284,12 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
     let mut rows = stmt.query([gv])?;
     while let Some(r) = rows.next()? {
         let kind: String = r.get(0)?;
+        let detail: Option<String> = r.get(9)?;
+        let http_detail = if kind == "HTTP_CALL" {
+            detail.clone()
+        } else {
+            None
+        };
         let probe = Edge {
             id: 0,
             file_path: String::new(),
@@ -1289,7 +1297,7 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
             source_symbol_id: None,
             target_symbol_id: None,
             target_qualname: None,
-            detail: r.get(9)?,
+            detail: if kind == "XREF" { detail.clone() } else { None },
             evidence_snippet: None,
             evidence_start_line: None,
             evidence_end_line: None,
@@ -1320,6 +1328,7 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
             src_line: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
             src_id: r.get(12)?,
             tgt_id: r.get(13)?,
+            detail: http_detail,
         });
     }
     Ok(out)

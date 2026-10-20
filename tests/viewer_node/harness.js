@@ -383,6 +383,20 @@ if (scenario === 'focus') {
   const landing = { cam: gl.camera(), cards: gl.cards(), curves: gl.curves() };
   gl.data().flows.forEach((_, i) => { gl.openFlow(i); flush(2); flows.push({ cards: gl.cards(), curves: gl.curves() }); gl.key('Escape'); flush(2); });
   out = { landing, flows };
+} else if (scenario === 'glance-deploy') {
+  // "Where it runs" on and off: the lanes, the frames, the side column.
+  const gl = g.glance;
+  const before = { lanes: gl.lanes(), head: gl.html().head };
+  gl.toggleDeploy(); flush(5);
+  const on = { state: gl.state(), lanes: gl.lanes(), cards: gl.cards(), curves: gl.curves(), side: gl.side(), html: gl.html().cards };
+  gl.toggleDeploy(); flush(5);
+  out = { before, on, off: { state: gl.state(), lanes: gl.lanes() } };
+} else if (scenario === 'glance-showall') {
+  // Every resource past the cap, shown and hidden again.
+  const gl = g.glance;
+  const before = { lanes: gl.lanes(), cards: gl.cards().length };
+  gl.showAll(); flush(5);
+  out = { before, after: { lanes: gl.lanes(), cards: gl.cards().length } };
 } else if (scenario === 'glance-route') {
   // A route between two boxes laid out by the test: `arg` is
   // {boxes, size, from, to} as JSON.

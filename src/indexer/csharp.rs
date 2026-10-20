@@ -2140,6 +2140,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_publish_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    if let Some(edge) = channel_sdk_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
     if let Some(edge) = channel_subscribe_edge(node, ctx, source) {
         output.edges.push(edge);
     }
@@ -4015,6 +4018,37 @@ fn channel_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     let detail = channel::build_publish_detail(&normalized, &raw_topic, "azure-service-bus");
     Some(EdgeInput {
         kind: channel::CHANNEL_PUBLISH_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(normalized),
+        detail: Some(detail),
+        evidence_snippet: None,
+        evidence_start_line: Some(span(node).0),
+        evidence_end_line: Some(span(node).2),
+        ..Default::default()
+    })
+}
+
+/// A broker SDK call that names its topic (`client.CreateSender("orders")`),
+/// whatever the client is called.
+fn channel_sdk_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    if node.kind() != "invocation_expression" {
+        return None;
+    }
+    let target_node = node.child_by_field_name("function")?;
+    let target = call_target_parts(target_node, source)?;
+    let (kind, framework, _) = channel::sdk_channel_call(&target.name)?;
+    let args = call_arguments(node);
+    let first_arg = args.first()?;
+    let raw_topic = node_text(*first_arg, source);
+    let local = csharp_local_binding(node, &raw_topic, source);
+    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
+    let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
+        channel::build_publish_detail(&normalized, &raw_topic, framework)
+    } else {
+        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
+    };
+    Some(EdgeInput {
+        kind: kind.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: Some(normalized),
         detail: Some(detail),

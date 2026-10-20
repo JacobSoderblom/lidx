@@ -5769,24 +5769,30 @@ fn grpc_impl_edge(
 fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     let target_node = call_target_node(node)?;
     let (receiver, method) = member_receiver_and_method(target_node, source)?;
-    if !channel::is_bus_receiver(&receiver) {
-        return None;
-    }
-    let kind = if channel::is_publish_method(&method) {
-        channel::CHANNEL_PUBLISH_KIND
-    } else if channel::is_subscribe_method(&method) {
-        channel::CHANNEL_SUBSCRIBE_KIND
+    // A broker SDK call names its topic whatever the client is called.
+    let (kind, framework) = if let Some((k, f, _)) = channel::sdk_channel_call(&method) {
+        (k, f)
     } else {
-        return None;
+        if !channel::is_bus_receiver(&receiver) {
+            return None;
+        }
+        let kind = if channel::is_publish_method(&method) {
+            channel::CHANNEL_PUBLISH_KIND
+        } else if channel::is_subscribe_method(&method) {
+            channel::CHANNEL_SUBSCRIBE_KIND
+        } else {
+            return None;
+        };
+        (kind, "js-bus")
     };
     let args = call_arguments(node);
     let raw_topic = node_text(*args.first()?, source);
     let normalized =
         channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, "js-bus")
+        channel::build_publish_detail(&normalized, &raw_topic, framework)
     } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, "js-bus")
+        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
     };
     Some(EdgeInput {
         kind: kind.to_string(),
