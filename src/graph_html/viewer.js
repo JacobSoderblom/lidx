@@ -6171,18 +6171,59 @@
     return out;
   })();
   // A line to a resource drawn only around a focus: the resource shared,
-  // or its user a hub.
+  // or its user a hub. A call between apps that a longer chain of drawn
+  // calls already shows waits for a focus too (gImplied).
   function gSharedLink(l) {
+    if (gImplied(l)) return true;
     var t = GL.nodes[l.to];
     return !!t && t.kind === 'resource' && (gIsShared(l.to) || (G_FANOUT[l.from] || 0) > G_FAN);
   }
+  // Calls between processes (HTTP, RPC, messages, a deployment's wiring).
+  var G_PROC = { http: 1, rpc: 1, bus: 1, wire: 1 };
+  var gImpliedMemo = {};
+  // The calls between apps that a chain of other calls already shows: a
+  // calls b, and a calls c that (through others) calls b. Drawn, they run
+  // across the rows the chain steps down and say nothing new about the
+  // order of the system; they are tags on the caller's card instead, their
+  // lines drawn around a focus. Only calls down the map (by lane, then
+  // layer) count, so a cycle hides nothing. Keyed by from>to>family.
+  function gImpliedSet() {
+    var key = gst.all ? 'all' : 'main';
+    if (gImpliedMemo[key]) return gImpliedMemo[key];
+    var laneAt = {};
+    GL.lanes.forEach(function (ln, i) { laneAt[ln.id] = i; });
+    var rank = function (n) { return (laneAt[n.lane] || 0) * 1e4 + Math.max(0, gLayer(n)); };
+    var adj = {}, cand = [];
+    GL.links.forEach(function (l) {
+      var a = gNode(l.from), b = gNode(l.to);
+      if (l.quiet || !G_PROC[l.family] || l.from === l.to || a.kind === 'resource' || b.kind === 'resource') return;
+      if (!gShown(a) || !gShown(b) || rank(a) >= rank(b)) return;
+      (adj[l.from] = adj[l.from] || []).push(l.to);
+      cand.push(l);
+    });
+    var out = {};
+    cand.forEach(function (l) {
+      var seen = {}, stack = (adj[l.from] || []).filter(function (w) { return w !== l.to; });
+      while (stack.length) {
+        var w = stack.pop();
+        if (w === l.to) { out[l.from + '>' + l.to + '>' + l.family] = 1; break; }
+        if (seen[w]) continue;
+        seen[w] = 1;
+        (adj[w] || []).forEach(function (x) { stack.push(x); });
+      }
+    });
+    return (gImpliedMemo[key] = out);
+  }
+  function gImplied(l) { return !!gImpliedSet()[l.from + '>' + l.to + '>' + l.family]; }
   // A node with lines drawn only around a focus.
   function gHasTagged(id) { return GL.links.some(function (l) { return (l.from === id || l.to === id) && gSharedLink(l); }); }
-  // The shared resources a card's part uses, in map order.
+  // The tags on a card: the shared resources its part uses, in map order,
+  // then the apps it also calls (gImplied).
   function gBadgesOf(id) {
     var out = [];
     GL.links.forEach(function (l) { if (l.from === id && gSharedLink(l) && out.indexOf(l.to) < 0) out.push(l.to); });
-    return out.sort(function (a, b) { return (GL.nodes[a].lane < GL.nodes[b].lane ? -1 : GL.nodes[a].lane > GL.nodes[b].lane ? 1 : 0) || a - b; });
+    var res = function (i) { return GL.nodes[i].kind === 'resource' ? 0 : 1; };
+    return out.sort(function (a, b) { return res(a) - res(b) || (GL.nodes[a].lane < GL.nodes[b].lane ? -1 : GL.nodes[a].lane > GL.nodes[b].lane ? 1 : 0) || a - b; });
   }
   // A card's height: its kind, name, the lines its sentence wraps to (up
   // to three, two above a row of tags) and its tags.
@@ -6413,6 +6454,7 @@
         if (!chip && !linked[n.id]) loose.push(n);
         else (groups[chip || oneRow ? 0 : Math.max(0, gLayer(n))] = groups[chip || oneRow ? 0 : Math.max(0, gLayer(n))] || []).push(n);
       });
+      if (!chip && !oneRow) gLiftOverflow(groups, per, loose.length);
       Object.keys(groups).map(Number).sort(function (a, b) { return a - b; }).forEach(function (l) {
         var list = groups[l].sort(function (a, b) { return (lane.id === 'infra' ? 0 : gLayer(a) - gLayer(b) || gOrder(a) - gOrder(b)) || byName(a, b); });
         for (var i = 0; i < list.length; i += per) rows.push(list.slice(i, i + per));
@@ -6423,7 +6465,17 @@
       });
       var wide = 0;
       rows.forEach(function (r) { wide = Math.max(wide, r.length); });
-      blocks.push({ lane: lane, rows: rows, size: size, chip: chip, cgx: cgx, cgy: cgy, w: wide * (size.w + cgx) - cgx, h: G_HEAD + rows.length * (size.h + cgy) - cgy });
+      // Each row of cards as tall as its tallest, not the lane's: one card
+      // with tags does not stretch every row.
+      var rowH = rows.map(function (r) {
+        if (chip) return size.h;
+        var h = 0;
+        r.forEach(function (n) { h = Math.max(h, gCardH(n, size.w)); });
+        return h || size.h;
+      });
+      var hh = G_HEAD - cgy;
+      rowH.forEach(function (h) { hh += h + cgy; });
+      blocks.push({ lane: lane, rows: rows, rowH: rowH, size: size, chip: chip, cgx: cgx, cgy: cgy, w: wide * (size.w + cgx) - cgx, h: hh });
     });
     var bands = [], cur = null;
     blocks.forEach(function (b) {
@@ -6448,13 +6500,15 @@
         var lane = b.lane, size = b.size, step = size.w + b.cgx;
         var slots = b.slots || Math.round((b.w + b.cgx) / step);
         lanes.push({ id: lane.id, label: lane.label, group: lane.group, more: lane.more, x: x, y: y, w: b.w, n: lane.members.length });
+        var ry = y + G_HEAD;
         b.rows.forEach(function (row, r) {
           var rw = row.length * step - b.cgx, x0 = x + Math.round((b.w - rw) / 2);
           var line = 'n' + lanes.length + '.' + r;
           row.forEach(function (n, c) {
-            boxes[n.id] = { x: x0 + c * step, y: y + G_HEAD + r * (size.h + b.cgy), w: size.w, h: size.h, chip: b.chip, line: line, lane: lane.id };
+            boxes[n.id] = { x: x0 + c * step, y: ry, w: size.w, h: b.rowH[r], chip: b.chip, line: line, lane: lane.id };
           });
-          rowsAll.push({ ids: row.map(function (n) { return n.id; }), x: x, step: step, slots: slots, y: y + G_HEAD + r * (size.h + b.cgy) });
+          rowsAll.push({ ids: row.map(function (n) { return n.id; }), x: x, step: step, slots: slots, y: ry });
+          ry += b.rowH[r] + b.cgy;
         });
         x += b.w + laneGap;
       });
@@ -6462,6 +6516,46 @@
     });
     gUntangle(boxes, rowsAll);
     return { boxes: boxes, lanes: lanes, size: { w: Math.max(W + 2 * G_PAD, 200), h: y - bandGap + G_PAD }, dir: 'v' };
+  }
+  // A layer a few cards too wide for its row, those few wrapped onto a row
+  // of their own: they move up into the free places of the row above,
+  // beside the card there that calls them, when that saves the lane a row.
+  // Only cards that call nothing in the lane and are called (in the lane)
+  // from that row alone, by one or two cards: each keeps one short line
+  // straight across. `groups`: the lane's linked cards by layer; `loose`:
+  // how many unlinked cards take the free places after.
+  function gLiftOverflow(groups, per, loose) {
+    var layerOf = {}, pred = {}, succ = {}, deg = {};
+    Object.keys(groups).forEach(function (l) { groups[l].forEach(function (n) { layerOf[n.id] = +l; }); });
+    gDrawnEdges().forEach(function (e) {
+      deg[e[0]] = (deg[e[0]] || 0) + 1; deg[e[1]] = (deg[e[1]] || 0) + 1;
+      if (layerOf[e[0]] === undefined || layerOf[e[1]] === undefined || e[0] === e[1]) return;
+      (succ[e[0]] = succ[e[0]] || []).push(e[1]);
+      (pred[e[1]] = pred[e[1]] || []).push(e[0]);
+    });
+    var rowsFor = function (g) {
+      var rows = 0, free = 0;
+      Object.keys(g).forEach(function (l) { var n = g[l].length; if (!n) return; rows += Math.ceil(n / per); free += Math.ceil(n / per) * per - n; });
+      return rows + Math.ceil(Math.max(0, loose - free) / per);
+    };
+    var keys = Object.keys(groups).map(Number).sort(function (a, b) { return a - b; });
+    for (var k = 1; k < keys.length; k++) {
+      var L = keys[k], P = keys[k - 1], list = groups[L], over = list.length % per;
+      if (list.length <= per || !over) continue;
+      var cand = list.filter(function (n) {
+        var ps = pred[n.id] || [];
+        return !(succ[n.id] || []).length && ps.length >= 1 && ps.length <= 2 && ps.every(function (p) { return layerOf[p] === P; });
+      });
+      if (cand.length < over) continue;
+      cand.sort(function (a, b) { return (deg[a.id] || 0) - (deg[b.id] || 0) || gOrder(a) - gOrder(b) || (a.name < b.name ? -1 : 1); });
+      var lift = cand.slice(0, over), next = {};
+      Object.keys(groups).forEach(function (l) { next[l] = groups[l]; });
+      next[P] = groups[P].concat(lift);
+      next[L] = list.filter(function (n) { return lift.indexOf(n) < 0; });
+      if (Math.ceil(next[P].length / per) > Math.ceil(groups[P].length / per) || rowsFor(next) >= rowsFor(groups)) continue;
+      groups[P] = next[P]; groups[L] = next[L];
+      lift.forEach(function (n) { layerOf[n.id] = P; });
+    }
   }
   // Cards moved along their rows towards what they link to (the mean of
   // their neighbours' places, sweeping down and up a few times), each row
@@ -6489,18 +6583,33 @@
         var linked = row.ids.filter(function (id) { return want[id] !== undefined; });
         if (!linked.length) return;
         linked.sort(function (a, b) { return want[a] - want[b] || mid(a) - mid(b); });
+        // A card linked only along its row (one lifted beside its caller)
+        // sits next to that caller: the two take their places as a block,
+        // its partners alternately right and left of it.
+        var rest = row.ids.filter(function (id) { return want[id] === undefined; });
+        var partners = {}, attached = {};
+        rest.slice().sort(function (a, b) { return mid(a) - mid(b); }).forEach(function (id) {
+          var p = (nb[id] || []).find(function (j) { return want[j] !== undefined && inRow[j]; });
+          if (p === undefined) return;
+          (partners[p] = partners[p] || []).push(id);
+          attached[id] = 1;
+        });
+        var span = function (id) { var n = (partners[id] || []).length; return { left: Math.floor(n / 2), right: n - Math.floor(n / 2) }; };
+        var need = function (k) { var t = 0; for (var j = k; j < linked.length; j++) { var sp = span(linked[j]); t += 1 + sp.left + sp.right; } return t; };
         var w = boxes[row.ids[0]].w, used = {}, last = -1;
         linked.forEach(function (id, k) {
-          var best = -1, bd = Infinity;
-          for (var s = last + 1; s <= row.slots - (linked.length - k); s++) {
+          var sp = span(id), best = -1, bd = Infinity;
+          for (var s = last + 1 + sp.left; s <= row.slots - need(k) + sp.left; s++) {
             var d = Math.abs(row.x + s * row.step + w / 2 - want[id]);
             if (d < bd - 0.5) { bd = d; best = s; }
           }
-          used[best] = id; last = best;
+          used[best] = id;
+          (partners[id] || []).forEach(function (q, j) { used[j % 2 === 0 ? best + 1 + j / 2 : best - 1 - (j - 1) / 2] = q; });
+          last = best + sp.right;
         });
         var free = [];
         for (var s = 0; s < row.slots; s++) if (used[s] === undefined) free.push(s);
-        row.ids.filter(function (id) { return want[id] === undefined; }).sort(function (a, b) { return mid(a) - mid(b); }).forEach(function (id, k) { used[free[k]] = id; });
+        rest.filter(function (id) { return !attached[id]; }).sort(function (a, b) { return mid(a) - mid(b); }).forEach(function (id, k) { used[free[k]] = id; });
         Object.keys(used).forEach(function (s) { boxes[used[s]].x = row.x + (+s) * row.step; });
       });
     }
@@ -6837,12 +6946,268 @@
       return (i === 0 ? 'M' + r1(p[0][0]) + ' ' + r1(p[0][1]) : '') + 'C' + r1(p[1][0]) + ' ' + r1(p[1][1]) + ' ' + r1(p[2][0]) + ' ' + r1(p[2][1]) + ' ' + r1(p[3][0]) + ' ' + r1(p[3][1]);
     }).join('');
   }
+  // ----- square routes: down the rows of the map
+  // A link to a card in a row further down (or, lanes as columns, further
+  // right; or, flipped, further up) runs square, as a tree from its
+  // caller: out of the middle of the caller's bottom into the gap under its
+  // row, along a track there, down a gap between the cards of any rows it
+  // skips, along a track in the gap over the target's row, and into the
+  // target's top. A caller's links share the first stretch, so its calls
+  // read as one branching line; callers sharing a gap each get a track of
+  // their own. Worked out in the frame of gTx, where the target is below.
+  var G_TRACK = 9, G_CORNER = 8, G_CLEAR = 7;
+  // `list`: [{i, a, b}] (a key and the two boxes). Returns, by key, the
+  // route's curves, its sides and the points its label may sit on; links
+  // with no square route (in one row, or no clear way) are left out.
+  function gOrthRoutes(list) {
+    var out = {};
+    if (gst.dir !== 'v' && gst.dir !== 'h') return out;
+    var H = gst.dir === 'h', frames = { d: [], u: [] };
+    list.forEach(function (e) {
+      var a = e.a, b = e.b;
+      if (H ? b.x >= a.x + a.w + 12 : b.y >= a.y + a.h + 12) frames.d.push(e);
+      else if (H ? b.x + b.w + 12 <= a.x : b.y + b.h + 12 <= a.y) frames.u.push(e);
+    });
+    // The sides of each box lines leave from and arrive at, over both frames.
+    var use = { root: {}, drop: {} };
+    ['d', 'u'].forEach(function (f) {
+      var tx = gTx(H, f === 'u');
+      frames[f].forEach(function (e) {
+        use.root[e.a.x + ',' + e.a.y + tx.side('b')] = 1;
+        use.drop[e.b.x + ',' + e.b.y + tx.side('t')] = 1;
+      });
+    });
+    gOrthFrame(H, false, frames.d, out, use);
+    gOrthFrame(H, true, frames.u, out, use);
+    return out;
+  }
+  // A lane heading's text (not its rule), which a line keeps off.
+  function gLaneText(ln) {
+    var w = gTextW(ln.label.toUpperCase() + '  ' + ln.n, '700 11px ' + SANS) * 1.2 + 16 + (ln.more ? 84 : 0);
+    if (gLaneNote(ln)) w += gTextW(G_NOTE, '600 11px ' + SANS) * 1.05 + 14;
+    return { x: ln.x, y: ln.y - 2, w: Math.min(Math.max(ln.w, 120), w), h: 21 };
+  }
+  function gOrthFrame(H, up, list, out, use) {
+    if (!list.length) return;
+    var tx = gTx(H, up), B = gst.boxes, F = {}, ids = Object.keys(B);
+    var width = H ? gst.size.h : gst.size.w;
+    ids.forEach(function (k) { F[k] = tx.box(B[k]); });
+    var keyOf = function (box) { for (var j = 0; j < ids.length; j++) if (B[ids[j]] === box) return ids[j]; return null; };
+    var heads = gst.lanes.map(function (ln) { return tx.box(gLaneText(ln)); });
+    // Rows: boxes whose spans down the frame overlap.
+    var rows = [], rowOf = {};
+    ids.slice().sort(function (p, q) { return F[p].y - F[q].y; }).forEach(function (k) {
+      var b = F[k], r = rows[rows.length - 1];
+      if (r && b.y < r.y1 - 1) { r.y1 = Math.max(r.y1, b.y + b.h); r.ids.push(k); } else rows.push({ y0: b.y, y1: b.y + b.h, ids: [k] });
+      rowOf[k] = rows.length - 1;
+    });
+    var plans = [];
+    list.forEach(function (e) {
+      var ka = keyOf(e.a), kb = keyOf(e.b);
+      if (ka === null || kb === null) return;
+      var ra = rowOf[ka], rb = rowOf[kb];
+      if (rb <= ra) return;
+      plans.push({ e: e, ka: ka, kb: kb, a: F[ka], b: F[kb], ra: ra, rb: rb });
+    });
+    var mid = function (o) { return o.x + o.w / 2; };
+    // Channels down the rows a link skips: the free stretches across them.
+    var chanBy = {};
+    plans.forEach(function (p) {
+      if (p.rb === p.ra + 1) return;
+      var y0 = rows[p.ra].y1, y1 = rows[p.rb].y0, free = [[4, width - 4]];
+      var cut = function (lo, hi) {
+        var next = [];
+        free.forEach(function (f) {
+          if (hi <= f[0] || lo >= f[1]) { next.push(f); return; }
+          if (lo > f[0]) next.push([f[0], lo]);
+          if (hi < f[1]) next.push([hi, f[1]]);
+        });
+        free = next;
+      };
+      for (var r = p.ra + 1; r < p.rb; r++) rows[r].ids.forEach(function (k) { cut(F[k].x - G_CLEAR, F[k].x + F[k].w + G_CLEAR); });
+      // Lane headings the channel would cross: a cost, not a wall (a line
+      // into a lane from above crosses its heading somewhere). One in the
+      // gap over the target's row with room above it is passed over.
+      var lastTop = rows[p.rb - 1].y1 + G_CORNER + 2;
+      var crossed = heads.filter(function (h) { return h.y + h.h > y0 && h.y < y1 && !(h.y > rows[p.rb - 1].y1 && h.y - 4 >= lastTop); });
+      var x0 = mid(p.a), x1 = mid(p.b), lo = Math.min(x0, x1), hi = Math.max(x0, x1), best = null;
+      var consider = function (c, f) {
+        var cost = Math.abs(c - x0) + Math.abs(c - x1) + Math.abs(c - x1) * 0.01;
+        crossed.forEach(function (h) { if (c > h.x - 4 && c < h.x + h.w + 4) cost += 320; });
+        if (!best || cost < best.cost) best = { c: c, cost: cost };
+      };
+      free.forEach(function (f) {
+        if (f[1] - f[0] < 6) return;
+        var m = Math.min(14, (f[1] - f[0]) / 2);
+        consider(Math.max(f[0] + m, Math.min(f[1] - m, Math.max(lo, Math.min(hi, x1)))), f);
+        // Or just past the end of a heading's text, where the stretch allows.
+        crossed.forEach(function (h) {
+          [h.x - 8, h.x + h.w + 8].forEach(function (c) { if (c >= f[0] + m && c <= f[1] - m) consider(c, f); });
+        });
+      });
+      if (!best) { p.fail = true; return; }
+      // A caller's other skipping links share its channel when it serves.
+      var prev = chanBy[p.ka];
+      if (prev !== undefined && free.some(function (f) { return prev >= f[0] + 4 && prev <= f[1] - 4; }) && Math.abs(prev - x0) + Math.abs(prev - x1) <= best.cost + 160) best = { c: prev };
+      else chanBy[p.ka] = best.c;
+      p.c = best.c;
+    });
+    plans = plans.filter(function (p) { return !p.fail; });
+    // Channels several callers share: side by side, a few pixels apart.
+    var byChan = {};
+    plans.forEach(function (p) { if (p.c !== undefined) { var k = Math.round(p.c); (byChan[k] = byChan[k] || []).push(p); } });
+    Object.keys(byChan).forEach(function (k) {
+      var owners = [];
+      byChan[k].forEach(function (p) { if (owners.indexOf(p.ka) < 0) owners.push(p.ka); });
+      owners.sort(function (p, q) { return mid(F[p]) - mid(F[q]); });
+      byChan[k].forEach(function (p) { p.c += (owners.indexOf(p.ka) - (owners.length - 1) / 2) * 6; });
+    });
+    // Ports: lines into a top side spread along it in the order they come
+    // from, either side of the middle when a line also leaves there; a
+    // caller's lines leave its bottom from the middle, or straight over
+    // its one target.
+    var into = {};
+    plans.forEach(function (p) { p.from = p.c !== undefined ? p.c : mid(p.a); (into[p.kb] = into[p.kb] || []).push(p); });
+    Object.keys(into).forEach(function (k) {
+      var l = into[k], b = F[k], n = l.length, root = use.root[B[k].x + ',' + B[k].y + tx.side('t')];
+      l.sort(function (p, q) { return p.from - q.from || mid(p.a) - mid(q.a); });
+      if (n === 1 && !root) {
+        var x = l[0].from;
+        l[0].x1 = Math.abs(x - mid(b)) <= b.w / 2 - 16 ? x : mid(b);
+        return;
+      }
+      if (root) {
+        var left = l.filter(function (p) { return p.from < mid(b); }), right = l.filter(function (p) { return p.from >= mid(b); });
+        left.forEach(function (p, j) { p.x1 = b.x + b.w * (0.14 + 0.28 * (j + 1) / (left.length + 1)); });
+        right.forEach(function (p, j) { p.x1 = b.x + b.w * (0.58 + 0.28 * (j + 1) / (right.length + 1)); });
+        return;
+      }
+      l.forEach(function (p, j) { p.x1 = b.x + b.w * (0.2 + 0.6 * (j + 1) / (n + 1)); });
+    });
+    var outOf = {};
+    plans.forEach(function (p) { (outOf[p.ka] = outOf[p.ka] || []).push(p); });
+    Object.keys(outOf).forEach(function (k) {
+      var l = outOf[k], a = F[k], x0 = mid(a);
+      if (l.length === 1 && !use.drop[B[k].x + ',' + B[k].y + tx.side('b')]) {
+        var to = l[0].c !== undefined ? l[0].c : l[0].x1;
+        x0 = Math.max(a.x + 14, Math.min(a.x + a.w - 14, to));
+      }
+      l.forEach(function (p) { p.x0 = x0; });
+    });
+    // Tracks: in each gap, a caller's stretch along it at a height of its
+    // own where it would run beside another's, clear of lane headings.
+    var gaps = {};
+    var stretch = function (g, owner, lo, hi) {
+      var gg = gaps[g] = gaps[g] || {};
+      var o = gg[owner] = gg[owner] || { lo: Infinity, hi: -Infinity, k: owner, first: false };
+      o.lo = Math.min(o.lo, lo); o.hi = Math.max(o.hi, hi);
+      return o;
+    };
+    plans.forEach(function (p) {
+      var x1 = p.c !== undefined ? p.c : p.x1;
+      stretch(p.ra, p.ka, Math.min(p.x0, x1), Math.max(p.x0, x1)).first = true;
+      if (p.c !== undefined) stretch(p.rb - 1, p.ka, Math.min(p.c, p.x1), Math.max(p.c, p.x1));
+    });
+    var trackAt = {};
+    var onHead = function (y, o) { return heads.some(function (h) { return y > h.y - 4 && y < h.y + h.h + 4 && o.hi > h.x - 6 && o.lo < h.x + h.w + 6; }); };
+    Object.keys(gaps).forEach(function (g) {
+      var top = rows[+g].y1 + G_CORNER + 2, bot = rows[+g + 1].y0 - G_CORNER - 4;
+      if (bot < top) { var m = (top + bot) / 2; top = m; bot = m; }
+      var owners = Object.keys(gaps[g]).map(function (k) { return gaps[g][k]; });
+      owners.sort(function (p, q) { return (q.first ? 1 : 0) - (p.first ? 1 : 0) || mid(F[p.k]) - mid(F[q.k]); });
+      var step = owners.length > 1 ? Math.max(4, Math.min(G_TRACK, (bot - top) / (owners.length - 1))) : G_TRACK;
+      var slots = Math.max(1, Math.floor((bot - top) / step + 1e-6) + 1), taken = [];
+      owners.forEach(function (o) {
+        var pick = -1, s;
+        for (s = 0; s < slots && pick < 0; s++) {
+          var busy = taken.some(function (t) { return t.s === s && t.o.hi + 10 > o.lo && t.o.lo - 10 < o.hi; });
+          if (!busy && !onHead(top + s * step, o)) pick = s;
+        }
+        for (s = 0; s < slots && pick < 0; s++) if (!onHead(top + s * step, o)) pick = s;
+        taken.push({ s: Math.max(0, pick), o: o });
+      });
+      // The tracks used, centred in the gap when headings allow.
+      var used = 0;
+      taken.forEach(function (t) { used = Math.max(used, t.s); });
+      var shift = Math.max(0, ((bot - top) - used * step) / 2);
+      var clear = taken.every(function (t) { return !onHead(top + t.s * step + shift, t.o); });
+      taken.forEach(function (t) { trackAt[g + ':' + t.o.k] = top + t.s * step + (clear ? shift : 0); });
+    });
+    plans.forEach(function (p) {
+      var a = p.a, b = p.b, t1 = trackAt[p.ra + ':' + p.ka], pts;
+      if (p.c === undefined) pts = [[p.x0, a.y + a.h], [p.x0, t1], [p.x1, t1], [p.x1, b.y]];
+      else {
+        var t2 = trackAt[(p.rb - 1) + ':' + p.ka];
+        pts = [[p.x0, a.y + a.h], [p.x0, t1], [p.c, t1], [p.c, t2], [p.x1, t2], [p.x1, b.y]];
+      }
+      var poly = gPoly(pts);
+      var segs = gRound(poly).map(function (seg) { return seg.map(tx.pt); });
+      out[p.e.i] = { pp: segs, side: [tx.side('b'), tx.side('t')], anchors: gAnchors(poly, tx, H) };
+    });
+  }
+  // A polyline without repeated or straight-through points.
+  function gPoly(pts) {
+    var out = [];
+    pts.forEach(function (q) {
+      var l = out[out.length - 1];
+      if (l && Math.abs(l[0] - q[0]) < 0.5 && Math.abs(l[1] - q[1]) < 0.5) return;
+      out.push(q);
+    });
+    for (var i = out.length - 2; i > 0; i--) {
+      var p = out[i - 1], q = out[i], r = out[i + 1];
+      if ((Math.abs(p[0] - q[0]) < 0.5 && Math.abs(q[0] - r[0]) < 0.5) || (Math.abs(p[1] - q[1]) < 0.5 && Math.abs(q[1] - r[1]) < 0.5)) out.splice(i, 1);
+    }
+    return out;
+  }
+  // A polyline as cubic curves: straight runs, each corner rounded.
+  function gRound(poly) {
+    var segs = [];
+    var line = function (p, q) { segs.push([p, [p[0] + (q[0] - p[0]) / 3, p[1] + (q[1] - p[1]) / 3], [p[0] + 2 * (q[0] - p[0]) / 3, p[1] + 2 * (q[1] - p[1]) / 3], q]); };
+    if (poly.length < 2) return segs;
+    var at = poly[0];
+    for (var i = 1; i < poly.length; i++) {
+      var q = poly[i];
+      if (i === poly.length - 1) { line(at, q); break; }
+      var n = poly[i + 1], d0 = Math.hypot(q[0] - at[0], q[1] - at[1]), d1 = Math.hypot(n[0] - q[0], n[1] - q[1]);
+      var r = Math.min(G_CORNER, d0 / 2, d1 / 2);
+      var p1 = [q[0] + (at[0] - q[0]) / (d0 || 1) * r, q[1] + (at[1] - q[1]) / (d0 || 1) * r];
+      var p2 = [q[0] + (n[0] - q[0]) / (d1 || 1) * r, q[1] + (n[1] - q[1]) / (d1 || 1) * r];
+      if (Math.hypot(p1[0] - at[0], p1[1] - at[1]) > 0.5) line(at, p1);
+      segs.push([p1, [p1[0] + (q[0] - p1[0]) * 0.55, p1[1] + (q[1] - p1[1]) * 0.55], [p2[0] + (q[0] - p2[0]) * 0.55, p2[1] + (q[1] - p2[1]) * 0.55], p2]);
+      at = p2;
+    }
+    return segs;
+  }
+  // Points along a square route a label may sit on, nearest its start
+  // first, each saying whether the line runs across the map there.
+  function gAnchors(poly, tx, H) {
+    var out = [], walked = 0;
+    for (var i = 1; i < poly.length; i++) {
+      var p = poly[i - 1], q = poly[i], d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      var across = Math.abs(q[1] - p[1]) < 0.5;
+      for (var s = 12; s < d - 10; s += 14) {
+        var f = s / d, pt = tx.pt([p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f]);
+        out.push({ pt: pt, across: across !== H, at: walked + s });
+      }
+      walked += d;
+    }
+    return out;
+  }
   function gGeom() {
-    var B = gst.boxes, out = [], ports = {};
+    var B = gst.boxes, out = [], ports = {}, on = [];
     GL.links.forEach(function (l, i) {
       if (!gLinkOn(l, i)) return;
       var a = B[l.from], b = B[l.to];
-      if (!a || !b) return;
+      if (a && b) on.push({ i: i, l: l, a: a, b: b });
+    });
+    var square = gOrthRoutes(on);
+    on.forEach(function (e) {
+      var a = e.a, b = e.b, l = e.l, i = e.i, o = square[i];
+      // A square route that would pass a card gives way to a curve.
+      if (o && gRouteHits(o.pp, a, b, gOthers(a, b)).hits === 0) {
+        out.push({ i: i, l: l, a: a, b: b, side: o.side, route: { side: o.side, square: true }, pp: o.pp, p: o.pp[0], anchors: o.anchors, square: true });
+        return;
+      }
       var route = gRoute(a, b), side = route.side;
       var g = { i: i, l: l, a: a, b: b, side: side, bow: route.bow, route: route };
       out.push(g);
@@ -6861,7 +7226,7 @@
     });
     // Lines sharing a gap run side by side in it, not on top of each other.
     var byGap = {};
-    out.forEach(function (g) { if (g.route.via !== undefined) (byGap[g.route.via] = byGap[g.route.via] || []).push(g); });
+    out.forEach(function (g) { if (!g.square && g.route.via !== undefined) (byGap[g.route.via] = byGap[g.route.via] || []).push(g); });
     Object.keys(byGap).forEach(function (x) {
       var list = byGap[x];
       list.sort(function (p, q) { return (p.a.x - q.a.x) || p.i - q.i; });
@@ -6871,6 +7236,7 @@
       });
     });
     out.forEach(function (g) {
+      if (g.square) return;
       var others = gOthers(g.a, g.b);
       g.pp = gSegs(g.a, g.b, g.route, g.f0, g.f1);
       var hits = gRouteHits(g.pp, g.a, g.b, others).hits;
@@ -6889,6 +7255,15 @@
       g.p = g.pp[0];
     });
     return out;
+  }
+  // The point a fraction `f` of the way along a route's curves.
+  function gAlong(segs, f) {
+    var pts = [], len = [0];
+    segs.forEach(function (p) { for (var t = 0; t <= 20; t++) pts.push(gBez(p, t / 20)); });
+    for (var i = 1; i < pts.length; i++) len.push(len[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    var want = len[len.length - 1] * f;
+    for (var j = 1; j < pts.length; j++) if (len[j] >= want) return pts[j];
+    return pts[pts.length - 1];
   }
   function gBez(p, t) {
     var u = 1 - t;
@@ -6914,7 +7289,12 @@
     }
     return false;
   }
-  // A label beside its line, off every card and every label already placed.
+  // A link's verb without its count: "calls RPC ×3" is "calls RPC".
+  function gVerb(label) { return String(label).replace(/ ×\d+$/, ''); }
+  // Labels beside their lines, off every card and every label already
+  // placed. A caller's links with one verb share a label: the verb said
+  // once, on the stretch they share (each line's own label is its title);
+  // a link alone keeps its own.
   function gPlaceLabels(geoms) {
     var obst = Object.keys(gst.boxes).map(function (k) { var b = gst.boxes[k]; return { x: b.x - 4, y: b.y - 4, w: b.w + 8, h: b.h + 8 }; });
     // Lane headings are text too.
@@ -6922,21 +7302,39 @@
     var placed = [];
     var sc = gScale(), mx = Math.max(0, (sc.w / sc.k - gst.size.w) / 2), my = Math.max(0, (sc.h / sc.k - gst.size.h) / 2);
     var ts = [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82];
+    var groups = {}, order = [];
+    geoms.forEach(function (g) {
+      var k = g.l.from + '|' + gVerb(g.l.label);
+      if (!groups[k]) { groups[k] = []; order.push(k); }
+      groups[k].push(g);
+      g.lbl = null; g.text = g.l.label;
+    });
+    var weight = function (k) { return groups[k].reduce(function (a, g) { return a + g.l.count; }, 0); };
     // Busiest first, so the strongest links keep the best spots.
-    geoms.slice().sort(function (a, b) { return b.l.count - a.l.count || a.i - b.i; }).forEach(function (g) {
-      var text = g.l.label, w = Math.ceil(gTextW(text, '600 11.5px ' + SANS)) + 10, h = 18;
-      g.lbl = null;
-      for (var k = 0; k < ts.length && !g.lbl; k++) {
-        var m = gBez(g.p, ts[k]);
-        var tries = [[m[0] - w / 2, m[1] - h / 2], [m[0] - w / 2, m[1] - h - 3], [m[0] - w / 2, m[1] + 3]];
+    order.sort(function (p, q) { return weight(q) - weight(p) || groups[p][0].i - groups[q][0].i; });
+    order.forEach(function (k) {
+      var list = groups[k], text = list.length > 1 ? gVerb(list[0].l.label) : list[0].l.label;
+      var w = Math.ceil(gTextW(text, '600 11.5px ' + SANS)) + 10, h = 18;
+      // Square routes: points along them, nearest the caller first, so a
+      // shared label sits on the shared stretch. Curves: along the first.
+      var spots = [];
+      list.forEach(function (g) {
+        if (g.anchors) g.anchors.forEach(function (a) { spots.push({ g: g, pt: a.pt, across: a.across, at: a.at }); });
+        else ts.forEach(function (t, n) { spots.push({ g: g, pt: gBez(g.p, t), curve: true, at: 1e6 + n }); });
+      });
+      spots.sort(function (p, q) { return p.at - q.at; });
+      for (var s = 0; s < spots.length; s++) {
+        var m = spots[s].pt, tries;
+        if (spots[s].curve || spots[s].across) tries = [[m[0] - w / 2, m[1] - h / 2], [m[0] - w / 2, m[1] - h - 3], [m[0] - w / 2, m[1] + 3]];
+        else tries = [[m[0] + 6, m[1] - h / 2], [m[0] - w - 6, m[1] - h / 2], [m[0] - w / 2, m[1] - h / 2]];
         for (var j = 0; j < tries.length; j++) {
           var r = { x: tries[j][0], y: tries[j][1], w: w, h: h };
           // Inside what the map's area shows: past it a label is cut off.
           var inside = r.x >= 2 - mx && r.y >= 2 - my && r.x + r.w <= gst.size.w - 2 + mx && r.y + r.h <= gst.size.h - 2 + my;
-          if (inside && !gHits(r, obst) && !gHits(r, placed)) { g.lbl = r; placed.push(r); break; }
+          if (inside && !gHits(r, obst) && !gHits(r, placed)) { spots[s].g.lbl = r; spots[s].g.text = text; placed.push(r); break; }
         }
+        if (j < tries.length) break;
       }
-      g.text = text;
     });
     gst.labels = geoms.filter(function (g) { return g.lbl; }).map(function (g) { return { i: g.i, text: g.text, box: g.lbl }; });
   }
@@ -6992,7 +7390,8 @@
   function gBadgeFit(ids, room) {
     var font = '600 11px ' + SANS, gap = 6, used = 0, line = 1, shown = [];
     for (var i = 0; i < ids.length; i++) {
-      var w = Math.min(room, Math.ceil(gTextW(gNode(ids[i]).name, font)) + 14);
+      // A called app's tag has an arrow before its name.
+      var w = Math.min(room, Math.ceil(gTextW(gNode(ids[i]).name, font)) + 14 + (gNode(ids[i]).kind === 'resource' ? 0 : 12));
       var rest = i < ids.length - 1 ? Math.ceil(gTextW('+' + (ids.length - i - 1), font)) + gap : 0;
       if (used > 0 && used + w > room) { if (line === 2) break; line = 2; used = 0; }
       if (line === 2 && used + w + rest > room && used > 0) break;
@@ -7003,9 +7402,12 @@
   }
   function gBadgesHtml(ids, room) {
     var shown = gBadgeFit(ids, room).shown;
-    var all = ids.map(function (id) { return gNode(id).name; }).join(', ');
-    return '<div class="g-badges" title="' + esc('Uses ' + all + '. Point at the card to draw these lines.') + '">' + shown.map(function (id) {
+    var names = function (app) { return ids.filter(function (id) { return (gNode(id).kind !== 'resource') === app; }).map(function (id) { return gNode(id).name; }).join(', '); };
+    var uses = names(false), calls = names(true);
+    var title = (uses ? 'Uses ' + uses + '. ' : '') + (calls ? 'Also calls ' + calls + ' directly. ' : '') + 'Point at the card to draw these lines.';
+    return '<div class="g-badges" title="' + esc(title) + '">' + shown.map(function (id) {
       var r = gNode(id);
+      if (r.kind !== 'resource') return '<span class="g-badge g-r-app" data-gb="' + id + '">' + esc(r.name) + '</span>';
       return '<span class="g-badge g-r-' + esc(r.res.cat) + '" data-gb="' + id + '">' + esc(r.name) + '</span>';
     }).join('') + (ids.length > shown.length ? '<span class="g-badge-more">+' + (ids.length - shown.length) + '</span>' : '') + '</div>';
   }
@@ -7030,6 +7432,16 @@
       if (k === 0 || prev === node || !gst.boxes[prev]) out.push(k);
     });
     return out;
+  }
+  // The note a resources lane's heading carries when its cards' lines are
+  // tags: the first such lane with room for it says it.
+  var G_NOTE = 'Coloured tags on a card stand for its lines here: point at the card to draw them';
+  function gLaneNote(ln) {
+    if (ln.id !== 'data' && ln.id !== 'ext') return false;
+    if (!Object.keys(gst.boxes).some(function (k) { return gst.boxes[k].lane === ln.id && gHasTagged(+k); })) return false;
+    if (gTextW(ln.label + ' ' + ln.n + (ln.more ? ' +' + ln.more + ' more' : '') + '  ' + G_NOTE, '600 11px ' + SANS) * 1.2 + 40 >= Math.max(ln.w, 120)) return false;
+    var first = gst.lanes.find(function (o) { return (o.id === 'data' || o.id === 'ext') && o !== ln && gst.lanes.indexOf(o) < gst.lanes.indexOf(ln) && gLaneNote(o); });
+    return !first;
   }
   function renderGlance() {
     if (!GL) return;
@@ -7059,10 +7471,7 @@
         }
         // Where the lines to shared resources went: tags on the cards.
         var more = ln.more ? ' <button type="button" class="g-lanemore" data-gall="1" title="Show every resource">+' + ln.more + ' more</button>' : '';
-        var noteText = 'Coloured tags on a card stand for its lines here: point at the card to draw them';
-        var note = !noted && (ln.id === 'data' || ln.id === 'ext') && Object.keys(gst.boxes).some(function (k) { return gst.boxes[k].lane === ln.id && gHasTagged(+k); }) &&
-          gTextW(ln.label + ' ' + ln.n + (ln.more ? ' +' + ln.more + ' more' : '') + '  ' + noteText, '600 11px ' + SANS) * 1.2 + 40 < Math.max(ln.w, 120)
-          ? '<span class="g-lanenote">' + esc(noteText) + '</span>' : '';
+        var note = !noted && gLaneNote(ln) ? '<span class="g-lanenote">' + esc(G_NOTE) + '</span>' : '';
         if (note) noted = true;
         html += '<div class="g-lane' + (ln.group ? ' g-dlane' : '') + '" style="transform:translate(' + ln.x + 'px,' + ln.y + 'px);width:' + Math.max(ln.w, 120) + 'px">' + esc(ln.label) + ' <span>' + ln.n + '</span>' + more + note + '</div>';
       });
@@ -7143,12 +7552,18 @@
       if (a === b || !B[a] || !B[b]) continue;
       var key = a + '>' + b, rep = seen[key] || 0;
       seen[key] = rep + 1;
-      var route = gRoute(B[a], B[b]), off = 0.5 + rep * 0.12;
-      var segs = gSegs(B[a], B[b], route, off, off);
+      // Along the link's own line where one is drawn, else a route of its own.
+      var drawn = gst.drawn.find(function (g) { return g.l.from === a && g.l.to === b; }), segs;
+      if (drawn) segs = drawn.pp;
+      else {
+        var sq = gOrthRoutes([{ i: 0, a: B[a], b: B[b] }])[0];
+        if (sq && gRouteHits(sq.pp, B[a], B[b], gOthers(B[a], B[b])).hits === 0) segs = sq.pp;
+        else { var off = 0.5 + rep * 0.12; segs = gSegs(B[a], B[b], gRoute(B[a], B[b]), off, off); }
+      }
       var cur = gst.flow !== null && k === gst.step, past = gst.flow === null || k < gst.step;
       var d = gPathD(segs);
-      // The number sits halfway: on the one curve, or where two meet.
-      var m = segs.length === 1 ? gBez(segs[0], 0.5) : segs[0][3];
+      // The number sits halfway along (a step taken twice, further on).
+      var m = gAlong(segs, Math.min(0.85, 0.5 + rep * 0.15));
       svg += '<g class="g-fl' + (cur ? ' cur' : past ? ' past' : '') + (f.steps[k].probable ? ' probable' : '') + '" data-gstep="' + k + '">' +
         '<path class="fl" d="' + d + '"/><circle cx="' + r1(m[0]) + '" cy="' + r1(m[1]) + '" r="11"/>' +
         '<text x="' + r1(m[0]) + '" y="' + r1(m[1] + 4) + '" text-anchor="middle">' + (k + 1) + '</text></g>';
@@ -7823,7 +8238,7 @@
       links: function () {
         var labelled = {};
         gst.labels.forEach(function (x) { labelled[x.i] = x; });
-        return gst.drawn.map(function (g) { return { from: gNode(g.l.from).name, to: gNode(g.l.to).name, family: g.l.family, label: g.l.label, shown: !!labelled[g.i], box: labelled[g.i] ? labelled[g.i].box : null }; });
+        return gst.drawn.map(function (g) { return { from: gNode(g.l.from).name, to: gNode(g.l.to).name, family: g.l.family, label: g.l.label, shown: !!labelled[g.i], text: labelled[g.i] ? labelled[g.i].text : null, box: labelled[g.i] ? labelled[g.i].box : null, square: !!g.square }; });
       },
       // The scale the map is drawn at, and its size.
       camera: function () { return { k: gst.cam.k, w: gst.size.w, h: gst.size.h, dir: gst.dir }; },

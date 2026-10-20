@@ -1390,7 +1390,7 @@ fn the_landing_page_shows_a_small_labelled_map() {
     assert_eq!(
         links,
         vec![
-            ("calls over HTTP ×1".to_string(), true),
+            ("calls over HTTP".to_string(), true),
             ("reads config DB_PASSWORD".to_string(), true),
             ("publishes fileuploaded".to_string(), true),
             // A short line between two stacked cards has no room for its
@@ -1665,7 +1665,7 @@ fn a_card_a_line_and_a_question_each_explain_themselves() {
     );
     let side = r["link"]["side"].as_str().unwrap();
     assert!(
-        side.starts_with("‹ Start hereportal → ingest-apiCalls over HTTP ×1.The calls behind it/uploadsfrom ui/src/api.sendUpload ui/src/api.ts:1to ingest_api.main.upload api/ingest_api/main.py:6"),
+        side.starts_with("‹ Start hereportal → ingest-apiCalls over HTTP.The calls behind it/uploadsfrom ui/src/api.sendUpload ui/src/api.ts:1to ingest_api.main.upload api/ingest_api/main.py:6"),
         "{side}"
     );
     assert_eq!(r["q"]["state"]["question"], 0);
@@ -2626,4 +2626,285 @@ fn crafted_deployment_and_resource_names_render_as_text() {
     let start = page.find("id=\"lidx-graph-data\"").unwrap();
     let end = start + page[start..].find("</script>").unwrap();
     assert!(!page[start..end].contains("<u"), "script context escaped");
+}
+
+/// A service mesh: load → gateway, which calls orders and recs and four
+/// of the services orders calls too; orders calls six; recs one. Ten
+/// services in one lane.
+fn mesh_page(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let calls: &[(&str, &[&str])] = &[
+        ("loadgen", &["gateway"]),
+        (
+            "gateway",
+            &["orders", "recs", "cart", "catalog", "shipping", "currency"],
+        ),
+        (
+            "orders",
+            &[
+                "cart", "catalog", "shipping", "currency", "email", "payment",
+            ],
+        ),
+        ("recs", &["catalog"]),
+        ("cart", &[]),
+        ("catalog", &[]),
+        ("shipping", &[]),
+        ("currency", &[]),
+        ("email", &[]),
+        ("payment", &[]),
+    ];
+    let mut owned: Vec<(String, String)> = Vec::new();
+    for (svc, outs) in calls {
+        owned.push((
+            format!("{svc}/pyproject.toml"),
+            format!("[project]\nname = \"{svc}\"\ndependencies = [\"fastapi\", \"requests\"]\n"),
+        ));
+        let mut body = format!(
+            "import requests\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/{svc}\")\ndef handle():\n"
+        );
+        for o in *outs {
+            body.push_str(&format!("    requests.get(\"/{o}\")\n"));
+        }
+        body.push_str("    return 1\n");
+        owned.push((format!("{svc}/{svc}/main.py"), body));
+    }
+    let files: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    glance_page(&files, prefix)
+}
+
+fn link_names(step: &Value) -> Vec<String> {
+    let mut v: Vec<String> = step["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            format!(
+                "{}>{}",
+                l["from"].as_str().unwrap(),
+                l["to"].as_str().unwrap()
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The points of a route's curves.
+fn seg_points(seg: &Value) -> Vec<(f64, f64)> {
+    (0..4)
+        .map(|i| (seg[i][0].as_f64().unwrap(), seg[i][1].as_f64().unwrap()))
+        .collect()
+}
+
+/// The straight runs of a route that go across the map, as (y, x0, x1).
+fn across_runs(curve: &Value) -> Vec<(f64, f64, f64)> {
+    let mut out = Vec::new();
+    for seg in curve["pp"].as_array().unwrap() {
+        let p = seg_points(seg);
+        if p.iter().all(|q| (q.1 - p[0].1).abs() < 0.5) && (p[3].0 - p[0].0).abs() > 1.0 {
+            out.push((p[0].1, p[0].0.min(p[3].0), p[0].0.max(p[3].0)));
+        }
+    }
+    out
+}
+
+/// Whether every piece of a route runs straight down, straight across, or
+/// is a rounded corner between the two.
+fn is_square(curve: &Value) -> bool {
+    curve["pp"].as_array().unwrap().iter().all(|seg| {
+        let p = seg_points(seg);
+        let down = p.iter().all(|q| (q.0 - p[0].0).abs() < 0.5);
+        let across = p.iter().all(|q| (q.1 - p[0].1).abs() < 0.5);
+        let corner = (p[3].0 - p[0].0).abs() <= 8.5 && (p[3].1 - p[0].1).abs() <= 8.5;
+        down || across || corner
+    })
+}
+
+/// A dense mesh reads as a call hierarchy in a 1400×900 window: callers
+/// over callees, one row per step of the longest call chain, a layer too
+/// wide for its row lifting its overflow beside its caller, so the whole
+/// map fits without scrolling. A call a longer chain already shows
+/// (gateway → cart, as gateway → orders → cart) is a tag on the caller,
+/// its line drawn with the pointer on it. Every line between rows runs
+/// square, and two callers' tracks never run on top of each other; no
+/// line crosses a card. A caller's lines with one verb share one label,
+/// with no "×1"; no label sits on a card or another.
+#[test]
+fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = mesh_page("lidx-viewer-gmesh-");
+    let r = run(&p, "glance-area-hover", "1040,717,gateway,");
+    let steps = r["steps"].as_array().unwrap();
+    let (rest, hover, off) = (&steps[0], &steps[1], &steps[2]);
+    // It fits at the readable scale: no scrolling.
+    let cam = &rest["cam"];
+    assert_eq!(cam["k"].as_f64().unwrap(), 1.0, "{cam}");
+    assert!(cam["h"].as_f64().unwrap() <= 717.0, "fits: {cam}");
+    let f = |c: &Value, k: &str| c[k].as_f64().unwrap();
+    let card = |n: &str| {
+        rest["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("{n}: {rest}"))
+            .clone()
+    };
+    let mut ys: Vec<i64> = rest["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| f(c, "y") as i64)
+        .collect();
+    ys.sort();
+    ys.dedup();
+    let row = |n: &str| {
+        ys.iter()
+            .position(|&y| y == f(&card(n), "y") as i64)
+            .unwrap()
+    };
+    // One row per step of the chain: load, gateway, orders and recs, the rest.
+    assert_eq!(ys.len(), 4, "{rest}");
+    assert_eq!(
+        [
+            "loadgen", "gateway", "orders", "recs", "catalog", "email", "payment", "shipping"
+        ]
+        .map(row),
+        [0, 1, 2, 2, 3, 3, 3, 3],
+        "{rest}"
+    );
+    // Two of orders' six callees lifted into its row, one either side.
+    assert_eq!([row("cart"), row("currency")], [2, 2], "{rest}");
+    let step = f(&card("orders"), "w") + 40.0;
+    let side = |n: &str| ((f(&card(n), "x") - f(&card("orders"), "x")) / step).round() as i64;
+    let mut sides = vec![side("cart"), side("currency")];
+    sides.sort();
+    assert_eq!(sides, vec![-1, 1], "{rest}");
+    // At rest: the calls down the hierarchy, not the four it implies.
+    assert_eq!(
+        link_names(rest),
+        vec![
+            "gateway>orders",
+            "gateway>recs",
+            "loadgen>gateway",
+            "orders>cart",
+            "orders>catalog",
+            "orders>currency",
+            "orders>email",
+            "orders>payment",
+            "orders>shipping",
+            "recs>catalog"
+        ],
+        "{rest}"
+    );
+    // Each drawn line steps one row down, or along a row to a neighbour.
+    for l in rest["links"].as_array().unwrap() {
+        let (a, b) = (l["from"].as_str().unwrap(), l["to"].as_str().unwrap());
+        match row(b) as i64 - row(a) as i64 {
+            1 => {}
+            0 => assert!(
+                (f(&card(a), "x") - f(&card(b), "x")).abs() < step + 1.0,
+                "{a}>{b} along its row skips a card: {rest}"
+            ),
+            d => panic!("{a}>{b} spans {d} rows: {rest}"),
+        }
+    }
+    // The implied calls: tags on the gateway's card (as many as fit, then
+    // how many more), named in full in their title; their lines on hover.
+    let html = rest["html"].as_str().unwrap();
+    let start = html.find("<h3>gateway</h3>").unwrap();
+    let gw = &html[start..start + html[start..].find("</article>").unwrap()];
+    let tags = gw.matches("<span class=\"g-badge g-r-app\"").count();
+    let pat = "<span class=\"g-badge-more\">+";
+    let more = gw
+        .find(pat)
+        .map(|i| {
+            let s = &gw[i + pat.len()..];
+            s[..s.find('<').unwrap()].parse::<usize>().unwrap()
+        })
+        .unwrap_or(0);
+    assert!(tags >= 1 && tags + more == 4, "{gw}");
+    assert!(
+        gw.contains("Also calls cart, catalog, currency, shipping directly."),
+        "{gw}"
+    );
+    let mut on = link_names(hover);
+    on.retain(|l| !link_names(rest).contains(l));
+    assert_eq!(
+        on,
+        vec![
+            "gateway>cart",
+            "gateway>catalog",
+            "gateway>currency",
+            "gateway>shipping"
+        ],
+        "{hover}"
+    );
+    assert_eq!(link_names(off), link_names(rest));
+    for s in [rest, hover] {
+        assert_eq!(
+            unclear_curves(&s["cards"], &s["curves"]),
+            Vec::<String>::new(),
+            "{s}"
+        );
+        // Lines between rows run square; two callers' tracks never run on
+        // top of each other.
+        let mut runs: Vec<(String, (f64, f64, f64))> = Vec::new();
+        for c in s["curves"].as_array().unwrap() {
+            let (a, b) = (c["from"].as_str().unwrap(), c["to"].as_str().unwrap());
+            if row(a) != row(b) {
+                assert!(is_square(c), "{a}>{b} is not square: {c}");
+            }
+            for run in across_runs(c) {
+                runs.push((a.to_string(), run));
+            }
+        }
+        for (i, (a, x)) in runs.iter().enumerate() {
+            for (b, y) in &runs[i + 1..] {
+                assert!(
+                    a == b || (x.0 - y.0).abs() >= 1.0 || x.2 <= y.1 + 2.0 || y.2 <= x.1 + 2.0,
+                    "{a} and {b} share a track at {}: {s}",
+                    x.0
+                );
+            }
+        }
+        // Labels: one per caller and verb, no count of one, clear.
+        let shown: Vec<&Value> = s["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["shown"].as_bool().unwrap())
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for l in &shown {
+            assert_eq!(l["text"], "calls over HTTP", "{l}");
+            assert!(
+                seen.insert(l["from"].as_str().unwrap()),
+                "two labels for {l}: {s}"
+            );
+        }
+        assert_eq!(
+            seen.into_iter().collect::<Vec<_>>(),
+            vec!["gateway", "loadgen", "orders", "recs"],
+            "{s}"
+        );
+        let rect = |b: &Value| [f(b, "x"), f(b, "y"), f(b, "w"), f(b, "h")];
+        let over = |a: [f64; 4], b: [f64; 4]| {
+            a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1]
+        };
+        for (i, l) in shown.iter().enumerate() {
+            let b = rect(&l["box"]);
+            for c in s["cards"].as_array().unwrap() {
+                assert!(!over(b, rect(c)), "label {l} on card {c}");
+            }
+            for m in &shown[i + 1..] {
+                assert!(!over(b, rect(&m["box"])), "labels {l} and {m} overlap");
+            }
+        }
+    }
 }
