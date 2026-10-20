@@ -2239,7 +2239,9 @@
     updateHistoryButtons();
   }
   function restore(s) {
+    if (s.level === 'glance') { setLevel('glance', true); return; }
     if (s.level === 'app') {
+      if (st.level === 'glance') setLevel('app', true);
       ast.selected = s.aSel; ast.selConn = null; ast.open = new Set(s.aOpen || []);
       ast.zpath = s.zpath || {}; ast.zsel = s.zsel || null; ast.zfocus = s.zfocus === undefined ? null : s.zfocus; ast.zlink = null;
       ast.zpanelUnit = s.zpanel === undefined ? null : s.zpanel;
@@ -2248,7 +2250,7 @@
       writeHash();
       return;
     }
-    if (st.level === 'app') setLevel('folder', true);
+    if (st.level === 'app' || st.level === 'glance') setLevel('folder', true);
     ast.open = new Set(s.aOpen || []);
     savePositions();
     st.expanded = new Set(s.expanded); st.depth = s.depth; st.group = s.group;
@@ -2739,7 +2741,7 @@
     var q = search.value.trim().toLowerCase();
     results = []; active = -1;
     if (!q) { closeList(); return; }
-    var scored = [], onSheet = st.level === 'app';
+    var scored = [], onSheet = st.level === 'app' || st.level === 'glance';
     // On the sheet, the symbols and files embedded for the zoom come first:
     // picking one opens its card down to it. A folder-map node they stand
     // for is not listed twice.
@@ -2758,7 +2760,7 @@
         var nm = u.name.toLowerCase(), s = nm === q ? 0 : nm.indexOf(q) === 0 ? 1 : nm.indexOf(q) >= 0 ? 3 : u.root.toLowerCase().indexOf(q) >= 0 ? 4 : -1;
         if (s < 0) return;
         // On the sheet, units come first.
-        scored.push([s - (st.level === 'app' ? 1 : 0.25) + (u.hidden ? 0.5 : 0), u.name.length, { unit: u.id }]);
+        scored.push([s - (onSheet ? 1 : 0.25) + (u.hidden ? 0.5 : 0), u.name.length, { unit: u.id }]);
       });
     }
     scored.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
@@ -2855,7 +2857,7 @@
       zshow(z.files[fi].unit, r.zsym !== undefined ? 's' + r.zsym : 'f' + fi);
       return;
     }
-    if (st.level === 'app') setLevel('folder');
+    if (st.level === 'app' || st.level === 'glance') setLevel('folder');
     if (r.group) {
       var opened = false;
       for (var p = parentOf(r.group); p; p = parentOf(p)) if (!st.expanded.has(p)) { if (!opened) pushHistory(); st.expanded.add(p); opened = true; }
@@ -3365,6 +3367,12 @@
       return;
     }
     if (ev.key === '?') { openHelp(); return; }
+    if (st.level === 'glance') {
+      if ((ev.key === 'a' || ev.key === 'A') && !ev.shiftKey) { setLevel('app'); return; }
+      glanceKey(ev);
+      return;
+    }
+    if ((ev.key === 'g' || ev.key === 'G') && GL && !ev.shiftKey) { setLevel('glance'); return; }
     if (st.level === 'app') { appKey(ev); return; }
     if ((ev.key === 'a' || ev.key === 'A') && HAS_APPS && !ev.shiftKey) { setLevel('app'); return; }
     if (ev.key === 'Escape') {
@@ -4820,7 +4828,7 @@
     list.forEach(function (s) { if (!s.box) out.push(s); });
     Object.keys(bySide).forEach(function (key) {
       var group = bySide[key], A = group[0].box, side = group[0].side, horiz = side === 't' || side === 'b';
-      // Past a handful on one side, the lightest share one stub: "+N more".
+      // Past a handful on one side, the lightest share one stub: "+N elsewhere".
       var cap = Math.min(STUBS_PER_SIDE, ast.stubCap[key] || Infinity);
       if (group.length > cap) {
         group.sort(function (a, b) { return b.w - a.w || a.ox - b.ox; });
@@ -4872,7 +4880,7 @@
     return { x1: A.x + 20 + textWidth('▾ ' + n.name, '700 12.5px ' + MONO, 7.6) + 8 + textWidth(itemCounts(n), '11px ' + SANS, 6.2) + 8, y1: A.y + ZFRAME_HEAD };
   }
   function stubName(s, short) {
-    if (!s.target) return '+' + fmt(s.more) + (short ? '' : ' more');
+    if (!s.target) return '+' + fmt(s.more) + (short ? '' : ' elsewhere');
     return s.label || targetName(s);
   }
   function targetName(s) {
@@ -6014,15 +6022,35 @@
   var lvlBtns = { app: document.getElementById('lvl-app'), folder: document.getElementById('lvl-folder'), file: document.getElementById('lvl-file') };
   var graphOnly = Array.prototype.slice.call(document.querySelectorAll('.graph-only'));
   var graphBooted = false, FOLDER_DEPTH = 1;
+  function currentLevel() { return st.level === 'glance' ? 'glance' : st.level === 'app' ? 'app' : st.depth === Infinity ? 'file' : 'folder'; }
   function updateLevelButtons() {
     if (!lvlBtns.app) return;
-    var lv = st.level === 'app' ? 'app' : st.depth === Infinity ? 'file' : 'folder';
+    var lv = currentLevel();
     Object.keys(lvlBtns).forEach(function (k) { lvlBtns[k].setAttribute('aria-pressed', String(k === lv)); });
+    var gb = document.getElementById('lvl-glance');
+    if (gb) gb.setAttribute('aria-pressed', String(lv === 'glance'));
   }
   function setLevel(l, fromHistory) {
     if (l === 'app' && !HAS_APPS) return;
+    if (l === 'glance' && !GL) return;
     var was = st.level;
-    if (!fromHistory && l !== (was === 'app' ? 'app' : st.depth === Infinity ? 'file' : 'folder')) pushHistory();
+    if (!fromHistory && l !== currentLevel()) pushHistory();
+    // The landing page: its own layout, over the whole window below the bar.
+    var gl = l === 'glance';
+    if (glanceEl) glanceEl.hidden = !gl;
+    if (mainEl) mainEl.hidden = gl;
+    if (metaEl) metaEl.hidden = gl;
+    crumbs.hidden = gl || l === 'app';
+    if (gl) {
+      st.level = 'glance';
+      hideTooltip();
+      graphOnly.forEach(function (el) { el.hidden = true; });
+      renderGlance();
+      updateLevelButtons();
+      setHeader();
+      return;
+    }
+    if (was === 'glance') { glanceEl.hidden = true; mainEl.hidden = false; metaEl.hidden = false; }
     var app = l === 'app';
     st.level = app ? 'app' : 'graph';
     appsEl.hidden = !app;
@@ -6073,6 +6101,877 @@
     if (st.colorBy === 'app') { var u = NODE_UNIT[n.i]; if (u >= 0) return appColor(u); }
     return langColor(n.lang);
   }
+
+  // ---------------------------------------------------------------- glance
+  // "System at a glance": the landing page (src/graph_html/glance.rs). A
+  // small map in lanes, a "Start here" column, flows to follow one request
+  // and a guided tour. Everything is precomputed; this only lays it out.
+  var GL = APPS && APPS.glance ? APPS.glance : null;
+  var glanceEl = document.getElementById('glance');
+  var mainEl = document.getElementById('main');
+  var metaEl = document.getElementById('meta');
+  var gMap = document.getElementById('g-map'), gWorld = document.getElementById('g-world');
+  var gSvg = document.getElementById('g-links'), gCards = document.getElementById('g-cards');
+  var gSide = document.getElementById('g-side'), gTours = document.getElementById('g-tours');
+  var gHead = document.getElementById('g-head'), gStrip = document.getElementById('g-strip');
+  var gSeq = document.getElementById('g-seq');
+  var G_CARD = { w: 196, h: 98 }, G_CHIP = { w: 176, h: 44 }, G_GAP = { x: 128, y: 18 }, G_HEAD = 30, G_PAD = 24;
+  var gst = {
+    sel: null, link: null, flow: null, step: 0, seq: false, tour: null, resume: null, question: null,
+    all: false, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
+  };
+  var VIA = {
+    start: 'starts', call: 'calls', http: 'calls over HTTP', rpc: 'calls over RPC', bus: 'sends on the bus', config: 'reads config', db: 'reaches the database'
+  };
+  var WAY = { http: 'HTTP route', rpc: 'RPC method', bus: 'topic subscription', cli: 'command', main: 'main', central: 'most called' };
+
+  function gNode(i) { return GL.nodes[i]; }
+  function gShown(n) {
+    if (n.place === 'card' || n.place === 'chip') return true;
+    return gst.all && n.place === 'off';
+  }
+  function gLayer(n) { return gst.all ? n.all_layer : n.layer; }
+  function gOrder(n) { return gst.all ? n.all_order : n.order; }
+
+  // ----- layout: lanes, each lane's layers in order of the links
+  // Two ways to draw the same order: layers as columns (left to right) or
+  // as rows (top to bottom); the one that fits the map larger wins, so text
+  // stays readable on a wide or a tall area.
+  function gDrawnEdges() {
+    var out = [];
+    GL.links.forEach(function (l) { if (!l.quiet && gShown(gNode(l.from)) && gShown(gNode(l.to))) out.push([l.from, l.to]); });
+    return out;
+  }
+  function gLayoutFor(dir, area) {
+    var V = dir === 'v';
+    var gx = V ? 40 : G_GAP.x, gy = V ? 46 : G_GAP.y;
+    // Left to right, labels sit between columns: the gap takes the widest.
+    if (!V) {
+      GL.links.forEach(function (l) {
+        if (!l.quiet && gShown(gNode(l.from)) && gShown(gNode(l.to))) gx = Math.max(gx, Math.ceil(gTextW(l.label, '600 11.5px ' + SANS)) + 34);
+      });
+      gx = Math.min(gx, 260);
+    }
+    var linked = {};
+    gDrawnEdges().forEach(function (e) { linked[e[0]] = 1; linked[e[1]] = 1; });
+    var boxes = {}, lanes = [], at = G_PAD;
+    var room = V ? Math.max(area.width, 360) - G_PAD * 2 : Math.max(area.height, 360) - G_PAD * 2 - G_HEAD - (GL.mode === 'apps' ? 54 : 0);
+    GL.lanes.forEach(function (lane) {
+      var members = GL.nodes.filter(function (n) { return n.lane === lane.id && gShown(n); });
+      if (!members.length) return;
+      var chip = lane.id === 'infra', size = chip ? G_CHIP : G_CARD;
+      var step = V ? size.w + (chip ? 14 : gx) : size.h + (chip ? 10 : gy);
+      var per = Math.max(chip ? 2 : 1, Math.floor((room + (V ? gx : gy)) / step));
+      var groups = {}, loose = [];
+      members.forEach(function (n) {
+        // Cards no drawn line touches pack together after the rest.
+        if (!chip && !linked[n.id] && members.length > 2) { loose.push(n); return; }
+        var l = Math.max(0, gLayer(n));
+        (groups[l] = groups[l] || []).push(n);
+      });
+      var chunks = [];
+      Object.keys(groups).map(Number).sort(function (a, b) { return a - b; }).forEach(function (l) {
+        var list = groups[l].sort(function (a, b) { return gOrder(a) - gOrder(b) || (a.name < b.name ? -1 : 1); });
+        for (var i = 0; i < list.length; i += per) chunks.push(list.slice(i, i + per));
+      });
+      loose.sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+      // Top to bottom, unlinked cards sit in a grid beside the linked rows
+      // (as many rows as those have), not in rows of their own below.
+      var beside = V && chunks.length >= 2 && loose.length;
+      if (!beside) for (var j = 0; j < loose.length; j += per) chunks.push(loose.slice(j, j + per));
+      var a0 = at;
+      if (V) at += G_HEAD;
+      var top0 = at, wide = 0;
+      chunks.forEach(function (ch) {
+        ch.forEach(function (n, r) {
+          boxes[n.id] = V
+            ? { x: G_PAD + r * (size.w + (chip ? 14 : gx)), y: at, w: size.w, h: size.h, chip: chip, line: 'r' + at, lane: lane.id }
+            : { x: at, y: G_PAD + G_HEAD + r * (size.h + (chip ? 10 : gy)), w: size.w, h: size.h, chip: chip, line: 'c' + at };
+        });
+        wide = Math.max(wide, ch.length);
+        at += V ? size.h + (chip ? 12 : gy) : size.w + gx;
+      });
+      if (beside) {
+        var rows = chunks.length, x0 = G_PAD + wide * (size.w + gx) + 40;
+        loose.forEach(function (n, k) {
+          var c = Math.floor(k / rows), r = k % rows;
+          boxes[n.id] = { x: x0 + c * (size.w + gx), y: top0 + r * (size.h + gy), w: size.w, h: size.h, chip: false, line: 'loose', lane: lane.id };
+        });
+      }
+      if (V) { at += 10; lanes.push({ id: lane.id, label: lane.label, x: G_PAD, y: a0, w: 0, n: members.length }); }
+      else lanes.push({ id: lane.id, label: lane.label, x: a0, y: G_PAD, w: at - gx - a0, n: members.length });
+    });
+    // Top to bottom: each lane's rows centred on its widest linked row, then
+    // each lane (with its unlinked block) centred on the widest lane.
+    if (V) {
+      var laneW = {}, laneConn = {};
+      Object.keys(boxes).forEach(function (k) {
+        var b = boxes[k];
+        if (b.line !== 'loose') laneConn[b.lane] = Math.max(laneConn[b.lane] || 0, b.x + b.w);
+      });
+      var rowsOf = {};
+      Object.keys(boxes).forEach(function (k) { var b = boxes[k]; if (b.line !== 'loose') (rowsOf[b.line] = rowsOf[b.line] || []).push(b); });
+      Object.keys(rowsOf).forEach(function (key) {
+        var row = rowsOf[key], end = 0;
+        row.forEach(function (b) { end = Math.max(end, b.x + b.w); });
+        var shift = Math.round((laneConn[row[0].lane] - end) / 2);
+        row.forEach(function (b) { b.x += shift; });
+      });
+      Object.keys(boxes).forEach(function (k) { var b = boxes[k]; laneW[b.lane] = Math.max(laneW[b.lane] || 0, b.x + b.w); });
+      var widest = 0;
+      Object.keys(laneW).forEach(function (l) { widest = Math.max(widest, laneW[l]); });
+      Object.keys(boxes).forEach(function (k) { var b = boxes[k]; b.x += Math.round((widest - laneW[b.lane]) / 2); });
+    }
+    // Left to right: each column centred on the longest, so short ones do not hang.
+    var extent = 0;
+    Object.keys(boxes).forEach(function (k) { var b = boxes[k]; if (b.line !== 'loose' && !b.chip) extent = Math.max(extent, V ? b.x + b.w : b.y + b.h); });
+    var lines = {};
+    Object.keys(boxes).forEach(function (k) { var b = boxes[k]; if (V || b.line === 'loose') return; (lines[b.line] = lines[b.line] || []).push(b); });
+    Object.keys(lines).forEach(function (key) {
+      var line = lines[key], end = 0;
+      line.forEach(function (b) { end = Math.max(end, V ? b.x + b.w : b.y + b.h); });
+      var shift = Math.round((extent - end) / 2);
+      line.forEach(function (b) { if (V) b.x += shift; else b.y += shift; });
+    });
+    var w = 0, h = 0;
+    Object.keys(boxes).forEach(function (k) { var b = boxes[k]; w = Math.max(w, b.x + b.w); h = Math.max(h, b.y + b.h); });
+    lanes.forEach(function (ln) { if (V) ln.w = w - G_PAD; });
+    var size2 = { w: Math.max(w + G_PAD + (V ? 0 : 0), 200), h: h + G_PAD + (V ? 30 : 0) };
+    return { boxes: boxes, lanes: lanes, size: size2, dir: dir };
+  }
+  function gGridLayout(area) {
+    var boxes = {}, lanes = [], y = G_PAD, gx = 64, gy = 52;
+    var aspect = Math.max(area.width, 200) / Math.max(area.height, 200);
+    GL.lanes.forEach(function (lane) {
+      var members = GL.nodes.filter(function (n) { return n.lane === lane.id && gShown(n); });
+      if (!members.length) return;
+      var chip = lane.id === 'infra', size = chip ? G_CHIP : G_CARD;
+      members.sort(function (a, b) { return gLayer(a) - gLayer(b) || gOrder(a) - gOrder(b) || (a.name < b.name ? -1 : 1); });
+      // Columns so the block is about as wide as the map is.
+      var cols = 1;
+      while (cols < members.length && ((cols + 1) * (size.w + gx)) / (Math.ceil(members.length / (cols + 1)) * (size.h + gy)) <= aspect * 1.15) cols++;
+      lanes.push({ id: lane.id, label: lane.label, x: G_PAD, y: y, w: 0, n: members.length });
+      y += G_HEAD;
+      members.forEach(function (n, k) {
+        var c = k % cols, r = Math.floor(k / cols);
+        boxes[n.id] = { x: G_PAD + c * (size.w + gx), y: y + r * (size.h + gy), w: size.w, h: size.h, chip: chip, line: 'g' };
+      });
+      y += Math.ceil(members.length / cols) * (size.h + gy) + 6;
+    });
+    var w = 0, h = 0;
+    Object.keys(boxes).forEach(function (k) { var b = boxes[k]; w = Math.max(w, b.x + b.w); h = Math.max(h, b.y + b.h); });
+    lanes.forEach(function (ln) { ln.w = w - G_PAD; });
+    return { boxes: boxes, lanes: lanes, size: { w: w + G_PAD, h: h + G_PAD }, dir: 'v' };
+  }
+  function gLayout() {
+    var area = gMap.getBoundingClientRect();
+    var stripH = GL.mode === 'apps' && gStripItems().length ? 46 : 0;
+    var fitK = function (L) { return Math.min(1, Math.max(area.width, 200) / L.size.w, Math.max(area.height - stripH, 200) / L.size.h); };
+    var h = gLayoutFor('h', area), v = gLayoutFor('v', area);
+    // Left to right reads as a flow; it wins unless top to bottom is clearly larger.
+    var L = fitK(v) > fitK(h) * 1.12 ? v : h;
+    // A dense web of in-process links (one unit's modules) gains little from
+    // layers: cards in reading order on a grid, when that is much larger.
+    if (GL.mode !== 'apps') {
+      var g = gGridLayout(area);
+      if (fitK(g) > fitK(L) * 1.25) L = g;
+    }
+    gst.boxes = L.boxes; gst.lanes = L.lanes; gst.size = L.size; gst.dir = L.dir;
+  }
+
+  // ----- links: one curve per link, ports spread along the card's side
+  function gLinkOn(l, i) {
+    if (!gShown(gNode(l.from)) || !gShown(gNode(l.to))) return false;
+    if (!l.quiet) return true;
+    // Quiet links (config every app reads) show around what is in focus.
+    if (gst.sel !== null && (l.from === gst.sel || l.to === gst.sel)) return true;
+    if (gst.link === i) return true;
+    var t = gTourStep();
+    if (t && t.links.indexOf(i) >= 0) return true;
+    if (gst.question !== null) {
+      var q = GL.questions[gst.question];
+      if (q && q.nodes.indexOf(l.from) >= 0 && q.nodes.indexOf(l.to) >= 0 && l.family === 'config') return true;
+    }
+    return false;
+  }
+  // Which sides of boxes a and b a line between them leaves and enters.
+  // A line that skips a row (or column) leaves by the side, so it goes
+  // round the cards between instead of behind them.
+  function gSides(a, b) {
+    var ax = a.x + a.w / 2, bx = b.x + b.w / 2, ay = a.y + a.h / 2, by = b.y + b.h / 2;
+    if (gst.dir === 'v') {
+      var down = b.y - (a.y + a.h), up = a.y - (b.y + b.h);
+      if (down > a.h) return [bx < ax ? 'l' : 'r', 't'];
+      if (up > a.h) return [bx < ax ? 'l' : 'r', 'b'];
+      if (down > 0) return ['b', 't'];
+      if (up > 0) return ['t', 'b'];
+      return bx > ax ? ['r', 'l'] : ['l', 'r'];
+    }
+    var right = b.x - (a.x + a.w), left = a.x - (b.x + b.w);
+    if (right > a.w + 100) return [by < ay ? 't' : 'b', 'l'];
+    if (left > a.w + 100) return [by < ay ? 't' : 'b', 'r'];
+    if (right > 0) return ['r', 'l'];
+    if (left > 0) return ['l', 'r'];
+    return by > ay ? ['b', 't'] : ['t', 'b'];
+  }
+  function gPort(box, side, f) {
+    if (side === 'r') return [box.x + box.w, box.y + box.h * f];
+    if (side === 'l') return [box.x, box.y + box.h * f];
+    if (side === 'b') return [box.x + box.w * f, box.y + box.h];
+    return [box.x + box.w * f, box.y];
+  }
+  function gCurve(p0, s0, p1, s1) {
+    var d = Math.max(40, Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) * 0.4);
+    var dirOf = function (s) { return s === 'r' ? [1, 0] : s === 'l' ? [-1, 0] : s === 'b' ? [0, 1] : [0, -1]; };
+    var a = dirOf(s0), b = dirOf(s1);
+    return [p0, [p0[0] + a[0] * d, p0[1] + a[1] * d], [p1[0] + b[0] * d, p1[1] + b[1] * d], p1];
+  }
+  function gGeom() {
+    var B = gst.boxes, out = [], ports = {};
+    GL.links.forEach(function (l, i) {
+      if (!gLinkOn(l, i)) return;
+      var a = B[l.from], b = B[l.to];
+      if (!a || !b) return;
+      var side = gSides(a, b);
+      var g = { i: i, l: l, a: a, b: b, side: side };
+      out.push(g);
+      (ports[l.from + side[0]] = ports[l.from + side[0]] || []).push([g, 0]);
+      (ports[l.to + side[1]] = ports[l.to + side[1]] || []).push([g, 1]);
+    });
+    // Ports on one side ordered by where the other end lies: no crossing at the card.
+    Object.keys(ports).forEach(function (k) {
+      var list = ports[k], side = k.slice(-1), across = side === 'l' || side === 'r';
+      list.sort(function (p, q) {
+        var op = p[1] === 0 ? p[0].b : p[0].a, oq = q[1] === 0 ? q[0].b : q[0].a;
+        var vp = across ? op.y + op.h / 2 : op.x + op.w / 2, vq = across ? oq.y + oq.h / 2 : oq.x + oq.w / 2;
+        return vp - vq || p[0].i - q[0].i;
+      });
+      list.forEach(function (p, j) { p[0][p[1] === 0 ? 'f0' : 'f1'] = 0.2 + 0.6 * (j + 1) / (list.length + 1); });
+    });
+    out.forEach(function (g) {
+      g.p = gCurve(gPort(g.a, g.side[0], g.f0), g.side[0], gPort(g.b, g.side[1], g.f1), g.side[1]);
+    });
+    return out;
+  }
+  function gBez(p, t) {
+    var u = 1 - t;
+    return [
+      u * u * u * p[0][0] + 3 * u * u * t * p[1][0] + 3 * u * t * t * p[2][0] + t * t * t * p[3][0],
+      u * u * u * p[0][1] + 3 * u * u * t * p[1][1] + 3 * u * t * t * p[2][1] + t * t * t * p[3][1]
+    ];
+  }
+  var gMeasure = null;
+  function gTextW(s, font) {
+    try {
+      if (!gMeasure) gMeasure = document.createElement('canvas').getContext('2d');
+      gMeasure.font = font;
+      var w = gMeasure.measureText(s).width;
+      if (w > 0) return w;
+    } catch (e) { /* no canvas */ }
+    return s.length * 6.6;
+  }
+  function gHits(r, list) {
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i];
+      if (r.x < o.x + o.w && r.x + r.w > o.x && r.y < o.y + o.h && r.y + r.h > o.y) return true;
+    }
+    return false;
+  }
+  // A label beside its line, off every card and every label already placed.
+  function gPlaceLabels(geoms) {
+    var obst = Object.keys(gst.boxes).map(function (k) { var b = gst.boxes[k]; return { x: b.x - 4, y: b.y - 4, w: b.w + 8, h: b.h + 8 }; });
+    // Lane headings are text too.
+    gst.lanes.forEach(function (ln) { obst.push({ x: ln.x, y: ln.y - 2, w: Math.max(ln.w, 120), h: 20 }); });
+    var placed = [];
+    var ts = [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82];
+    // Busiest first, so the strongest links keep the best spots.
+    geoms.slice().sort(function (a, b) { return b.l.count - a.l.count || a.i - b.i; }).forEach(function (g) {
+      var text = g.l.label, w = Math.ceil(gTextW(text, '600 11.5px ' + SANS)) + 10, h = 18;
+      g.lbl = null;
+      for (var k = 0; k < ts.length && !g.lbl; k++) {
+        var m = gBez(g.p, ts[k]);
+        var tries = [[m[0] - w / 2, m[1] - h / 2], [m[0] - w / 2, m[1] - h - 3], [m[0] - w / 2, m[1] + 3]];
+        for (var j = 0; j < tries.length; j++) {
+          var r = { x: tries[j][0], y: tries[j][1], w: w, h: h };
+          if (!gHits(r, obst) && !gHits(r, placed)) { g.lbl = r; placed.push(r); break; }
+        }
+      }
+      g.text = text;
+    });
+    gst.labels = geoms.filter(function (g) { return g.lbl; }).map(function (g) { return { i: g.i, text: g.text, box: g.lbl }; });
+  }
+  function gWidth(n, family) { return Math.min(family === 'code' ? 2.6 : 4.2, 1.2 + Math.log2(Math.max(1, n)) * (family === 'code' ? 0.3 : 0.55)); }
+
+  // ----- render
+  function gEmphasis() {
+    // What stays bright: the selection and its neighbours, a link's ends,
+    // a flow's nodes, a tour step's nodes, a question's nodes.
+    var keep = null;
+    if (gst.flow !== null) keep = GL.flows[gst.flow].nodes.slice();
+    else if (gTourStep()) keep = gTourStep().nodes.slice();
+    else if (gst.question !== null) keep = GL.questions[gst.question].nodes.slice();
+    else if (gst.link !== null) { var l = GL.links[gst.link]; keep = [l.from, l.to]; }
+    else if (gst.sel !== null) {
+      keep = [gst.sel];
+      GL.links.forEach(function (l) { if (l.from === gst.sel) keep.push(l.to); if (l.to === gst.sel) keep.push(l.from); });
+    }
+    if (keep && !keep.length) keep = null;
+    return keep;
+  }
+  function gCardHtml(n, box) {
+    var keep = gst.keep, dim = keep && keep.indexOf(n.id) < 0;
+    var cls = 'g-card ' + (box.chip ? 'g-chip' : n.lane === 'lib' ? 'g-lib' : n.kind === 'module' ? 'g-mod' : 'g-app') +
+      (gst.sel === n.id ? ' sel' : '') + (dim ? ' dim' : '');
+    var style = 'transform:translate(' + box.x + 'px,' + box.y + 'px);width:' + box.w + 'px;height:' + box.h + 'px';
+    var kind = n.kind === 'infra' ? 'infra' : n.kind === 'module' ? 'module' : (KIND_LABEL[n.kind] || n.kind);
+    var lang = n.langs && n.langs.length ? n.langs.slice(0, 2).join(' · ') : '';
+    var html = '<article class="' + cls + '" style="' + style + '" data-g="' + n.id + '" tabindex="0" role="listitem" aria-label="' +
+      esc(n.name + ', ' + kind + '. ' + n.sentence) + '" title="' + esc(n.sentence) + '">';
+    if (box.chip) {
+      html += '<h3>' + esc(n.name) + '</h3><p>' + esc(plural(n.units.length, 'folder', 'folders')) + '</p>';
+    } else {
+      html += '<div class="g-k"><span>' + esc(kind) + '</span>' + (lang ? '<span class="g-lang">' + esc(lang) + '</span>' : '') + '</div>';
+      html += '<h3>' + esc(n.name) + '</h3><p class="g-sent">' + esc(n.sentence) + '</p>';
+    }
+    // Flow steps that happen inside this card.
+    if (gActiveFlow() !== null) {
+      var nums = gFlowBadges(n.id);
+      if (nums.length) html += '<span class="g-nums">' + nums.map(function (k) { return '<b class="g-num' + (gst.flow !== null && k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>'; }).join('') + '</span>';
+    }
+    return html + '</article>';
+  }
+  // Steps of the current flow shown on a card: those that stay in it.
+  function gFlowBadges(node) {
+    var f = GL.flows[gActiveFlow()], out = [];
+    f.steps.forEach(function (s, k) {
+      if (s.node !== node) return;
+      var prev = k > 0 ? f.steps[k - 1].node : null;
+      if (k === 0 || prev === node || !gst.boxes[prev]) out.push(k);
+    });
+    return out;
+  }
+  function renderGlance() {
+    if (!GL) return;
+    gst.keep = gEmphasis();
+    renderGlanceHead();
+    renderGlanceTours();
+    if (gst.seq && gst.flow !== null) {
+      gWorld.hidden = true; gSeq.hidden = false; gStrip.hidden = true;
+      renderSequence();
+    } else {
+      gWorld.hidden = false; gSeq.hidden = true;
+      gLayout();
+      var geoms = gGeom();
+      gPlaceLabels(geoms);
+      gst.drawn = geoms;
+      var html = '';
+      gst.lanes.forEach(function (ln) {
+        html += '<div class="g-lane" style="transform:translate(' + ln.x + 'px,' + ln.y + 'px);width:' + Math.max(ln.w, 120) + 'px">' + esc(ln.label) + ' <span>' + ln.n + '</span></div>';
+      });
+      Object.keys(gst.boxes).forEach(function (k) { html += gCardHtml(gNode(+k), gst.boxes[k]); });
+      gCards.innerHTML = html;
+      renderGlanceLinks(geoms);
+      renderGlanceStrip();
+      gFit();
+    }
+    renderGlanceSide();
+  }
+  function renderGlanceLinks(geoms) {
+    var keep = gst.keep, svg = '';
+    var flowPairs = gFlowPairs();
+    var flowing = gActiveFlow() !== null;
+    geoms.forEach(function (g) {
+      var l = g.l, on = keep && keep.indexOf(l.from) >= 0 && keep.indexOf(l.to) >= 0;
+      var dim = keep && !on;
+      if (flowing) dim = !flowPairs[l.from + '>' + l.to];
+      var d = 'M' + r1(g.p[0][0]) + ' ' + r1(g.p[0][1]) + 'C' + r1(g.p[1][0]) + ' ' + r1(g.p[1][1]) + ' ' + r1(g.p[2][0]) + ' ' + r1(g.p[2][1]) + ' ' + r1(g.p[3][0]) + ' ' + r1(g.p[3][1]);
+      var end = g.p[3], c = g.p[2], ang = Math.atan2(end[1] - c[1], end[0] - c[0]), s = 7;
+      var ah = 'M' + r1(end[0]) + ' ' + r1(end[1]) + 'L' + r1(end[0] - s * Math.cos(ang - 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang - 0.42)) +
+        'L' + r1(end[0] - s * Math.cos(ang + 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang + 0.42)) + 'Z';
+      svg += '<g class="g-ln f-' + esc(l.family) + (dim ? ' dim' : '') + (gst.link === g.i ? ' sel' : '') + '" data-gl="' + g.i + '" style="--w:' + gWidth(l.count, l.family) + '">' +
+        '<path class="ln" d="' + d + '"/><path class="ah" d="' + ah + '"/><path class="hit" d="' + d + '"><title>' + esc(gNode(l.from).name + ' ' + l.label + ' ' + gNode(l.to).name) + '</title></path>';
+      if (g.lbl) svg += '<text class="lbl" x="' + r1(g.lbl.x + g.lbl.w / 2) + '" y="' + r1(g.lbl.y + 13) + '" text-anchor="middle">' + esc(g.text) + '</text>';
+      svg += '</g>';
+    });
+    svg += gFlowOverlay();
+    // In a flow the numbers tell the story: the links' own labels step aside.
+    gSvg.classList.toggle('flowing', flowing);
+    gSvg.setAttribute('width', String(gst.size.w));
+    gSvg.setAttribute('height', String(gst.size.h));
+    gSvg.innerHTML = svg;
+  }
+  // Pairs of nodes a flow crosses between, for its own numbered arrows.
+  function gFlowPairs() {
+    var out = {};
+    if (gActiveFlow() === null) return out;
+    var f = GL.flows[gActiveFlow()];
+    for (var k = 1; k < f.steps.length; k++) {
+      var a = f.steps[k - 1].node, b = f.steps[k].node;
+      if (a !== b) out[a + '>' + b] = k;
+    }
+    return out;
+  }
+  // The flow drawn on the map: the one being stepped through, or the one a
+  // tour step tells (all its steps at once).
+  function gActiveFlow() {
+    if (gst.flow !== null) return gst.flow;
+    var t = gTourStep();
+    return t && t.flow !== undefined && GL.flows[t.flow] ? t.flow : null;
+  }
+  function gFlowOverlay() {
+    var fi = gActiveFlow();
+    if (fi === null) return '';
+    var f = GL.flows[fi], B = gst.boxes, svg = '';
+    var seen = {};
+    for (var k = 1; k < f.steps.length; k++) {
+      var a = f.steps[k - 1].node, b = f.steps[k].node;
+      if (a === b || !B[a] || !B[b]) continue;
+      var key = a + '>' + b, rep = seen[key] || 0;
+      seen[key] = rep + 1;
+      var side = gSides(B[a], B[b]), off = 0.5 + rep * 0.12;
+      var p = gCurve(gPort(B[a], side[0], off), side[0], gPort(B[b], side[1], off), side[1]);
+      var cur = gst.flow !== null && k === gst.step, past = gst.flow === null || k < gst.step;
+      var d = 'M' + r1(p[0][0]) + ' ' + r1(p[0][1]) + 'C' + r1(p[1][0]) + ' ' + r1(p[1][1]) + ' ' + r1(p[2][0]) + ' ' + r1(p[2][1]) + ' ' + r1(p[3][0]) + ' ' + r1(p[3][1]);
+      var m = gBez(p, 0.5);
+      svg += '<g class="g-fl' + (cur ? ' cur' : past ? ' past' : '') + (f.steps[k].probable ? ' probable' : '') + '" data-gstep="' + k + '">' +
+        '<path class="fl" d="' + d + '"/><circle cx="' + r1(m[0]) + '" cy="' + r1(m[1]) + '" r="11"/>' +
+        '<text x="' + r1(m[0]) + '" y="' + r1(m[1] + 4) + '" text-anchor="middle">' + (k + 1) + '</text></g>';
+    }
+    return svg;
+  }
+  // Libraries the strip lists: those an app uses.
+  function gStripItems() {
+    return GL.nodes.filter(function (n) { return n.place === 'strip' && n.used_by.length; });
+  }
+  function renderGlanceStrip() {
+    if (GL.mode !== 'apps') { gStrip.hidden = true; gStrip.innerHTML = ''; return; }
+    var libs = gStripItems();
+    if (!libs.length) { gStrip.hidden = true; gStrip.innerHTML = ''; return; }
+    libs.sort(function (a, b) { return b.used_by.length - a.used_by.length || (a.name < b.name ? -1 : 1); });
+    var af = gActiveFlow(), flowNodes = af !== null ? GL.flows[af].nodes : [];
+    var keep = gst.keep;
+    var shown = libs.slice(0, 8);
+    gStrip.hidden = false;
+    gStrip.innerHTML = '<span class="g-strip-k">Shared libraries</span>' + shown.map(function (n) {
+      var dim = keep && keep.indexOf(n.id) < 0;
+      var nums = af !== null && flowNodes.indexOf(n.id) >= 0 ? gFlowBadges(n.id) : [];
+      return '<button type="button" class="g-libchip' + (dim ? ' dim' : '') + (gst.sel === n.id ? ' sel' : '') + '" data-g="' + n.id + '" title="' + esc(n.sentence) + '">' +
+        esc(n.name) + ' <span>' + (n.used_by.length ? esc('used by ' + plural(n.used_by.length, 'app', 'apps')) : 'shared') + '</span>' +
+        nums.map(function (k) { return '<b class="g-num' + (gst.flow !== null && k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>'; }).join('') + '</button>';
+    }).join('') + (libs.length > shown.length ? '<span class="g-more">+' + (libs.length - shown.length) + ' more</span>' : '');
+  }
+  // The map scaled to its area, never above 1: text stays text-sized.
+  function gFit() {
+    var r = gMap.getBoundingClientRect(), stripH = gStrip.hidden ? 0 : 44;
+    var w = Math.max(r.width, 200), h = Math.max(r.height - stripH, 200);
+    var k = Math.min(1, w / gst.size.w, h / gst.size.h);
+    k = Math.max(k, 0.55);
+    gst.cam.k = k;
+    gst.cam.x = Math.max(0, Math.round((w - gst.size.w * k) / 2));
+    gst.cam.y = Math.max(0, Math.round((h - gst.size.h * k) / 2));
+    gWorld.style.transform = 'translate(' + gst.cam.x + 'px,' + gst.cam.y + 'px) scale(' + k + ')';
+    gWorld.style.width = gst.size.w + 'px';
+    gWorld.style.height = gst.size.h + 'px';
+    // Too big to fit at a readable size: the map scrolls.
+    gMap.classList.toggle('scrolls', gst.size.w * k > w + 1 || gst.size.h * k > h + 1);
+  }
+
+  // ----- header and tours strip
+  function renderGlanceHead() {
+    var counts = [];
+    var by = {};
+    GL.nodes.forEach(function (n) { by[n.lane] = (by[n.lane] || 0) + 1; });
+    if (GL.mode === 'apps') {
+      var apps = (by.front || 0) + (by.svc || 0) + (by.work || 0);
+      counts.push(plural(apps, 'app', 'apps'));
+      if (by.lib) counts.push(plural(by.lib, 'library', 'libraries'));
+    } else if (GL.mode === 'packages') {
+      counts.push(plural((by.apps || 0) + (by.lib || 0), 'package', 'packages'));
+    } else {
+      counts.push(plural(by.mod || 0, 'module', 'modules'));
+      if (by.apps) counts.push(plural(by.apps, 'app', 'apps'));
+      if (by.lib) counts.push(plural(by.lib, 'library', 'libraries'));
+    }
+    var infra = GL.nodes.filter(function (n) { return n.lane === 'infra'; }).map(function (n) { return n.name; });
+    if (infra.length) counts.push(infra.join(', '));
+    var hidden = GL.hidden || {};
+    var note = '';
+    if (hidden.cards) note += '<button type="button" class="g-link" data-gall="1">' + (gst.all ? 'Show the ' + fmt(GL.nodes.filter(function (n) { return n.place === 'card' || n.place === 'chip'; }).length) + ' main parts' : 'Show all ' + fmt(hidden.cards + GL.nodes.filter(function (n) { return n.place === 'card'; }).length) + ' (' + fmt(hidden.cards) + ' hidden)') + '</button>';
+    if (hidden.tests) note += '<span class="g-dim">' + esc(plural(hidden.tests, 'test, docs or tooling unit', 'test, docs and tooling units')) + ' left out</span>';
+    var from = GL.summary.from && GL.summary.from !== 'template' ? '<span class="g-src">from ' + esc(GL.summary.from) + '</span>' : '';
+    gHead.innerHTML = '<div class="g-row"><div class="g-title"><h2>' + esc(META.repo) + '</h2><span class="g-counts">' + esc(counts.join(' · ')) + '</span>' + note + '</div>' +
+      '<button type="button" class="g-explore" data-gexplore="1" title="The apps, folders, files and symbols, zoomable (E)">Explore ▸</button></div>' +
+      '<p class="g-sum">' + esc(GL.summary.text) + ' ' + from + '</p>';
+  }
+  function gTourStep() { return gst.tour !== null ? GL.tour[gst.tour] : null; }
+  function renderGlanceTours() {
+    var html = '';
+    if (gst.tour !== null) {
+      var t = GL.tour[gst.tour];
+      html += '<span class="g-tk">System tour</span><span class="g-dots" aria-label="Step ' + (gst.tour + 1) + ' of ' + GL.tour.length + '">' +
+        GL.tour.map(function (_, i) { return '<button type="button" class="g-dot' + (i === gst.tour ? ' cur' : i < gst.tour ? ' done' : '') + '" data-gtour="' + i + '" aria-label="Step ' + (i + 1) + '"></button>'; }).join('') + '</span>' +
+        '<span class="g-tstep">Step ' + (gst.tour + 1) + ' of ' + GL.tour.length + ': <b>' + esc(t.title) + '</b></span>' +
+        '<span class="g-tbtns"><button type="button" data-gtnav="-1"' + (gst.tour === 0 ? ' disabled' : '') + '>‹ Back</button>' +
+        '<button type="button" class="pri" data-gtnav="1">' + (gst.tour === GL.tour.length - 1 ? 'Finish' : 'Next ›') + '</button>' +
+        '<button type="button" data-gtexit="1" title="Leave the tour here (Esc)">Exit</button></span>';
+    } else if (gst.flow !== null) {
+      var f = GL.flows[gst.flow];
+      html += '<button type="button" data-gflowexit="1" class="g-back">◂ Overview</button><span class="g-tk">Flow</span><b class="g-ftitle">' + esc(f.title) + '</b>' +
+        '<span class="g-tstep">Step ' + (gst.step + 1) + ' of ' + f.steps.length + '</span>' +
+        '<span class="g-tbtns"><button type="button" data-gstepnav="-1"' + (gst.step === 0 ? ' disabled' : '') + ' aria-label="Previous step">‹</button>' +
+        '<button type="button" data-gstepnav="1"' + (gst.step === f.steps.length - 1 ? ' disabled' : '') + ' aria-label="Next step">›</button>' +
+        '<button type="button" data-gseq="1" aria-pressed="' + gst.seq + '">Sequence</button></span>';
+    } else {
+      html += '<span class="g-tk">Tours</span>';
+      if (GL.tour.length) html += '<button type="button" class="g-tour pri" data-gtstart="1">System tour <span>' + esc(plural(GL.tour.length, 'step', 'steps')) + '</span></button>';
+      if (gst.resume !== null) html += '<button type="button" class="g-tour" data-gtour="' + gst.resume + '">Resume tour <span>step ' + (gst.resume + 1) + '</span></button>';
+      GL.flows.slice(0, 3).forEach(function (f, i) {
+        html += '<button type="button" class="g-tour" data-gflow="' + i + '" title="Follow this request step by step">' + esc(f.title) + '</button>';
+      });
+      if (GL.questions.length) {
+        html += '<span class="g-q"><button type="button" data-gqmenu="1" aria-haspopup="true" aria-expanded="' + !!gst.qmenu + '">More questions ▾</button>';
+        if (gst.qmenu) html += '<div class="g-qmenu" role="menu">' + GL.questions.map(function (q, i) { return '<button type="button" role="menuitem" data-gq="' + i + '">' + esc(q.q) + '</button>'; }).join('') + '</div>';
+        html += '</span>';
+      }
+    }
+    gTours.innerHTML = html;
+  }
+
+  // ----- the side column
+  function gLoc(file, line) { return file ? file + (line ? ':' + line : '') : ''; }
+  function gCode(file, line) { var l = gLoc(file, line); return l ? '<button type="button" class="g-loc" data-gcopy="' + esc(l) + '" title="Copy">' + esc(l) + '</button>' : ''; }
+  function gNodeBtn(i) { return '<button type="button" class="g-nm" data-g="' + i + '">' + esc(gNode(i).name) + '</button>'; }
+  function renderGlanceSide() {
+    var html;
+    if (gst.flow !== null) html = gFlowSide();
+    else if (gTourStep()) html = gTourSide();
+    else if (gst.question !== null) html = gQuestionSide();
+    else if (gst.link !== null) html = gLinkSide(gst.link);
+    else if (gst.sel !== null) html = gNodeSide(gst.sel);
+    else html = gStartHere();
+    gSide.innerHTML = html;
+  }
+  function gStartHere() {
+    var html = '<h2 class="g-h">Start here</h2>';
+    // Ways in, per node.
+    var real = GL.entries.filter(function (e) { return e.kind !== 'central'; });
+    html += '<section><h3>Ways in</h3>';
+    if (!real.length) {
+      html += '<p class="g-note">No HTTP routes, RPC methods, topic subscriptions, commands or main functions were found.' +
+        (GL.central ? ' The flows start from the most called functions instead.' : '') + '</p>';
+    } else {
+      var byNode = {};
+      real.forEach(function (e) { (byNode[e.node] = byNode[e.node] || []).push(e); });
+      var order = Object.keys(byNode).map(Number).sort(function (a, b) { return byNode[b].length - byNode[a].length || a - b; });
+      order.slice(0, 4).forEach(function (nd) {
+        var list = byNode[nd];
+        html += '<div class="g-ways"><div class="g-wh">' + gNodeBtn(nd) + '<span>' + esc(gWaysText(gNode(nd).ways)) + '</span></div><ul>';
+        list.slice(0, 3).forEach(function (e) { html += gEntryRow(e); });
+        if (list.length > 3) html += '<li class="g-dim">+' + (list.length - 3) + ' more · open the card</li>';
+        html += '</ul></div>';
+      });
+      if (order.length > 4) html += '<p class="g-dim">' + esc(plural(order.length - 4, 'other part has', 'other parts have')) + ' ways in: click its card.</p>';
+    }
+    html += '</section>';
+    if (GL.core_types.length) {
+      html += '<section><h3>Core types <span>most used</span></h3><ul class="g-rows">' + GL.core_types.slice(0, 6).map(function (c) {
+        return '<li><b>' + esc(c.name) + '</b><span class="g-dim">×' + fmt(c.uses) + ' · ' + esc(gNode(c.node).name) + '</span>' + gCode(c.file, c.line) + '</li>';
+      }).join('') + '</ul></section>';
+    }
+    if (GL.read_first.length) {
+      html += '<section><h3>Read first</h3><ul class="g-rows">' + GL.read_first.map(function (r) {
+        return '<li><button type="button" class="g-loc" data-gcopy="' + esc(r.path) + '">' + esc(r.path) + '</button><span class="g-dim">' + esc(r.note) + '</span></li>';
+      }).join('') + '</ul></section>';
+    }
+    if (GL.hotspots.length) {
+      html += '<section><h3>Careful here <span>complex and widely called</span></h3><ul class="g-rows">' + GL.hotspots.slice(0, 5).map(function (h) {
+        return '<li><b>' + esc(h.name) + '</b><span class="g-dim">complexity ' + fmt(h.complexity) + ' · ' + esc(plural(h.uses, 'caller', 'callers')) + ' · ' + esc(gNode(h.node).name) + '</span>' + gCode(h.file, h.line) + '</li>';
+      }).join('') + '</ul></section>';
+    }
+    html += '<p class="g-hint">Click a card or a line for more; double-click a card to open it in Explore.</p>';
+    return html;
+  }
+  function gWaysText(w) {
+    var parts = [];
+    [['http', 'route', 'routes'], ['rpc', 'RPC method', 'RPC methods'], ['bus', 'subscription', 'subscriptions'], ['cli', 'command', 'commands'], ['main', 'main', 'mains']].forEach(function (k) {
+      if (w && w[k[0]]) parts.push(plural(w[k[0]], k[1], k[2]));
+    });
+    return parts.join(' · ');
+  }
+  function gEntryRow(e) {
+    return '<li class="g-entry" title="' + esc(e.qual + ' · ' + gLoc(e.file, e.line)) + '"><span class="g-way g-w-' + esc(e.kind) + '">' + esc(e.kind === 'http' ? 'HTTP' : e.kind === 'rpc' ? 'RPC' : e.kind) + '</span>' +
+      '<span class="g-el">' + esc(e.label) + '</span>' +
+      (e.flow !== null && e.flow !== undefined ? '<button type="button" class="g-follow" data-gflow="' + e.flow + '" title="Follow this request step by step">Follow ▸</button>' : '<span></span>') + '</li>';
+  }
+  function gNodeSide(i) {
+    var n = gNode(i);
+    var kind = n.kind === 'infra' ? 'infrastructure' : n.kind === 'module' ? 'module' : (KIND_LABEL[n.kind] || n.kind);
+    var html = '<button type="button" class="g-backlink" data-gclear="1">‹ Start here</button>';
+    html += '<h2 class="g-h">' + esc(n.name) + ' <span>' + esc(kind + (n.langs.length ? ' · ' + n.langs.join(', ') : '')) + '</span></h2>';
+    html += '<p class="g-lead">' + esc(n.sentence) + '</p>';
+    if (n.dir) html += '<p class="g-dir">' + esc(n.dir) + '</p>';
+    var ways = GL.entries.filter(function (e) { return e.node === i && e.kind !== 'central'; });
+    html += '<dl class="g-dl">';
+    if (ways.length) html += '<dt>Ways in</dt><dd><p>' + esc(gWaysText(n.ways)) + '</p><ul>' + ways.slice(0, 6).map(gEntryRow).join('') + (ways.length > 6 ? '<li class="g-dim">+' + (ways.length - 6) + ' more</li>' : '') + '</ul></dd>';
+    var out = [], inn = [];
+    GL.links.forEach(function (l, li) { if (l.from === i) out.push(li); if (l.to === i) inn.push(li); });
+    var linkList = function (list, other) {
+      return '<ul>' + list.map(function (li) {
+        var l = GL.links[li];
+        return '<li><button type="button" class="g-nm" data-gl="' + li + '">' + esc(gNode(l[other]).name) + '</button> <span class="g-dim">' + esc(l.label) + '</span></li>';
+      }).join('') + '</ul>';
+    };
+    if (out.length) html += '<dt>Talks to</dt><dd>' + linkList(out, 'to') + '</dd>';
+    if (inn.length) html += '<dt>Called by</dt><dd>' + linkList(inn, 'from') + '</dd>';
+    if (n.used_by && n.used_by.length) html += '<dt>Used by</dt><dd>' + n.used_by.map(gNodeBtn).join(', ') + '</dd>';
+    if (n.key_types.length) html += '<dt>Key types</dt><dd><ul>' + n.key_types.map(function (c) { return '<li><b>' + esc(c.name) + '</b> <span class="g-dim">×' + fmt(c.uses) + '</span> ' + gCode(c.file, c.line) + '</li>'; }).join('') + '</ul></dd>';
+    if (n.flows.length) html += '<dt>Flows</dt><dd><ul>' + n.flows.map(function (fi) { return '<li><button type="button" class="g-follow" data-gflow="' + fi + '">' + esc(GL.flows[fi].title) + ' ▸</button></li>'; }).join('') + '</ul></dd>';
+    if (n.deployed_by.length) html += '<dt>Deployed by</dt><dd>' + n.deployed_by.map(function (f) { return gCode(f, 0); }).join(' ') + '</dd>';
+    html += '</dl>';
+    if (n.units.length && n.kind !== 'infra') html += '<div class="g-actions"><button type="button" class="pri" data-gopen="' + i + '">Open in Explore ▸</button></div>';
+    return html;
+  }
+  function gLinkSide(li) {
+    var l = GL.links[li];
+    var html = '<button type="button" class="g-backlink" data-gclear="1">‹ Start here</button>';
+    html += '<h2 class="g-h">' + gNodeBtn(l.from) + ' → ' + gNodeBtn(l.to) + '</h2><p class="g-lead">' + esc(gNode(l.from).name + ' ' + l.label + ' ' + gNode(l.to).name) + '.</p>';
+    html += '<h3>The calls behind it</h3><ul class="g-calls">';
+    l.calls.forEach(function (c) {
+      if (c.key !== undefined) {
+        html += '<li><code>' + esc(c.key) + '</code>' +
+          (c.from ? '<div><span class="g-dim">from</span> ' + esc(c.from.qual) + ' ' + gCode(c.from.file, c.from.line) + '</div>' : '') +
+          (c.to ? '<div><span class="g-dim">to</span> ' + esc(c.to.qual) + ' ' + gCode(c.to.file, c.to.line) + '</div>' : '') + '</li>';
+      } else {
+        html += '<li>' + esc(c.text) + ' ' + gCode(c.file, c.line) + '</li>';
+      }
+    });
+    if (l.count > l.calls.length) html += '<li class="g-dim">+' + fmt(l.count - l.calls.length) + ' more</li>';
+    return html + '</ul>';
+  }
+  function gStepText(f, k) {
+    var s = f.steps[k], prev = k > 0 ? f.steps[k - 1] : null, here = gNode(s.node).name;
+    if (k === 0) return f.caller ? here + ' sends the request' : 'It starts in ' + here + ' at ' + f.label;
+    var from = gNode(prev.node).name;
+    switch (s.via) {
+      case 'http': return from + ' calls ' + here + ' over HTTP';
+      case 'rpc': return from + ' calls ' + here + ' over RPC';
+      case 'bus': return from + ' publishes; ' + here + ' picks the message up';
+      case 'config': return from + ' reads config from ' + here;
+      case 'db': return from + ' reaches the database in ' + here;
+      default: return prev.node === s.node ? s.name + ' runs in ' + here : from + ' calls into ' + here;
+    }
+  }
+  function gFlowSide() {
+    var f = GL.flows[gst.flow], s = f.steps[gst.step];
+    var html = '<h2 class="g-h">' + esc(f.title) + '</h2>';
+    html += '<p class="g-lead"><b class="g-num cur">' + (gst.step + 1) + '</b> ' + esc(gStepText(f, gst.step)) + '.</p>';
+    html += '<div class="g-stepbox"><div class="g-sym">' + esc(s.qual) + '</div>' + gCode(s.file, s.line) +
+      (s.probable ? '<p class="g-prob">Probable: this call was matched by name only.</p>' : '') + '</div>';
+    html += '<ol class="g-chain">' + f.steps.map(function (st0, k) {
+      return '<li class="' + (k === gst.step ? 'cur' : '') + (st0.probable ? ' probable' : '') + '"><button type="button" data-gstep="' + k + '"><b class="g-num' + (k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>' +
+        '<span class="g-cn">' + esc(st0.name) + '</span><span class="g-dim">' + esc(gNode(st0.node).name) + (st0.via !== 'call' && st0.via !== 'start' ? ' · ' + VIA[st0.via] : '') + '</span></button></li>';
+    }).join('') + '</ol>';
+    if (f.ends === 'unresolved') html += '<p class="g-note">The trace stops here: the next calls could not be resolved to code in the index.</p>';
+    if (f.probable) html += '<p class="g-note">Dashed steps are probable: their calls were matched by name only.</p>';
+    html += '<p class="g-hint"><kbd>←</kbd> <kbd>→</kbd> step · <kbd>Esc</kbd> leaves the flow and keeps the app selected.</p>';
+    return html;
+  }
+  function gTourSide() {
+    var t = GL.tour[gst.tour];
+    var html = '<p class="g-kicker">System tour · step ' + (gst.tour + 1) + ' of ' + GL.tour.length + '</p><h2 class="g-h">' + esc(t.title) + '</h2><p class="g-lead">' + esc(t.text) + '</p>';
+    if (t.flow !== undefined && GL.flows[t.flow]) {
+      var f = GL.flows[t.flow];
+      html += '<ol class="g-chain">' + f.steps.map(function (s, k) {
+        return '<li><b class="g-num">' + (k + 1) + '</b><span class="g-cn">' + esc(s.name) + '</span><span class="g-dim">' + esc(gNode(s.node).name) + '</span></li>';
+      }).join('') + '</ol><div class="g-actions"><button type="button" data-gflow="' + t.flow + '">Step through this flow ▸</button></div>';
+    }
+    if (t.panel === 'ways' && t.select !== undefined) {
+      var ways = GL.entries.filter(function (e) { return e.node === t.select && e.kind !== 'central'; });
+      html += '<ul>' + ways.slice(0, 8).map(gEntryRow).join('') + (ways.length > 8 ? '<li class="g-dim">+' + (ways.length - 8) + ' more</li>' : '') + '</ul>';
+    }
+    if (t.panel === 'core') html += '<ul class="g-rows">' + GL.core_types.slice(0, 5).map(function (c) { return '<li><b>' + esc(c.name) + '</b><span class="g-dim">×' + fmt(c.uses) + ' · ' + esc(gNode(c.node).name) + '</span>' + gCode(c.file, c.line) + '</li>'; }).join('') + '</ul>';
+    if (t.panel === 'hotspots') html += '<ul class="g-rows">' + GL.hotspots.slice(0, 5).map(function (h) { return '<li><b>' + esc(h.name) + '</b><span class="g-dim">complexity ' + fmt(h.complexity) + ' · ' + esc(gNode(h.node).name) + '</span>' + gCode(h.file, h.line) + '</li>'; }).join('') + '</ul>';
+    html += '<p class="g-hint"><kbd>←</kbd> <kbd>→</kbd> step · <kbd>Esc</kbd> leaves the tour here.</p>';
+    return html;
+  }
+  function gQuestionSide() {
+    var q = GL.questions[gst.question];
+    var html = '<button type="button" class="g-backlink" data-gclear="1">‹ Start here</button><h2 class="g-h">' + esc(q.q) + '</h2><p class="g-lead">' + esc(q.a) + '</p>';
+    if (q.items.length) html += '<ul class="g-rows">' + q.items.map(function (it) { return '<li><span>' + esc(it.text) + '</span>' + gCode(it.file, it.line) + '</li>'; }).join('') + '</ul>';
+    return html;
+  }
+
+  // ----- the sequence view of a flow: one lane per part, steps top down
+  function renderSequence() {
+    var f = GL.flows[gst.flow];
+    var lanes = [];
+    f.steps.forEach(function (s) { if (lanes.indexOf(s.node) < 0) lanes.push(s.node); });
+    var colW = 190, top = 56, rowH = 46, left = 30;
+    var w = left * 2 + lanes.length * colW, h = top + f.steps.length * rowH + 30;
+    var x = function (node) { return left + lanes.indexOf(node) * colW + colW / 2; };
+    var svg = '<svg class="g-seqsvg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="img" aria-label="' + esc('Sequence of ' + f.title) + '">';
+    lanes.forEach(function (nd) {
+      var cx = x(nd), name = gNode(nd).name;
+      svg += '<rect class="sq-head" x="' + r1(cx - colW / 2 + 10) + '" y="8" width="' + (colW - 20) + '" height="30" rx="4"/>' +
+        '<text class="sq-name" x="' + r1(cx) + '" y="28" text-anchor="middle">' + esc(name.length > 24 ? name.slice(0, 23) + '…' : name) + '</text>' +
+        '<line class="sq-life" x1="' + r1(cx) + '" y1="38" x2="' + r1(cx) + '" y2="' + (h - 12) + '"/>';
+    });
+    f.steps.forEach(function (s, k) {
+      var y = top + k * rowH + 20, cur = k === gst.step ? ' cur' : '', prob = s.probable ? ' probable' : '';
+      var from = k === 0 ? s.node : f.steps[k - 1].node, x0 = x(from), x1 = x(s.node);
+      var label = (k + 1) + '  ' + s.name + (s.via !== 'call' && s.via !== 'start' ? '  · ' + VIA[s.via] : '');
+      svg += '<g class="sq-msg' + cur + prob + '" data-gstep="' + k + '">';
+      if (k === 0 || from === s.node) {
+        svg += '<path class="sq-ln" d="M' + r1(x1) + ' ' + r1(y - 10) + 'h26v20h-26"/><path class="sq-ah" d="M' + r1(x1) + ' ' + r1(y + 10) + 'l7 -4v8z"/>' +
+          '<text class="sq-lbl" x="' + r1(x1 + 32) + '" y="' + r1(y + 4) + '">' + esc(label) + '</text>';
+      } else {
+        var dir = x1 > x0 ? 1 : -1;
+        svg += '<path class="sq-ln" d="M' + r1(x0) + ' ' + r1(y) + 'H' + r1(x1 - dir * 2) + '"/><path class="sq-ah" d="M' + r1(x1) + ' ' + r1(y) + 'l' + (-dir * 8) + ' -4v8z"/>' +
+          '<text class="sq-lbl" x="' + r1((x0 + x1) / 2) + '" y="' + r1(y - 7) + '" text-anchor="middle">' + esc(label) + '</text>';
+      }
+      svg += '</g>';
+    });
+    gSeq.innerHTML = svg + '</svg>';
+    gst.seqLanes = lanes.map(function (nd) { return gNode(nd).name; });
+  }
+
+  // ----- state changes
+  function gSelect(i) {
+    gst.sel = i; gst.link = null; gst.question = null; gst.qmenu = false;
+    renderGlance();
+    if (i !== null) live.textContent = gNode(i).name + ': ' + gNode(i).sentence;
+  }
+  function gSelectLink(li) { gst.link = li; gst.sel = null; gst.question = null; gst.qmenu = false; renderGlance(); }
+  function gOpenFlow(fi, step) {
+    if (!GL.flows[fi]) return;
+    gst.flow = fi; gst.step = step || 0; gst.qmenu = false; gst.question = null; gst.sel = null; gst.link = null;
+    if (gst.tour !== null) { gst.resume = gst.tour; gst.tour = null; }
+    renderGlance();
+    live.textContent = 'Flow ' + GL.flows[fi].title + ', step 1 of ' + GL.flows[fi].steps.length;
+  }
+  function gStep(d) {
+    if (gst.flow === null) return;
+    var f = GL.flows[gst.flow], k = Math.max(0, Math.min(f.steps.length - 1, gst.step + d));
+    if (k === gst.step) return;
+    gst.step = k;
+    renderGlance();
+    live.textContent = 'Step ' + (k + 1) + ': ' + gStepText(f, k);
+  }
+  function gLeaveFlow() {
+    if (gst.flow === null) return;
+    var f = GL.flows[gst.flow];
+    // Martini glass: out of the flow, at the part it had reached.
+    gst.sel = f.steps[gst.step].node;
+    gst.flow = null; gst.seq = false;
+    renderGlance();
+  }
+  function gTour(i) {
+    if (!GL.tour.length) return;
+    gst.tour = Math.max(0, Math.min(GL.tour.length - 1, i));
+    gst.flow = null; gst.seq = false; gst.question = null; gst.qmenu = false; gst.link = null;
+    var t = GL.tour[gst.tour];
+    gst.sel = t.select !== undefined ? t.select : null;
+    renderGlance();
+    live.textContent = 'Tour step ' + (gst.tour + 1) + ': ' + t.title;
+  }
+  function gTourNav(d) {
+    if (gst.tour === null) return;
+    if (d > 0 && gst.tour === GL.tour.length - 1) { gTourExit(true); return; }
+    gTour(gst.tour + d);
+  }
+  function gTourExit(finished) {
+    if (gst.tour === null) return;
+    var t = GL.tour[gst.tour];
+    gst.resume = finished ? null : gst.tour;
+    gst.tour = null;
+    // Keep what the step showed selected: the user explores from there.
+    if (t.select !== undefined) gst.sel = t.select;
+    else if (t.nodes.length === 1) gst.sel = t.nodes[0];
+    renderGlance();
+  }
+  function gQuestion(i) { gst.question = i; gst.qmenu = false; gst.sel = null; gst.link = null; renderGlance(); }
+  // Into Explore, at the card (and folder) this node stands for.
+  function gExplore(i) {
+    setLevel('app');
+    if (i === null || i === undefined) return;
+    var n = gNode(i);
+    var uid = n.units[0];
+    if (uid === undefined) return;
+    revealUnit(uid);
+    if (!zoomable(AU[uid])) { selectUnit('u' + uid, true); return; }
+    var path = [];
+    if (n.kind === 'module') {
+      var rel = n.dir.slice((AU[uid].dir || '').length);
+      var id = rel ? nodeFromRef(uid, rel) : null;
+      if (id) path = zchain(uid, id);
+    }
+    zoomOpen(uid, path);
+  }
+  function glanceKey(ev) {
+    var k = ev.key;
+    if (gst.flow !== null && (k === 'ArrowRight' || k === 'ArrowLeft')) { ev.preventDefault(); gStep(k === 'ArrowRight' ? 1 : -1); return; }
+    if (gst.tour !== null && (k === 'ArrowRight' || k === 'ArrowLeft')) { ev.preventDefault(); gTourNav(k === 'ArrowRight' ? 1 : -1); return; }
+    if (k === 'Escape') {
+      if (gst.qmenu) { gst.qmenu = false; renderGlanceTours(); return; }
+      if (gst.flow !== null) { gLeaveFlow(); return; }
+      if (gst.tour !== null) { gTourExit(false); return; }
+      if (gst.sel !== null || gst.link !== null || gst.question !== null) { gst.sel = null; gst.link = null; gst.question = null; renderGlance(); }
+      return;
+    }
+    if ((k === 'e' || k === 'E') && !ev.shiftKey) { gExplore(gst.sel); return; }
+    if (k === 's' && gst.flow !== null) { gst.seq = !gst.seq; renderGlance(); return; }
+    if (k === 't' && gst.tour === null && GL.tour.length) { gTour(0); return; }
+    // A focused card: Enter selects it, Enter again opens it in Explore.
+    if ((k === 'Enter' || k === ' ') && ev.target && ev.target.dataset && ev.target.dataset.g !== undefined && ev.target.tagName === 'ARTICLE') {
+      ev.preventDefault();
+      var id = +ev.target.dataset.g;
+      if (gst.sel === id && k === 'Enter') gExplore(id); else { gSelect(id); var el = gCards.querySelector('[data-g="' + id + '"]'); if (el && el.focus) el.focus(); }
+    }
+  }
+  function glanceClick(t) {
+    if (!t || !t.dataset) return false;
+    var d = t.dataset;
+    if (d.gcopy !== undefined) { copyText(d.gcopy); return true; }
+    if (d.gexplore !== undefined) { gExplore(gst.sel); return true; }
+    if (d.gopen !== undefined) { gExplore(+d.gopen); return true; }
+    if (d.gall !== undefined) { gst.all = !gst.all; renderGlance(); return true; }
+    if (d.gtstart !== undefined) { gTour(0); return true; }
+    if (d.gtour !== undefined) { gTour(+d.gtour); return true; }
+    if (d.gtnav !== undefined) { gTourNav(+d.gtnav); return true; }
+    if (d.gtexit !== undefined) { gTourExit(false); return true; }
+    if (d.gflow !== undefined) { gOpenFlow(+d.gflow); return true; }
+    if (d.gflowexit !== undefined) { gLeaveFlow(); return true; }
+    if (d.gstepnav !== undefined) { gStep(+d.gstepnav); return true; }
+    if (d.gstep !== undefined && gst.flow !== null) { gst.step = +d.gstep; renderGlance(); return true; }
+    if (d.gseq !== undefined) { gst.seq = !gst.seq; renderGlance(); return true; }
+    if (d.gqmenu !== undefined) { gst.qmenu = !gst.qmenu; renderGlanceTours(); return true; }
+    if (d.gq !== undefined) { gQuestion(+d.gq); return true; }
+    if (d.gclear !== undefined) { gst.sel = null; gst.link = null; gst.question = null; renderGlance(); return true; }
+    if (d.gl !== undefined) { gSelectLink(+d.gl); return true; }
+    if (d.g !== undefined) { if (gst.flow !== null) gLeaveFlow(); gSelect(+d.g); return true; }
+    return false;
+  }
+  if (glanceEl) {
+    glanceEl.addEventListener('click', function (ev) {
+      var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gq], [data-gclear]');
+      if (t) { glanceClick(t); return; }
+      // The paper: back to Start here (a flow or a tour keeps going).
+      if (ev.target.closest('#g-map') && gst.flow === null && gst.tour === null && (gst.sel !== null || gst.link !== null || gst.question !== null)) {
+        gst.sel = null; gst.link = null; gst.question = null; renderGlance();
+      }
+      if (gst.qmenu && !ev.target.closest('.g-q')) { gst.qmenu = false; renderGlanceTours(); }
+    });
+    glanceEl.addEventListener('dblclick', function (ev) {
+      var c = ev.target.closest('[data-g]');
+      if (c && c.closest('#g-map')) gExplore(+c.dataset.g);
+    });
+    glanceEl.addEventListener('mouseover', function (ev) {
+      var hit = ev.target.closest('.g-ln');
+      gSvg.classList.toggle('hovering', !!hit);
+    });
+  }
+  var lvlGlance = document.getElementById('lvl-glance');
+  if (lvlGlance) lvlGlance.addEventListener('click', function () { setLevel('glance'); });
 
   // ----------------------------------------------------------------- header
   function setHeader() {
@@ -6130,6 +7029,7 @@
   if (HAS_APPS) {
     levelSeg.hidden = false;
     search.placeholder = 'Find an app, symbol, file or folder';
+    if (GL) lvlGlance.hidden = false;
   }
   applyTheme(null);
   renderCrumbs();
@@ -6137,6 +7037,7 @@
   // the view's centre; only Fit (or a first look) rescales.
   var lastStageW = stage.getBoundingClientRect().width;
   function onResize() {
+    if (st.level === 'glance') { renderGlance(); return; }
     var w = stage.getBoundingClientRect().width;
     if (st.level === 'app') {
       // A fit still moving (or just made) is made again for the new size:
@@ -6150,6 +7051,8 @@
   }
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(onResize).observe(stage);
   else window.addEventListener('resize', onResize);
+  // The landing page refits when its map area changes (the stage is hidden then).
+  if (typeof ResizeObserver !== 'undefined' && gMap) new ResizeObserver(function () { if (st.level === 'glance') renderGlance(); }).observe(gMap);
   resize();
   layForce.setAttribute('aria-pressed', String(st.layout === 'force'));
   layLayer.setAttribute('aria-pressed', String(st.layout === 'layered'));
@@ -6174,7 +7077,8 @@
   var fromHash = false;
   try { fromHash = st.level === 'app' && readHash(); } catch (e) { fromHash = false; }
   if (!fromHash && shownUnits.length === 1) { ast.open.add(shownUnits[0].id); ast.zpath[shownUnits[0].id] = []; ast.zfocus = shownUnits[0].id; }
-  if (st.level === 'app') setLevel('app', true);
+  // The landing page, unless the link names a place in Explore.
+  if (st.level === 'app') setLevel(GL && !fromHash ? 'glance' : 'app', true);
   if (fromHash) {
     // Straight to the state the link names, without animating.
     var hf = ast.hashFocus, savedReduce = REDUCE;
@@ -6230,7 +7134,46 @@
     },
     setLayout: setLayout,
     setView: setView,
-    level: function () { return st.level === 'app' ? 'app' : st.depth === Infinity ? 'file' : 'folder'; },
+    level: currentLevel,
+    // The landing page: what it shows, and the same actions its controls take.
+    glance: !GL ? null : {
+      data: function () { return GL; },
+      state: function () {
+        return {
+          sel: gst.sel === null ? null : gNode(gst.sel).name, link: gst.link, flow: gst.flow, step: gst.step, seq: gst.seq,
+          tour: gst.tour, resume: gst.resume, question: gst.question, all: gst.all,
+          dim: Object.keys(gst.boxes).filter(function (k) { return gst.keep && gst.keep.indexOf(+k) < 0; }).map(function (k) { return gNode(+k).name; }).sort()
+        };
+      },
+      cards: function () {
+        return Object.keys(gst.boxes).map(function (k) { var b = gst.boxes[k]; return { name: gNode(+k).name, lane: gNode(+k).lane, chip: !!b.chip, x: b.x, y: b.y, w: b.w, h: b.h }; });
+      },
+      lanes: function () { return gst.lanes.map(function (l) { return { id: l.id, label: l.label, n: l.n }; }); },
+      links: function () {
+        var labelled = {};
+        gst.labels.forEach(function (x) { labelled[x.i] = x; });
+        return gst.drawn.map(function (g) { return { from: gNode(g.l.from).name, to: gNode(g.l.to).name, family: g.l.family, label: g.l.label, shown: !!labelled[g.i], box: labelled[g.i] ? labelled[g.i].box : null }; });
+      },
+      strip: function () { return gStrip.hidden ? [] : GL.nodes.filter(function (n) { return n.place === 'strip'; }).map(function (n) { return n.name; }); },
+      html: function () { return { head: gHead.innerHTML, tours: gTours.innerHTML, cards: gCards.innerHTML, links: gSvg.innerHTML, side: gSide.innerHTML, seq: gSeq.innerHTML, strip: gStrip.innerHTML }; },
+      side: function () { return gSide.textContent; },
+      tours: function () { return gTours.textContent; },
+      seqLanes: function () { return gst.seq ? (gst.seqLanes || []) : []; },
+      select: function (name) { var n = GL.nodes.find(function (x) { return x.name === name; }); if (!n) return false; glanceClick({ dataset: { g: String(n.id) } }); return true; },
+      selectLink: function (i) { glanceClick({ dataset: { gl: String(i) } }); },
+      dblclick: function (name) { var n = GL.nodes.find(function (x) { return x.name === name; }); if (!n) return false; gExplore(n.id); return true; },
+      explore: function () { glanceClick({ dataset: { gexplore: '1' } }); },
+      openFlow: function (i) { glanceClick({ dataset: { gflow: String(i) } }); },
+      key: function (k) { glanceKey({ key: k, target: document.body, preventDefault: function () {} }); },
+      toggleSeq: function () { glanceClick({ dataset: { gseq: '1' } }); },
+      tourStart: function () { glanceClick({ dataset: { gtstart: '1' } }); },
+      tourNext: function () { glanceClick({ dataset: { gtnav: '1' } }); },
+      tourBack: function () { glanceClick({ dataset: { gtnav: '-1' } }); },
+      tourExit: function () { glanceClick({ dataset: { gtexit: '1' } }); },
+      question: function (i) { glanceClick({ dataset: { gq: String(i) } }); },
+      showAll: function () { glanceClick({ dataset: { gall: '1' } }); },
+      clear: function () { glanceClick({ dataset: { gclear: '1' } }); }
+    },
     setLevel: setLevel,
     colorBy: function () { return st.colorBy; },
     // The sheet: each card's band and box, and the drawn links.

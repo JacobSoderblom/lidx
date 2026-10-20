@@ -241,7 +241,7 @@ fn the_app_sheet_layers_by_role_and_switches_to_folders() {
     assert_eq!(web_core["up"], false, "dependencies flow down: {r}");
     assert_eq!(web_core["family"], "code", "{r}");
     assert!(
-        web_core["label"].as_str().unwrap().contains("references"),
+        web_core["label"].as_str().unwrap().contains("depends on"),
         "code and the declared reference share one line: {r}"
     );
     assert_eq!(r["selected"], true);
@@ -596,7 +596,7 @@ fn two_open_apps_show_a_cross_app_link_between_symbols() {
 }
 
 /// A file using six siblings: past the per-side cap the lightest stubs on a
-/// side share one "+N more" stub, and no weight or member is lost.
+/// side share one "+N elsewhere" stub, and no weight or member is lost.
 #[test]
 fn stubs_past_the_cap_share_one_and_keep_their_weight() {
     if !node_available() {
@@ -662,7 +662,11 @@ fn stubs_past_the_cap_share_one_and_keep_their_weight() {
         if group.len() == 1 {
             assert_eq!(now[0]["target"], group[0]["target"], "{r}");
         } else {
-            assert_eq!(now[0]["target"], format!("+{} more", group.len()), "{r}");
+            assert_eq!(
+                now[0]["target"],
+                format!("+{} elsewhere", group.len()),
+                "{r}"
+            );
             let w: u64 = group.iter().map(|s| s["weight"].as_u64().unwrap()).sum();
             assert_eq!(now[0]["weight"], w, "{r}");
             assert_eq!(
@@ -1321,4 +1325,371 @@ fn link_labels_in_a_file_are_whole_and_apart() {
         "the selected method's calls are labelled: {r}"
     );
     assert_labels_clear(&r);
+}
+
+// ------------------------------------------------- the landing page
+
+fn glance_page(files: &[(&str, &str)], prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, root, db) = common::index_repo(prefix, files);
+    let p = page(&root, &db, &[]);
+    (tmp, p)
+}
+
+fn field_list(v: &Value, key: &str) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x[key].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The page opens on the overview: a few cards in lanes, every line with a
+/// verb and a count and its label clear of every card and other label.
+#[test]
+fn the_landing_page_shows_a_small_labelled_map() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-glance-");
+    let r = run(&p, "glance-landing", "");
+    assert_eq!(r["level"], "glance", "{r}");
+    let cards = r["cards"].as_array().unwrap();
+    assert!(cards.len() <= 12);
+    assert_eq!(
+        field_list(&r["cards"], "name"),
+        vec!["portal", "ingest-api", "validator", "Kubernetes manifests"]
+    );
+    assert_eq!(
+        field_list(&r["lanes"], "label"),
+        vec![
+            "Front ends",
+            "Services",
+            "Workers and tools",
+            "Infrastructure"
+        ]
+    );
+    let links: Vec<(String, bool)> = r["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["label"].as_str().unwrap().to_string(),
+                l["shown"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        links,
+        vec![
+            ("calls over HTTP ×1".to_string(), true),
+            ("publishes fileuploaded".to_string(), true),
+            ("reads config DB_PASSWORD".to_string(), true),
+        ]
+    );
+    // Labels keep off the cards and each other.
+    let rect = |v: &Value| -> (f64, f64, f64, f64) {
+        (
+            v["x"].as_f64().unwrap(),
+            v["y"].as_f64().unwrap(),
+            v["w"].as_f64().unwrap(),
+            v["h"].as_f64().unwrap(),
+        )
+    };
+    let overlap = |a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)| {
+        a.0 < b.0 + b.2 && a.0 + a.2 > b.0 && a.1 < b.1 + b.3 && a.1 + a.3 > b.1
+    };
+    let boxes: Vec<_> = r["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| rect(&l["box"]))
+        .collect();
+    for (i, b) in boxes.iter().enumerate() {
+        for c in cards {
+            assert!(!overlap(*b, rect(c)), "label {i} on card {c}: {r}");
+        }
+        for (j, o) in boxes.iter().enumerate() {
+            assert!(
+                i == j || !overlap(*b, *o),
+                "labels {i} and {j} overlap: {r}"
+            );
+        }
+    }
+    assert_eq!(r["strip"], serde_json::json!([]), "no library: no strip");
+    let side = r["side"].as_str().unwrap();
+    assert!(
+        side.starts_with("Start hereWays iningest-api1 routeHTTPPOST /uploadsFollow ▸validator1 subscriptionbuson file-uploaded"),
+        "{side}"
+    );
+    assert!(
+        side.contains("Read firstREADME.mdwhat the project is"),
+        "{side}"
+    );
+    assert_eq!(
+        r["tours"],
+        "ToursSystem tour 5 stepsPOST /uploads → ingest-api → validator → Kubernetes manifestsMore questions ▾"
+    );
+    // Every string reaches the page escaped.
+    let html = r["html"]["cards"].as_str().unwrap();
+    assert!(html.contains("data-g=\"1\""), "{html}");
+}
+
+/// A flow steps with the arrow keys over the map, and Escape leaves it with
+/// the part it had reached selected.
+#[test]
+fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gflow-");
+    let r = run(&p, "glance-flow", "0");
+    let steps: Vec<(Value, Value, Value)> = r["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["flow"].clone(), s["step"].clone(), s["sel"].clone()))
+        .collect();
+    use serde_json::json;
+    assert_eq!(
+        steps,
+        vec![
+            (json!(0), json!(0), Value::Null),
+            (json!(0), json!(1), Value::Null),
+            (json!(0), json!(2), Value::Null),
+            (json!(0), json!(1), Value::Null),
+            // Past the end it stays on the last step.
+            (json!(0), json!(5), Value::Null),
+            (Value::Null, json!(5), json!("Kubernetes manifests")),
+        ],
+        "{r}"
+    );
+    // Step 3: the symbol, its file and line, and the chain so far.
+    let side = r["side"].as_str().unwrap();
+    assert!(
+        side.starts_with("POST /uploads → ingest-api → validator → Kubernetes manifests3 store runs in ingest-api.ingest_api.main.storeapi/ingest_api/main.py:11"),
+        "{side}"
+    );
+    assert!(
+        side.contains("4on_uploadedvalidator · sends on the bus"),
+        "{side}"
+    );
+    assert!(
+        side.contains("6config DB_PASSWORDKubernetes manifests · reads config"),
+        "{side}"
+    );
+    // Numbered crossings on the map, the current one marked.
+    let links = r["html"]["links"].as_str().unwrap();
+    assert_eq!(links.matches("class=\"g-fl").count(), 3, "{links}");
+    assert!(
+        links.contains("class=\"g-fl past\" data-gstep=\"1\""),
+        "{links}"
+    );
+    assert!(links.contains("class=\"g-fl\" data-gstep=\"3\""), "{links}");
+    let tours = r["html"]["tours"].as_str().unwrap();
+    assert!(tours.contains("Step 3 of 6"), "{tours}");
+}
+
+/// The sequence view: one lane per part in the order the flow reaches it.
+#[test]
+fn the_sequence_toggle_draws_the_flow_in_lanes() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gseq-");
+    let r = run(&p, "glance-seq", "0");
+    assert_eq!(r["on"]["state"]["seq"], true);
+    assert_eq!(
+        r["on"]["lanes"],
+        serde_json::json!(["portal", "ingest-api", "validator", "Kubernetes manifests"])
+    );
+    let svg = r["on"]["html"].as_str().unwrap();
+    assert_eq!(svg.matches("class=\"sq-msg").count(), 6, "{svg}");
+    assert!(
+        svg.contains("class=\"sq-msg cur\" data-gstep=\"1\""),
+        "{svg}"
+    );
+    assert!(svg.contains("2  upload  · calls over HTTP"), "{svg}");
+    // Off again: the map is back, the flow still open.
+    assert_eq!(r["off"]["state"]["seq"], false);
+    assert_eq!(r["off"]["state"]["flow"], 0);
+    assert_eq!(r["off"]["cards"], 4);
+}
+
+/// The system tour runs step by step, shows its progress, and exits with
+/// the selection kept and a way back in.
+#[test]
+fn the_tour_runs_and_exits_keeping_the_selection() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gtour-");
+    let r = run(&p, "glance-tour", "");
+    assert_eq!(r["count"], 5);
+    let seen = r["seen"].as_array().unwrap();
+    let at: Vec<Value> = seen.iter().map(|s| s["state"]["tour"].clone()).collect();
+    assert_eq!(
+        at,
+        serde_json::json!([0, 1, 2, 1, null])
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(
+        seen[0]["tours"],
+        "System tourStep 1 of 5: These are the 3 apps, by role‹ BackNext ›Exit"
+    );
+    assert_eq!(seen[1]["state"]["sel"], "ingest-api");
+    assert_eq!(
+        seen[1]["state"]["dim"],
+        serde_json::json!(["Kubernetes manifests"])
+    );
+    assert!(
+        seen[2]["side"].as_str().unwrap().starts_with("System tour · step 3 of 5Follow one requestPOST /uploads → ingest-api → validator → Kubernetes manifests: 6 steps across 4 parts."),
+        "{}",
+        seen[2]["side"]
+    );
+    // Escape: out of the tour, at the part step 2 selected, with a resume chip.
+    assert_eq!(seen[4]["state"]["sel"], "ingest-api");
+    assert_eq!(seen[4]["state"]["resume"], 1);
+    assert!(
+        seen[4]["tours"]
+            .as_str()
+            .unwrap()
+            .contains("Resume tour step 2"),
+        "{}",
+        seen[4]["tours"]
+    );
+}
+
+/// Explore is one click away and keeps working; the overview comes back.
+#[test]
+fn explore_opens_the_app_view_and_comes_back() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gexp-");
+    let r = run(&p, "glance-explore", "");
+    assert_eq!(r["before"], "glance");
+    assert_eq!(r["after"], "app");
+    assert_eq!(r["open"], serde_json::json!([]));
+    assert_eq!(r["back"], "glance");
+}
+
+/// Double-clicking a card opens that app in Explore, zoomed into it; a
+/// module card opens its unit at that folder.
+#[test]
+fn double_clicking_a_card_opens_it_in_explore() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gdbl-");
+    let r = run(&p, "glance-dblclick", "validator");
+    assert_eq!(r["ok"], true);
+    assert_eq!(r["level"], "app");
+    assert_eq!(r["open"], serde_json::json!(["validator"]));
+    assert_eq!(r["crumbs"], serde_json::json!(["validator"]));
+    let (_tmp2, p2) = glance_page(common::glance_fixtures::CLI, "lidx-viewer-gdblm-");
+    let r = run(&p2, "glance-dblclick", "store");
+    assert_eq!(r["level"], "app", "{r}");
+    assert_eq!(r["open"], serde_json::json!(["tally"]), "{r}");
+    assert_eq!(
+        r["crumbs"],
+        serde_json::json!(["tally", "src/", "store/"]),
+        "{r}"
+    );
+}
+
+/// A card shows its neighbours and fades the rest; a line shows the calls
+/// behind it; a question its answer; Escape clears all three.
+#[test]
+fn a_card_a_line_and_a_question_each_explain_themselves() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gsel-");
+    let r = run(&p, "glance-select", "validator");
+    assert_eq!(r["card"]["state"]["sel"], "validator");
+    assert_eq!(r["card"]["state"]["dim"], serde_json::json!(["portal"]));
+    let side = r["card"]["side"].as_str().unwrap();
+    assert!(
+        side.starts_with("‹ Start herevalidator worker · PythonPython worker subscribed to 1 topic; reads 1 config key.worker/Ways in1 subscriptionbuson file-uploaded"),
+        "{side}"
+    );
+    assert!(
+        side.contains("Talks toKubernetes manifests reads config DB_PASSWORD"),
+        "{side}"
+    );
+    assert!(
+        side.contains("Called byingest-api publishes fileuploaded"),
+        "{side}"
+    );
+    assert!(
+        !side.contains("Flows"),
+        "a flow passing through is not one that starts here: {side}"
+    );
+    assert_eq!(r["link"]["state"]["link"], 0);
+    assert_eq!(
+        r["link"]["state"]["dim"],
+        serde_json::json!(["Kubernetes manifests", "validator"])
+    );
+    let side = r["link"]["side"].as_str().unwrap();
+    assert!(
+        side.starts_with("‹ Start hereportal → ingest-apiportal calls over HTTP ×1 ingest-api.The calls behind it/uploadsfrom ui/src/api.sendUpload ui/src/api.ts:1to ingest_api.main.upload api/ingest_api/main.py:6"),
+        "{side}"
+    );
+    assert_eq!(r["q"]["state"]["question"], 0);
+    assert!(
+        r["q"]["side"]
+            .as_str()
+            .unwrap()
+            .starts_with("‹ Start hereWhere do secrets come from?No code reads a secret."),
+        "{}",
+        r["q"]["side"]
+    );
+    assert_eq!(r["cleared"]["sel"], Value::Null);
+    assert_eq!(r["cleared"]["question"], Value::Null);
+    assert_eq!(r["cleared"]["dim"], serde_json::json!([]));
+}
+
+/// A crafted description reaches the landing page as text, never as markup.
+#[test]
+fn crafted_descriptions_render_as_text_on_the_landing_page() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let mut files: Vec<(&str, &str)> = common::glance_fixtures::MULTI
+        .iter()
+        .filter(|(p, _)| *p != "ui/package.json")
+        .copied()
+        .collect();
+    files.push((
+        "ui/package.json",
+        "{\n  \"name\": \"portal\",\n  \"description\": \"<img src=x onerror=alert(1)> & co\",\n  \"scripts\": { \"dev\": \"vite\" },\n  \"dependencies\": { \"react\": \"18.0.0\" }\n}\n",
+    ));
+    let (_tmp, p) = glance_page(&files, "lidx-viewer-gesc-");
+    let landing = run(&p, "glance-landing", "");
+    let all: String = ["head", "tours", "cards", "links", "side", "seq", "strip"]
+        .iter()
+        .map(|k| landing["html"][k].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(!all.contains("<img"), "{all}");
+    assert!(
+        all.contains("&lt;img src=x onerror=alert(1)&gt; &amp; co"),
+        "{all}"
+    );
+    let r = run(&p, "glance-select", "portal");
+    let side = r["card"]["side"].as_str().unwrap();
+    assert!(
+        side.contains("<img src=x onerror=alert(1)> & co"),
+        "as text: {side}"
+    );
 }

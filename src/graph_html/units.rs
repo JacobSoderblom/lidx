@@ -153,6 +153,9 @@ pub struct Unit {
     pub why: String,
     /// Dockerfiles that build it.
     pub dockerfiles: Vec<String>,
+    /// What it is, in its own words: the manifest's description, else the
+    /// first sentence of the README in its folder.
+    pub description: Option<String>,
 }
 
 impl Unit {
@@ -182,6 +185,7 @@ impl Unit {
             images: Vec::new(),
             why: why.to_string(),
             dockerfiles: Vec::new(),
+            description: None,
         }
     }
 
@@ -1108,8 +1112,299 @@ fn detect_with_disk(root: &Path, disk: HashSet<String>, indexed: &[(String, Stri
             u.why = "library with a command".to_string();
         }
     }
+    // No description in a manifest: the README in the unit's own folder.
+    for u in &mut keep {
+        if u.description.is_none() && u.file_roots.is_empty() {
+            u.description = readme_in(&repo, &u.root).and_then(|t| readme_summary(&t));
+        }
+    }
     keep.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
     keep
+}
+
+/// README file names, in the order they are looked for.
+const READMES: &[&str] = &[
+    "README.md",
+    "readme.md",
+    "Readme.md",
+    "README.rst",
+    "README.txt",
+    "README",
+];
+
+fn readme_in(repo: &Repo, dir: &str) -> Option<String> {
+    READMES
+        .iter()
+        .map(|n| format!("{dir}{n}"))
+        .find(|p| repo.disk.contains(p))
+        .and_then(|p| read_head(&repo.abs(&p)))
+}
+
+/// The README at the top of `root`, if any (for the repo's summary).
+pub fn root_readme(root: &Path) -> Option<(String, String)> {
+    READMES.iter().find_map(|n| {
+        let p = root.join(n);
+        p.is_file()
+            .then(|| read_head(&p))
+            .flatten()
+            .map(|t| (n.to_string(), t))
+    })
+}
+
+/// Longest description kept, in characters.
+const MAX_DESCRIPTION: usize = 240;
+
+/// A manifest description on one line, cut at `MAX_DESCRIPTION`; `None` when
+/// empty or a placeholder.
+pub fn clean_description(s: &str) -> Option<String> {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = flat.to_ascii_lowercase();
+    // Placeholders tools write into new manifests say nothing.
+    let placeholder = matches!(
+        lower.trim_end_matches('.'),
+        "todo" | "tbd" | "description" | "package description"
+    ) || lower.starts_with("add your description")
+        || lower.starts_with("a short description")
+        || lower.starts_with("describe your");
+    if flat.chars().count() < 3 || placeholder {
+        return None;
+    }
+    Some(cut_words(&flat, MAX_DESCRIPTION))
+}
+
+/// `s` cut to at most `max` characters at a word boundary, with `…`.
+fn cut_words(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    let cut = head
+        .rfind(' ')
+        .filter(|&i| i > max / 2)
+        .unwrap_or(head.len());
+    format!("{}…", head[..cut].trim_end_matches([',', ';', ':', ' ']))
+}
+
+/// Markdown inline syntax removed: images, links (their text kept), code
+/// spans, emphasis and HTML tags.
+fn strip_inline(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // `![alt](url)`: dropped.
+        if c == '!'
+            && chars.get(i + 1) == Some(&'[')
+            && let Some(end) = skip_link(&chars, i + 1)
+        {
+            i = end;
+            continue;
+        }
+        // `[text](url)` / `[text][ref]`: the text.
+        if c == '['
+            && let Some(close) = matching_bracket(&chars, i).map(|c| c - i - 1)
+        {
+            let text: String = chars[i + 1..i + 1 + close].iter().collect();
+            let after = i + 2 + close;
+            if let Some(end) = skip_link(&chars, i) {
+                out.push_str(&strip_inline(&text));
+                i = end;
+                continue;
+            }
+            out.push_str(&text);
+            i = after;
+            continue;
+        }
+        // `<tag ...>`: dropped.
+        if c == '<'
+            && let Some(close) = chars[i + 1..].iter().position(|&x| x == '>')
+        {
+            let inner: String = chars[i + 1..i + 1 + close].iter().collect();
+            if inner.starts_with(|x: char| x.is_ascii_alphabetic() || x == '/' || x == '!') {
+                i += close + 2;
+                continue;
+            }
+        }
+        if c == '`' || c == '*' {
+            i += 1;
+            continue;
+        }
+        // `_emphasis_` and `__strong__`, not snake_case.
+        if c == '_' {
+            let prev = if i == 0 { ' ' } else { chars[i - 1] };
+            let next = chars.get(i + 1).copied().unwrap_or(' ');
+            if !(prev.is_alphanumeric() && next.is_alphanumeric()) {
+                i += 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// The `]` matching the `[` at `open`, nested brackets counted.
+fn matching_bracket(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (i, &c) in chars.iter().enumerate().skip(open) {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Past a `[text](url)` or `[text][ref]` starting at `open` (`[`), if it is one.
+fn skip_link(chars: &[char], open: usize) -> Option<usize> {
+    let close = matching_bracket(chars, open)?;
+    let c = match chars.get(close + 1) {
+        Some('(') => ')',
+        Some('[') => ']',
+        _ => return None,
+    };
+    let end = close + 2 + chars[close + 2..].iter().position(|&x| x == c)?;
+    Some(end + 1)
+}
+
+/// The first sentence of a README's first prose paragraph (two when the
+/// first is short), with Markdown removed. Headings, badges, HTML blocks,
+/// lists, tables, quotes and code are skipped.
+pub fn readme_summary(text: &str) -> Option<String> {
+    let mut fence = false;
+    let mut para: Vec<String> = Vec::new();
+    let mut lines = text.lines().peekable();
+    // YAML front matter.
+    if lines.peek().is_some_and(|l| l.trim() == "---") {
+        lines.next();
+        for l in lines.by_ref() {
+            if l.trim() == "---" {
+                break;
+            }
+        }
+    }
+    let mut chosen: Option<String> = None;
+    for raw in lines {
+        let l = raw.trim();
+        if l.starts_with("```") || l.starts_with("~~~") {
+            fence = !fence;
+            para.clear();
+            continue;
+        }
+        if fence {
+            continue;
+        }
+        let skip = l.starts_with('#')
+            || l.starts_with("[![")
+            || l.starts_with("![")
+            || l.starts_with('<')
+            || l.starts_with('|')
+            || l.starts_with('>')
+            || l.starts_with("- ")
+            || l.starts_with("* ")
+            || l.starts_with("+ ")
+            || l.starts_with(".. ")
+            || l.chars().next().is_some_and(|c| c.is_ascii_digit()) && l.contains(". ")
+            || (!l.is_empty() && l.chars().all(|c| matches!(c, '=' | '-' | '~' | '^' | '*')));
+        if l.is_empty() || skip {
+            if !para.is_empty() {
+                let text = strip_inline(&para.join(" "));
+                let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                // Prose, not a line of badges, a bare link, an instruction
+                // leading into a code block ("Run the following:") or words
+                // about the document itself ("This page contains...").
+                if text.chars().filter(|c| c.is_alphabetic()).count() >= 20
+                    && text.contains(' ')
+                    && !text.ends_with(':')
+                    && !about_the_document(&text)
+                {
+                    chosen = Some(text);
+                    break;
+                }
+                para.clear();
+            }
+            continue;
+        }
+        // An underlined (setext / rST) heading: the line before is a title.
+        para.push(l.to_string());
+    }
+    if chosen.is_none() && !para.is_empty() {
+        let text = strip_inline(&para.join(" "));
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.chars().filter(|c| c.is_alphabetic()).count() >= 20
+            && !text.ends_with(':')
+            && !about_the_document(&text)
+        {
+            chosen = Some(text);
+        }
+    }
+    let text = chosen?;
+    let first = first_sentence(&text);
+    let out = if first.chars().count() < 40 && first.len() < text.len() {
+        let rest = text[first.len()..].trim_start();
+        let second = first_sentence(rest);
+        format!("{first} {second}")
+    } else {
+        first.to_string()
+    };
+    clean_description(&out)
+}
+
+/// A sentence about the README rather than the project: "This page
+/// contains...", "This document describes...".
+fn about_the_document(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "this page",
+        "this document",
+        "this readme",
+        "this file",
+        "this guide",
+        "these instructions",
+    ]
+    .iter()
+    .any(|p| lower.starts_with(p))
+}
+
+/// The text up to and including the first sentence end (`.`, `!`, `?` before
+/// a space and a capital or digit, or at the end), not after `e.g.`/`i.e.`.
+fn first_sentence(text: &str) -> &str {
+    let b = text.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        if !matches!(c, b'.' | b'!' | b'?') {
+            continue;
+        }
+        let end = i + 1;
+        if end == b.len() {
+            return text;
+        }
+        let next_ok = b[end] == b' '
+            && text[end + 1..]
+                .chars()
+                .next()
+                .is_some_and(|n| n.is_uppercase() || n.is_ascii_digit() || n == '(');
+        let word = text[..i]
+            .rsplit(' ')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let abbrev = matches!(
+            word.as_str(),
+            "e.g" | "i.e" | "etc" | "vs" | "approx" | "incl"
+        ) || word.len() == 1;
+        if next_ok && !abbrev {
+            return &text[..end];
+        }
+    }
+    text
 }
 
 /// A .NET project: an app by SDK, output type or a `Program.cs`.
@@ -1172,6 +1467,7 @@ fn dotnet_unit(repo: &Repo, proj: &str, text: &str) -> Unit {
         u.aliases.insert(norm(asm));
     }
     u.packages = packages;
+    u.description = xml_text(text, "Description").and_then(clean_description);
     for (at, tag) in xml_tags(text, "ProjectReference") {
         if let Some(inc) = xml_attr(tag, "Include")
             && let Some(path) = join_rel(dir, inc)
@@ -1204,6 +1500,7 @@ struct PackageJson {
     bin: Vec<String>,
     entry: bool,
     workspaces: bool,
+    description: Option<String>,
 }
 
 impl PackageJson {
@@ -1246,6 +1543,10 @@ impl PackageJson {
                 .iter()
                 .any(|k| v.get(k).is_some()),
             workspaces: v.get("workspaces").is_some(),
+            description: v
+                .get("description")
+                .and_then(|d| d.as_str())
+                .and_then(clean_description),
         })
     }
 
@@ -1291,6 +1592,9 @@ impl PackageJson {
     /// Fold a tooling `package.json` into the unit of the manifest next to it.
     fn merge_into(self, u: &mut Unit) {
         u.manifests.push(self.path.clone());
+        if u.description.is_none() {
+            u.description = self.description.clone();
+        }
         if let Some(n) = &self.name {
             u.names.insert((Eco::Npm, n.clone()));
             let a = norm(n.rsplit('/').next().unwrap_or(n));
@@ -1374,6 +1678,7 @@ impl PackageJson {
         let mut u = Unit::new(&short, kind, dir, &why);
         u.name = name.clone();
         u.manifests.push(self.path.clone());
+        u.description = self.description.clone();
         u.names.insert((Eco::Npm, name));
         u.entries.extend(self.bin.iter().cloned());
         self.add_deps(&mut u, dir);
@@ -1526,6 +1831,11 @@ fn pyproject_unit(dir: &str, path: &str, text: &str) -> Option<Unit> {
     u.manifests.push(path.to_string());
     u.names.insert((Eco::Py, py_norm(&name)));
     u.entries = scripts;
+    u.description = project
+        .and_then(|p| p.get("description"))
+        .or_else(|| poetry.and_then(|p| p.get("description")))
+        .and_then(|v| v.as_str())
+        .and_then(clean_description);
     let ev = |needle: &str| {
         let (line, t) = line_of(text, needle);
         Evidence {
@@ -1624,6 +1934,7 @@ fn setup_py_unit(dir: &str, path: &str, text: &str) -> Unit {
     let mut u = Unit::new(&name, kind, dir, why);
     u.manifests.push(path.to_string());
     u.names.insert((Eco::Py, py_norm(&name)));
+    u.description = quoted_after("description").and_then(|d| clean_description(&d));
     if let Some(at) = text.find("install_requires") {
         let rest = &text[at..];
         if let (Some(open), Some(close)) = (rest.find('['), rest.find(']')) {
@@ -1686,6 +1997,12 @@ fn cargo_unit(repo: &Repo, dir: &str, path: &str, text: &str) -> Option<Unit> {
     let mut u = Unit::new(&name, kind, dir, why);
     u.manifests.push(path.to_string());
     u.names.insert((Eco::Cargo, norm(&name)));
+    // `description.workspace = true` is a table, not text: no description.
+    u.description = table
+        .get("package")
+        .and_then(|p| p.get("description"))
+        .and_then(|v| v.as_str())
+        .and_then(clean_description);
     u.entries.extend(bins);
     if main && u.entries.is_empty() && app {
         u.entries.insert(name.clone());
@@ -2091,6 +2408,50 @@ mod tests {
         assert!(!runs_workspace("node server.js && npm run watch"));
         let ancestors: Vec<&str> = ancestors("a/b/c.rs").collect();
         assert_eq!(ancestors, ["a/b/", "a/", ""]);
+    }
+
+    #[test]
+    fn readme_summaries_are_the_first_prose_sentence() {
+        // Badges, HTML, headings, an instruction leading into code, the code
+        // itself and a list are skipped; Markdown is removed.
+        let md = "<div align=\"center\"><img src=\"x.png\"></div>\n\n# Tool\n\n[![ci](https://b/ci.svg)](https://ci) ![v](https://b/v.svg)\n\nInstall it with:\n\n```sh\ncargo install tool\n```\n\n- a list item that is long enough to look like prose\n\n**Tool** finds `TODO` comments in [your code](https://x) quickly. It is fast.\n";
+        assert_eq!(
+            readme_summary(md).as_deref(),
+            Some("Tool finds TODO comments in your code quickly.")
+        );
+        // A short first sentence takes the next one too.
+        assert_eq!(
+            readme_summary("# A\n\nFast grep. Searches files for a pattern, recursively.\n")
+                .as_deref(),
+            Some("Fast grep. Searches files for a pattern, recursively.")
+        );
+        // Words about the README itself are not the project's.
+        assert_eq!(
+            readme_summary("This page contains instructions on deploying it.\n\nThe widget renders charts from CSV files.\n").as_deref(),
+            Some("The widget renders charts from CSV files.")
+        );
+        // Front matter, a setext heading and snake_case survive.
+        assert_eq!(
+            readme_summary("---\ntitle: x\n---\nTitle\n=====\n\nThe parse_args helper reads flags, e.g. --verbose, from argv. More.\n").as_deref(),
+            Some("The parse_args helper reads flags, e.g. --verbose, from argv.")
+        );
+        assert_eq!(readme_summary("# Only a title\n\n[![b](x)](y)\n"), None);
+        let long = format!("{} end.", "word ".repeat(80));
+        let cut = readme_summary(&long).unwrap();
+        assert!(
+            cut.ends_with('…') && cut.chars().count() <= MAX_DESCRIPTION + 1,
+            "{cut}"
+        );
+    }
+
+    #[test]
+    fn descriptions_are_one_trimmed_line() {
+        assert_eq!(
+            clean_description("  Bills\n   customers. ").as_deref(),
+            Some("Bills customers.")
+        );
+        assert_eq!(clean_description("TODO"), None);
+        assert_eq!(clean_description("x"), None);
     }
 
     #[test]

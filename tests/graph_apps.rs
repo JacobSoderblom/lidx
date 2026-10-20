@@ -383,7 +383,7 @@ fn every_link_family_has_its_weight_and_evidence() {
 
     assert_eq!(
         a.link("orders-ui", "orders-api", "http")["label"],
-        "HTTP ×1"
+        "calls over HTTP ×1"
     );
     assert_eq!(
         a.link("orders-ui", "orders-api", "http")["keys"][0],
@@ -398,7 +398,7 @@ fn every_link_family_has_its_weight_and_evidence() {
         "{bus}"
     );
     assert_eq!(a.link("Web", "Core", "code")["label"], "calls ×3");
-    assert_eq!(a.link("Web", "Core", "depends")["label"], "references");
+    assert_eq!(a.link("Web", "Core", "depends")["label"], "depends on");
     let deps_ev = &a.link("Web", "Core", "depends")["evidence"][0];
     assert_eq!(deps_ev[1], "services/web/Web.csproj");
     assert_eq!(deps_ev[2], 7);

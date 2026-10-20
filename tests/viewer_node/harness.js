@@ -128,6 +128,11 @@ function flush(rounds) {
 }
 flush(200);
 const g = sandbox.lidxGraph;
+// Whole-repo pages open on the landing page; the scenarios about Explore
+// (the app sheet and its zoom) start there, one click away, without a
+// history entry.
+const landing = g.level();
+if (!scenario.startsWith('glance') && landing === 'glance') { g.setLevel('app', true); flush(50); }
 let out;
 if (scenario === 'focus') {
   const q = arg || g.foldedSample();
@@ -312,6 +317,66 @@ if (scenario === 'focus') {
   let html = '';
   elements.forEach((e) => { html += '\n' + e.innerHTML; });
   out = { open: g.zoom.open_cards(), crumbs: g.zoom.crumbs(), sel: g.zoom.selected(), panel: g.panelText(), html };
+} else if (scenario === 'glance-landing') {
+  // The landing page as it opens: the map, its links, the side column.
+  const gl = g.glance;
+  out = { level: g.level(), cards: gl.cards(), lanes: gl.lanes(), links: gl.links(), strip: gl.strip(), side: gl.side(), tours: gl.tours(), html: gl.html() };
+} else if (scenario === 'glance-flow') {
+  // Into a flow, stepped with the arrow keys, then out with Escape.
+  const gl = g.glance, steps = [];
+  gl.openFlow(+arg); flush(5);
+  steps.push(gl.state());
+  gl.key('ArrowRight'); flush(5); steps.push(gl.state());
+  gl.key('ArrowRight'); flush(5); steps.push(gl.state());
+  const side = gl.side(), html = gl.html();
+  gl.key('ArrowLeft'); flush(5); steps.push(gl.state());
+  for (let i = 0; i < 9; i++) gl.key('ArrowRight');
+  flush(5); steps.push(gl.state());
+  gl.key('Escape'); flush(5); steps.push(gl.state());
+  out = { steps, side, html };
+} else if (scenario === 'glance-seq') {
+  const gl = g.glance;
+  gl.openFlow(+arg); flush(5);
+  gl.key('ArrowRight'); flush(5);
+  gl.toggleSeq(); flush(5);
+  const on = { state: gl.state(), lanes: gl.seqLanes(), html: gl.html().seq };
+  gl.toggleSeq(); flush(5);
+  out = { on, off: { state: gl.state(), lanes: gl.seqLanes(), cards: gl.cards().length } };
+} else if (scenario === 'glance-tour') {
+  const gl = g.glance, seen = [];
+  gl.tourStart(); flush(5);
+  seen.push({ state: gl.state(), tours: gl.tours(), side: gl.side() });
+  gl.tourNext(); flush(5);
+  seen.push({ state: gl.state(), tours: gl.tours(), side: gl.side() });
+  gl.key('ArrowRight'); flush(5);
+  seen.push({ state: gl.state(), tours: gl.tours(), side: gl.side() });
+  gl.tourBack(); flush(5);
+  seen.push({ state: gl.state() });
+  gl.key('Escape'); flush(5);
+  seen.push({ state: gl.state(), tours: gl.tours() });
+  out = { seen, count: gl.data().tour.length };
+} else if (scenario === 'glance-explore') {
+  const gl = g.glance;
+  const before = g.level();
+  gl.explore(); flush(20);
+  out = { before, after: g.level(), open: g.zoom.open_cards() };
+  g.setLevel('glance'); flush(5);
+  out.back = g.level();
+} else if (scenario === 'glance-dblclick') {
+  const gl = g.glance;
+  const ok = gl.dblclick(arg); flush(40);
+  out = { ok, level: g.level(), open: g.zoom.open_cards(), crumbs: g.zoom.crumbs() };
+} else if (scenario === 'glance-select') {
+  // A card, then a line, then a question: what stays lit and what the side says.
+  const gl = g.glance;
+  gl.select(arg); flush(5);
+  const card = { state: gl.state(), side: gl.side() };
+  gl.selectLink(0); flush(5);
+  const link = { state: gl.state(), side: gl.side() };
+  gl.question(0); flush(5);
+  const q = { state: gl.state(), side: gl.side() };
+  gl.key('Escape'); flush(5);
+  out = { card, link, q, cleared: gl.state() };
 } else {
   throw new Error('unknown scenario ' + scenario);
 }

@@ -23,7 +23,8 @@
   </div>
   <div class="tools" role="toolbar" aria-label="View">
     <div class="seg" role="group" aria-label="Level" id="level-seg" hidden>
-      <button type="button" id="lvl-app" aria-pressed="false" title="Applications, libraries and infra (A)">Apps</button>
+      <button type="button" id="lvl-glance" aria-pressed="false" title="System at a glance (G)" hidden>Overview</button>
+      <button type="button" id="lvl-app" aria-pressed="false" title="Explore: applications, libraries and infra, zoomable (A)">Apps</button>
       <button type="button" id="lvl-folder" aria-pressed="false" title="Folder map">Folders</button>
       <button type="button" id="lvl-file" aria-pressed="false" title="Every folder open, down to files">Files</button>
     </div>
@@ -63,7 +64,20 @@
   </div>
 </header>
 <p id="meta" class="meta"></p>
-<main class="main">
+<section id="glance" class="glance" aria-label="System at a glance" hidden>
+  <div id="g-head" class="g-head"></div>
+  <div id="g-tours" class="g-tours" role="toolbar" aria-label="Tours and flows"></div>
+  <div id="g-map" class="g-map">
+    <div id="g-world" class="g-world">
+      <svg id="g-links" class="g-links" aria-hidden="true"></svg>
+      <div id="g-cards" role="list" aria-label="The main parts of the system"></div>
+    </div>
+    <div id="g-seq" class="g-seq" hidden></div>
+    <div id="g-strip" class="g-strip" hidden></div>
+  </div>
+  <aside id="g-side" class="g-side" aria-label="Start here" aria-live="polite"></aside>
+</section>
+<main id="main" class="main">
   <aside id="legend" class="legend" aria-label="Legend and filters"></aside>
   <div class="stage" id="stage">
     <canvas id="canvas" tabindex="0" role="application" aria-roledescription="graph" aria-label="Code graph. Search to find a node; arrow keys move between neighbours of the selection or pan; plus and minus zoom; F fits." aria-describedby="status"></canvas>
@@ -92,6 +106,7 @@
 <dialog id="help-dialog" aria-labelledby="help-title">
   <h2 id="help-title">Keyboard and mouse</h2>
   <dl class="keys">
+    <dt>Overview</dt><dd>The landing page. Click a card for what it does, its ways in and the flows that start there; click a line for the calls behind it; double-click a card (or <kbd>E</kbd>) to open it in Explore. In a flow or the tour, <kbd>←</kbd> <kbd>→</kbd> step and <kbd>Esc</kbd> leaves, keeping the part you reached selected. <kbd>T</kbd> starts the tour, <kbd>S</kbd> shows a flow as a sequence, <kbd>G</kbd> comes back here from anywhere.</dd>
     <dt>Apps view</dt><dd>Click a card for what it exposes and consumes. Scroll into a card, double-click it or press <kbd>Enter</kbd> to expand it in place: folders, then files, then their classes and functions. Scroll out, <kbd>Esc</kbd> or the breadcrumb goes back up. Arrow keys move between the boxes of an open card. Links that leave an open folder or file end in one named stub per target; hover it for the boxes behind it. Hover a line for its evidence.</dd>
     <dt><kbd>/</kbd></dt><dd>Find; <kbd>↑</kbd> <kbd>↓</kbd> to pick, <kbd>Enter</kbd> to go</dd>
     <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move to the neighbour in that direction; pan when nothing is selected (<kbd>Shift</kbd> always pans)</dd>

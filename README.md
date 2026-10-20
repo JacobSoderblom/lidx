@@ -155,8 +155,46 @@ re-indexes.
 lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --depth 3 --open
 ```
 
-- No `--seed`: an architecture diagram of the repo's applications,
-  libraries and infrastructure (`--level app`, the default). Units come from
+- No `--seed`: the page opens on **System at a glance**, a landing page
+  for someone new to the repo:
+  - The repo in one sentence (the README's first paragraph, else a
+    manifest description, else a factual template) and its counts.
+  - A small map of at most 12 cards in lanes, laid out the same way every
+    time. Repos with two or more apps that talk across processes show the
+    apps; libraries become a "used by N apps" strip and infrastructure one
+    chip per tool. Every line has a verb and a count ("calls over HTTP ×9",
+    "calls RPC ×4", "publishes orders", "reads 3 secrets"), only for links
+    the index found on both sides. A workspace of libraries shows its
+    packages and their declared dependencies. A repo that is one unit shows
+    that unit's modules.
+  - Every card says what it is in one sentence (manifest `description`,
+    else the README in its folder, else a template such as "Go service
+    serving 11 HTTP routes; calls 4 apps over RPC").
+  - **Start here**: the ways in (HTTP routes, RPC methods, bus
+    subscriptions, `main` and CLI commands found for Cobra, click/typer,
+    commander and System.CommandLine), the most used types, the docs to
+    read first (README, CONTEXT.md, ADRs) and hotspots by complexity and
+    fan-in.
+  - **Flows**: `trace_flow` runs from each entry point, with bus, RPC, HTTP
+    and config bridging. The paths that cross the most parts and reach the
+    most infrastructure are kept, three to six of them, each titled from its
+    entry point ("/cart/checkout → frontend → checkoutservice →
+    cartservice"). Follow one step by step over the map with the other
+    parts faded, or as a sequence diagram; steps matched by name only are
+    marked probable. With no entry points the flows start from the most
+    called functions, and the page says so.
+  - A **System tour** of about six steps (lanes, where traffic enters, one
+    request, how the apps talk, where config and secrets come from, shared
+    code, hotspots), and pre-computed answers under "More questions" ("Where
+    do secrets come from?", "What talks to X?", "Which apps share Y?").
+  - Click a card for its ways in, what it talks to and what calls it, key
+    types and flows; click a line for the calls behind it; double-click a
+    card to open it in Explore. `←` `→` step through a flow or the tour,
+    and `Esc` leaves it with the part you reached still selected.
+  Everything is computed from the index when the page is written: no model
+  writes any of the text.
+- **Explore ▸** (`--level app`) is the full architecture diagram of the
+  repo's applications, libraries and infrastructure. Units come from
   the manifests: .NET projects, `package.json` packages, Python projects,
   crates, Go modules and main packages, Dockerfiles, and Kubernetes, Helm,
   compose, Bicep and Terraform files. Files no manifest owns form a
@@ -165,8 +203,8 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
   data). Each card says what the unit exposes (HTTP routes, RPC services,
   bus subscriptions, commands) and what it uses (config keys, secrets,
   topics, external endpoints). Links say what they are in words, such as
-  "calls ×N", "RPC ×N", "publishes to topic X", "reads secret X",
-  "references" and "deploys". Test projects, examples, docs and tooling
+  "calls ×N", "calls RPC ×N", "publishes to topic X", "reads secret X",
+  "depends on" and "deploys". Test projects, examples, docs and tooling
   start hidden. Click a card for every route, topic and key with the
   symbols behind it. Scroll into a card (or double-click it) to open it in
   place: its folders, then a folder's files, then a file's classes with
@@ -174,14 +212,16 @@ lidx graph --repo . --seed crate::indexer::Indexer::reindex --direction down --d
   `file:line`. The calls, uses and bridges between whatever is shown inside
   the open folder or file are drawn with weights; links that leave it go
   through one stub per target on its edge, named with the folder, file or
-  app and the count (hover one for the boxes behind it). Several cards can
+  app and the count, the lightest grouped as "+N elsewhere" (hover one for
+  the boxes behind it). Several cards can
   be open at once: with both ends in view a client's RPC call is drawn to
   the server method. Scroll out, `Esc` or the breadcrumb
   goes back up, and the panel lists everything inside a unit in a
   filterable tree. The URL fragment keeps what is open. `--max-symbols`
   (default 60000) caps the symbols embedded for this, whole files per
-  unit; the page and stderr say what was left out. The Apps / Folders /
-  Files switch (and `--level module|file`) gives the folder map.
+  unit; the page and stderr say what was left out. The Overview / Apps /
+  Folders / Files switch (and `--level module|file`) gives the folder map;
+  `G` comes back to the overview.
 - `--seed <qualname or query>` (repeatable), `--depth`, `--direction up|down|both`,
   `--kinds CALLS,USES`, `--lang`, `--max-nodes` (a cap on every node in the
   page, halo and externals included): a symbol neighbourhood plus
