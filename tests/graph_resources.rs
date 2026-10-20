@@ -194,8 +194,8 @@ fn a_compose_stack_shows_each_resource_category_with_verbs_and_evidence() {
         res_links(&g),
         own4(&[
             ("web", "api.payhub.io", "ext", "calls over HTTP ×1"),
-            ("orders", "PostgreSQL", "data", "reads/writes"),
-            ("orders", "Redis", "data", "uses"),
+            ("orders", "PostgreSQL", "data", "reads/writes data"),
+            ("orders", "Redis", "data", "caches data"),
             ("orders", "RabbitMQ", "msg", "publishes ordercreated"),
             ("orders", "Amazon S3", "store", "stores objects"),
             ("worker", "RabbitMQ", "msg", "subscribes to ordercreated"),
@@ -374,7 +374,7 @@ fn a_broker_used_through_a_library_is_named_and_an_unnamed_one_stays_neutral() {
         res_links(&g),
         own4(&[
             ("api", "Kafka", "msg", "publishes paymentmade"),
-            ("jobs", "RabbitMQ", "msg", "uses"),
+            ("jobs", "RabbitMQ", "msg", "exchanges messages"),
             ("mailer", "Kafka", "msg", "subscribes to 2 topics"),
         ])
     );
@@ -482,15 +482,10 @@ fn an_aspire_app_host_declares_resources_and_wires_its_projects() {
     assert_eq!(
         res_links(&g),
         own4(&[
-            ("Catalog.Api", "RabbitMQ", "msg", "uses"),
-            ("Orders.Api", "RabbitMQ", "msg", "uses"),
-            ("Orders.Api", "PostgreSQL", "data", "reads/writes"),
-            (
-                "Orders.Api",
-                "Catalog.Api",
-                "wire",
-                "calls (set in deployment)"
-            ),
+            ("Catalog.Api", "RabbitMQ", "msg", "exchanges messages"),
+            ("Orders.Api", "RabbitMQ", "msg", "exchanges messages"),
+            ("Orders.Api", "PostgreSQL", "data", "reads/writes data"),
+            ("Orders.Api", "Catalog.Api", "wire", "sends requests"),
         ])
     );
     assert_eq!(
@@ -525,8 +520,8 @@ fn kubernetes_groups_apps_by_namespace_and_env_hosts_wire_them() {
     assert_eq!(
         res_links(&g),
         own4(&[
-            ("cart", "Redis", "data", "uses"),
-            ("front", "cart", "wire", "calls (set in deployment)"),
+            ("cart", "Redis", "data", "caches data"),
+            ("front", "cart", "wire", "sends requests"),
         ])
     );
     assert_eq!(

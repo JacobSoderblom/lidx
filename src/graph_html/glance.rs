@@ -1350,7 +1350,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             label: if starts_after {
                 "starts after".to_string()
             } else {
-                "calls (set in deployment)".to_string()
+                "sends requests".to_string()
             },
             count: evs.len(),
             quiet: false,
@@ -2291,50 +2291,46 @@ impl ResAgg {
             Cat::Bus => {
                 let (p, s) = (self.named(Verb::Publishes), self.named(Verb::Subscribes));
                 match (p.len(), s.len()) {
-                    (0, 0) if has(Verb::Subscribes) => "subscribes".to_string(),
-                    (0, 0) => "uses".to_string(),
+                    (0, 0) if has(Verb::Subscribes) => "receives messages".to_string(),
+                    (0, 0) => "exchanges messages".to_string(),
                     (1, 0) => format!("publishes {}", p[0]),
                     (n, 0) => format!("publishes {n} topics"),
                     (0, 1) => format!("subscribes to {}", s[0]),
                     (0, n) => format!("subscribes to {n} topics"),
                     (a, b) => format!(
-                        "publishes {a}, subscribes to {}",
-                        count(b, "topic", "topics")
+                        "publishes {}, subscribes to {b}",
+                        count(a, "topic", "topics")
                     ),
                 }
             }
             Cat::Secrets => {
                 let s = self.named(Verb::ReadsSecrets);
                 match s.len() {
-                    0 if has(Verb::ReadsSecrets) && code => "reads secrets".to_string(),
-                    0 => "uses".to_string(),
+                    0 => "reads secrets".to_string(),
                     1 => format!("reads secret {}", s[0]),
                     n => format!("reads {n} secrets"),
                 }
             }
             Cat::Config => "reads config".to_string(),
             Cat::Db if has(Verb::Subscribes) && !code => "reads the change stream".to_string(),
-            Cat::Db if has(Verb::ReadsWrites) && code => "reads/writes".to_string(),
-            Cat::Storage if has(Verb::Stores) && code => {
-                if tech.contains("Blob") {
-                    "stores blobs".to_string()
-                } else {
-                    "stores objects".to_string()
-                }
+            Cat::Db => "reads/writes data".to_string(),
+            Cat::Cache => "caches data".to_string(),
+            Cat::Storage if has(Verb::Subscribes) && !has(Verb::Stores) => {
+                "is triggered by".to_string()
             }
-            Cat::Storage if has(Verb::Subscribes) => "is triggered by".to_string(),
-            Cat::Search if code => "queries".to_string(),
+            Cat::Storage if tech.contains("Blob") => "stores blobs".to_string(),
+            Cat::Storage => "stores objects".to_string(),
+            Cat::Search => "queries the index".to_string(),
             Cat::Ext => {
                 let calls = self.named(Verb::Calls);
                 if !calls.is_empty() {
                     format!("calls over HTTP ×{}", calls.len())
                 } else if code {
-                    "calls".to_string()
+                    "calls its API".to_string()
                 } else {
-                    "uses".to_string()
+                    "depends on its SDK".to_string()
                 }
             }
-            _ => "uses".to_string(),
         };
         // Only through one library: say which.
         if self.hows.len() == 1
@@ -4166,7 +4162,7 @@ fn tour(doc: &Value) -> Vec<Value> {
             steps.push(json!({
                 "id": "talk",
                 "title": "How the parts depend on each other",
-                "text": format!("The lines are in-process links. The heaviest: {} {} {}.", name(&top["from"]), top["label"].as_str().unwrap_or(""), name(&top["to"])),
+                "text": format!("The lines are in-process links. The heaviest: {} → {} ({}).", name(&top["from"]), name(&top["to"]), top["label"].as_str().unwrap_or("")),
                 "nodes": ns.into_iter().collect::<Vec<_>>(),
                 "links": heavy.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
             }));
@@ -4559,6 +4555,149 @@ fn questions(doc: &Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link's verb for one category, from the verbs and the ways its
+    /// uses were found, with the items `named` names.
+    fn res_label(
+        cat: Cat,
+        tech: &str,
+        verbs: &[Verb],
+        hows: &[How],
+        named: &[(&str, Verb)],
+    ) -> String {
+        let mut agg = ResAgg::default();
+        agg.verbs.extend(verbs.iter().copied());
+        agg.hows.extend(hows.iter().copied());
+        for (item, verb) in named {
+            agg.items.entry(item.to_string()).or_default().insert(*verb);
+        }
+        agg.label(cat, tech, &[])
+    }
+
+    /// Every line to a resource says what is done with it: a verb with an
+    /// object, never a bare "uses" or "calls".
+    #[test]
+    fn resource_links_say_what_is_done_with_the_resource() {
+        use How::*;
+        use Verb::*;
+        let cases: Vec<(String, &str)> = vec![
+            (
+                res_label(Cat::Bus, "RabbitMQ", &[Uses], &[Manifest], &[]),
+                "exchanges messages",
+            ),
+            (
+                res_label(Cat::Bus, "Kafka", &[Subscribes], &[Import], &[]),
+                "receives messages",
+            ),
+            (
+                res_label(
+                    Cat::Bus,
+                    "Kafka",
+                    &[Publishes],
+                    &[Edge],
+                    &[("orders", Publishes)],
+                ),
+                "publishes orders",
+            ),
+            (
+                res_label(
+                    Cat::Bus,
+                    "Kafka",
+                    &[Publishes, Subscribes],
+                    &[Edge],
+                    &[("a", Publishes), ("b", Subscribes), ("c", Subscribes)],
+                ),
+                "publishes 1 topic, subscribes to 2",
+            ),
+            (
+                res_label(
+                    Cat::Bus,
+                    "Kafka",
+                    &[Publishes, Subscribes],
+                    &[Edge],
+                    &[("a", Publishes), ("b", Publishes), ("c", Subscribes)],
+                ),
+                "publishes 2 topics, subscribes to 1",
+            ),
+            (
+                res_label(Cat::Secrets, "Vault", &[Uses], &[Deploy], &[]),
+                "reads secrets",
+            ),
+            (
+                res_label(
+                    Cat::Secrets,
+                    "Vault",
+                    &[ReadsSecrets],
+                    &[Edge],
+                    &[("db-pass", ReadsSecrets)],
+                ),
+                "reads secret db-pass",
+            ),
+            (
+                res_label(Cat::Db, "PostgreSQL", &[ReadsWrites], &[Import], &[]),
+                "reads/writes data",
+            ),
+            (
+                res_label(Cat::Db, "PostgreSQL", &[Uses], &[Manifest], &[]),
+                "reads/writes data",
+            ),
+            (
+                res_label(Cat::Db, "Cosmos DB", &[Subscribes], &[Deploy], &[]),
+                "reads the change stream",
+            ),
+            (
+                res_label(Cat::Cache, "Redis", &[Uses], &[Import], &[]),
+                "caches data",
+            ),
+            (
+                res_label(
+                    Cat::Storage,
+                    "Azure Blob Storage",
+                    &[Stores],
+                    &[Import],
+                    &[],
+                ),
+                "stores blobs",
+            ),
+            (
+                res_label(Cat::Storage, "Amazon S3", &[Uses], &[Manifest], &[]),
+                "stores objects",
+            ),
+            (
+                res_label(Cat::Storage, "Amazon S3", &[Subscribes], &[Deploy], &[]),
+                "is triggered by",
+            ),
+            (
+                res_label(Cat::Search, "Elasticsearch", &[Uses], &[Manifest], &[]),
+                "queries the index",
+            ),
+            (
+                res_label(Cat::Config, "App Configuration", &[Uses], &[Import], &[]),
+                "reads config",
+            ),
+            (
+                res_label(Cat::Ext, "Stripe", &[Uses], &[Import], &[]),
+                "calls its API",
+            ),
+            (
+                res_label(Cat::Ext, "Stripe", &[Uses], &[Manifest], &[]),
+                "depends on its SDK",
+            ),
+            (
+                res_label(
+                    Cat::Ext,
+                    "api.example.com",
+                    &[Calls],
+                    &[Edge],
+                    &[("GET /a", Calls), ("GET /b", Calls)],
+                ),
+                "calls over HTTP ×2",
+            ),
+        ];
+        for (got, want) in &cases {
+            assert_eq!(got, want);
+        }
+    }
 
     fn step(node: usize, qual: &str) -> Step {
         Step {
