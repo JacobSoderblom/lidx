@@ -2216,11 +2216,16 @@ fn best_path(
 /// `trace_flow` downstream from each id. The traces are independent reads,
 /// so they run side by side; results come back in the order of `ids`, so the
 /// page never depends on thread timing.
+///
+/// Two threads, not one per core: every connection shares SQLite's one
+/// page-cache mutex (the bundled build enables memory management), so more
+/// threads mostly wait on it. Measured on three repositories, two was the
+/// fastest and eight took twice as long as two.
 fn trace_all(ctx: &Ctx, cfg: &TraceConfig, ids: &[i64]) -> Vec<Option<Vec<TraceHop>>> {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
-        .clamp(1, 8);
+        .clamp(1, 2);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done: std::sync::Mutex<Vec<(usize, Option<Vec<TraceHop>>)>> =
         std::sync::Mutex::new(Vec::new());
