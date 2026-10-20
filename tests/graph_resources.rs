@@ -1079,7 +1079,10 @@ fn what_infrastructure_declares_does_not_depend_on_the_scope_shown() {
                 "examples/kafka/docker-compose.yml",
                 "services:\n  broker:\n    image: apache/kafka:3.7\n",
             ),
-            ("api/pyproject.toml", "[project]\nname = \"orders\"\ndependencies = [\"fastapi\"]\n"),
+            (
+                "api/pyproject.toml",
+                "[project]\nname = \"orders\"\ndependencies = [\"fastapi\"]\n",
+            ),
             ("api/orders/main.py", PY_API),
             WORKER_TOML,
             WORKER_PY,

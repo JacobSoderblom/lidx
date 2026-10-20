@@ -10,7 +10,7 @@ use crate::indexer::extract::{
 };
 use crate::indexer::http;
 use crate::indexer::proto;
-use crate::indexer::string_consts::{LocalBinding, StringConsts};
+use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -5766,6 +5766,75 @@ fn grpc_impl_edge(
     })
 }
 
+/// What the functions around `call` say about a bare identifier argument:
+/// a parameter or reassigned name has no static value (it is not the file
+/// constant it may shadow); one `const`/`let` with an initializer has that.
+fn js_local_binding(call: Node<'_>, name: &str, source: &str) -> LocalBinding {
+    let name = name.trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    {
+        return LocalBinding::NotLocal;
+    }
+    let binds = |n: Node<'_>| {
+        node_text(n, source)
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
+            .any(|t| t == name)
+    };
+    let kinds = [
+        "function_declaration",
+        "function_expression",
+        "function",
+        "generator_function_declaration",
+        "generator_function",
+        "arrow_function",
+        "method_definition",
+    ];
+    scan_enclosing_function(call, &kinds, |n, tally| match n.kind() {
+        "formal_parameters" | "catch_clause" => {
+            let target = if n.kind() == "catch_clause" {
+                n.child_by_field_name("parameter")
+            } else {
+                Some(n)
+            };
+            if target.is_some_and(binds) {
+                tally.other_bindings += 1;
+            }
+        }
+        "arrow_function" => {
+            if n.child_by_field_name("parameter")
+                .is_some_and(|p| node_text(p, source) == name)
+            {
+                tally.other_bindings += 1;
+            }
+        }
+        "variable_declarator" => match n.child_by_field_name("name") {
+            Some(x) if x.kind() == "identifier" && node_text(x, source) == name => {
+                tally.declarations += 1;
+                tally.initializer = n.child_by_field_name("value").map(|v| node_text(v, source));
+            }
+            Some(x) if x.kind() != "identifier" && binds(x) => tally.other_bindings += 1,
+            _ => {}
+        },
+        "assignment_expression" | "augmented_assignment_expression" | "update_expression" => {
+            let target = n
+                .child_by_field_name("left")
+                .or_else(|| n.child_by_field_name("argument"));
+            if target.is_some_and(|t| node_text(t, source) == name) {
+                tally.reassignments += 1;
+            }
+        }
+        "for_in_statement" => {
+            if n.child_by_field_name("left").is_some_and(binds) {
+                tally.other_bindings += 1;
+            }
+        }
+        _ => {}
+    })
+}
+
 fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     let target_node = call_target_node(node)?;
     let (receiver, method) = member_receiver_and_method(target_node, source)?;
@@ -5787,8 +5856,8 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     };
     let args = call_arguments(node);
     let raw_topic = node_text(*args.first()?, source);
-    let normalized =
-        channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
+    let local = js_local_binding(node, &raw_topic, source);
+    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
         channel::build_publish_detail(&normalized, &raw_topic, framework)
     } else {
