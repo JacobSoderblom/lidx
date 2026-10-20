@@ -1063,3 +1063,33 @@ fn a_test_stacks_wiring_is_no_use() {
     assert_eq!(res_names(&g), strs(&["Redis"]));
     assert_eq!(uses_of(&g), own3(&[]));
 }
+
+#[test]
+fn what_infrastructure_declares_does_not_depend_on_the_scope_shown() {
+    // Compose files of examples declare nothing; the system's own compose
+    // file declares its resources whichever files the page shows first.
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-res-",
+        &[
+            (
+                "docker-compose.yml",
+                "services:\n  api:\n    build: ./api\n  cache:\n    image: redis:7\n",
+            ),
+            (
+                "examples/kafka/docker-compose.yml",
+                "services:\n  broker:\n    image: apache/kafka:3.7\n",
+            ),
+            ("api/pyproject.toml", "[project]\nname = \"orders\"\ndependencies = [\"fastapi\"]\n"),
+            ("api/orders/main.py", PY_API),
+            WORKER_TOML,
+            WORKER_PY,
+        ],
+    );
+    for scope in ["code", "tests", "all"] {
+        assert_eq!(
+            res_names(&glance_with(&root, &db, &["--scope", scope])),
+            strs(&["Redis"]),
+            "{scope}"
+        );
+    }
+}

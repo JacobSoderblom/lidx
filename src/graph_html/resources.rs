@@ -2346,6 +2346,13 @@ pub fn test_only(path: &str) -> bool {
     })
 }
 
+/// A file of the system itself, whatever `--scope` shows at first: not a
+/// test, example, doc or generated file, and not a test or CI stack.
+fn system_file(path: &str) -> bool {
+    !test_only(path)
+        && crate::search::scope_allows(path, Some(crate::search::SearchScope::Code), true, None)
+}
+
 fn dir_of(path: &str) -> String {
     path.rsplit_once('/')
         .map(|(a, _)| format!("{a}/"))
@@ -2403,11 +2410,7 @@ pub(super) fn find(inp: &Input) -> Found {
         (m.len() == 1).then(|| m[0])
     };
     for (u, unit) in units.iter().enumerate() {
-        for d in unit
-            .decls
-            .iter()
-            .filter(|d| !test_only(&d.ev.file) && scoped(&d.ev.file))
-        {
+        for d in unit.decls.iter().filter(|d| system_file(&d.ev.file)) {
             let lname = d.name.to_ascii_lowercase();
             // Compose files are stacks of their own: `db` in one is not `db`
             // in another. The name alone stays for overrides that wire to a
