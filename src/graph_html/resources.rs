@@ -2089,9 +2089,125 @@ fn item_kind(kind: &str) -> Option<&'static str> {
     })
 }
 
-/// `(managed service, engine)`: a database infrastructure declares and the
-/// engine a client in the code names, one resource.
-const MANAGED: &[(&str, &str)] = &[("Azure SQL", "SQL Server")];
+/// `(category, server, client)`: a server infrastructure declares and the
+/// technology whose client the code uses to reach it, one resource. Azure
+/// SQL is what a SQL Server client reaches, MariaDB what a MySQL client
+/// reaches, and Valkey, KeyDB and Garnet are what a Redis client reaches.
+const MANAGED: &[(Cat, &str, &str)] = &[
+    (Cat::Db, "Azure SQL", "SQL Server"),
+    (Cat::Db, "MariaDB", "MySQL"),
+    (Cat::Cache, "Valkey", "Redis"),
+    (Cat::Cache, "KeyDB", "Redis"),
+    (Cat::Cache, "Garnet", "Redis"),
+];
+
+/// Databases that hold no SQL objects: a table or stored procedure the code
+/// references, or a SQL-only client, never reaches one of these.
+const NOT_SQL: &[&str] = &[
+    "MongoDB",
+    "Cassandra",
+    "ScyllaDB",
+    "DynamoDB",
+    "Cosmos DB",
+    "Firestore",
+    "Neo4j",
+    "CouchDB",
+];
+
+/// Clients and ORMs that speak SQL and name no engine (`database/sql`,
+/// `sqlx`, SQLAlchemy, Knex, Dapper): the database they reach is a SQL one.
+const SQL_CLIENTS: &[&str] = &[
+    "database/sql",
+    "github.com/jmoiron/sqlx",
+    "gorm.io/gorm",
+    "sqlx",
+    "diesel",
+    "sea-orm",
+    "sea_orm",
+    "sqlalchemy",
+    "sqlmodel",
+    "alembic",
+    "peewee",
+    "knex",
+    "kysely",
+    "drizzle-orm",
+    "sequelize",
+    "dapper",
+];
+
+fn sql_client(lang: &str, module: &str) -> bool {
+    import_candidates(lang, &module.to_ascii_lowercase())
+        .iter()
+        .any(|m| SQL_CLIENTS.contains(&m.as_str()))
+}
+
+/// The databases a Django `DATABASES` setting names by its engine:
+/// `"ENGINE": "django.db.backends.postgresql"`.
+pub fn django_engines(line: &str) -> Vec<(Cat, &'static str)> {
+    let mut out = Vec::new();
+    for key in ["django.db.backends.", "django.contrib.gis.db.backends."] {
+        let mut rest = line;
+        while let Some(at) = rest.find(key) {
+            let quoted = rest[..at].ends_with(['"', '\'']);
+            let tail = &rest[at + key.len()..];
+            let engine: String = tail
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let tech = match engine.as_str() {
+                "postgresql" | "postgresql_psycopg2" | "postgis" => Some("PostgreSQL"),
+                "mysql" => Some("MySQL"),
+                "sqlite3" | "spatialite" => Some("SQLite"),
+                "oracle" => Some("Oracle"),
+                _ => None,
+            };
+            if quoted
+                && let Some(t) = tech
+                && !out.contains(&(Cat::Db, t))
+            {
+                out.push((Cat::Db, t));
+            }
+            rest = tail;
+        }
+    }
+    out
+}
+
+/// The broker a Celery app's broker URL names: `broker_url =
+/// "redis://cache:6379/0"`, `Celery("app", broker="amqp://mq//")`.
+pub fn celery_broker_in(line: &str) -> Option<(Cat, &'static str)> {
+    let l = line.to_ascii_lowercase();
+    if !(l.contains("broker_url") || l.contains("broker=") || l.contains("broker =")) {
+        return None;
+    }
+    url_broker(&l)
+}
+
+fn url_broker(l: &str) -> Option<(Cat, &'static str)> {
+    if l.contains("redis://") || l.contains("rediss://") {
+        Some((Cat::Cache, "Redis"))
+    } else if l.contains("amqp://") || l.contains("amqps://") || l.contains("pyamqp://") {
+        Some((Cat::Bus, "RabbitMQ"))
+    } else if l.contains("sqs://") {
+        Some((Cat::Bus, "Amazon SQS"))
+    } else {
+        None
+    }
+}
+
+/// The broker a `celery[...]` requirement's extras name: `celery[redis]`.
+pub fn celery_broker_extra(line: &str) -> Option<(Cat, &'static str)> {
+    let l = line.to_ascii_lowercase();
+    let at = l.find("celery[")?;
+    let extras = &l[at + "celery[".len()..];
+    let extras = &extras[..extras.find(']')?];
+    extras.split(',').map(str::trim).find_map(|e| match e {
+        "redis" => Some((Cat::Cache, "Redis")),
+        "librabbitmq" | "pyamqp" => Some((Cat::Bus, "RabbitMQ")),
+        "sqs" => Some((Cat::Bus, "Amazon SQS")),
+        _ => None,
+    })
+}
 
 /// Known hosts of external services, by domain.
 const HOSTS: &[(&str, &str)] = &[
@@ -2128,6 +2244,8 @@ struct Pending {
     ev: Evidence,
     /// For a secret: the infra unit providing it.
     provider: Option<usize>,
+    /// A database reached in SQL: a SQL object or a SQL-only client.
+    sql: bool,
 }
 
 impl Pending {
@@ -2143,6 +2261,7 @@ impl Pending {
             via: None,
             ev,
             provider: None,
+            sql: false,
         }
     }
 }
@@ -2290,6 +2409,10 @@ pub(super) fn find(inp: &Input) -> Found {
             .filter(|d| !test_only(&d.ev.file) && scoped(&d.ev.file))
         {
             let lname = d.name.to_ascii_lowercase();
+            // Compose files are stacks of their own: `db` in one is not `db`
+            // in another. The name alone stays for overrides that wire to a
+            // service another file defines.
+            let in_file = (d.source == "compose").then(|| (u, format!("{}#{lname}", d.ev.file)));
             match d.source {
                 "bicep" | "terraform" | "cfn" => {
                     if let Some((cat, tech)) = classify_iac(&d.what) {
@@ -2316,6 +2439,9 @@ pub(super) fn find(inp: &Input) -> Found {
                             let i = reg.get(cat, tech);
                             reg.declare(i, &d.ev, Some((d.name.as_str(), "service")));
                             svc.insert((u, lname.clone()), Svc::Res(i));
+                            if let Some(k) = &in_file {
+                                svc.insert(k.clone(), Svc::Res(i));
+                            }
                             if !d.group.is_empty() {
                                 svc.insert((u, d.group.to_ascii_lowercase()), Svc::Res(i));
                             }
@@ -2323,6 +2449,9 @@ pub(super) fn find(inp: &Input) -> Found {
                             super::units::image_name_pub(img).and_then(|a| app_by_alias(&a))
                         {
                             svc.entry((u, lname.clone())).or_insert(Svc::App(a));
+                            if let Some(k) = &in_file {
+                                svc.insert(k.clone(), Svc::App(a));
+                            }
                             if !d.group.is_empty() {
                                 svc.entry((u, d.group.to_ascii_lowercase()))
                                     .or_insert(Svc::App(a));
@@ -2334,6 +2463,9 @@ pub(super) fn find(inp: &Input) -> Found {
                             && let Some(a) = own(&full).filter(|&a| code_unit(a))
                         {
                             svc.insert((u, lname.clone()), Svc::App(a));
+                            if let Some(k) = &in_file {
+                                svc.insert(k.clone(), Svc::App(a));
+                            }
                         }
                     } else if let Some(target) = d.what.strip_prefix("project:") {
                         let a = if let Some(alias) = target.strip_prefix("alias:") {
@@ -2582,13 +2714,16 @@ pub(super) fn find(inp: &Input) -> Found {
                     line: 0,
                     text: p.clone(),
                 });
-            pend.push(Pending::new(u, cat, tech, Verb::Uses, How::Manifest, ev));
+            let mut x = Pending::new(u, cat, tech, Verb::Uses, How::Manifest, ev);
+            x.sql = cat == Cat::Db && tech.is_empty() && sql_client("", p);
+            pend.push(x);
         }
     }
 
     // ---- imports in the code
     // Files whose own code uses a resource: (cat, tech, verb).
-    let mut file_res: HashMap<String, BTreeSet<(Cat, String, Verb)>> = HashMap::new();
+    // `(category, technology, verb, reached in SQL)`.
+    let mut file_res: HashMap<String, BTreeSet<(Cat, String, Verb, bool)>> = HashMap::new();
     for (path, lang, _) in inp.files {
         if !CODE.contains(&lang.as_str()) || !scoped(path) || test_only(path) {
             continue;
@@ -2600,7 +2735,7 @@ pub(super) fn find(inp: &Input) -> Found {
         let mut in_go_block = false;
         let mut umbrella = false;
         let mut seen: BTreeSet<(Cat, &'static str)> = BTreeSet::new();
-        let mut hits: Vec<(Cat, &'static str, i64, String)> = Vec::new();
+        let mut hits: Vec<(Cat, &'static str, i64, String, bool)> = Vec::new();
         for (i, line) in text.lines().enumerate() {
             let t = line.trim();
             if lang == "go" {
@@ -2622,7 +2757,15 @@ pub(super) fn find(inp: &Input) -> Found {
                     continue;
                 }
                 if seen.insert((cat, tech)) {
-                    hits.push((cat, tech, i as i64 + 1, t.chars().take(160).collect()));
+                    let sql = cat == Cat::Db && tech.is_empty() && sql_client(lang, &m);
+                    hits.push((cat, tech, i as i64 + 1, t.chars().take(160).collect(), sql));
+                }
+            }
+            if lang == "python" {
+                for (cat, tech) in django_engines(line) {
+                    if seen.insert((cat, tech)) {
+                        hits.push((cat, tech, i as i64 + 1, t.chars().take(160).collect(), true));
+                    }
                 }
             }
         }
@@ -2635,18 +2778,19 @@ pub(super) fn find(inp: &Input) -> Found {
                             tech,
                             i as i64 + 1,
                             line.trim().chars().take(160).collect(),
+                            false,
                         ));
                     }
                 }
             }
         }
-        for (cat, tech, line, t) in hits {
+        for (cat, tech, line, t, sql) in hits {
             let verb = default_verb(cat);
             file_res
                 .entry(path.clone())
                 .or_default()
-                .insert((cat, tech.to_string(), verb));
-            pend.push(Pending::new(
+                .insert((cat, tech.to_string(), verb, sql));
+            let mut x = Pending::new(
                 u,
                 cat,
                 tech,
@@ -2657,7 +2801,64 @@ pub(super) fn find(inp: &Input) -> Found {
                     line,
                     text: t,
                 },
-            ));
+            );
+            x.sql = sql;
+            pend.push(x);
+        }
+    }
+
+    // ---- Celery's broker: a Celery app is a client of the broker its
+    // broker URL or its requirement's extra names.
+    let celery_units: BTreeSet<usize> = pend
+        .iter()
+        .filter(|p| p.tech == "Celery")
+        .map(|p| p.unit)
+        .collect();
+    for u in celery_units {
+        let mut broker: Option<(Cat, &'static str, Evidence, How)> = None;
+        for (path, lang, _) in inp.files {
+            if broker.is_some() {
+                break;
+            }
+            if lang != "python" || test_only(path) || !scoped(path) || own(path) != Some(u) {
+                continue;
+            }
+            let Some(text) = read(path) else { continue };
+            broker = text.lines().enumerate().find_map(|(i, l)| {
+                let (c, t) = celery_broker_in(l)?;
+                Some((c, t, ev(path, i as i64 + 1, l), How::Import))
+            });
+        }
+        if broker.is_none() {
+            let mut manifests = units[u].manifests.clone();
+            for req in ["requirements.txt", "requirements.in"] {
+                manifests.push(format!("{}{req}", units[u].root));
+            }
+            broker = manifests.iter().find_map(|m| {
+                let text = read(m)?;
+                text.lines().enumerate().find_map(|(i, l)| {
+                    let (c, t) = celery_broker_extra(l.split('#').next().unwrap_or(""))?;
+                    Some((c, t, ev(m, i as i64 + 1, l), How::Manifest))
+                })
+            });
+        }
+        let Some((cat, tech, at, how)) = broker else {
+            continue;
+        };
+        for p in pend
+            .iter_mut()
+            .filter(|p| p.unit == u && p.tech == "Celery")
+        {
+            p.cat = cat;
+            p.tech = tech.to_string();
+            p.ev = at.clone();
+            p.how = how;
+        }
+        for (_, set) in file_res.iter_mut().filter(|(f, _)| own(f) == Some(u)) {
+            if set.iter().any(|(_, t, _, _)| t == "Celery") {
+                set.retain(|(_, t, _, _)| t != "Celery");
+                set.insert((cat, tech.to_string(), Verb::Uses, false));
+            }
         }
     }
 
@@ -2666,18 +2867,29 @@ pub(super) fn find(inp: &Input) -> Found {
         if !code_unit(u) {
             continue;
         }
+        // A front end's events are in-process (a viewer's event bus) unless
+        // its own code names a broker client.
+        let in_process = units[u].kind == Kind::Ui
+            && !pend
+                .iter()
+                .any(|p| p.unit == u && p.cat == Cat::Bus && !p.tech.is_empty());
         for (usage, verb, word) in [
             (&x.topics, Verb::Publishes, "publishes"),
             (&x.bus, Verb::Subscribes, "subscribes to"),
         ] {
+            if in_process {
+                continue;
+            }
             for (k, (_, syms)) in &usage.keys {
                 let Some((q, f, l)) = syms.iter().find(|(_, f, _)| !test_only(f)) else {
                     continue;
                 };
-                file_res
-                    .entry(f.clone())
-                    .or_default()
-                    .insert((Cat::Bus, String::new(), verb));
+                file_res.entry(f.clone()).or_default().insert((
+                    Cat::Bus,
+                    String::new(),
+                    verb,
+                    false,
+                ));
                 let mut p = Pending::new(
                     u,
                     Cat::Bus,
@@ -2728,7 +2940,11 @@ pub(super) fn find(inp: &Input) -> Found {
             pend.push(p);
         }
     }
-    let internal_hosts: BTreeSet<String> = svc.keys().map(|(_, s)| s.clone()).collect();
+    let internal_hosts: BTreeSet<String> = svc
+        .keys()
+        .filter(|(_, s)| !s.contains('#'))
+        .map(|(_, s)| s.clone())
+        .collect();
     for r in inp.rows {
         if !scoped(&r.src_path) {
             continue;
@@ -2755,6 +2971,7 @@ pub(super) fn find(inp: &Input) -> Found {
                 cat,
                 tech.clone(),
                 Verb::ReadsWrites,
+                true,
             ));
             let mut p = Pending::new(
                 u,
@@ -2777,6 +2994,7 @@ pub(super) fn find(inp: &Input) -> Found {
             );
             p.item = item;
             p.qual = Some(r.src_qual.clone());
+            p.sql = true;
             pend.push(p);
             continue;
         }
@@ -2814,11 +3032,17 @@ pub(super) fn find(inp: &Input) -> Found {
 
     // ---- deployment wiring
     for (u, unit) in units.iter().enumerate() {
-        for w in &unit.wires {
-            let Some(Svc::App(app)) = svc.get(&(u, w.from.to_ascii_lowercase())).copied() else {
+        for w in unit.wires.iter().filter(|w| !test_only(&w.ev.file)) {
+            let look = |name: &str| {
+                let name = name.to_ascii_lowercase();
+                svc.get(&(u, format!("{}#{name}", w.ev.file)))
+                    .or_else(|| svc.get(&(u, name)))
+                    .copied()
+            };
+            let Some(Svc::App(app)) = look(&w.from) else {
                 continue;
             };
-            let i = match svc.get(&(u, w.to.to_ascii_lowercase())).copied() {
+            let i = match look(&w.to) {
                 Some(Svc::Res(i)) => i,
                 Some(Svc::App(to)) => {
                     if to != app
@@ -2842,7 +3066,7 @@ pub(super) fn find(inp: &Input) -> Found {
 
     // ---- through libraries: an app calling into a library file that
     // uses a resource uses it too.
-    let mut lib_files: HashMap<String, BTreeSet<(Cat, String, Verb)>> = file_res
+    let mut lib_files: HashMap<String, BTreeSet<(Cat, String, Verb, bool)>> = file_res
         .iter()
         .filter(|(f, _)| own(f).is_some_and(is_lib))
         .map(|(f, s)| (f.clone(), s.clone()))
@@ -2850,14 +3074,7 @@ pub(super) fn find(inp: &Input) -> Found {
     let code_kind = |k: &str| {
         matches!(
             k,
-            "CALLS"
-                | "USES"
-                | "REFERENCES"
-                | "IMPORTS"
-                | "IMPORTS_FILE"
-                | "EXTENDS"
-                | "IMPLEMENTS"
-                | "DISPATCH"
+            "CALLS" | "USES" | "REFERENCES" | "IMPORTS" | "IMPORTS_FILE" | "EXTENDS" | "DISPATCH"
         )
     };
     for _ in 0..3 {
@@ -2881,7 +3098,7 @@ pub(super) fn find(inp: &Input) -> Found {
             break;
         }
     }
-    let mut via_seen: BTreeSet<(usize, usize, Cat, String, Verb)> = BTreeSet::new();
+    let mut via_seen: BTreeSet<(usize, usize, Cat, String, Verb, bool)> = BTreeSet::new();
     for r in inp.rows {
         let Some(tp) = &r.tgt_path else { continue };
         if !code_kind(&r.kind) || !scoped(&r.src_path) {
@@ -2896,8 +3113,8 @@ pub(super) fn find(inp: &Input) -> Found {
         let Some(set) = lib_files.get(tp) else {
             continue;
         };
-        for (cat, tech, verb) in set {
-            if !via_seen.insert((a, l, *cat, tech.clone(), *verb)) {
+        for (cat, tech, verb, sql) in set {
+            if !via_seen.insert((a, l, *cat, tech.clone(), *verb, *sql)) {
                 continue;
             }
             let mut p = Pending::new(
@@ -2918,6 +3135,7 @@ pub(super) fn find(inp: &Input) -> Found {
             );
             p.qual = Some(r.src_qual.clone());
             p.via = Some(l);
+            p.sql = *sql;
             pend.push(p);
         }
     }
@@ -2971,7 +3189,14 @@ pub(super) fn find(inp: &Input) -> Found {
                     .or_else(|| one(&all_stores)),
                 cat => {
                     let mine = &reach[p.unit];
-                    one(&named_by(cat, &|x| mine.contains(&x))).or_else(|| {
+                    // SQL reaches a SQL database, not a document store.
+                    let fits = |mut s: BTreeSet<String>| {
+                        if p.sql {
+                            s.retain(|t| !NOT_SQL.contains(&t.as_str()));
+                        }
+                        s
+                    };
+                    one(&fits(named_by(cat, &|x| mine.contains(&x)))).or_else(|| {
                         let mut all = by_cat.get(&cat).cloned().unwrap_or_default();
                         all.extend(
                             reg.res
@@ -2981,7 +3206,7 @@ pub(super) fn find(inp: &Input) -> Found {
                                 })
                                 .map(|r| r.tech.clone()),
                         );
-                        one(&all)
+                        one(&fits(all))
                     })
                 }
             };
@@ -3012,21 +3237,56 @@ pub(super) fn find(inp: &Input) -> Found {
             ev: p.ev,
         });
     }
+    let mut alias: HashMap<usize, usize> = HashMap::new();
+    // A folder of SQL in no named dialect is the repository's one SQL
+    // database, when it has exactly one.
+    if let Some(&i) = reg.at.get(&(Cat::Db, String::new()))
+        && !reg.res[i].units.is_empty()
+    {
+        let used: BTreeSet<usize> = found.uses.iter().map(|x| x.res).collect();
+        let sql: Vec<usize> = (0..reg.res.len())
+            .filter(|&j| {
+                let r = &reg.res[j];
+                r.cat == Cat::Db
+                    && !r.tech.is_empty()
+                    && !NOT_SQL.contains(&r.tech.as_str())
+                    && (!r.declared.is_empty() || used.contains(&j))
+            })
+            .collect();
+        if let [j] = sql[..] {
+            let units = std::mem::take(&mut reg.res[i].units);
+            let declared = std::mem::take(&mut reg.res[i].declared);
+            let items = std::mem::take(&mut reg.res[i].items);
+            let r = &mut reg.res[j];
+            r.units.extend(units);
+            for d in declared {
+                if !r.declared.contains(&d) && r.declared.len() < MAX_DECLARED {
+                    r.declared.push(d);
+                }
+            }
+            for (k, v) in items {
+                r.items.entry(k).or_insert(v);
+            }
+            if !used.contains(&i) {
+                alias.insert(i, j);
+            }
+        }
+    }
     // A managed service the infrastructure declares and the engine the code
     // names are one resource: Azure SQL is what a SQL Server client reaches.
-    let mut alias: HashMap<usize, usize> = HashMap::new();
-    for (managed, engine) in MANAGED {
+    for (cat, managed, engine) in MANAGED {
         if let (Some(&i), Some(&j)) = (
-            reg.at.get(&(Cat::Db, managed.to_string())),
-            reg.at.get(&(Cat::Db, engine.to_string())),
-        ) && !reg.res[i].declared.is_empty()
+            reg.at.get(&(*cat, managed.to_string())),
+            reg.at.get(&(*cat, engine.to_string())),
+        ) && !alias.contains_key(&j)
+            && !reg.res[i].declared.is_empty()
             && reg.res[j].declared.iter().all(|e| e.line == 0)
         {
             alias.insert(j, i);
             let moved = std::mem::replace(
                 &mut reg.res[j],
                 Res {
-                    cat: Cat::Db,
+                    cat: *cat,
                     tech: engine.to_string(),
                     items: BTreeMap::new(),
                     declared: Vec::new(),
@@ -3056,7 +3316,7 @@ pub(super) fn find(inp: &Input) -> Found {
     }
     for (file, set) in file_res.iter().chain(lib_files.iter()) {
         let unit = own(file);
-        for (cat, tech, _) in set {
+        for (cat, tech, _, _) in set {
             let i = if !tech.is_empty() {
                 reg.at.get(&(*cat, tech.clone())).copied()
             } else {

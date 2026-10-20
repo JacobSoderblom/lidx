@@ -660,11 +660,11 @@ const NODE_TEST_ONLY: &[(&str, &str)] = &[
     ),
     (
         "docker-compose.yml",
-        "services:\n  api:\n    build: .\n    depends_on:\n      - mongo\n  mongo:\n    image: mongo:7\n#  redis:\n#    image: redis:7\n  # broker:\n  #   image: rabbitmq:3\n",
+        "services:\n  api:\n    build: .\n  mongo:\n    image: mongo:7\n#  redis:\n#    image: redis:7\n  # broker:\n  #   image: rabbitmq:3\n",
     ),
     (
         "docker-compose.test.yml",
-        "services:\n  redis:\n    image: redis:7\n",
+        "services:\n  api:\n    depends_on:\n      - mongo\n      - redis\n  redis:\n    image: redis:7\n",
     ),
     (
         "docker-compose.ci.yml",
@@ -679,7 +679,22 @@ const NODE_TEST_ONLY: &[(&str, &str)] = &[
 #[test]
 fn packages_images_and_imports_only_tests_or_tooling_use_are_not_resources() {
     let (_tmp, root, db) = common::index_repo("lidx-res-", NODE_TEST_ONLY);
-    assert_eq!(res_names(&glance_at(&root, &db)), strs(&["MongoDB"]));
+    let g = glance_at(&root, &db);
+    assert_eq!(res_names(&g), strs(&["MongoDB"]));
+    // The code reads and writes it; the test stack's wiring is not a use.
+    assert_eq!(uses_of(&g), own3(&[("src", "MongoDB", "reads/writes")]));
+    let calls: Vec<(String, String)> = link(&g, "src", "MongoDB")["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["file"].as_str().unwrap().to_string(),
+                c["how"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(calls, [("src/server.js".to_string(), "import".to_string())]);
     // Showing every file at first does not make test code a user of one.
     assert_eq!(
         res_names(&glance_with(&root, &db, &["--scope", "all"])),
@@ -785,4 +800,266 @@ fn rust_dev_dependencies_and_dotnet_test_projects_are_not_resources() {
         ),
     ]);
     assert_eq!(res_names(&g), strs(&["Kafka"]));
+}
+
+/// `(from, to, label)` of every link to a resource.
+fn uses_of(g: &Value) -> Vec<(String, String, String)> {
+    res_links(g)
+        .into_iter()
+        .filter(|l| l.2 != "wire")
+        .map(|(a, b, _, l)| (a, b, l))
+        .collect()
+}
+
+fn own3(v: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
+    v.iter()
+        .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+        .collect()
+}
+
+/// A second app, so the page maps apps rather than modules.
+const WORKER_TOML: (&str, &str) = (
+    "worker/pyproject.toml",
+    "[project]\nname = \"worker\"\n\n[project.scripts]\nworker = \"worker.main:run\"\n",
+);
+const WORKER_PY: (&str, &str) = ("worker/worker/main.py", "def run():\n    pass\n");
+
+const PY_API: &str = "from fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/orders\")\ndef orders():\n    return 1\n";
+
+#[test]
+fn each_compose_file_wires_its_own_services() {
+    // Two stacks of one app: `db` is PostgreSQL in one file, MariaDB in
+    // the other.
+    let g = glance(&[
+        (
+            "deploy/compose.postgres.yml",
+            "services:\n  api:\n    build: ../api\n    depends_on:\n      - db\n  db:\n    image: postgres:16\n",
+        ),
+        (
+            "deploy/compose.mariadb.yml",
+            "services:\n  api:\n    build: ../api\n    depends_on:\n      - db\n  db:\n    image: mariadb:11\n",
+        ),
+        (
+            "api/pyproject.toml",
+            "[project]\nname = \"orders\"\ndependencies = [\"fastapi\"]\n",
+        ),
+        ("api/orders/main.py", PY_API),
+        WORKER_TOML,
+        WORKER_PY,
+    ]);
+    assert_eq!(res_names(&g), strs(&["MariaDB", "PostgreSQL"]));
+    assert_eq!(
+        uses_of(&g),
+        own3(&[
+            ("orders", "MariaDB", "uses"),
+            ("orders", "PostgreSQL", "uses")
+        ])
+    );
+}
+
+#[test]
+fn a_redis_or_mysql_client_reaches_the_compatible_server_compose_runs() {
+    let g = glance(&[
+        (
+            "docker-compose.yml",
+            "services:\n  api:\n    build: ./api\n    depends_on:\n      - cache\n      - db\n  cache:\n    image: valkey/valkey:8\n  db:\n    image: mariadb:11\n",
+        ),
+        (
+            "api/pyproject.toml",
+            "[project]\nname = \"orders\"\ndependencies = [\"fastapi\", \"redis\", \"pymysql\"]\n",
+        ),
+        (
+            "api/orders/main.py",
+            "import pymysql\nimport redis\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/orders\")\ndef orders():\n    return redis.Redis(), pymysql.connect()\n",
+        ),
+    ]);
+    assert_eq!(res_names(&g), strs(&["Valkey", "MariaDB"]));
+    assert_eq!(
+        uses_of(&g),
+        own3(&[
+            ("orders", "Valkey", "uses"),
+            ("orders", "MariaDB", "reads/writes")
+        ])
+    );
+}
+
+#[test]
+fn a_celery_app_uses_the_broker_its_url_or_extra_names() {
+    let g = glance(&[
+        (
+            "jobs/pyproject.toml",
+            "[project]\nname = \"jobs\"\ndependencies = [\"celery[redis]>=5\"]\n\n[project.scripts]\njobs = \"jobs.main:run\"\n",
+        ),
+        (
+            "jobs/jobs/main.py",
+            "from celery import Celery\n\napp = Celery(\"jobs\")\n\n\ndef run():\n    app.start()\n",
+        ),
+        (
+            "mail/pyproject.toml",
+            "[project]\nname = \"mail\"\ndependencies = [\"celery\"]\n\n[project.scripts]\nmail = \"mail.main:run\"\n",
+        ),
+        (
+            "mail/mail/main.py",
+            "from celery import Celery\n\napp = Celery(\"mail\", broker=\"amqp://guest@mq//\")\n\n\ndef run():\n    app.start()\n",
+        ),
+    ]);
+    assert_eq!(res_names(&g), strs(&["Redis", "RabbitMQ"]));
+    let calls = |from: &str, to: &str| -> Vec<(String, String, String)> {
+        link(&g, from, to)["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["file"].as_str().unwrap().to_string(),
+                    c["how"].as_str().unwrap().to_string(),
+                    c["text"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        calls("jobs", "Redis"),
+        own3(&[(
+            "jobs/pyproject.toml",
+            "manifest",
+            "declares dependencies = [\"celery[redis]>=5\"]"
+        )])
+    );
+    assert_eq!(
+        calls("mail", "RabbitMQ"),
+        own3(&[(
+            "mail/mail/main.py",
+            "import",
+            "app = Celery(\"mail\", broker=\"amqp://guest@mq//\")"
+        )])
+    );
+    let redis = node(&g, "Redis");
+    assert_eq!(redis["sentence"], "Redis cache; used by 1 app.", "{redis}");
+}
+
+#[test]
+fn a_django_database_engine_names_the_database() {
+    let g = glance(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"site\"\ndependencies = [\"django\"]\n",
+        ),
+        (
+            "manage.py",
+            "import os\nimport sys\n\nif __name__ == \"__main__\":\n    from django.core.management import execute_from_command_line\n    execute_from_command_line(sys.argv)\n",
+        ),
+        (
+            "site/settings.py",
+            "DATABASES = {\n    \"default\": {\n        \"ENGINE\": \"django.db.backends.postgresql\",\n        \"NAME\": \"site\",\n    },\n    \"geo\": {\"ENGINE\": \"django.contrib.gis.db.backends.spatialite\"},\n}\n# ENGINE: django.db.backends.mysql is not used\n",
+        ),
+    ]);
+    assert_eq!(res_names(&g), strs(&["PostgreSQL", "SQLite"]));
+}
+
+#[test]
+fn a_front_ends_own_event_bus_is_no_broker() {
+    let g = glance(&[
+        (
+            "ui/package.json",
+            "{\n  \"name\": \"viewer\",\n  \"scripts\": { \"dev\": \"vite\" },\n  \"dependencies\": { \"react\": \"18.0.0\" }\n}\n",
+        ),
+        (
+            "ui/src/viewer.ts",
+            "export function wire(eventBus: any) {\n  eventBus.on('pagerendered', () => 1);\n  eventBus.publish('find', {});\n}\n",
+        ),
+        (
+            "worker/pyproject.toml",
+            "[project]\nname = \"worker\"\ndependencies = [\"pika\"]\n\n[project.scripts]\nworker = \"worker.main:run\"\n",
+        ),
+        (
+            "worker/worker/main.py",
+            "import pika\n\n\n@router.subscribe(\"file-uploaded\")\ndef on_uploaded(msg):\n    return 1\n\n\ndef run():\n    pass\n",
+        ),
+    ]);
+    assert_eq!(res_names(&g), strs(&["RabbitMQ"]));
+    assert_eq!(
+        uses_of(&g),
+        own3(&[("worker", "RabbitMQ", "subscribes to fileuploaded")])
+    );
+}
+
+#[test]
+fn sql_reaches_the_one_sql_database_and_an_interface_lends_no_resources() {
+    // A writer on PostgreSQL and a reader on MongoDB in one Go module. The
+    // writer's `database/sql` import and its SQL against the migrations (a
+    // folder of SQL of its own) reach PostgreSQL, the only SQL database. Its handler satisfies the
+    // reader's interface, which uses none of the reader's MongoDB.
+    let g = glance(&[
+        (
+            "shop/go.mod",
+            "module example.com/shop\n\ngo 1.22\n\nrequire (\n\tgithub.com/jackc/pgx/v5 v5.5.0\n\tgo.mongodb.org/mongo-driver v1.15.0\n)\n",
+        ),
+        (
+            "migrations/001_init.up.sql",
+            "CREATE TABLE products (id int primary key, name text);\n",
+        ),
+        (
+            "shop/cmd/writer/main.go",
+            "package main\n\nimport \"example.com/shop/writer\"\n\nfunc main() {\n\twriter.Run()\n}\n",
+        ),
+        (
+            "shop/cmd/reader/main.go",
+            "package main\n\nimport \"example.com/shop/reader\"\n\nfunc main() {\n\treader.Run()\n}\n",
+        ),
+        (
+            "shop/writer/run.go",
+            "package writer\n\nimport (\n\t\"database/sql\"\n\n\t\"github.com/jackc/pgx/v5\"\n)\n\nvar ErrNone = sql.ErrNoRows\n\nfunc Run() {\n\t_, _ = pgx.Connect(nil, \"\")\n\tsave()\n\tlookup()\n}\n\nfunc save() {\n\tq := \"INSERT INTO products (id, name) VALUES ($1, $2)\"\n\t_ = q\n}\n\nfunc lookup() string {\n\treturn handler{}.Handle(\"x\")\n}\n",
+        ),
+        (
+            "shop/writer/handler.go",
+            "package writer\n\ntype handler struct{}\n\nfunc (h handler) Handle(id string) string { return id }\n",
+        ),
+        (
+            "shop/reader/run.go",
+            "package reader\n\nimport \"go.mongodb.org/mongo-driver/mongo\"\n\ntype Handler interface {\n\tHandle(id string) string\n}\n\nfunc Run() {\n\t_, _ = mongo.Connect(nil)\n}\n",
+        ),
+    ]);
+    assert_eq!(res_names(&g), strs(&["PostgreSQL", "MongoDB"]));
+    assert_eq!(
+        uses_of(&g),
+        own3(&[
+            // The packages, then the commands that run them.
+            ("reader", "MongoDB", "reads/writes"),
+            ("writer", "PostgreSQL", "reads/writes"),
+            ("reader", "MongoDB", "reads/writes via shop"),
+            ("writer", "PostgreSQL", "reads/writes via shop"),
+        ])
+    );
+    // The folder of SQL is PostgreSQL's, not a database of no technology.
+    let pg = &node(&g, "PostgreSQL")["res"];
+    assert_eq!(
+        pg["declared"],
+        json!([{ "file": "migrations/", "line": 0, "text": "SQL in migrations/" }])
+    );
+    assert_eq!(pg["items"], json!([["products", "object"]]));
+}
+
+#[test]
+fn a_test_stacks_wiring_is_no_use() {
+    // Only the test stack wires the API to the cache the main stack runs.
+    let g = glance(&[
+        (
+            "docker-compose.yml",
+            "services:\n  api:\n    build: ./api\n  cache:\n    image: redis:7\n",
+        ),
+        (
+            "docker-compose.test.yml",
+            "services:\n  api:\n    depends_on:\n      - cache\n    environment:\n      REDIS_URL: redis://cache:6379\n",
+        ),
+        (
+            "api/pyproject.toml",
+            "[project]\nname = \"orders\"\ndependencies = [\"fastapi\"]\n",
+        ),
+        ("api/orders/main.py", PY_API),
+        WORKER_TOML,
+        WORKER_PY,
+    ]);
+    assert_eq!(res_names(&g), strs(&["Redis"]));
+    assert_eq!(uses_of(&g), own3(&[]));
 }
