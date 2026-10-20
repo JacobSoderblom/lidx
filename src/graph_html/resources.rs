@@ -1162,8 +1162,12 @@ pub fn url_host(raw: &str) -> Option<String> {
         .split(':')
         .next()?
         .to_ascii_lowercase();
+    // A host name is letters, digits, dots and hyphens: anything else is a
+    // placeholder, a template or not a host at all.
     if host.is_empty()
-        || host.contains(['$', '{', '}', '<', '>', '`', ' '])
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         || !host.contains('.')
         || matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0")
         || host.ends_with(".local")
@@ -3614,6 +3618,17 @@ mod tests {
         assert_eq!(url_host("http://localhost:3000/x"), None);
         assert_eq!(url_host("/api/x"), None);
         assert_eq!(url_host("https://${HOST}/x"), None);
+        // Only host-name characters: markup or quotes are not a host.
+        assert_eq!(
+            url_host("https://q\"onmouseover=alert(1)&x.evil.io/a"),
+            None
+        );
+        assert_eq!(url_host("https://a'b.evil.io/"), None);
+        assert_eq!(url_host("https://%41.evil.io/"), None);
+        assert_eq!(
+            url_host("https://Api-2.Payments.io:8443/v1"),
+            Some("api-2.payments.io".to_string())
+        );
     }
 
     #[test]
