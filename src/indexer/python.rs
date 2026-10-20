@@ -3158,30 +3158,37 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     if base.is_empty() {
         return None;
     }
-    if !channel::is_bus_receiver(&base) {
-        return None;
-    }
-    let kind = if channel::is_publish_method(&name) {
-        channel::CHANNEL_PUBLISH_KIND
-    } else if channel::is_subscribe_method(&name) {
-        channel::CHANNEL_SUBSCRIBE_KIND
+    // A broker SDK call names its topic whatever the client is called.
+    let sdk = channel::sdk_channel_call(&name);
+    let (kind, framework, keyword) = if let Some((k, f, kw)) = sdk {
+        (k, f, kw)
     } else {
-        return None;
+        if !channel::is_bus_receiver(&base) {
+            return None;
+        }
+        let kind = if channel::is_publish_method(&name) {
+            channel::CHANNEL_PUBLISH_KIND
+        } else if channel::is_subscribe_method(&name) {
+            channel::CHANNEL_SUBSCRIBE_KIND
+        } else {
+            return None;
+        };
+        (kind, "python-bus", "topic")
     };
     let args = parse_call_arguments(node, source);
-    // First positional arg or topic= keyword
+    // First positional arg or the topic keyword
     let raw_topic = args
         .keywords
         .iter()
-        .find(|(k, _)| k == "topic")
+        .find(|(k, _)| k == keyword)
         .map(|(_, v)| node_text(*v, source))
         .or_else(|| args.positional.first().map(|v| node_text(*v, source)))?;
     let local = python_local_binding(node, &raw_topic, source);
     let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, "python-bus")
+        channel::build_publish_detail(&normalized, &raw_topic, framework)
     } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, "python-bus")
+        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
     };
     Some(EdgeInput {
         kind: kind.to_string(),

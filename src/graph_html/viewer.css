@@ -29,6 +29,9 @@
   --sans: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", Ubuntu, Cantarell, system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
   --tap: 30px;
+  /* Resource categories: a card's top rule and the tags on its users. */
+  --r-db: oklch(48% 0.12 250); --r-cache: oklch(50% 0.1 175); --r-search: oklch(50% 0.1 215);
+  --r-store: oklch(50% 0.11 135); --r-secret: oklch(52% 0.11 75); --r-ext: oklch(55% 0.018 255);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -55,6 +58,8 @@
     --l5: #8E9CF7; /* Okabe blue moved off sky blue so the two stay apart on dark paper */
     --l-other: oklch(58% 0.012 255);
     --shadow: 0 10px 30px oklch(5% 0.01 255 / 0.5);
+    --r-db: oklch(74% 0.1 250); --r-cache: oklch(76% 0.09 175); --r-search: oklch(76% 0.09 215);
+    --r-store: oklch(76% 0.1 135); --r-secret: oklch(78% 0.11 80); --r-ext: oklch(66% 0.015 255);
   }
 }
 :root[data-theme="dark"] {
@@ -81,6 +86,8 @@
   --l5: #8E9CF7;
   --l-other: oklch(58% 0.012 255);
   --shadow: 0 10px 30px oklch(5% 0.01 255 / 0.5);
+  --r-db: oklch(74% 0.1 250); --r-cache: oklch(76% 0.09 175); --r-search: oklch(76% 0.09 215);
+  --r-store: oklch(76% 0.1 135); --r-secret: oklch(78% 0.11 80); --r-ext: oklch(66% 0.015 255);
 }
 @media (pointer: coarse) { :root { --tap: 44px; } }
 
@@ -683,13 +690,15 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-qmenu button:hover, .g-qmenu button:focus-visible { background: var(--paper-2); }
 
 .g-map { grid-area: map; position: relative; overflow: hidden; background: var(--canvas); min-width: 0; }
-.g-map.scrolls { overflow: auto; }
+/* The map's cards and lines, scrolling above the strip when too big. */
+.g-scroll { position: absolute; left: 0; right: 0; top: 0; bottom: 0; overflow: hidden; }
+.g-scroll.scrolls { overflow: auto; }
 .g-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .g-links { position: absolute; left: 0; top: 0; overflow: visible; }
 #g-cards { position: absolute; left: 0; top: 0; }
 .g-lane {
   position: absolute; left: 0; top: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
-  border-bottom: 1px solid var(--rule); padding-bottom: 4px; white-space: nowrap; pointer-events: none;
+  border-bottom: 1px solid var(--rule); padding-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
 }
 .g-lane span { font-weight: 500; letter-spacing: 0.02em; margin-left: 4px; }
 .g-card {
@@ -701,10 +710,37 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-card.g-chip { border: 1.2px dashed var(--ink-3); border-radius: 999px; padding: 4px 16px; display: flex; flex-direction: column; justify-content: center; }
 .g-card.g-chip h3 { font-size: 13px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-card.g-chip p { margin: 0; font-size: 11.5px; color: var(--ink-3); }
+/* Resources: a rounded tray, a thin rule above for data, a double one for messaging. */
+.g-card.g-res { border: 1.2px solid var(--ink-2); border-radius: 12px; background: var(--paper-2); padding: 6px 12px 7px; }
+.g-card.g-res h3 { font-size: 13.5px; margin: 1px 0 1px; }
+.g-card.g-res p { margin: 0; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-card.g-res.g-r-secrets, .g-card.g-res.g-r-config { border-style: dashed; }
+.g-card.g-res.g-r-ext { border-style: dotted; border-width: 1.6px; background: var(--paper); }
+/* A resource's colour: its card's top rule and kind, and the tags on the
+   cards of the apps that share it. */
+.g-r-db { --rc: var(--r-db); } .g-r-cache { --rc: var(--r-cache); } .g-r-search { --rc: var(--r-search); }
+.g-r-bus { --rc: var(--bridge); } .g-r-secrets, .g-r-config { --rc: var(--r-secret); }
+.g-r-storage { --rc: var(--r-store); } .g-r-ext { --rc: var(--r-ext); }
+.g-card.g-res { border-top: 4px solid var(--rc); }
+.g-card.g-res.g-r-bus { border-top: 4px double var(--rc); }
+.g-card.g-res .g-k { color: var(--rc); }
+.g-badges { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; overflow: hidden; white-space: nowrap; }
+.g-badge { flex: none; max-width: 100%; overflow: hidden; display: inline-flex; align-items: center; height: 19px; padding: 0 5px 0 4px; font: 600 11px var(--sans); color: var(--ink);
+  background: color-mix(in oklch, var(--rc) 13%, var(--paper)); border: 1px solid color-mix(in oklch, var(--rc) 45%, transparent); border-left: 3px solid var(--rc); border-radius: 4px; }
+.g-badge-more { flex: none; font: 600 11px var(--sans); color: var(--ink-3); line-height: 19px; }
+.g-sent.g-sent2 { -webkit-line-clamp: 2; }
+.g-lane .g-lanenote { font-weight: 500; letter-spacing: 0.01em; text-transform: none; margin-left: 10px; color: var(--ink-3); }
+.g-group { position: absolute; left: 0; top: 0; border: 1.2px dashed var(--ink-3); border-radius: 10px; background: var(--hull); pointer-events: none; }
+.g-lane.g-dlane { text-transform: none; letter-spacing: 0.02em; font-size: 12px; color: var(--ink-2); }
+.g-lanemore { pointer-events: auto; margin-left: 8px; font: 600 11px var(--sans); text-transform: none; letter-spacing: 0; color: var(--ink-2); background: var(--paper); border: 1px solid var(--rule); border-radius: 999px; padding: 1px 8px; cursor: pointer; min-height: 20px; }
+.g-lanemore:hover, .g-lanemore:focus-visible { border-color: var(--ink-3); color: var(--ink); }
+.g-dtoggle[aria-pressed="true"] { color: var(--focus); font-weight: 700; }
+.g-items { display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 0; list-style: none; }
+.g-items code { font-size: 11.5px; }
 .g-card:hover { box-shadow: 0 0 0 3px var(--paper-3); }
 .g-card.sel { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-soft); }
 .g-card.dim, .g-libchip.dim { opacity: 0.28; }
-.g-k { display: flex; gap: 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
+.g-k { display: flex; gap: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
 .g-lang { margin-left: auto; font-weight: 500; letter-spacing: 0.02em; text-transform: none; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .g-card h3 { margin: 2px 0 3px; font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-sent { margin: 0; font-size: 12px; line-height: 1.38; color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -723,6 +759,14 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-ln.f-http, .g-ln.f-rpc, .g-ln.f-bus, .g-ln.f-config { --c: var(--bridge); }
 .g-ln.f-http .ln { stroke-dasharray: 11 3 2 3; } .g-ln.f-rpc .ln { stroke-dasharray: 4 3; }
 .g-ln.f-bus .ln { stroke-dasharray: 11 4; } .g-ln.f-config .ln { stroke-dasharray: 1 5; }
+/* Links to resources: messaging is a bridge (purple, long dashes); data and
+   storage are plain ink; secrets dotted; external systems long dashes; a
+   deployment's wiring thin and dotted. */
+.g-ln.f-msg { --c: var(--bridge); } .g-ln.f-msg .ln { stroke-dasharray: 11 4; }
+.g-ln.f-data, .g-ln.f-store { --c: var(--edge); }
+.g-ln.f-secret { --c: var(--edge-2); } .g-ln.f-secret .ln { stroke-dasharray: 1 5; }
+.g-ln.f-ext { --c: var(--edge); } .g-ln.f-ext .ln { stroke-dasharray: 8 5; }
+.g-ln.f-wire { --c: var(--edge-2); } .g-ln.f-wire .ln { stroke-dasharray: 2 4; }
 .g-fl .fl { fill: none; stroke: var(--focus); stroke-width: 2.4px; opacity: 0.5; }
 .g-fl circle { fill: var(--paper); stroke: var(--focus); stroke-width: 1.6px; }
 .g-fl text { font: 700 11.5px var(--sans); fill: var(--focus); pointer-events: none; }

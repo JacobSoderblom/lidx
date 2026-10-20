@@ -20,6 +20,7 @@
 
 use super::apps::{LinkView, SymRef, UnitUse, is_probe, is_secret, short_key};
 use super::build::{Ctx, RepoFile, RepoRow, RouteCanon};
+use super::resources::{self, Cat, Found, How, Verb};
 use super::units::{self, Kind, Owners, Unit};
 use crate::model::TraceHop;
 use crate::traversal::{TraceConfig, trace_flow};
@@ -49,6 +50,10 @@ const ENTRIES_PER_NODE: usize = 40;
 const MAX_CALLS: usize = 12;
 /// Drawn links in a module or package map before the rest wait for a focus.
 const MAX_DRAWN: usize = 12;
+/// Data and messaging resources on the map before "show all".
+pub const MAX_RESOURCES: usize = 8;
+/// External systems on the map before "show all".
+pub const MAX_EXTERNAL: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -132,6 +137,8 @@ struct Node {
     langs: Vec<String>,
     sentence: String,
     sentence_from: &'static str,
+    /// A resource's detail: category, items, declarations.
+    res: Option<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -196,6 +203,12 @@ struct OutLink {
     calls: Vec<Value>,
 }
 
+/// A lane of code (apps, libraries, modules), not of infrastructure or
+/// resources.
+fn is_code_lane(lane: &str) -> bool {
+    !matches!(lane, "infra" | "data" | "ext")
+}
+
 fn lane_label(lane: &str) -> &'static str {
     match lane {
         "front" => "Front ends",
@@ -204,6 +217,8 @@ fn lane_label(lane: &str) -> &'static str {
         "apps" => "Apps",
         "lib" => "Libraries",
         "mod" => "Modules",
+        "data" => "Data and messaging",
+        "ext" => "External systems",
         "infra" => "Infrastructure",
         _ => "Other",
     }
@@ -303,6 +318,8 @@ pub struct Facts {
     pub used_by: usize,
     pub files: i64,
     pub command: Option<String>,
+    /// Databases, brokers, storage and external systems it uses.
+    pub resources: Vec<String>,
 }
 
 /// The template sentence of an app or library card:
@@ -388,6 +405,13 @@ pub fn card_sentence(f: &Facts) -> String {
     if f.secrets > 0 {
         rest.push(format!("reads {}", count(f.secrets, "secret", "secrets")));
     }
+    if !f.resources.is_empty() {
+        let mut names: Vec<String> = f.resources.iter().take(3).cloned().collect();
+        if f.resources.len() > 3 {
+            names.push(format!("{} more", f.resources.len() - 3));
+        }
+        rest.push(format!("uses {}", and_list(&names)));
+    }
     if f.used_by > 0 {
         rest.push(format!("used by {}", count(f.used_by, "unit", "units")));
     }
@@ -451,6 +475,10 @@ fn tool_name(tool: &str) -> String {
         "Terraform" => "Terraform".to_string(),
         "compose" => "Compose files".to_string(),
         "SQL" => "SQL database projects".to_string(),
+        "Aspire" => "Aspire app host".to_string(),
+        "Skaffold" => "Skaffold config".to_string(),
+        "Serverless" => "Serverless Framework".to_string(),
+        "CloudFormation" => "CloudFormation templates".to_string(),
         t => t.to_string(),
     }
 }
@@ -742,9 +770,16 @@ fn entry_label(kind: &str, key: &str, detail: Option<&Value>) -> String {
         }
         _ => {
             // The topic as written (`"file-uploaded"`), not its matching key.
+            // A constant's name (`TOPIC_NAME`) is not the topic: its key is.
+            let quoted = |r: &str| r.starts_with(['"', '\'', '`']);
             let raw = detail
                 .and_then(|d| d.get("raw"))
                 .and_then(Value::as_str)
+                .filter(|r| {
+                    quoted(r)
+                        || r.contains('-')
+                        || (r.chars().any(|c| c.is_ascii_lowercase()) && !r.contains('.'))
+                })
                 .map(|r| r.trim_matches(['"', '\'', '`']))
                 .filter(|r| !r.is_empty() && !r.contains(['(', ' ']));
             format!("on {}", raw.unwrap_or(short_key(key)))
@@ -831,7 +866,32 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         .collect();
     let total: i64 = code_syms.iter().sum();
     let dominant = total > 0 && code_syms.iter().any(|&s| s * 100 >= total * DOMINANT_PCT);
-    let mode = mode_for(apps.len(), libs.len(), process_links, dominant);
+    // ---- resources: databases, brokers, secret stores, storage, external
+    let deps = units::resolve_deps(units);
+    let in_scope = |p: &str| ctx.in_scope(p);
+    let found = resources::find(&resources::Input {
+        root: inp.repo_root,
+        units,
+        owners: inp.owners,
+        files: inp.files,
+        rows: inp.rows,
+        uses: inp.uses,
+        links: inp.links,
+        in_scope: &in_scope,
+        deps: &deps,
+    });
+    // Apps that meet at a resource talk across processes as much as two
+    // that call each other.
+    let shared = {
+        let mut users: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        for x in &found.uses {
+            if is_app(x.unit) && x.how != How::Manifest {
+                users.entry(x.res).or_default().insert(x.unit);
+            }
+        }
+        users.values().filter(|s| s.len() >= 2).count()
+    };
+    let mode = mode_for(apps.len(), libs.len(), process_links + shared, dominant);
 
     // ---- nodes
     let mut nodes: Vec<Node> = Vec::new();
@@ -857,6 +917,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         langs: code_langs(&langs[u]),
         sentence: String::new(),
         sentence_from: "template",
+        res: None,
     };
     match mode {
         Mode::Apps => {
@@ -940,6 +1001,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                         langs: code_langs(&langs),
                         sentence: String::new(),
                         sentence_from: "template",
+                        res: None,
                     });
                 }
                 mod_keys = keys;
@@ -967,19 +1029,15 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     // Infrastructure: one chip per tool.
     let mut chip_of_tool: BTreeMap<String, usize> = BTreeMap::new();
     for u in 0..n {
-        if units[u].kind.hidden() || !matches!(units[u].kind, Kind::Infra | Kind::Data) {
+        if units[u].kind.hidden() || units[u].kind != Kind::Infra {
             continue;
         }
-        let tool = if units[u].kind == Kind::Data {
-            "SQL".to_string()
-        } else {
-            units[u]
-                .why
-                .split(", ")
-                .next()
-                .unwrap_or("infra")
-                .to_string()
-        };
+        let tool = units[u]
+            .why
+            .split(", ")
+            .next()
+            .unwrap_or("infra")
+            .to_string();
         let id = *chip_of_tool.entry(tool.clone()).or_insert_with(|| {
             nodes.push(Node {
                 name: tool_name(&tool),
@@ -994,12 +1052,55 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 langs: Vec::new(),
                 sentence: String::new(),
                 sentence_from: "template",
+                res: None,
             });
             nodes.len() - 1
         });
         nodes[id].units.push(u);
         nodes[id].files += inp.file_count[u];
         unit_node[u] = Some(id);
+    }
+
+    // Resources: a node each, in the data and messaging lane or the
+    // external systems lane. A SQL project is its database.
+    let mut res_node: Vec<Option<usize>> = vec![None; found.res.len()];
+    {
+        let mut used: BTreeSet<usize> = found
+            .uses
+            .iter()
+            .filter(|x| !units[x.unit].kind.hidden())
+            .map(|x| x.res)
+            .collect();
+        used.extend(
+            found
+                .res
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| !r.declared.is_empty())
+                .map(|(i, _)| i),
+        );
+        for i in used {
+            let r = &found.res[i];
+            res_node[i] = Some(nodes.len());
+            for &u in &r.units {
+                unit_node[u] = Some(nodes.len());
+            }
+            nodes.push(Node {
+                name: r.name(),
+                kind: "resource".to_string(),
+                lane: r.cat.lane(),
+                units: r.units.clone(),
+                dir: String::new(),
+                place: Place::Card,
+                rank: 0.0,
+                files: r.units.iter().map(|&u| inp.file_count[u]).sum(),
+                symbols: 0,
+                langs: Vec::new(),
+                sentence: String::new(),
+                sentence_from: "template",
+                res: None,
+            });
+        }
     }
 
     // The node of a file: its module in modules mode, else its unit's.
@@ -1013,6 +1114,12 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
 
     // ---- links
     let mut out_links: Vec<OutLink> = Vec::new();
+    let store_secrets: HashSet<(usize, String)> = found
+        .uses
+        .iter()
+        .filter(|x| x.verb == Verb::ReadsSecrets && x.how == How::Edge && res_node[x.res].is_some())
+        .filter_map(|x| Some((x.unit, x.item.clone()?)))
+        .collect();
     // Who reads what from each chip, for chip sentences.
     let mut chip_keys: HashMap<usize, (BTreeSet<String>, BTreeSet<usize>)> = HashMap::new();
     match mode {
@@ -1028,7 +1135,24 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 if a == b || nodes[a].place == Place::Strip || nodes[b].place == Place::Strip {
                     continue;
                 }
-                let keys: Vec<&String> = l.keys.iter().filter(|k| !is_probe(k)).collect();
+                // Infrastructure declaring a topic publishes nothing: the
+                // broker's node holds what it declares.
+                if l.family == "bus"
+                    && (!is_code_lane(nodes[a].lane) || !is_code_lane(nodes[b].lane))
+                {
+                    continue;
+                }
+                // A secret read from a secret store is drawn to the store.
+                let keys: Vec<&String> = l
+                    .keys
+                    .iter()
+                    .filter(|k| !is_probe(k))
+                    .filter(|k| {
+                        !(l.family == "config"
+                            && is_secret(k)
+                            && store_secrets.contains(&(l.from, short_key(k).to_string())))
+                    })
+                    .collect();
                 if keys.is_empty() {
                     continue;
                 }
@@ -1070,7 +1194,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                     let (Some(a), Some(b)) = (unit_node[l.from], unit_node[l.to]) else {
                         continue;
                     };
-                    if a == b || nodes[a].lane == "infra" || nodes[b].lane == "infra" {
+                    if a == b || !is_code_lane(nodes[a].lane) || !is_code_lane(nodes[b].lane) {
                         continue;
                     }
                     let e = agg.entry((a, b)).or_default();
@@ -1083,7 +1207,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                     let (Some(a), Some(b)) = (unit_node[l.from], unit_node[l.to]) else {
                         continue;
                     };
-                    if a != b && nodes[a].lane != "infra" && nodes[b].lane != "infra" {
+                    if a != b && is_code_lane(nodes[a].lane) && is_code_lane(nodes[b].lane) {
                         agg.entry((a, b)).or_default();
                     }
                 }
@@ -1101,7 +1225,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                     let (Some(a), Some(b)) = (node_of_file(&r.src_path), node_of_file(tp)) else {
                         continue;
                     };
-                    if a == b || nodes[a].lane == "infra" || nodes[b].lane == "infra" {
+                    if a == b || !is_code_lane(nodes[a].lane) || !is_code_lane(nodes[b].lane) {
                         continue;
                     }
                     let e = agg.entry((a, b)).or_default();
@@ -1161,6 +1285,108 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         }
     }
 
+    // ---- links to resources, with a verb and their evidence
+    let mut ragg: BTreeMap<(usize, usize), ResAgg> = BTreeMap::new();
+    for x in &found.uses {
+        let Some(rn) = res_node[x.res] else { continue };
+        if units[x.unit].kind.hidden() {
+            continue;
+        }
+        let from = match mode {
+            // A module is where the code is; the manifest of the unit the
+            // modules split names none.
+            Mode::Modules if Some(x.unit) == main_unit => {
+                if matches!(x.how, How::Manifest | How::Deploy) {
+                    None
+                } else {
+                    node_of_file(&x.ev.file)
+                }
+            }
+            _ => unit_node[x.unit],
+        };
+        let Some(a) = from else { continue };
+        if a == rn || nodes[a].place == Place::Strip || !is_code_lane(nodes[a].lane) {
+            continue;
+        }
+        ragg.entry((a, rn)).or_default().add(x, units);
+    }
+    for ((a, rn), agg) in &ragg {
+        let r = &found.res[found_index(&res_node, *rn)];
+        out_links.push(OutLink {
+            from: *a,
+            to: *rn,
+            family: r.cat.family(),
+            label: agg.label(r.cat, &r.tech, units),
+            count: agg.items.len().max(1),
+            quiet: false,
+            calls: agg.calls(units),
+        });
+    }
+    // Apps a deployment file wires to each other (an env value naming the
+    // other's host, an app host's reference), when no other link says so.
+    let mut wired: BTreeMap<(usize, usize), Vec<&units::Evidence>> = BTreeMap::new();
+    for (a, b, ev) in &found.app_wires {
+        let (Some(na), Some(nb)) = (unit_node[*a], unit_node[*b]) else {
+            continue;
+        };
+        let card = |i: usize| is_code_lane(nodes[i].lane) && nodes[i].place != Place::Strip;
+        if na == nb || !card(na) || !card(nb) {
+            continue;
+        }
+        if out_links
+            .iter()
+            .any(|l| (l.from == na && l.to == nb) || (l.from == nb && l.to == na))
+        {
+            continue;
+        }
+        wired.entry((na, nb)).or_default().push(ev);
+    }
+    for ((a, b), evs) in wired {
+        let starts_after = evs.iter().all(|e| e.text.contains(" depends on "));
+        out_links.push(OutLink {
+            from: a,
+            to: b,
+            family: "wire",
+            label: if starts_after {
+                "starts after".to_string()
+            } else {
+                "sends requests".to_string()
+            },
+            count: evs.len(),
+            quiet: false,
+            calls: evs
+                .iter()
+                .take(MAX_CALLS)
+                .map(|e| json!({ "text": format!("deployment: {}", e.text), "file": e.file, "line": e.line }))
+                .collect(),
+        });
+    }
+    // Apps that meet at a broker are drawn through it: their direct bus
+    // link waits for a focus.
+    let brokered: HashSet<usize> = ragg
+        .keys()
+        .filter(|(_, rn)| {
+            nodes[*rn].lane == "data" && found.res[found_index(&res_node, *rn)].cat == Cat::Bus
+        })
+        .map(|(a, _)| *a)
+        .collect();
+    for l in out_links.iter_mut() {
+        if l.family == "bus" && brokered.contains(&l.from) && brokered.contains(&l.to) {
+            l.quiet = true;
+        }
+    }
+    // A resource nothing on the map links to and no file declares is
+    // only in the detail.
+    let linked_res: HashSet<usize> = ragg.keys().map(|(_, rn)| *rn).collect();
+    for (i, nd) in res_node.iter().enumerate() {
+        if let Some(rn) = *nd
+            && !linked_res.contains(&rn)
+            && found.res[i].declared.is_empty()
+        {
+            nodes[rn].place = Place::Off;
+        }
+    }
+
     // ---- entry points
     let mut entries = collect_entries(&ix, mode, &nodes, &node_of_file, main_unit)?;
     // Two `main`s (or commands) of one part read apart by their file.
@@ -1217,6 +1443,12 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     // Who reads which provided key: reader qualname -> the step to the
     // infrastructure that provides it (secrets first).
     let mut reads: HashMap<String, Step> = HashMap::new();
+    let secret_node: HashMap<(usize, String), usize> = found
+        .uses
+        .iter()
+        .filter(|x| x.verb == Verb::ReadsSecrets && x.how == How::Edge)
+        .filter_map(|x| Some(((x.unit, x.item.clone()?), res_node[x.res]?)))
+        .collect();
     if mode == Mode::Apps {
         let mut config_links: Vec<&LinkView> =
             inp.links.iter().filter(|l| l.family == "config").collect();
@@ -1252,9 +1484,18 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                                 .or_else(|| syms.first())
                                 .cloned()
                         });
+                // A secret from a secret store comes from the store.
+                let from = if is_secret(k) {
+                    secret_node
+                        .get(&(l.from, short_key(k).to_string()))
+                        .copied()
+                        .unwrap_or(chip)
+                } else {
+                    chip
+                };
                 for (q, _, _) in readers.map(|(_, s)| s.as_slice()).unwrap_or(&[]) {
                     reads.entry(q.clone()).or_insert_with(|| Step {
-                        node: chip,
+                        node: from,
                         name: format!(
                             "{} {}",
                             if is_secret(k) { "secret" } else { "config" },
@@ -1272,6 +1513,88 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         }
     }
     let config_of = |q: &str| -> Option<Step> { reads.get(q).cloned() };
+    // A message crosses its broker: the topic's resource, at its publisher.
+    let mut topic_at: HashMap<String, (usize, String, i64)> = HashMap::new();
+    for x in &found.uses {
+        if let (Some(t), Some(rn), Verb::Publishes | Verb::Subscribes) =
+            (&x.item, res_node[x.res], x.verb)
+        {
+            let e = (rn, x.ev.file.clone(), x.ev.line);
+            if x.verb == Verb::Publishes {
+                topic_at.insert(t.clone(), e);
+            } else {
+                topic_at.entry(t.clone()).or_insert(e);
+            }
+        }
+    }
+    let mut publisher_of: HashMap<String, (String, String, i64)> = HashMap::new();
+    for x in &found.uses {
+        if let (Some(t), Some(q), Verb::Publishes) = (&x.item, &x.qual, x.verb) {
+            publisher_of
+                .entry(t.clone())
+                .or_insert((q.clone(), x.ev.file.clone(), x.ev.line));
+        }
+    }
+    let broker_of = |topic: &str| -> Option<Step> {
+        let (rn, file, line) = topic_at.get(topic)?.clone();
+        Some(Step {
+            node: rn,
+            name: topic.to_string(),
+            qual: topic.to_string(),
+            file,
+            line,
+            kind: "CHANNEL_PUBLISH".to_string(),
+            via: "publish",
+            probable: false,
+        })
+    };
+    // The resource a file's code uses, as the last step of a flow.
+    let mut file_line: HashMap<(&str, usize), i64> = HashMap::new();
+    for x in &found.uses {
+        file_line
+            .entry((x.ev.file.as_str(), x.res))
+            .or_insert(x.ev.line);
+    }
+    let rank_cat = |c: Cat| match c {
+        Cat::Db => 0,
+        Cat::Storage => 1,
+        Cat::Cache => 2,
+        Cat::Bus => 3,
+        Cat::Search => 4,
+        Cat::Ext => 5,
+        _ => 9,
+    };
+    let res_of = |file: &str| -> Option<Step> {
+        let set = found.file_res.get(file)?;
+        let i = set
+            .iter()
+            .copied()
+            .filter(|&i| res_node[i].is_some() && rank_cat(found.res[i].cat) < 9)
+            .min_by(|&a, &b| {
+                rank_cat(found.res[a].cat)
+                    .cmp(&rank_cat(found.res[b].cat))
+                    .then_with(|| found.res[a].name().cmp(&found.res[b].name()))
+            })?;
+        let r = &found.res[i];
+        Some(Step {
+            node: res_node[i]?,
+            name: r.name(),
+            qual: r.name(),
+            file: file.to_string(),
+            line: file_line.get(&(file, i)).copied().unwrap_or(0),
+            kind: "USES".to_string(),
+            via: if r.cat == Cat::Db { "db" } else { "res" },
+            probable: false,
+        })
+    };
+    let code_lanes: Vec<bool> = nodes.iter().map(|n| is_code_lane(n.lane)).collect();
+    let code_node = |i: usize| code_lanes.get(i).copied().unwrap_or(false);
+    let hooks = Hooks {
+        config_of: &config_of,
+        broker_of: &broker_of,
+        res_of: &res_of,
+        code_node: &code_node,
+    };
     let cfg = TraceConfig {
         max_hops: TRACE_HOPS,
         // Apps cross processes a few calls deep, past generated client
@@ -1367,6 +1690,32 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                             probable: false,
                         })
                     })
+            } else if e.kind == "bus" {
+                // A subscription starts where the topic is published.
+                e.key
+                    .as_ref()
+                    .and_then(|k| publisher_of.get(short_key(k)))
+                    .and_then(|(q, f, l)| {
+                        let node = node_of_file(f)?;
+                        (node != e.node && counted(node)).then(|| Step {
+                            node,
+                            name: q.rsplit(['.', ':', '/']).next().unwrap_or(q).to_string(),
+                            qual: q.clone(),
+                            file: f.clone(),
+                            line: *l,
+                            kind: "ENTRY".to_string(),
+                            via: "start",
+                            probable: false,
+                        })
+                    })
+                    // No app on the map publishes it: the broker hands it over.
+                    .or_else(|| {
+                        let k = e.key.as_ref()?;
+                        let mut b = broker_of(short_key(k))?;
+                        b.via = "start";
+                        b.kind = "ENTRY".to_string();
+                        Some(b)
+                    })
             } else {
                 None
             };
@@ -1379,7 +1728,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 &counted,
                 ctx,
                 &probable_kinds,
-                &config_of,
+                &hooks,
             ));
         }
         // Few ways in (one `main`): several paths from each, so the page
@@ -1421,8 +1770,28 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             ways.min(50.0) * 2.0 + (degree as f64).sqrt() * 3.0 + ((nd.symbols + 1) as f64).ln();
     }
     let flow_nodes: HashSet<usize> = flows.iter().flat_map(|f| f.seq.iter().copied()).collect();
+    // Resources: their own row and cap, the most used first.
+    let mut hidden_res = 0usize;
+    for (lane, cap) in [("data", MAX_RESOURCES), ("ext", MAX_EXTERNAL)] {
+        let mut list: Vec<usize> = (0..nodes.len())
+            .filter(|&i| nodes[i].lane == lane && nodes[i].place == Place::Card)
+            .collect();
+        let users = |i: usize| ragg.keys().filter(|(_, rn)| *rn == i).count();
+        list.sort_by(|&a, &b| {
+            flow_nodes
+                .contains(&b)
+                .cmp(&flow_nodes.contains(&a))
+                .then_with(|| users(b).cmp(&users(a)))
+                .then_with(|| nodes[a].name.cmp(&nodes[b].name))
+        });
+        let keep = cap.max(list.iter().filter(|c| flow_nodes.contains(c)).count());
+        for &i in list.iter().skip(keep) {
+            nodes[i].place = Place::Off;
+            hidden_res += 1;
+        }
+    }
     let mut cards: Vec<usize> = (0..nodes.len())
-        .filter(|&i| nodes[i].place == Place::Card)
+        .filter(|&i| nodes[i].place == Place::Card && is_code_lane(nodes[i].lane))
         .collect();
     cards.sort_by(|&a, &b| {
         flow_nodes
@@ -1468,6 +1837,27 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 core_by_node.get(&i).map(Vec::as_slice).unwrap_or(&[]),
             );
             nd.sentence = s;
+            continue;
+        }
+        if nd.kind == "resource" {
+            let r = &found.res[found_index(&res_node, i)];
+            let aggs: Vec<&ResAgg> = ragg
+                .iter()
+                .filter(|((_, rn), _)| *rn == i)
+                .map(|(_, a)| a)
+                .collect();
+            // Libraries that use it directly, for a resource no app reaches.
+            let libs: BTreeSet<String> = found
+                .uses
+                .iter()
+                .filter(|x| {
+                    res_node[x.res] == Some(i)
+                        && matches!(units[x.unit].kind, Kind::Lib | Kind::Loose)
+                })
+                .map(|x| units[x.unit].name.clone())
+                .collect();
+            nd.sentence = resource_sentence(r, &aggs, mode == Mode::Modules, &libs);
+            nd.res = Some(resource_json(r));
             continue;
         }
         if nd.kind == "infra" {
@@ -1536,15 +1926,36 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             command: (units[u].kind == Kind::Cli)
                 .then(|| units[u].entries.iter().next().cloned())
                 .flatten(),
+            resources: {
+                let mut names: BTreeSet<String> = ragg
+                    .keys()
+                    .filter(|(a, _)| *a == i)
+                    .map(|(_, rn)| &found.res[found_index(&res_node, *rn)])
+                    .filter(|r| !matches!(r.cat, Cat::Secrets | Cat::Config))
+                    .map(|r| r.in_sentence())
+                    .collect();
+                if nd.place == Place::Strip {
+                    names.extend(
+                        found
+                            .uses
+                            .iter()
+                            .filter(|x| x.unit == u && res_node[x.res].is_some())
+                            .map(|x| &found.res[x.res])
+                            .filter(|r| !matches!(r.cat, Cat::Secrets | Cat::Config))
+                            .map(|r| r.in_sentence()),
+                    );
+                }
+                names.into_iter().collect()
+            },
         };
         nd.sentence = card_sentence(&facts);
     }
 
     // ---- layout: lanes, layers, order
     let lanes_order: &[&str] = match mode {
-        Mode::Apps => &["front", "svc", "work", "infra"],
-        Mode::Packages => &["apps", "lib", "infra"],
-        Mode::Modules => &["apps", "mod", "lib", "infra"],
+        Mode::Apps => &["front", "svc", "work", "data", "ext", "infra"],
+        Mode::Packages => &["apps", "lib", "data", "ext", "infra"],
+        Mode::Modules => &["apps", "mod", "lib", "data", "ext", "infra"],
     };
     let shown = |p: Place| matches!(p, Place::Card | Place::Chip);
     let drawn: Vec<(usize, usize)> = out_links
@@ -1591,6 +2002,35 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                     o[i] = k;
                 }
                 (vec![0usize; set.len()], o)
+            } else if !is_code_lane(lane) {
+                // Resources under the apps that use them: by the mean
+                // position of their users, then by name.
+                let mut idx: Vec<usize> = (0..set.len()).collect();
+                let at = |i: usize| -> f64 {
+                    let users: Vec<f64> = edges
+                        .iter()
+                        .filter(|(_, b)| *b == set[i])
+                        .filter_map(|(a, _)| {
+                            let o = order[*a];
+                            (o >= 0).then_some(o as f64)
+                        })
+                        .collect();
+                    if users.is_empty() {
+                        f64::MAX
+                    } else {
+                        users.iter().sum::<f64>() / users.len() as f64
+                    }
+                };
+                idx.sort_by(|&a, &b| {
+                    at(a)
+                        .total_cmp(&at(b))
+                        .then_with(|| names[a].cmp(&names[b]))
+                });
+                let mut o = vec![0usize; set.len()];
+                for (k, &i) in idx.iter().enumerate() {
+                    o[i] = k;
+                }
+                (vec![0usize; set.len()], o)
             } else {
                 layer_lane(&names, &local)
             };
@@ -1628,7 +2068,11 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 .map(|&nd| nodes[nd].name.clone())
                 .collect();
             // A database reached inside a part is named too.
-            if f.steps.iter().any(|s| s.via == "db") && !names.iter().any(|n| n == "database") {
+            if f.steps
+                .iter()
+                .any(|s| s.via == "db" && nodes[s.node].kind != "resource")
+                && !names.iter().any(|n| n == "database")
+            {
                 names.push("database".to_string());
             }
             json!({
@@ -1694,6 +2138,28 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         v.truncate(4);
         v
     };
+    // Infrastructure a chip declares beyond the resources on the map.
+    let other_infra = |i: usize| -> Value {
+        if nodes[i].kind != "infra" {
+            return Value::Null;
+        }
+        let mut m: BTreeMap<String, usize> = BTreeMap::new();
+        let mut runs: BTreeSet<&str> = BTreeSet::new();
+        for u in &nodes[i].units {
+            for (k, c) in found.other.get(u).into_iter().flatten() {
+                *m.entry(k.clone()).or_default() += c;
+            }
+            runs.extend(found.runtimes.get(u).into_iter().flatten());
+        }
+        let mut v: Vec<(String, usize)> = m.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        json!({
+            "types": v.iter().take(12).map(|(k, c)| json!([k, c])).collect::<Vec<_>>(),
+            "total": v.iter().map(|(_, c)| c).sum::<usize>(),
+            "runtimes": runs,
+        })
+    };
+    let deploy = deploy_groups(inp, &found, &nodes, &unit_node, mode);
     let users_of = |i: usize| -> Vec<usize> {
         let mut v: BTreeSet<usize> = BTreeSet::new();
         for &u in &nodes[i].units {
@@ -1722,6 +2188,9 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 "flows": flows.iter().enumerate().filter(|(_, f)| entries[f.entry].node == i).map(|(fi, _)| fi).collect::<Vec<_>>(),
                 "deployed_by": deployed_by(i),
                 "used_by": if nd.lane == "lib" || mode != Mode::Apps { json!(users_of(i)) } else { json!([]) },
+                "res": nd.res,
+                "other": other_infra(i),
+                "deploy": deploy.of.get(&i).cloned().unwrap_or_default(),
             })
         })
         .collect();
@@ -1746,8 +2215,10 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         "hotspots": hotspots.iter().map(|h| h.to_json()).collect::<Vec<_>>(),
         "read_first": read_first,
         "central": central_used,
+        "deploy": deploy.groups,
         "hidden": {
             "cards": hidden_cards,
+            "resources": hidden_res,
             "tests": units.iter().filter(|u| u.kind.hidden()).count(),
             "entries": entries.len().saturating_sub(entries_json_len(&entries)),
             "traced": traced,
@@ -1756,6 +2227,549 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     doc["tour"] = json!(tour(&doc));
     doc["questions"] = json!(questions(&doc));
     Ok(doc)
+}
+
+/// The resource a resource node stands for.
+fn found_index(res_node: &[Option<usize>], node: usize) -> usize {
+    res_node.iter().position(|n| *n == Some(node)).unwrap_or(0)
+}
+
+/// What a flow looks up as it is built: the config a symbol reads, the
+/// broker of a topic, the resource a file's code uses.
+struct Hooks<'a> {
+    config_of: &'a dyn Fn(&str) -> Option<Step>,
+    broker_of: &'a dyn Fn(&str) -> Option<Step>,
+    res_of: &'a dyn Fn(&str) -> Option<Step>,
+    /// A node of code (an app, library or module), not infrastructure.
+    code_node: &'a dyn Fn(usize) -> bool,
+}
+
+/// What one node does with one resource: verbs, the items they name, and
+/// the evidence.
+#[derive(Default)]
+struct ResAgg {
+    verbs: BTreeSet<Verb>,
+    /// Topics, secrets, SQL objects, calls: the verbs that name each.
+    items: BTreeMap<String, BTreeSet<Verb>>,
+    hows: BTreeSet<How>,
+    vias: BTreeSet<usize>,
+    ev: Vec<resources::Use>,
+}
+
+impl ResAgg {
+    fn add(&mut self, x: &resources::Use, _units: &[Unit]) {
+        self.verbs.insert(x.verb);
+        self.hows.insert(x.how);
+        if let Some(v) = x.via {
+            self.vias.insert(v);
+        }
+        if let Some(item) = &x.item
+            && x.how == How::Edge
+        {
+            self.items.entry(item.clone()).or_default().insert(x.verb);
+        }
+        self.ev.push(x.clone());
+    }
+
+    fn named(&self, verb: Verb) -> Vec<&String> {
+        self.items
+            .iter()
+            .filter(|(_, v)| v.contains(&verb))
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// The verb of the line: "publishes order-created", "reads 4 secrets",
+    /// "reads/writes", "stores blobs", "calls over HTTP ×3".
+    fn label(&self, cat: Cat, tech: &str, units: &[Unit]) -> String {
+        let has = |v: Verb| self.verbs.contains(&v);
+        let code = self
+            .hows
+            .iter()
+            .any(|h| matches!(h, How::Edge | How::Import | How::Via));
+        let base = match cat {
+            Cat::Bus => {
+                let (p, s) = (self.named(Verb::Publishes), self.named(Verb::Subscribes));
+                match (p.len(), s.len()) {
+                    (0, 0) if has(Verb::Subscribes) => "receives messages".to_string(),
+                    (0, 0) => "exchanges messages".to_string(),
+                    (1, 0) => format!("publishes {}", p[0]),
+                    (n, 0) => format!("publishes {n} topics"),
+                    (0, 1) => format!("subscribes to {}", s[0]),
+                    (0, n) => format!("subscribes to {n} topics"),
+                    (a, b) => format!(
+                        "publishes {}, subscribes to {b}",
+                        count(a, "topic", "topics")
+                    ),
+                }
+            }
+            Cat::Secrets => {
+                let s = self.named(Verb::ReadsSecrets);
+                match s.len() {
+                    0 => "reads secrets".to_string(),
+                    1 => format!("reads secret {}", s[0]),
+                    n => format!("reads {n} secrets"),
+                }
+            }
+            Cat::Config => "reads config".to_string(),
+            Cat::Db if has(Verb::Subscribes) && !code => "reads the change stream".to_string(),
+            Cat::Db => "reads/writes data".to_string(),
+            Cat::Cache => "caches data".to_string(),
+            Cat::Storage if has(Verb::Subscribes) && !has(Verb::Stores) => {
+                "is triggered by".to_string()
+            }
+            Cat::Storage if tech.contains("Blob") => "stores blobs".to_string(),
+            Cat::Storage => "stores objects".to_string(),
+            Cat::Search => "queries the index".to_string(),
+            Cat::Ext => {
+                let calls = self.named(Verb::Calls);
+                if !calls.is_empty() {
+                    format!("calls over HTTP ×{}", calls.len())
+                } else if code {
+                    "calls its API".to_string()
+                } else {
+                    "depends on its SDK".to_string()
+                }
+            }
+        };
+        // Only through one library: say which.
+        if self.hows.len() == 1
+            && self.hows.contains(&How::Via)
+            && let [lib] = self.vias.iter().collect::<Vec<_>>().as_slice()
+        {
+            return format!("{base} via {}", units[**lib].name);
+        }
+        base
+    }
+
+    /// The evidence behind the line, strongest first.
+    fn calls(&self, units: &[Unit]) -> Vec<Value> {
+        let mut ev: Vec<&resources::Use> = self.ev.iter().collect();
+        ev.sort_by(|a, b| {
+            b.how
+                .cmp(&a.how)
+                .then_with(|| a.ev.file.cmp(&b.ev.file))
+                .then_with(|| a.ev.line.cmp(&b.ev.line))
+        });
+        let mut seen: HashSet<(String, i64, Option<String>)> = HashSet::new();
+        let mut out = Vec::new();
+        for x in ev {
+            if out.len() >= MAX_CALLS {
+                break;
+            }
+            if !seen.insert((x.ev.file.clone(), x.ev.line, x.item.clone())) {
+                continue;
+            }
+            if let (Some(item), Some(q), How::Edge) = (&x.item, &x.qual, x.how) {
+                out.push(json!({
+                    "key": item,
+                    "from": { "qual": q, "file": x.ev.file, "line": x.ev.line },
+                }));
+                continue;
+            }
+            let text = match x.how {
+                How::Manifest => format!("declares {}", x.ev.text),
+                How::Deploy => format!("deployment: {}", x.ev.text),
+                How::Via => format!(
+                    "through {}: {}",
+                    x.via.map(|v| units[v].name.as_str()).unwrap_or("a library"),
+                    x.ev.text
+                ),
+                _ => x.ev.text.clone(),
+            };
+            out.push(json!({ "text": text, "file": x.ev.file, "line": x.ev.line, "how": x.how.as_str() }));
+        }
+        out
+    }
+}
+
+/// The sentence of a resource card: "PostgreSQL database with 4 databases
+/// (catalogdb, identitydb and 2 more); used by 3 apps; declared in Aspire."
+fn resource_sentence(
+    r: &resources::Res,
+    aggs: &[&ResAgg],
+    modules: bool,
+    libs: &BTreeSet<String>,
+) -> String {
+    let (one, many) = if modules {
+        ("part", "parts")
+    } else {
+        ("app", "apps")
+    };
+    let noun = match r.cat {
+        Cat::Db => "database",
+        Cat::Cache => "cache",
+        Cat::Search => "search index",
+        Cat::Bus => "message broker",
+        Cat::Secrets => "secret store",
+        Cat::Config => "config store",
+        Cat::Storage => "object storage",
+        Cat::Ext => "external service",
+    };
+    let mut s = if r.tech.is_empty() {
+        format!(
+            "{} (the repository names no {})",
+            r.name(),
+            if r.cat == Cat::Bus {
+                "broker"
+            } else {
+                "technology"
+            }
+        )
+    } else if r.cat == Cat::Ext && r.tech.contains('.') {
+        format!("External API at {}", r.tech)
+    } else {
+        format!("{} {noun}", r.tech)
+    };
+    // Named parts, by kind.
+    let mut by_kind: BTreeMap<&str, Vec<&String>> = BTreeMap::new();
+    for (name, k) in &r.items {
+        if *k != "call" && *k != "object" {
+            by_kind.entry(k).or_default().push(name);
+        }
+    }
+    let parts: Vec<String> = by_kind
+        .iter()
+        .map(|(k, names)| {
+            let shown: Vec<String> = names.iter().take(3).map(|n| n.to_string()).collect();
+            let mut list = shown.clone();
+            if names.len() > 3 {
+                list.push(format!("{} more", names.len() - 3));
+            }
+            let plural = match *k {
+                "database" => "databases",
+                "topic" => "topics",
+                "queue" => "queues",
+                "subscription" => "subscriptions",
+                "secret" => "secrets",
+                "container" => "containers",
+                "table" => "tables",
+                "stream" => "streams",
+                "parameter" => "parameters",
+                "service" => "services",
+                "chart" => "charts",
+                _ => "resources",
+            };
+            format!("{} ({})", count(names.len(), k, plural), and_list(&list))
+        })
+        .collect();
+    if !parts.is_empty() {
+        s = format!("{s} with {}", and_list(&parts));
+    }
+    let mut rest: Vec<String> = Vec::new();
+    if r.cat == Cat::Bus {
+        let p = aggs
+            .iter()
+            .filter(|a| a.verbs.contains(&Verb::Publishes))
+            .count();
+        let sub = aggs
+            .iter()
+            .filter(|a| a.verbs.contains(&Verb::Subscribes))
+            .count();
+        let other = aggs.len().saturating_sub(
+            aggs.iter()
+                .filter(|a| {
+                    a.verbs.contains(&Verb::Publishes) || a.verbs.contains(&Verb::Subscribes)
+                })
+                .count(),
+        );
+        if p > 0 {
+            rest.push(format!(
+                "{} publish{}",
+                count(p, one, many),
+                if p == 1 { "es" } else { "" }
+            ));
+        }
+        if sub > 0 {
+            rest.push(format!(
+                "{} subscribe{}",
+                count(sub, one, many),
+                if sub == 1 { "s" } else { "" }
+            ));
+        }
+        if other > 0 && p + sub == 0 {
+            rest.push(format!("used by {}", count(other, one, many)));
+        } else if other > 0 {
+            rest.push(format!(
+                "{} more use{} it",
+                count(other, one, many),
+                if other == 1 { "s" } else { "" }
+            ));
+        }
+    } else if !aggs.is_empty() {
+        rest.push(format!("used by {}", count(aggs.len(), one, many)));
+    }
+    if aggs.is_empty() && !libs.is_empty() {
+        let names: Vec<String> = libs.iter().take(3).cloned().collect();
+        rest.push(format!(
+            "used by the {} {}",
+            if libs.len() == 1 {
+                "library"
+            } else {
+                "libraries"
+            },
+            and_list(&names)
+        ));
+    }
+    let tools: BTreeSet<&str> = r
+        .declared
+        .iter()
+        .filter(|e| e.line > 0)
+        .map(|e| match units::infra_kind(&e.file) {
+            "Kubernetes" if e.file.ends_with(".cs") => "Aspire",
+            "Kubernetes" if e.file.ends_with(".prisma") => "Prisma",
+            "Kubernetes" if !(e.file.ends_with(".yaml") || e.file.ends_with(".yml")) => "code",
+            t => t,
+        })
+        .collect();
+    if !tools.is_empty() {
+        let names: Vec<String> = tools
+            .iter()
+            .map(|t| match *t {
+                "compose" => "Docker Compose".to_string(),
+                "code" => "the app host".to_string(),
+                t => t.to_string(),
+            })
+            .collect();
+        rest.push(format!("declared in {}", and_list(&names)));
+    }
+    if aggs.is_empty() && libs.is_empty() {
+        rest.push("no code here was found using it".to_string());
+    }
+    if rest.is_empty() {
+        format!("{s}.")
+    } else {
+        format!("{s}; {}.", rest.join("; "))
+    }
+}
+
+/// A resource's detail for the side column.
+fn resource_json(r: &resources::Res) -> Value {
+    json!({
+        "cat": r.cat.as_str(),
+        "noun": r.cat.noun(),
+        "tech": r.tech,
+        "items": r.items.iter().take(60).map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
+        "total_items": r.items.len(),
+        "declared": r.declared.iter().take(8).map(|e| json!({ "text": e.text, "file": e.file, "line": e.line })).collect::<Vec<_>>(),
+        "kinds": r.kinds.iter().map(|(k, n)| json!([k, n])).collect::<Vec<_>>(),
+    })
+}
+
+/// A deployment group being built: its tool, nodes and files.
+type DeployGroup = (&'static str, BTreeSet<usize>, BTreeSet<String>);
+
+/// Where the apps run: deployment groups for the overlay.
+struct Deploy {
+    groups: Vec<Value>,
+    /// Node -> its groups, the one it is drawn in first.
+    of: HashMap<usize, Vec<usize>>,
+}
+
+fn deploy_groups(
+    inp: &Input,
+    found: &Found,
+    nodes: &[Node],
+    unit_node: &[Option<usize>],
+    mode: Mode,
+) -> Deploy {
+    let units = inp.units;
+    let mut out = Deploy {
+        groups: Vec::new(),
+        of: HashMap::new(),
+    };
+    if mode == Mode::Modules {
+        return out;
+    }
+    let app_node = |u: usize| -> Option<usize> {
+        let nd = unit_node[u]?;
+        (is_code_lane(nodes[nd].lane) && nodes[nd].place != Place::Strip).then_some(nd)
+    };
+    // label -> (tool, nodes, files)
+    let mut groups: BTreeMap<String, DeployGroup> = BTreeMap::new();
+    for (i, t, ev) in units::deployments(units) {
+        let Some(nd) = app_node(t) else { continue };
+        let infra = &units[i];
+        let root = infra.display_root();
+        let tool: &'static str = if infra.why == "Aspire" {
+            "Aspire"
+        } else {
+            units::infra_kind(&ev.file)
+        };
+        let runtimes: Vec<&str> = found
+            .runtimes
+            .get(&i)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        let label = match tool {
+            "Kubernetes" | "Helm" => {
+                let dir = ev.file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                let ns = infra
+                    .decls
+                    .iter()
+                    .find(|d| {
+                        d.source == "k8s"
+                            && d.ev.file == ev.file
+                            && d.span.0 <= ev.line
+                            && ev.line <= d.span.1
+                            && d.ns.is_some()
+                    })
+                    .or_else(|| {
+                        infra.decls.iter().find(|d| {
+                            d.what == "kind:Kustomization"
+                                && dir.starts_with(
+                                    d.ev.file.rsplit_once('/').map(|(x, _)| x).unwrap_or(""),
+                                )
+                        })
+                    })
+                    .and_then(|d| d.ns.clone());
+                let chart = infra
+                    .decls
+                    .iter()
+                    .find(|d| d.source == "helm" && d.what == "chart")
+                    .map(|d| d.name.clone());
+                match (tool, ns, chart) {
+                    (_, Some(ns), _) => format!("Kubernetes namespace {ns}"),
+                    ("Helm", None, Some(c)) => format!("Helm chart {c}"),
+                    ("Helm", None, None) => format!("Helm ({root})"),
+                    _ => format!("Kubernetes ({root})"),
+                }
+            }
+            "compose" => format!("Docker Compose ({})", ev.file),
+            "Aspire" => format!("Aspire app host {}", infra.name),
+            "Bicep" | "Terraform" => match runtimes.first() {
+                Some(rt) => format!("{rt} ({tool}, {root})"),
+                None => format!("{tool} ({root})"),
+            },
+            other => format!("{other} ({root})"),
+        };
+        let g = groups
+            .entry(label)
+            .or_insert_with(|| (tool, BTreeSet::new(), BTreeSet::new()));
+        g.1.insert(nd);
+        g.2.insert(ev.file.clone());
+    }
+    for (u, runs) in &found.runs_on {
+        let Some(nd) = app_node(*u) else { continue };
+        for (rt, ev) in runs {
+            let g = groups
+                .entry(format!("{rt} (Serverless Framework)"))
+                .or_insert_with(|| ("Serverless", BTreeSet::new(), BTreeSet::new()));
+            g.1.insert(nd);
+            g.2.insert(ev.file.clone());
+        }
+    }
+    // Apps no deployment file names.
+    let placed: HashSet<usize> = groups.values().flat_map(|g| g.1.iter().copied()).collect();
+    for (u, unit) in units.iter().enumerate() {
+        let Some(nd) = app_node(u) else { continue };
+        if placed.contains(&nd) || !unit.kind.is_app() {
+            continue;
+        }
+        let (label, tool) = if unit.dockerfiles.is_empty() {
+            (
+                "Not deployed by files in this repository".to_string(),
+                "none",
+            )
+        } else {
+            ("Container images (Dockerfile only)".to_string(), "docker")
+        };
+        let g = groups
+            .entry(label)
+            .or_insert_with(|| (tool, BTreeSet::new(), BTreeSet::new()));
+        g.1.insert(nd);
+        g.2.extend(unit.dockerfiles.iter().cloned());
+    }
+    let rank = |tool: &str| -> usize {
+        match tool {
+            "Kubernetes" => 0,
+            "Helm" => 1,
+            "compose" => 2,
+            "Aspire" => 3,
+            "Bicep" | "Terraform" => 4,
+            "Serverless" => 5,
+            "Skaffold" => 6,
+            "docker" => 7,
+            _ => 8,
+        }
+    };
+    let list: Vec<(String, DeployGroup)> = groups.into_iter().collect();
+    // Each node is drawn in one group: the first a deployment runs it in.
+    let mut primary: HashMap<usize, usize> = HashMap::new();
+    for (gi, (label, (tool, ns, _))) in list.iter().enumerate() {
+        for &nd in ns {
+            // The deployment that runs it (Kubernetes before a dev
+            // compose file or a build tool), then the biggest group.
+            let better = match primary.get(&nd) {
+                None => true,
+                Some(&o) => {
+                    let (ol, (ot, ons, _)) = &list[o];
+                    (
+                        std::cmp::Reverse(rank(tool)),
+                        ns.len(),
+                        std::cmp::Reverse(label),
+                    ) > (
+                        std::cmp::Reverse(rank(ot)),
+                        ons.len(),
+                        std::cmp::Reverse(ol),
+                    )
+                }
+            };
+            if better {
+                primary.insert(nd, gi);
+            }
+        }
+    }
+    for (gi, (label, (tool, ns, files))) in list.iter().enumerate() {
+        let n = ns.len();
+        let sentence = match *tool {
+            "Kubernetes" => format!(
+                "Runs as {} {}.",
+                count(n, "container", "containers"),
+                label
+                    .strip_prefix("Kubernetes namespace ")
+                    .map(|x| format!("in Kubernetes namespace {x}"))
+                    .unwrap_or_else(|| "on Kubernetes".to_string())
+            ),
+            "Helm" => format!("Runs as {} from {label}.", count(n, "service", "services")),
+            "compose" => format!("Runs as {} in {label}.", count(n, "service", "services")),
+            "Aspire" => format!(
+                "{} run together by the .NET {label}.",
+                count(n, "app", "apps")
+            ),
+            "Bicep" | "Terraform" => format!("{} deployed with {label}.", count(n, "app", "apps")),
+            "Skaffold" => format!("{} built and run by {label}.", count(n, "app", "apps")),
+            "Serverless" => format!(
+                "{} run as AWS Lambda functions (Serverless Framework).",
+                count(n, "app", "apps")
+            ),
+            "docker" => format!(
+                "{} built as container images; no deployment file here runs them.",
+                count(n, "app", "apps")
+            ),
+            _ => format!(
+                "{}: no Dockerfile or deployment file here runs them.",
+                count(n, "app", "apps")
+            ),
+        };
+        let mut members: Vec<usize> = ns.iter().copied().collect();
+        members.sort_by_key(|nd| (primary.get(nd) != Some(&gi), *nd));
+        for &nd in ns {
+            let e = out.of.entry(nd).or_default();
+            if primary.get(&nd) == Some(&gi) {
+                e.insert(0, gi);
+            } else {
+                e.push(gi);
+            }
+        }
+        out.groups.push(json!({
+            "id": gi, "label": label, "tool": tool, "sentence": sentence,
+            "nodes": members,
+            "primary": ns.iter().filter(|nd| primary.get(nd) == Some(&gi)).collect::<Vec<_>>(),
+            "files": files.iter().take(6).collect::<Vec<_>>(),
+        }));
+    }
+    out
 }
 
 fn entries_json_len(entries: &[EntryPoint]) -> usize {
@@ -2000,8 +3014,9 @@ fn best_path(
     counted: &dyn Fn(usize) -> bool,
     ctx: &Ctx,
     probable_kinds: &[&str],
-    config_of: &dyn Fn(&str) -> Option<Step>,
+    hooks: &Hooks,
 ) -> Vec<Candidate> {
+    let config_of = hooks.config_of;
     let by_id: HashMap<i64, usize> = {
         let mut m = HashMap::new();
         for (i, h) in hops.iter().enumerate() {
@@ -2019,13 +3034,18 @@ fn best_path(
         kind: if caller.is_some() {
             match e.kind {
                 "http" => "HTTP_ROUTE".to_string(),
+                "bus" => "CHANNEL_SUBSCRIBE".to_string(),
                 _ => "RPC_IMPL".to_string(),
             }
         } else {
             "ENTRY".to_string()
         },
         via: if caller.is_some() {
-            if e.kind == "http" { "http" } else { "rpc" }
+            match e.kind {
+                "http" => "http",
+                "bus" => "bus",
+                _ => "rpc",
+            }
         } else {
             "start"
         },
@@ -2045,6 +3065,13 @@ fn best_path(
     let mut consider = |mut steps: Vec<Step>, unresolved: bool| {
         if let Some(c) = &caller {
             steps.insert(0, c.clone());
+            // Publisher, broker, subscriber.
+            if e.kind == "bus"
+                && let Some(b) = e.key.as_ref().and_then(|k| (hooks.broker_of)(short_key(k)))
+                && b.node != c.node
+            {
+                steps.insert(1, b);
+            }
         }
         // Trim after the last step that adds a node or reaches infra.
         let mut seen: Vec<usize> = Vec::new();
@@ -2057,7 +3084,10 @@ fn best_path(
             if fresh {
                 seen.push(s.node);
             }
-            let infra = matches!(s.via, "http" | "rpc" | "bus" | "config" | "db");
+            let infra = matches!(
+                s.via,
+                "http" | "rpc" | "bus" | "config" | "db" | "publish" | "res"
+            );
             if fresh || infra {
                 last = k;
             }
@@ -2079,7 +3109,17 @@ fn best_path(
         let found = (last..=seg_end)
             .rev()
             .find_map(|r| config_of(&steps[r].qual).map(|c| (r, c)));
-        let trimmed = last + 1 < steps.len() && found.is_none();
+        // Else the resource the last code reached uses (a database, a
+        // store, an external API), as its own final step.
+        let used = if found.is_none() {
+            (last..steps.len())
+                .rev()
+                .find_map(|r| (hooks.res_of)(&steps[r].file).map(|s| (r, s)))
+                .filter(|(_, s)| !seen.contains(&s.node))
+        } else {
+            None
+        };
+        let trimmed = last + 1 < steps.len() && found.is_none() && used.is_none();
         if let Some((r, cs)) = found {
             steps.truncate(r + 1);
             if !seen.contains(&cs.node) && counted(cs.node) {
@@ -2087,6 +3127,13 @@ fn best_path(
             }
             config = true;
             steps.push(cs);
+        } else if let Some((r, rs)) = used {
+            steps.truncate(r + 1);
+            if counted(rs.node) {
+                seen.push(rs.node);
+            }
+            db = true;
+            steps.push(rs);
         } else {
             steps.truncate(last + 1);
         }
@@ -2172,6 +3219,21 @@ fn best_path(
             } else {
                 "call"
             };
+            // A crossing into infrastructure (a Bicep subscription, a route
+            // a manifest declares) reaches no code: the flow ends before it.
+            if matches!(via, "http" | "rpc" | "bus") && !(hooks.code_node)(node) {
+                break;
+            }
+            // A message goes through its broker: a step of its own.
+            if via == "bus"
+                && let Some(topic) = h
+                    .protocol_context
+                    .as_ref()
+                    .and_then(|p| p["channel"].as_str())
+                && let Some(b) = (hooks.broker_of)(short_key(topic))
+            {
+                steps.push(b);
+            }
             steps.push(Step {
                 node,
                 name: h.symbol.name.clone(),
@@ -2300,7 +3362,7 @@ fn central_entries(
         let Some(nd) = node_of_file(&path) else {
             continue;
         };
-        if nodes[nd].lane == "infra" {
+        if !is_code_lane(nodes[nd].lane) {
             continue;
         }
         let Some(u) = ix.inp.owners.owner(&path) else {
@@ -2350,7 +3412,7 @@ fn collect_entries(
             return None;
         }
         let nd = node_of_file(path)?;
-        if nodes[nd].lane == "infra" {
+        if !is_code_lane(nodes[nd].lane) {
             return None;
         }
         Some((u, nd))
@@ -2881,7 +3943,7 @@ fn summary(inp: &Input, mode: Mode, nodes: &[Node]) -> Value {
             }
             and_list(&parts)
         }
-        Mode::Packages => count(count_of(&|n| n.lane != "infra"), "package", "packages"),
+        Mode::Packages => count(count_of(&|n| is_code_lane(n.lane)), "package", "packages"),
         Mode::Modules => format!(
             "one unit in {}",
             count(count_of(&|n| n.kind == "module"), "module", "modules")
@@ -2958,7 +4020,10 @@ fn tour(doc: &Value) -> Vec<Value> {
             ),
             "packages" => format!(
                 "This workspace has {} packages",
-                nodes.iter().filter(|n| n["lane"] != "infra").count()
+                nodes
+                    .iter()
+                    .filter(|n| n["lane"].as_str().is_some_and(is_code_lane))
+                    .count()
             ),
             _ => format!(
                 "This repository is one unit in {} modules",
@@ -2970,7 +4035,7 @@ fn tour(doc: &Value) -> Vec<Value> {
     // 2. Where most traffic enters.
     let busiest = nodes
         .iter()
-        .filter(|n| n["lane"] != "infra")
+        .filter(|n| n["lane"].as_str().is_some_and(is_code_lane))
         .map(|n| {
             let ways: u64 = n["ways"]
                 .as_object()
@@ -3079,7 +4144,7 @@ fn tour(doc: &Value) -> Vec<Value> {
         let heavy: Vec<(usize, &Value)> = links
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l["quiet"].as_bool().unwrap_or(false))
+            .filter(|(_, l)| !l["quiet"].as_bool().unwrap_or(false) && l["family"] == "code")
             .collect();
         if let Some((_, top)) = heavy
             .iter()
@@ -3097,17 +4162,21 @@ fn tour(doc: &Value) -> Vec<Value> {
             steps.push(json!({
                 "id": "talk",
                 "title": "How the parts depend on each other",
-                "text": format!("The lines are in-process links. The heaviest: {} {} {}.", name(&top["from"]), top["label"].as_str().unwrap_or(""), name(&top["to"])),
+                "text": format!("The lines are in-process links. The heaviest: {} → {} ({}).", name(&top["from"]), name(&top["to"]), top["label"].as_str().unwrap_or("")),
                 "nodes": ns.into_iter().collect::<Vec<_>>(),
                 "links": heavy.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
             }));
         }
     }
-    // 5. Config and secrets.
+    // 5. Data and messaging: the resources the apps share.
+    if let Some(step) = data_step(&nodes, &links, mode) {
+        steps.push(step);
+    }
+    // 6. Config and secrets.
     let cfg: Vec<(usize, &Value)> = links
         .iter()
         .enumerate()
-        .filter(|(_, l)| l["family"] == "config")
+        .filter(|(_, l)| matches!(l["family"].as_str(), Some("config" | "secret")))
         .collect();
     if !cfg.is_empty() {
         let mut providers: BTreeMap<String, usize> = BTreeMap::new();
@@ -3228,6 +4297,117 @@ fn tour(doc: &Value) -> Vec<Value> {
     steps
 }
 
+/// Families of links to a resource.
+fn is_res_family(f: &str) -> bool {
+    matches!(f, "data" | "msg" | "secret" | "store" | "ext")
+}
+
+/// The tour step on the resources: who keeps data where, who passes
+/// messages through what, and which apps meet only there.
+fn data_step(nodes: &[Value], links: &[Value], mode: &str) -> Option<Value> {
+    let on_map = |i: u64| {
+        nodes
+            .get(i as usize)
+            .is_some_and(|n| matches!(n["place"].as_str(), Some("card" | "chip")))
+    };
+    let res_links: Vec<(usize, &Value)> = links
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            l["family"].as_str().is_some_and(is_res_family)
+                && on_map(l["from"].as_u64().unwrap_or(0))
+                && on_map(l["to"].as_u64().unwrap_or(0))
+        })
+        .collect();
+    if res_links.is_empty() {
+        return None;
+    }
+    let (one, many) = if mode == "apps" {
+        ("app", "apps")
+    } else {
+        ("part", "parts")
+    };
+    let name = |i: u64| nodes[i as usize]["name"].as_str().unwrap_or("").to_string();
+    let mut users: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    for (_, l) in &res_links {
+        users
+            .entry(l["to"].as_u64().unwrap_or(0))
+            .or_default()
+            .insert(l["from"].as_u64().unwrap_or(0));
+    }
+    let mut order: Vec<(&u64, &BTreeSet<u64>)> = users.iter().collect();
+    order.sort_by(|a, b| {
+        b.1.len()
+            .cmp(&a.1.len())
+            .then_with(|| name(*a.0).cmp(&name(*b.0)))
+    });
+    let parts: Vec<String> = order
+        .iter()
+        .take(5)
+        .map(|(r, u)| format!("{} ({})", name(**r), count(u.len(), one, many)))
+        .collect();
+    let mut text = format!(
+        "The {many} keep data and pass messages through {}: {}",
+        count(users.len(), "shared resource", "shared resources"),
+        and_list(&parts)
+    );
+    if users.len() > 5 {
+        text.push_str(&format!(" and {} more", users.len() - 5));
+    }
+    text.push('.');
+    // Pairs that never call each other and meet only at a resource.
+    let direct: BTreeSet<(u64, u64)> = links
+        .iter()
+        .filter(|l| !l["family"].as_str().is_some_and(is_res_family))
+        .map(|l| {
+            let (a, b) = (
+                l["from"].as_u64().unwrap_or(0),
+                l["to"].as_u64().unwrap_or(0),
+            );
+            (a.min(b), a.max(b))
+        })
+        .collect();
+    let mut only: Vec<(u64, u64, u64)> = Vec::new();
+    for (r, u) in &order {
+        let list: Vec<u64> = u.iter().copied().collect();
+        for (i, a) in list.iter().enumerate() {
+            for b in &list[i + 1..] {
+                if !direct.contains(&((*a).min(*b), (*a).max(*b)))
+                    && !only.iter().any(|(x, y, _)| (x, y) == (a, b))
+                {
+                    only.push((*a, *b, **r));
+                }
+            }
+        }
+    }
+    if let Some((a, b, r)) = only.first() {
+        text.push_str(&format!(
+            " {} meet only here, such as {} and {} through {}.",
+            count(
+                only.len(),
+                &format!("pair of {many} that never call each other"),
+                &format!("pairs of {many} that never call each other")
+            ),
+            name(*a),
+            name(*b),
+            name(*r)
+        ));
+    }
+    text.push_str(" Click a resource to see who uses it and how.");
+    let mut ns: BTreeSet<u64> = BTreeSet::new();
+    for (_, l) in &res_links {
+        ns.insert(l["from"].as_u64().unwrap_or(0));
+        ns.insert(l["to"].as_u64().unwrap_or(0));
+    }
+    Some(json!({
+        "id": "data",
+        "title": "Data and messaging",
+        "text": text,
+        "nodes": ns.into_iter().collect::<Vec<_>>(),
+        "links": res_links.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+    }))
+}
+
 /// Questions with answers worked out in advance.
 fn questions(doc: &Value) -> Vec<Value> {
     let nodes = doc["nodes"].as_array().cloned().unwrap_or_default();
@@ -3243,9 +4423,14 @@ fn questions(doc: &Value) -> Vec<Value> {
     {
         let mut items: Vec<Value> = Vec::new();
         let mut ns: BTreeSet<u64> = BTreeSet::new();
-        for l in links.iter().filter(|l| l["family"] == "config") {
+        for l in links
+            .iter()
+            .filter(|l| matches!(l["family"].as_str(), Some("config" | "secret")))
+        {
             for c in l["calls"].as_array().into_iter().flatten() {
-                let key = c["key"].as_str().unwrap_or("");
+                let Some(key) = c["key"].as_str() else {
+                    continue;
+                };
                 items.push(json!({
                     "text": format!("{} reads {key} from {}", name(&l["from"]), name(&l["to"])),
                     "file": c["from"]["file"], "line": c["from"]["line"],
@@ -3257,10 +4442,14 @@ fn questions(doc: &Value) -> Vec<Value> {
         let secrets: Vec<&Value> = links
             .iter()
             .filter(|l| {
-                l["family"] == "config" && l["label"].as_str().is_some_and(|s| s.contains("secret"))
+                matches!(l["family"].as_str(), Some("config" | "secret"))
+                    && l["label"].as_str().is_some_and(|s| s.contains("secret"))
             })
             .collect();
-        let a = if links.iter().all(|l| l["family"] != "config") {
+        let a = if links
+            .iter()
+            .all(|l| !matches!(l["family"].as_str(), Some("config" | "secret")))
+        {
             "No secrets or config keys found: no code reads a key that the repository's infrastructure provides.".to_string()
         } else if secrets.is_empty() {
             "No code reads a secret. Config keys come from the infrastructure listed below."
@@ -3300,11 +4489,42 @@ fn questions(doc: &Value) -> Vec<Value> {
             .collect();
         let mut ns = vec![id.clone()];
         ns.extend(inc.iter().map(|l| l["from"].clone()));
+        let resource = n["kind"] == "resource";
+        // A resource's answer lists its evidence: where each user touches it.
+        let mut items: Vec<Value> = Vec::new();
+        if resource {
+            for l in &inc {
+                for c in l["calls"].as_array().into_iter().flatten().take(4) {
+                    let (text, file, line) = match c["key"].as_str() {
+                        Some(k) => (
+                            format!(
+                                "{} {}: {k}",
+                                name(&l["from"]),
+                                l["label"].as_str().unwrap_or("")
+                            ),
+                            c["from"]["file"].clone(),
+                            c["from"]["line"].clone(),
+                        ),
+                        None => (
+                            format!("{}: {}", name(&l["from"]), c["text"].as_str().unwrap_or("")),
+                            c["file"].clone(),
+                            c["line"].clone(),
+                        ),
+                    };
+                    items.push(json!({ "text": text, "file": file, "line": line }));
+                }
+            }
+            items.truncate(40);
+        }
         out.push(json!({
-            "id": format!("talks-{}", id),
-            "q": format!("What talks to {}?", n["name"].as_str().unwrap_or("")),
+            "id": format!("{}-{}", if resource { "uses" } else { "talks" }, id),
+            "q": if resource {
+                format!("What uses {}?", n["name"].as_str().unwrap_or(""))
+            } else {
+                format!("What talks to {}?", n["name"].as_str().unwrap_or(""))
+            },
             "a": format!("{}.", parts.join("; ")),
-            "nodes": ns, "items": [],
+            "nodes": ns, "items": items,
         }));
     }
     // Which apps share a library.
@@ -3335,6 +4555,149 @@ fn questions(doc: &Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link's verb for one category, from the verbs and the ways its
+    /// uses were found, with the items `named` names.
+    fn res_label(
+        cat: Cat,
+        tech: &str,
+        verbs: &[Verb],
+        hows: &[How],
+        named: &[(&str, Verb)],
+    ) -> String {
+        let mut agg = ResAgg::default();
+        agg.verbs.extend(verbs.iter().copied());
+        agg.hows.extend(hows.iter().copied());
+        for (item, verb) in named {
+            agg.items.entry(item.to_string()).or_default().insert(*verb);
+        }
+        agg.label(cat, tech, &[])
+    }
+
+    /// Every line to a resource says what is done with it: a verb with an
+    /// object, never a bare "uses" or "calls".
+    #[test]
+    fn resource_links_say_what_is_done_with_the_resource() {
+        use How::*;
+        use Verb::*;
+        let cases: Vec<(String, &str)> = vec![
+            (
+                res_label(Cat::Bus, "RabbitMQ", &[Uses], &[Manifest], &[]),
+                "exchanges messages",
+            ),
+            (
+                res_label(Cat::Bus, "Kafka", &[Subscribes], &[Import], &[]),
+                "receives messages",
+            ),
+            (
+                res_label(
+                    Cat::Bus,
+                    "Kafka",
+                    &[Publishes],
+                    &[Edge],
+                    &[("orders", Publishes)],
+                ),
+                "publishes orders",
+            ),
+            (
+                res_label(
+                    Cat::Bus,
+                    "Kafka",
+                    &[Publishes, Subscribes],
+                    &[Edge],
+                    &[("a", Publishes), ("b", Subscribes), ("c", Subscribes)],
+                ),
+                "publishes 1 topic, subscribes to 2",
+            ),
+            (
+                res_label(
+                    Cat::Bus,
+                    "Kafka",
+                    &[Publishes, Subscribes],
+                    &[Edge],
+                    &[("a", Publishes), ("b", Publishes), ("c", Subscribes)],
+                ),
+                "publishes 2 topics, subscribes to 1",
+            ),
+            (
+                res_label(Cat::Secrets, "Vault", &[Uses], &[Deploy], &[]),
+                "reads secrets",
+            ),
+            (
+                res_label(
+                    Cat::Secrets,
+                    "Vault",
+                    &[ReadsSecrets],
+                    &[Edge],
+                    &[("db-pass", ReadsSecrets)],
+                ),
+                "reads secret db-pass",
+            ),
+            (
+                res_label(Cat::Db, "PostgreSQL", &[ReadsWrites], &[Import], &[]),
+                "reads/writes data",
+            ),
+            (
+                res_label(Cat::Db, "PostgreSQL", &[Uses], &[Manifest], &[]),
+                "reads/writes data",
+            ),
+            (
+                res_label(Cat::Db, "Cosmos DB", &[Subscribes], &[Deploy], &[]),
+                "reads the change stream",
+            ),
+            (
+                res_label(Cat::Cache, "Redis", &[Uses], &[Import], &[]),
+                "caches data",
+            ),
+            (
+                res_label(
+                    Cat::Storage,
+                    "Azure Blob Storage",
+                    &[Stores],
+                    &[Import],
+                    &[],
+                ),
+                "stores blobs",
+            ),
+            (
+                res_label(Cat::Storage, "Amazon S3", &[Uses], &[Manifest], &[]),
+                "stores objects",
+            ),
+            (
+                res_label(Cat::Storage, "Amazon S3", &[Subscribes], &[Deploy], &[]),
+                "is triggered by",
+            ),
+            (
+                res_label(Cat::Search, "Elasticsearch", &[Uses], &[Manifest], &[]),
+                "queries the index",
+            ),
+            (
+                res_label(Cat::Config, "App Configuration", &[Uses], &[Import], &[]),
+                "reads config",
+            ),
+            (
+                res_label(Cat::Ext, "Stripe", &[Uses], &[Import], &[]),
+                "calls its API",
+            ),
+            (
+                res_label(Cat::Ext, "Stripe", &[Uses], &[Manifest], &[]),
+                "depends on its SDK",
+            ),
+            (
+                res_label(
+                    Cat::Ext,
+                    "api.example.com",
+                    &[Calls],
+                    &[Edge],
+                    &[("GET /a", Calls), ("GET /b", Calls)],
+                ),
+                "calls over HTTP ×2",
+            ),
+        ];
+        for (got, want) in &cases {
+            assert_eq!(got, want);
+        }
+    }
 
     fn step(node: usize, qual: &str) -> Step {
         Step {

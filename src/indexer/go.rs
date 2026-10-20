@@ -11,7 +11,7 @@ use crate::indexer::go_repo::{GoRepo, ImportTarget};
 use crate::indexer::go_types::LocalTypes;
 use crate::indexer::http;
 use crate::indexer::proto;
-use crate::indexer::string_consts::{LocalBinding, StringConsts};
+use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, collect_identifier_names, module_symbol_fallback,
     module_symbol_with_span, node_text, span,
@@ -2735,30 +2735,111 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     })
 }
 
+/// What the functions around `call` say about a bare identifier argument:
+/// a parameter, range variable or reassigned name has no static value (it
+/// is not the package constant it may shadow); one `:=`, `var` or `const`
+/// with a single initializer has that.
+fn go_local_binding(call: Node<'_>, name: &str, source: &str) -> LocalBinding {
+    let name = name.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return LocalBinding::NotLocal;
+    }
+    let binds = |n: Node<'_>| {
+        node_text(n, source)
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|t| t == name)
+    };
+    let kinds = ["function_declaration", "method_declaration", "func_literal"];
+    scan_enclosing_function(call, &kinds, |n, tally| match n.kind() {
+        "parameter_declaration" | "variadic_parameter_declaration" => {
+            let mut c = n.walk();
+            if n.children_by_field_name("name", &mut c)
+                .any(|x| node_text(x, source) == name)
+            {
+                tally.other_bindings += 1;
+            }
+        }
+        "short_var_declaration" | "var_spec" | "const_spec" => {
+            let (names, values) = if n.kind() == "short_var_declaration" {
+                let named = |f: &str| -> Vec<Node<'_>> {
+                    n.child_by_field_name(f)
+                        .map(|l| {
+                            let mut c = l.walk();
+                            l.named_children(&mut c).collect()
+                        })
+                        .unwrap_or_default()
+                };
+                (named("left"), named("right"))
+            } else {
+                let mut c = n.walk();
+                let names: Vec<Node<'_>> = n.children_by_field_name("name", &mut c).collect();
+                let values: Vec<Node<'_>> = n
+                    .child_by_field_name("value")
+                    .map(|v| {
+                        let mut c = v.walk();
+                        v.named_children(&mut c).collect()
+                    })
+                    .unwrap_or_default();
+                (names, values)
+            };
+            if names.iter().any(|x| node_text(*x, source) == name) {
+                if names.len() == 1 && values.len() == 1 {
+                    tally.declarations += 1;
+                    tally.initializer = Some(node_text(values[0], source));
+                } else {
+                    tally.other_bindings += 1;
+                }
+            }
+        }
+        "assignment_statement" | "inc_statement" | "dec_statement" => {
+            let target = n.child_by_field_name("left").unwrap_or(n);
+            if binds(target) {
+                tally.reassignments += 1;
+            }
+        }
+        "range_clause" => {
+            if n.child_by_field_name("left").is_some_and(binds) {
+                tally.other_bindings += 1;
+            }
+        }
+        "type_switch_statement" => {
+            if n.child_by_field_name("alias").is_some_and(binds) {
+                tally.other_bindings += 1;
+            }
+        }
+        _ => {}
+    })
+}
+
 fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     let function_node = node.child_by_field_name("function")?;
     let (receiver, method_name) = split_selector_expr(function_node, source)?;
 
-    if !channel::is_bus_receiver(&receiver) {
-        return None;
-    }
-
-    let kind = if channel::is_publish_method(&method_name) {
-        channel::CHANNEL_PUBLISH_KIND
-    } else if channel::is_subscribe_method(&method_name) {
-        channel::CHANNEL_SUBSCRIBE_KIND
+    // A broker SDK call names its topic whatever the client is called.
+    let (kind, framework) = if let Some((k, f, _)) = channel::sdk_channel_call(&method_name) {
+        (k, f)
     } else {
-        return None;
+        if !channel::is_bus_receiver(&receiver) {
+            return None;
+        }
+        let kind = if channel::is_publish_method(&method_name) {
+            channel::CHANNEL_PUBLISH_KIND
+        } else if channel::is_subscribe_method(&method_name) {
+            channel::CHANNEL_SUBSCRIBE_KIND
+        } else {
+            return None;
+        };
+        (kind, "go-bus")
     };
 
     let args = call_arguments(node);
     let raw_topic = node_text(*args.first()?, source);
-    let normalized =
-        channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
+    let local = go_local_binding(node, &raw_topic, source);
+    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, "go-bus")
+        channel::build_publish_detail(&normalized, &raw_topic, framework)
     } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, "go-bus")
+        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
     };
 
     Some(EdgeInput {

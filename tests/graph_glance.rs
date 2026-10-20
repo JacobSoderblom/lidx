@@ -175,7 +175,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
                 "validator",
                 "card",
                 "work",
-                "Python worker subscribed to 1 topic; reads 1 config key."
+                "Python worker subscribed to 1 topic; reads 1 config key, uses a message bus."
             ),
             (
                 "Kubernetes manifests",
@@ -183,9 +183,17 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
                 "infra",
                 "Kubernetes manifests in 1 folder providing 1 config key to 1 app."
             ),
+            // No broker named anywhere: a plain message bus, not a guess.
+            (
+                "Message bus",
+                "card",
+                "data",
+                "Message bus (the repository names no broker) with 1 topic (fileuploaded); 1 app publishes; 1 app subscribes."
+            ),
         ])
     );
-    // Verbs and counts; nothing in-process between apps.
+    // Verbs and counts; nothing in-process between apps. The two apps meet
+    // at the bus: their direct link waits for a focus.
     assert_eq!(
         g.links(),
         vec![
@@ -199,12 +207,24 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
                 "ingest-api".into(),
                 "validator".into(),
                 "publishes fileuploaded".into(),
-                false
+                true
             ),
             (
                 "validator".into(),
                 "Kubernetes manifests".into(),
                 "reads config DB_PASSWORD".into(),
+                false
+            ),
+            (
+                "ingest-api".into(),
+                "Message bus".into(),
+                "publishes fileuploaded".into(),
+                false
+            ),
+            (
+                "validator".into(),
+                "Message bus".into(),
+                "subscribes to fileuploaded".into(),
                 false
             ),
         ]
@@ -218,9 +238,10 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
     );
     // One flow: the request starts at the portal's call, and every hop says
     // how it crossed. The bus entry's own path is the tail of this one.
+    // The message crosses the bus as a step of its own.
     assert_eq!(
         g.titles(),
-        vec!["POST /uploads → ingest-api → validator → Kubernetes manifests"]
+        vec!["POST /uploads → ingest-api → Message bus → validator → Kubernetes manifests"]
     );
     assert_eq!(
         g.steps(0),
@@ -228,6 +249,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             ("portal", "start", "ui/src/api.sendUpload"),
             ("ingest-api", "http", "ingest_api.main.upload"),
             ("ingest-api", "call", "ingest_api.main.store"),
+            ("Message bus", "publish", "fileuploaded"),
             ("validator", "bus", "validator.main.on_uploaded"),
             ("validator", "call", "validator.main.check"),
             ("Kubernetes manifests", "config", "env://DB_PASSWORD"),
@@ -237,7 +259,8 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
     assert_eq!(f["caller"], true);
     assert_eq!(f["label"], "POST /uploads");
     assert_eq!(f["probable"], false);
-    assert_eq!(f["steps"][5]["file"], "deploy/k8s/validator.yaml");
+    assert_eq!(f["steps"][3]["file"], "api/ingest_api/main.py");
+    assert_eq!(f["steps"][6]["file"], "deploy/k8s/validator.yaml");
     // The entry point's card knows its flow.
     assert_eq!(g.g()["nodes"][1]["flows"], serde_json::json!([0]));
     assert_eq!(g.g()["entries"][0]["flow"], 0);
@@ -248,12 +271,17 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             ("busiest".into(), "Most traffic enters ingest-api".into()),
             ("flow".into(), "Follow one request".into()),
             ("talk".into(), "How the apps talk".into()),
+            ("data".into(), "Data and messaging".into()),
             ("config".into(), "Where config and secrets come from".into()),
         ]
     );
     assert_eq!(
         g.g()["tour"][0]["text"],
-        "Front ends: portal. Services: ingest-api. Workers and tools: validator. Infrastructure: Kubernetes manifests."
+        "Front ends: portal. Services: ingest-api. Workers and tools: validator. Data and messaging: Message bus. Infrastructure: Kubernetes manifests."
+    );
+    assert_eq!(
+        g.g()["tour"][4]["text"],
+        "The apps keep data and pass messages through 1 shared resource: Message bus (2 apps). Click a resource to see who uses it and how."
     );
     assert_eq!(
         g.g()["tour"][3]["text"],
@@ -269,11 +297,16 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
         qs,
         vec![
             "Where do secrets come from?",
+            "What uses Message bus?",
             "What talks to ingest-api?",
             "What talks to validator?"
         ]
     );
-    assert_eq!(g.g()["questions"][1]["a"], "portal calls over HTTP ×1.");
+    assert_eq!(
+        g.g()["questions"][1]["a"],
+        "ingest-api publishes fileuploaded; validator subscribes to fileuploaded."
+    );
+    assert_eq!(g.g()["questions"][2]["a"], "portal calls over HTTP ×1.");
     assert_eq!(
         g.g()["read_first"],
         serde_json::json!([{ "path": "README.md", "note": "what the project is" }])

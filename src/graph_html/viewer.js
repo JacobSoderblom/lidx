@@ -6111,24 +6111,124 @@
   var mainEl = document.getElementById('main');
   var metaEl = document.getElementById('meta');
   var gMap = document.getElementById('g-map'), gWorld = document.getElementById('g-world');
+  var gScroll = document.getElementById('g-scroll') || gMap;
   var gSvg = document.getElementById('g-links'), gCards = document.getElementById('g-cards');
   var gSide = document.getElementById('g-side'), gTours = document.getElementById('g-tours');
   var gHead = document.getElementById('g-head'), gStrip = document.getElementById('g-strip');
   var gSeq = document.getElementById('g-seq');
-  var G_CARD = { w: 196, h: 98 }, G_CHIP = { w: 176, h: 44 }, G_GAP = { x: 128, y: 18 }, G_HEAD = 30, G_PAD = 24;
+  var G_CARD = { w: 196, h: 106 }, G_CHIP = { w: 176, h: 44 }, G_RES = { w: 184, h: 64 }, G_GAP = { x: 128, y: 18 }, G_HEAD = 30, G_PAD = 24, G_SIDE = 32;
   // Largest scale the map is drawn at: a small map grows to use its area,
   // with cards and text no more than a third larger than their own size.
   var G_MAX_K = 1.35;
+  // Widest a card grows to when its row has room to spare.
+  var G_CARD_MAX = 268;
+  // Smallest scale: card text stays at least 11px. A map too tall for its
+  // area at this scale scrolls instead of shrinking.
+  var G_MIN_K = 1;
+  // A resource this many apps use is shared infrastructure: a coloured tag
+  // on each user's card, its lines drawn only around a focus on it or on
+  // one of its users. Fewer users keep their lines, unless their user has
+  // more than G_FAN such lines: a hub's resources are tags on its card too.
+  var G_SHARED = 3, G_FAN = 4;
   var gst = {
     sel: null, link: null, flow: null, step: 0, seq: false, tour: null, resume: null, question: null,
-    all: false, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
+    all: false, deploy: false, hover: null, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
   };
   var VIA = {
-    start: 'starts', call: 'calls', http: 'calls over HTTP', rpc: 'calls over RPC', bus: 'sends on the bus', config: 'reads config', db: 'reaches the database'
+    start: 'starts', call: 'calls', http: 'calls over HTTP', rpc: 'calls over RPC', bus: 'receives the message', config: 'reads config', db: 'reaches the database',
+    publish: 'publishes to', res: 'reaches the resource'
   };
+  // What a flow does at a resource, by its category.
+  var VIA_RES = {
+    db: 'reaches the database', cache: 'reads the cache', search: 'queries the index', bus: 'publishes to',
+    secrets: 'reads the secret', config: 'reads config', storage: 'stores the file', ext: 'calls the service'
+  };
+  function gVia(s) {
+    var n = GL.nodes[s.node];
+    if (s.via === 'res' && n && n.res && VIA_RES[n.res.cat]) return VIA_RES[n.res.cat];
+    return VIA[s.via];
+  }
+  // Who uses each resource: the parts with a link to it.
+  var G_USERS = (function () {
+    var out = {};
+    if (!GL) return out;
+    GL.links.forEach(function (l) {
+      var t = GL.nodes[l.to];
+      if (!t || t.kind !== 'resource') return;
+      var u = out[l.to] = out[l.to] || [];
+      if (u.indexOf(l.from) < 0) u.push(l.from);
+    });
+    return out;
+  })();
+  function gIsShared(id) { return (G_USERS[id] || []).length >= G_SHARED; }
+  var G_FANOUT = (function () {
+    var out = {};
+    if (!GL) return out;
+    Object.keys(G_USERS).forEach(function (r) {
+      if (gIsShared(+r)) return;
+      G_USERS[r].forEach(function (u) { out[u] = (out[u] || 0) + 1; });
+    });
+    return out;
+  })();
+  // A line to a resource drawn only around a focus: the resource shared,
+  // or its user a hub.
+  function gSharedLink(l) {
+    var t = GL.nodes[l.to];
+    return !!t && t.kind === 'resource' && (gIsShared(l.to) || (G_FANOUT[l.from] || 0) > G_FAN);
+  }
+  // A node with lines drawn only around a focus.
+  function gHasTagged(id) { return GL.links.some(function (l) { return (l.from === id || l.to === id) && gSharedLink(l); }); }
+  // The shared resources a card's part uses, in map order.
+  function gBadgesOf(id) {
+    var out = [];
+    GL.links.forEach(function (l) { if (l.from === id && gSharedLink(l) && out.indexOf(l.to) < 0) out.push(l.to); });
+    return out.sort(function (a, b) { return (GL.nodes[a].lane < GL.nodes[b].lane ? -1 : GL.nodes[a].lane > GL.nodes[b].lane ? 1 : 0) || a - b; });
+  }
+  // A card's height: its kind, name, the lines its sentence wraps to (up
+  // to three, two above a row of tags) and its tags.
+  function gCardH(n, cw) {
+    cw = cw || G_CARD.w;
+    var tags = gBadgeFit(gBadgesOf(n.id), cw - 22).lines;
+    var w = gTextW(n.sentence || '', '400 12px ' + SANS);
+    var lines = Math.max(1, Math.min(tags ? 2 : 3, Math.ceil(w * 1.1 / (cw - 22))));
+    return Math.ceil(3 + 17 + 15 + 23 + lines * 16.6 + (tags ? 5 + tags * 19 + (tags - 1) * 4 : 0));
+  }
   var WAY = { http: 'HTTP route', rpc: 'RPC method', bus: 'topic subscription', cli: 'command', main: 'main', central: 'most called' };
 
   function gNode(i) { return GL.nodes[i]; }
+  // Lanes of small cards packed in rows: infrastructure chips, and the
+  // resources (data and messaging, external systems).
+  function gCompact(id) { return id === 'infra' || id === 'data' || id === 'ext'; }
+  // The size of a lane's cards: one height for the lane, its tallest card's.
+  // `cw`: a card width other than the usual.
+  function gSizeOf(id, members, cw) {
+    if (id === 'infra') return G_CHIP;
+    if (id === 'data' || id === 'ext') return G_RES;
+    var h = 0;
+    (members || []).forEach(function (n) { h = Math.max(h, gCardH(n, cw)); });
+    return { w: cw || G_CARD.w, h: h || G_CARD.h };
+  }
+  // The lanes drawn and their cards: by role, or with "Where it runs" on,
+  // the apps by the deployment that runs them.
+  function gLaneList() {
+    var shown = GL.nodes.filter(gShown), out = [];
+    var more = function (id) { return gst.all || !gCompact(id) ? 0 : GL.nodes.filter(function (n) { return n.lane === id && n.place === 'off'; }).length; };
+    var placed = {};
+    if (gst.deploy && GL.deploy && GL.deploy.length) {
+      GL.deploy.forEach(function (g) {
+        var m = shown.filter(function (n) { return n.deploy && n.deploy[0] === g.id; });
+        m.forEach(function (n) { placed[n.id] = 1; });
+        if (m.length) out.push({ id: 'd' + g.id, label: g.label, group: g, members: m, more: 0 });
+      });
+    }
+    GL.lanes.forEach(function (lane) {
+      var m = shown.filter(function (n) { return n.lane === lane.id && !placed[n.id]; });
+      out.push({ id: lane.id, label: lane.label, members: m, more: more(lane.id) });
+    });
+    return out;
+  }
+  // "Where it runs" is worth a toggle when a file here deploys an app.
+  function gDeployUseful() { return !!(GL.deploy && GL.deploy.some(function (g) { return g.tool !== 'none'; })); }
   function gShown(n) {
     if (n.place === 'card' || n.place === 'chip') return true;
     return gst.all && n.place === 'off';
@@ -6142,7 +6242,7 @@
   // stays readable on a wide or a tall area.
   function gDrawnEdges() {
     var out = [];
-    GL.links.forEach(function (l) { if (!l.quiet && gShown(gNode(l.from)) && gShown(gNode(l.to))) out.push([l.from, l.to]); });
+    GL.links.forEach(function (l) { if (!l.quiet && !gSharedLink(l) && gShown(gNode(l.from)) && gShown(gNode(l.to))) out.push([l.from, l.to]); });
     return out;
   }
   function gLayoutFor(dir, area) {
@@ -6151,7 +6251,7 @@
     // Left to right, labels sit between columns: the gap takes the widest.
     if (!V) {
       GL.links.forEach(function (l) {
-        if (!l.quiet && gShown(gNode(l.from)) && gShown(gNode(l.to))) gx = Math.max(gx, Math.ceil(gTextW(l.label, '600 11.5px ' + SANS)) + 34);
+        if (!l.quiet && !gSharedLink(l) && gShown(gNode(l.from)) && gShown(gNode(l.to))) gx = Math.max(gx, Math.ceil(gTextW(l.label, '600 11.5px ' + SANS)) + 34);
       });
       gx = Math.min(gx, 260);
     }
@@ -6159,11 +6259,11 @@
     gDrawnEdges().forEach(function (e) { linked[e[0]] = 1; linked[e[1]] = 1; });
     var boxes = {}, lanes = [], at = G_PAD;
     var room = V ? Math.max(area.width, 360) - G_PAD * 2 : Math.max(area.height, 360) - G_PAD * 2 - G_HEAD - (GL.mode === 'apps' ? 54 : 0);
-    GL.lanes.forEach(function (lane) {
-      var members = GL.nodes.filter(function (n) { return n.lane === lane.id && gShown(n); });
+    gLaneList().forEach(function (lane) {
+      var members = lane.members;
       if (!members.length) return;
-      var chip = lane.id === 'infra', size = chip ? G_CHIP : G_CARD;
-      var step = V ? size.w + (chip ? 14 : gx) : size.h + (chip ? 10 : gy);
+      var chip = gCompact(lane.id), size = gSizeOf(lane.id, members), cgx = lane.id === 'infra' ? 14 : 34, cgy = lane.id === 'infra' ? 10 : 16;
+      var step = V ? size.w + (chip ? cgx : gx) : size.h + (chip ? cgy : gy);
       var per = Math.max(chip ? 2 : 1, Math.floor((room + (V ? gx : gy)) / step));
       var groups = {}, loose = [];
       members.forEach(function (n) {
@@ -6180,7 +6280,10 @@
       loose.sort(function (a, b) { return a.name < b.name ? -1 : 1; });
       // Top to bottom, unlinked cards sit in a grid beside the linked rows
       // (as many rows as those have), not in rows of their own below.
-      var beside = V && chunks.length >= 2 && loose.length;
+      var wideRow = 0;
+      chunks.forEach(function (ch) { wideRow = Math.max(wideRow, ch.length); });
+      var beside = V && chunks.length >= 2 && loose.length &&
+        G_PAD + wideRow * (size.w + gx) + 40 + Math.ceil(loose.length / chunks.length) * (size.w + gx) - gx <= room + G_PAD;
       if (!beside) for (var j = 0; j < loose.length; j += per) chunks.push(loose.slice(j, j + per));
       var a0 = at;
       if (V) at += G_HEAD;
@@ -6188,11 +6291,11 @@
       chunks.forEach(function (ch) {
         ch.forEach(function (n, r) {
           boxes[n.id] = V
-            ? { x: G_PAD + r * (size.w + (chip ? 14 : gx)), y: at, w: size.w, h: size.h, chip: chip, line: 'r' + at, lane: lane.id }
-            : { x: at, y: G_PAD + G_HEAD + r * (size.h + (chip ? 10 : gy)), w: size.w, h: size.h, chip: chip, line: 'c' + at };
+            ? { x: G_PAD + r * (size.w + (chip ? cgx : gx)), y: at, w: size.w, h: size.h, chip: chip, line: 'r' + at, lane: lane.id }
+            : { x: at, y: G_PAD + G_HEAD + r * (size.h + (chip ? cgy : gy)), w: size.w, h: size.h, chip: chip, line: 'c' + at, lane: lane.id };
         });
         wide = Math.max(wide, ch.length);
-        at += V ? size.h + (chip ? 12 : gy) : size.w + gx;
+        at += V ? size.h + (chip ? cgy + 2 : gy) : size.w + gx;
       });
       if (beside) {
         var rows = chunks.length, x0 = G_PAD + wide * (size.w + gx) + 40;
@@ -6201,8 +6304,8 @@
           boxes[n.id] = { x: x0 + c * (size.w + gx), y: top0 + r * (size.h + gy), w: size.w, h: size.h, chip: false, line: 'loose', lane: lane.id };
         });
       }
-      if (V) { at += 10; lanes.push({ id: lane.id, label: lane.label, x: G_PAD, y: a0, w: 0, n: members.length }); }
-      else lanes.push({ id: lane.id, label: lane.label, x: a0, y: G_PAD, w: at - gx - a0, n: members.length });
+      if (V) { at += 10; lanes.push({ id: lane.id, label: lane.label, group: lane.group, more: lane.more, x: G_PAD, y: a0, w: 0, n: members.length }); }
+      else lanes.push({ id: lane.id, label: lane.label, group: lane.group, more: lane.more, x: a0, y: G_PAD, w: at - gx - a0, n: members.length });
     });
     // Top to bottom: each lane's rows centred on its widest linked row, then
     // each lane (with its unlinked block) centred on the widest lane.
@@ -6253,17 +6356,17 @@
     gDrawnEdges().forEach(function (e) { linked[e[0]] = 1; linked[e[1]] = 1; });
     var room = Math.max(area.width, 360) - G_PAD * 2;
     var boxes = {}, lanes = [], y = G_PAD, wraps = false;
-    GL.lanes.forEach(function (lane) {
-      var members = GL.nodes.filter(function (n) { return n.lane === lane.id && gShown(n); });
+    gLaneList().forEach(function (lane) {
+      var members = lane.members;
       if (!members.length) return;
-      var chip = lane.id === 'infra', size = chip ? G_CHIP : G_CARD;
+      var chip = gCompact(lane.id), size = gSizeOf(lane.id, members), cgx = lane.id === 'infra' ? 14 : 34, cgy = lane.id === 'infra' ? 10 : 16;
       members.sort(function (a, b) {
         return (chip ? 0 : (linked[b.id] ? 1 : 0) - (linked[a.id] ? 1 : 0)) ||
-          (chip ? 0 : gLayer(a) - gLayer(b) || gOrder(a) - gOrder(b)) || (a.name < b.name ? -1 : 1);
+          (lane.id === 'infra' ? 0 : gLayer(a) - gLayer(b) || gOrder(a) - gOrder(b)) || (a.name < b.name ? -1 : 1);
       });
-      var stepX = size.w + (chip ? 14 : gx), per = Math.max(1, Math.floor((room + (chip ? 14 : gx)) / stepX));
+      var stepX = size.w + (chip ? cgx : gx), per = Math.max(1, Math.floor((room + (chip ? cgx : gx)) / stepX));
       if (!chip && members.length > per) wraps = true;
-      lanes.push({ id: lane.id, label: lane.label, x: G_PAD, y: y, w: 0, n: members.length });
+      lanes.push({ id: lane.id, label: lane.label, group: lane.group, more: lane.more, x: G_PAD, y: y, w: 0, n: members.length });
       y += G_HEAD;
       members.forEach(function (n, k) {
         var c = k % per, r = Math.floor(k / per);
@@ -6279,22 +6382,178 @@
     lanes.forEach(function (ln) { ln.w = w - G_PAD; });
     return { boxes: boxes, lanes: lanes, size: { w: Math.max(w + G_PAD, 200), h: h + G_PAD }, dir: 'v' };
   }
+  // Lanes in bands as wide as the area: a lane's cards in rows (each layer
+  // of its linked cards a row of its own, unlinked cards in the free places
+  // and then rows of their own), with `pack` lanes of one row side by side
+  // while they fit, in their order. The densest of the layouts: at the
+  // readable scale it needs the least height. `plain`: cards of the usual
+  // width, not widened to fill a row.
+  function gBandLayout(area, plain, pack) {
+    var gx = 40, gyRow = 46, laneGap = 48, bandGap = 34;
+    var linked = {};
+    gDrawnEdges().forEach(function (e) { linked[e[0]] = 1; linked[e[1]] = 1; });
+    var room = Math.max(area.width, 360) - G_PAD * 2;
+    // Fewer cards to a row than fit: wider cards (to G_CARD_MAX), so names
+    // and sentences wrap less.
+    var most = 1, fit = Math.max(1, Math.floor((room + gx) / (G_CARD.w + gx)));
+    gLaneList().forEach(function (lane) { if (!gCompact(lane.id)) most = Math.max(most, Math.min(fit, lane.members.length)); });
+    var cw = plain ? G_CARD.w : Math.max(G_CARD.w, Math.min(G_CARD_MAX, Math.floor((room - (most - 1) * gx) / most)));
+    var blocks = [];
+    gLaneList().forEach(function (lane) {
+      var members = lane.members;
+      if (!members.length) return;
+      var chip = gCompact(lane.id), size = gSizeOf(lane.id, members, chip ? 0 : cw);
+      var cgx = chip ? (lane.id === 'infra' ? 14 : 34) : gx, cgy = chip ? (lane.id === 'infra' ? 10 : 16) : gyRow;
+      var per = Math.max(1, Math.floor((room + cgx) / (size.w + cgx)));
+      var byName = function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; };
+      var rows = [], loose = [], groups = {};
+      // A lane that fits one row keeps one, its layers left to right.
+      var oneRow = members.length <= per;
+      members.forEach(function (n) {
+        if (!chip && !linked[n.id]) loose.push(n);
+        else (groups[chip || oneRow ? 0 : Math.max(0, gLayer(n))] = groups[chip || oneRow ? 0 : Math.max(0, gLayer(n))] || []).push(n);
+      });
+      Object.keys(groups).map(Number).sort(function (a, b) { return a - b; }).forEach(function (l) {
+        var list = groups[l].sort(function (a, b) { return (lane.id === 'infra' ? 0 : gLayer(a) - gLayer(b) || gOrder(a) - gOrder(b)) || byName(a, b); });
+        for (var i = 0; i < list.length; i += per) rows.push(list.slice(i, i + per));
+      });
+      loose.sort(byName).forEach(function (n) {
+        var row = rows.find(function (r) { return r.length < per; });
+        if (row) row.push(n); else rows.push([n]);
+      });
+      var wide = 0;
+      rows.forEach(function (r) { wide = Math.max(wide, r.length); });
+      blocks.push({ lane: lane, rows: rows, size: size, chip: chip, cgx: cgx, cgy: cgy, w: wide * (size.w + cgx) - cgx, h: G_HEAD + rows.length * (size.h + cgy) - cgy });
+    });
+    var bands = [], cur = null;
+    blocks.forEach(function (b) {
+      var one = b.rows.length === 1;
+      if (pack && cur && one && cur.one && cur.w + laneGap + b.w <= room) { cur.items.push(b); cur.w += laneGap + b.w; cur.h = Math.max(cur.h, b.h); }
+      else { cur = { items: [b], w: b.w, h: b.h, one: one }; bands.push(cur); }
+    });
+    var W = 0;
+    bands.forEach(function (bd) { W = Math.max(W, bd.w); });
+    // A lane alone in its band may use the band's whole width: its cards
+    // can then sit under (or over) what they link to.
+    bands.forEach(function (bd) {
+      if (bd.items.length !== 1) return;
+      var b = bd.items[0], step = b.size.w + b.cgx;
+      b.slots = Math.max(b.w > 0 ? Math.round((b.w + b.cgx) / step) : 1, Math.floor((W + b.cgx) / step));
+      b.w = b.slots * step - b.cgx; bd.w = b.w;
+    });
+    var boxes = {}, lanes = [], rowsAll = [], y = G_PAD;
+    bands.forEach(function (bd) {
+      var x = G_PAD + Math.round((W - bd.w) / 2);
+      bd.items.forEach(function (b) {
+        var lane = b.lane, size = b.size, step = size.w + b.cgx;
+        var slots = b.slots || Math.round((b.w + b.cgx) / step);
+        lanes.push({ id: lane.id, label: lane.label, group: lane.group, more: lane.more, x: x, y: y, w: b.w, n: lane.members.length });
+        b.rows.forEach(function (row, r) {
+          var rw = row.length * step - b.cgx, x0 = x + Math.round((b.w - rw) / 2);
+          var line = 'n' + lanes.length + '.' + r;
+          row.forEach(function (n, c) {
+            boxes[n.id] = { x: x0 + c * step, y: y + G_HEAD + r * (size.h + b.cgy), w: size.w, h: size.h, chip: b.chip, line: line, lane: lane.id };
+          });
+          rowsAll.push({ ids: row.map(function (n) { return n.id; }), x: x, step: step, slots: slots, y: y + G_HEAD + r * (size.h + b.cgy) });
+        });
+        x += b.w + laneGap;
+      });
+      y += bd.h + bandGap;
+    });
+    gUntangle(boxes, rowsAll);
+    return { boxes: boxes, lanes: lanes, size: { w: Math.max(W + 2 * G_PAD, 200), h: y - bandGap + G_PAD }, dir: 'v' };
+  }
+  // Cards moved along their rows towards what they link to (the mean of
+  // their neighbours' places, sweeping down and up a few times), each row
+  // keeping its slots: lines run short and straight instead of across the
+  // map. A row's unlinked cards take the slots left over.
+  function gUntangle(boxes, rows) {
+    var nb = {};
+    gDrawnEdges().forEach(function (e) {
+      if (!boxes[e[0]] || !boxes[e[1]] || e[0] === e[1]) return;
+      (nb[e[0]] = nb[e[0]] || []).push(e[1]);
+      (nb[e[1]] = nb[e[1]] || []).push(e[0]);
+    });
+    var mid = function (id) { return boxes[id].x + boxes[id].w / 2; };
+    var order = rows.slice().sort(function (a, b) { return a.y - b.y; });
+    for (var sweep = 0; sweep < 6; sweep++) {
+      var list = sweep % 2 ? order.slice().reverse() : order;
+      list.forEach(function (row) {
+        var inRow = {};
+        row.ids.forEach(function (id) { inRow[id] = 1; });
+        var want = {};
+        row.ids.forEach(function (id) {
+          var o = (nb[id] || []).filter(function (j) { return !inRow[j]; });
+          if (o.length) want[id] = o.reduce(function (a, j) { return a + mid(j); }, 0) / o.length;
+        });
+        var linked = row.ids.filter(function (id) { return want[id] !== undefined; });
+        if (!linked.length) return;
+        linked.sort(function (a, b) { return want[a] - want[b] || mid(a) - mid(b); });
+        var w = boxes[row.ids[0]].w, used = {}, last = -1;
+        linked.forEach(function (id, k) {
+          var best = -1, bd = Infinity;
+          for (var s = last + 1; s <= row.slots - (linked.length - k); s++) {
+            var d = Math.abs(row.x + s * row.step + w / 2 - want[id]);
+            if (d < bd - 0.5) { bd = d; best = s; }
+          }
+          used[best] = id; last = best;
+        });
+        var free = [];
+        for (var s = 0; s < row.slots; s++) if (used[s] === undefined) free.push(s);
+        row.ids.filter(function (id) { return want[id] === undefined; }).sort(function (a, b) { return mid(a) - mid(b); }).forEach(function (id, k) { used[free[k]] = id; });
+        Object.keys(used).forEach(function (s) { boxes[used[s]].x = row.x + (+s) * row.step; });
+      });
+    }
+  }
+  // The cards of each line of a layout (a row, or a column left to right)
+  // put in the order of what they link to, in the places the line already
+  // has: lines between lines stop crossing. Cards with no line keep their
+  // place among the rest.
+  function gPermute(L) {
+    var H = L.dir === 'h';
+    var at = function (b) { return H ? b.y + b.h / 2 : b.x + b.w / 2; };
+    var nb = {};
+    gDrawnEdges().forEach(function (e) {
+      if (!L.boxes[e[0]] || !L.boxes[e[1]] || e[0] === e[1]) return;
+      (nb[e[0]] = nb[e[0]] || []).push(e[1]);
+      (nb[e[1]] = nb[e[1]] || []).push(e[0]);
+    });
+    var lines = {};
+    Object.keys(L.boxes).forEach(function (k) { var b = L.boxes[k]; if (b.line !== 'loose' && b.line !== 'g') (lines[b.line] = lines[b.line] || []).push(+k); });
+    for (var sweep = 0; sweep < 4; sweep++) {
+      Object.keys(lines).forEach(function (key) {
+        var ids = lines[key];
+        if (ids.length < 2) return;
+        var inLine = {};
+        ids.forEach(function (id) { inLine[id] = 1; });
+        var slots = ids.map(function (id) { return H ? L.boxes[id].y : L.boxes[id].x; }).sort(function (a, b) { return a - b; });
+        var want = {};
+        ids.forEach(function (id) {
+          var o = (nb[id] || []).filter(function (j) { return !inLine[j]; });
+          want[id] = o.length ? o.reduce(function (a, j) { return a + at(L.boxes[j]); }, 0) / o.length : at(L.boxes[id]);
+        });
+        ids.slice().sort(function (a, b) { return want[a] - want[b] || at(L.boxes[a]) - at(L.boxes[b]); }).forEach(function (id, k) {
+          if (H) L.boxes[id].y = slots[k]; else L.boxes[id].x = slots[k];
+        });
+      });
+    }
+  }
   function gGridLayout(area) {
     var boxes = {}, lanes = [], y = G_PAD, gx = 64, gy = 52;
     var aspect = Math.max(area.width, 200) / Math.max(area.height, 200);
-    GL.lanes.forEach(function (lane) {
-      var members = GL.nodes.filter(function (n) { return n.lane === lane.id && gShown(n); });
+    gLaneList().forEach(function (lane) {
+      var members = lane.members;
       if (!members.length) return;
-      var chip = lane.id === 'infra', size = chip ? G_CHIP : G_CARD;
+      var chip = gCompact(lane.id), size = gSizeOf(lane.id, members), cgx = lane.id === 'infra' ? 14 : 34, cgy = lane.id === 'infra' ? 10 : 16;
       members.sort(function (a, b) { return gLayer(a) - gLayer(b) || gOrder(a) - gOrder(b) || (a.name < b.name ? -1 : 1); });
       // Columns so the block is about as wide as the map is.
       var cols = 1;
       while (cols < members.length && ((cols + 1) * (size.w + gx)) / (Math.ceil(members.length / (cols + 1)) * (size.h + gy)) <= aspect * 1.15) cols++;
-      lanes.push({ id: lane.id, label: lane.label, x: G_PAD, y: y, w: 0, n: members.length });
+      lanes.push({ id: lane.id, label: lane.label, group: lane.group, more: lane.more, x: G_PAD, y: y, w: 0, n: members.length });
       y += G_HEAD;
       members.forEach(function (n, k) {
         var c = k % cols, r = Math.floor(k / cols);
-        boxes[n.id] = { x: G_PAD + c * (size.w + gx), y: y + r * (size.h + gy), w: size.w, h: size.h, chip: chip, line: 'g' };
+        boxes[n.id] = { x: G_PAD + c * (size.w + gx), y: y + r * (size.h + gy), w: size.w, h: size.h, chip: chip, line: 'g', lane: lane.id };
       });
       y += Math.ceil(members.length / cols) * (size.h + gy) + 6;
     });
@@ -6304,19 +6563,49 @@
     return { boxes: boxes, lanes: lanes, size: { w: w + G_PAD, h: h + G_PAD }, dir: 'v' };
   }
   function gLayout() {
-    var area = gMap.getBoundingClientRect();
+    var rect = gMap.getBoundingClientRect();
     var stripH = GL.mode === 'apps' && gStripItems().length ? 46 : 0;
+    // The gutters beside a map with resources (below) are taken off the
+    // width the lanes wrap to, so the whole stays as wide as the area.
+    var gutters = GL.nodes.some(function (n) { return n.kind === 'resource' && gShown(n); }) ? 2 * G_SIDE : 0;
+    var area = { width: rect.width - gutters, height: rect.height };
     var fitK = function (L) { return Math.min(G_MAX_K, Math.max(area.width, 200) / L.size.w, Math.max(area.height - stripH, 200) / L.size.h); };
+    // A layout as wide as the area at the readable scale beats one that
+    // is not (it would scroll sideways); then the one drawn larger, or
+    // scrolling less, by at least `bias`.
+    var wfit = function (L) { return Math.max(area.width, 200) / L.size.w >= G_MIN_K; };
+    var better = function (a, b, bias) { return wfit(a) !== wfit(b) ? wfit(a) : fitK(a) > fitK(b) * bias; };
     var h = gLayoutFor('h', area), v = gLayoutFor('v', area), r = gRowsLayout(area);
     // Lanes as rows: layers in rows or in columns, whichever fits larger.
-    if (r && fitK(r) > fitK(v)) v = r;
+    if (r && better(r, v, 1)) v = r;
     // Left to right reads as a flow; it wins unless top to bottom is clearly larger.
-    var L = fitK(v) > fitK(h) * 1.12 ? v : h;
+    var L = better(v, h, 1.12) ? v : h;
     // A dense web of in-process links (one unit's modules) gains little from
     // layers: cards in reading order on a grid, when that is much larger.
     if (GL.mode !== 'apps') {
       var g = gGridLayout(area);
-      if (fitK(g) > fitK(L) * 1.25) L = g;
+      if (better(g, L, 1.25)) L = g;
+    }
+    gPermute(L);
+    // Too big for the area at the readable scale: bands, which take the
+    // least height (a lane each when that fits, else lanes of one row side
+    // by side; wider cards unless the usual ones take less height), with
+    // the cards untangled.
+    if (fitK(L) < G_MIN_K) {
+      var band = function (pack) {
+        var a = gBandLayout(area, false, pack), b = gBandLayout(area, true, pack);
+        return b.size.h < a.size.h - 20 ? b : a;
+      };
+      var bd = band(false);
+      if (fitK(bd) < G_MIN_K) bd = band(true);
+      if (!better(L, bd, 1)) L = bd;
+    }
+    // Lines to the resources lane come from every row above it: a gutter on
+    // each side lets them go round the cards instead of behind them.
+    if (gutters) {
+      Object.keys(L.boxes).forEach(function (k) { L.boxes[k].x += G_SIDE; });
+      L.lanes.forEach(function (ln) { ln.x += G_SIDE; });
+      L.size = { w: L.size.w + 2 * G_SIDE, h: L.size.h };
     }
     gst.boxes = L.boxes; gst.lanes = L.lanes; gst.size = L.size; gst.dir = L.dir;
   }
@@ -6324,15 +6613,18 @@
   // ----- links: one curve per link, ports spread along the card's side
   function gLinkOn(l, i) {
     if (!gShown(gNode(l.from)) || !gShown(gNode(l.to))) return false;
-    if (!l.quiet) return true;
-    // Quiet links (config every app reads) show around what is in focus.
+    var shared = gSharedLink(l);
+    if (!l.quiet && !shared) return true;
+    // Quiet links (config every app reads) and lines to shared resources
+    // show around what is in focus: selected or under the pointer.
     if (gst.sel !== null && (l.from === gst.sel || l.to === gst.sel)) return true;
+    if (shared && gst.hover !== null && (l.from === gst.hover || l.to === gst.hover)) return true;
     if (gst.link === i) return true;
     var t = gTourStep();
     if (t && t.links.indexOf(i) >= 0) return true;
     if (gst.question !== null) {
       var q = GL.questions[gst.question];
-      if (q && q.nodes.indexOf(l.from) >= 0 && q.nodes.indexOf(l.to) >= 0 && l.family === 'config') return true;
+      if (q && q.nodes.indexOf(l.from) >= 0 && q.nodes.indexOf(l.to) >= 0 && (l.family === 'config' || shared)) return true;
     }
     return false;
   }
@@ -6375,36 +6667,175 @@
   // clear, the one crossing fewest cards. A line never runs behind a card
   // it does not connect, so it visibly starts and ends at its own.
   var G_BOWS = [0.4, 0.15, 0.08, 0.75, 1.1];
-  function gRoute(a, b) {
+  // Cards a route passes (other than its ends), plus one for every point
+  // off the map or back through one of its own cards; and its length.
+  function gRouteHits(segs, a, b, others) {
+    var hits = 0, len = 0;
+    segs.forEach(function (p, si) {
+      var prev = p[0];
+      for (var t = 1; t <= 40; t++) {
+        var q = gBez(p, t / 40);
+        len += Math.hypot(q[0] - prev[0], q[1] - prev[1]);
+        prev = q;
+        for (var i = 0; i < others.length; i++) {
+          var o = others[i];
+          if (q[0] > o.x - 3 && q[0] < o.x + o.w + 3 && q[1] > o.y - 3 && q[1] < o.y + o.h + 3) { hits++; break; }
+        }
+        // Off the map, where it is cut.
+        if (q[0] < 2 || q[1] < 2 || q[0] > gst.size.w - 2 || q[1] > gst.size.h - 2) hits++;
+        // Back through one of its own cards: as unclear as another's.
+        var inner = !(si === 0 && t <= 2) && !(si === segs.length - 1 && t >= 38);
+        if (inner && [a, b].some(function (o) { return q[0] > o.x + 2 && q[0] < o.x + o.w - 2 && q[1] > o.y + 2 && q[1] < o.y + o.h - 2; })) hits++;
+      }
+    });
+    return { hits: hits, len: len };
+  }
+  function gOthers(a, b) {
     var B = gst.boxes, others = [];
     Object.keys(B).forEach(function (k) { var o = B[k]; if (o !== a && o !== b) others.push(o); });
+    return others;
+  }
+  // `fa` and `fb`: where on its sides the line leaves and enters (0.5 when
+  // not yet known).
+  function gRoute(a, b, fa, fb) {
+    fa = fa === undefined ? 0.5 : fa; fb = fb === undefined ? 0.5 : fb;
+    var B = gst.boxes, others = gOthers(a, b);
     var pref = gSides(a, b), sides = ['r', 'l', 'b', 't'], best = null;
     var cands = [[pref[0], pref[1]]];
     sides.forEach(function (s0) { sides.forEach(function (s1) { if (s0 !== pref[0] || s1 !== pref[1]) cands.push([s0, s1]); }); });
     G_BOWS.forEach(function (bow, bi) {
       cands.forEach(function (sd, ci) {
-        var p = gCurve(gPort(a, sd[0], 0.5), sd[0], gPort(b, sd[1], 0.5), sd[1], bow);
-        var hits = 0, len = 0, prev = p[0];
-        for (var t = 1; t < 40; t++) {
-          var q = gBez(p, t / 40);
-          len += Math.hypot(q[0] - prev[0], q[1] - prev[1]);
-          prev = q;
-          for (var i = 0; i < others.length; i++) {
-            var o = others[i];
-            if (q[0] > o.x - 3 && q[0] < o.x + o.w + 3 && q[1] > o.y - 3 && q[1] < o.y + o.h + 3) { hits++; break; }
-          }
-          // Off the map, where it is cut.
-          if (q[0] < 2 || q[1] < 2 || q[0] > gst.size.w - 2 || q[1] > gst.size.h - 2) hits++;
-          // Back through one of its own cards: as unclear as another's.
-          if (t > 2 && t < 38 && [a, b].some(function (o) { return q[0] > o.x + 2 && q[0] < o.x + o.w - 2 && q[1] > o.y + 2 && q[1] < o.y + o.h - 2; })) hits++;
-        }
+        var h = gRouteHits([gCurve(gPort(a, sd[0], fa), sd[0], gPort(b, sd[1], fb), sd[1], bow)], a, b, others);
         // Fewest cards crossed, then the shortest; the usual sides win
         // among clear routes unless another is much shorter.
-        var cost = hits * 1e6 + len * (ci === 0 ? 0.8 : 1) + bi * 40;
-        if (!best || cost < best.cost) best = { side: sd, bow: bow, cost: cost };
+        var cost = h.hits * 1e6 + h.len * (ci === 0 ? 0.8 : 1) + bi * 40;
+        if (!best || cost < best.cost) best = { side: sd, bow: bow, cost: cost, hits: h.hits };
       });
     });
+    // No clear curve, or only a long detour: down the gutter beside every
+    // card and back in from that side or from above.
+    var straight = Math.hypot(b.x - a.x, b.y - a.y);
+    if (best.hits > 0 || best.cost > straight * 1.7 + 150) {
+      // Lanes as columns (left to right): the same, turned a quarter; a
+      // target above: the same, upside down.
+      var H = gst.dir === 'h', lim = H ? gst.size.h : gst.size.w;
+      var up = (H ? gT(b) : b).y + (H ? gT(b) : b).h < (H ? gT(a) : a).y;
+      var tx = gTx(H, up), ta = tx.box(a);
+      var x0 = Infinity, x1 = -Infinity, chans = {};
+      Object.keys(B).forEach(function (k) {
+        var o = tx.box(B[k]);
+        x0 = Math.min(x0, o.x); x1 = Math.max(x1, o.x + o.w);
+        // The gaps beside every card: columns a line may run down.
+        chans[Math.round(o.x - 14)] = 1; chans[Math.round(o.x + o.w + 14)] = 1;
+      });
+      var gvs = [[x0 - 22, 'l'], [x1 + 22, 'r']];
+      var tb = tx.box(b);
+      Object.keys(chans).map(Number).forEach(function (x) {
+        if (x < ta.x - 4) gvs.push([x, 'l']);
+        else if (x > ta.x + ta.w + 4) gvs.push([x, 'r']);
+        // Or out of the bottom, along the gap under its row to the column.
+        if (tb.y > ta.y + ta.h) gvs.push([x, 'b']);
+      });
+      gvs.forEach(function (gv) {
+        if (gv[0] < 6 || gv[0] > lim - 6) return;
+        // Out of the bottom: into the top, or into the side facing the gap.
+        var into = gv[1] === 'b' ? ['t'].concat(gv[0] < tb.x - 4 ? ['l'] : gv[0] > tb.x + tb.w + 4 ? ['r'] : []) : [gv[1], 't'];
+        into.forEach(function (s1) {
+          var r = { side: [tx.side(gv[1]), tx.side(s1)], via: gv[0], tside: [gv[1], s1], h: H, up: up, bow: 0.4 };
+          var h = gRouteHits(gSegs(a, b, r, fa, fb), a, b, others);
+          var cost = h.hits * 1e6 + h.len + 60;
+          if (cost < best.cost) best = Object.assign(r, { cost: cost, hits: h.hits });
+        });
+      });
+    }
     return best;
+  }
+  // A route down a gutter: out of box a's side to the gutter at x = gx,
+  // along it, and into box b's side; two curves meeting in the gutter.
+  function gViaPath(a, b, sd, gx, fa, fb) {
+    var dirOf = function (s) { return s === 'r' ? [1, 0] : s === 'l' ? [-1, 0] : s === 'b' ? [0, 1] : [0, -1]; };
+    var p0 = gPort(a, sd[0], fa), p6 = gPort(b, sd[1], fb), o = dirOf(sd[0]), e = dirOf(sd[1]);
+    var down = p6[1] >= p0[1] ? 1 : -1, mid = [gx, (p0[1] + p6[1]) / 2];
+    // Out of the bottom, along the gap under its row, down the column and
+    // into the side of a box below.
+    if (sd[0] === 'b' && sd[1] !== 't' && down > 0) {
+      var ry2 = a.y + a.h + 9, sx2 = gx > p0[0] ? 1 : -1, r2 = Math.min(12, Math.abs(gx - p0[0]) / 2);
+      var ty = p6[1], ex = p6[0] + e[0] * Math.max(12, Math.abs(gx - p6[0]) / 2);
+      return [
+        [p0, [p0[0], ry2], [p0[0] + sx2 * r2, ry2], [p0[0] + (gx - p0[0]) / 2, ry2]],
+        [[p0[0] + (gx - p0[0]) / 2, ry2], [gx - sx2 * r2, ry2], [gx, ry2], [gx, ry2 + Math.min(24, (ty - ry2) / 2)]],
+        [[gx, ry2 + Math.min(24, (ty - ry2) / 2)], [gx, ty], [gx, ty], [ex, ty]],
+        [[ex, ty], [ex + (p6[0] - ex) / 2, ty], [ex + (p6[0] - ex) / 2, ty], p6]
+      ];
+    }
+    // Into the top of a box below: along the gap just above its row, so
+    // the row's other cards stay clear.
+    if (sd[1] === 't' && down > 0) {
+      var cy = b.y - 14;
+      // Out of the bottom: along the gap under its own row to the column first.
+      if (sd[0] === 'b') {
+        var ry = a.y + a.h + 9, sx = gx > p0[0] ? 1 : -1;
+        return [
+          [p0, [p0[0], ry], [p0[0] + sx * Math.min(12, Math.abs(gx - p0[0]) / 2), ry], [p0[0] + (gx - p0[0]) / 2, ry]],
+          [[p0[0] + (gx - p0[0]) / 2, ry], [gx - sx * Math.min(12, Math.abs(gx - p0[0]) / 2), ry], [gx, ry], [gx, ry + Math.min(24, (cy - ry) / 2)]],
+          [[gx, ry + Math.min(24, (cy - ry) / 2)], [gx, cy], [gx + (p6[0] - gx) * 0.55, cy], [p6[0] + (gx - p6[0]) * 0.1, cy]],
+          [[p6[0] + (gx - p6[0]) * 0.1, cy], [p6[0], cy], [p6[0], cy + 4], p6]
+        ];
+      }
+      return [
+        [p0, [p0[0] + o[0] * Math.max(18, Math.abs(gx - p0[0]) * 0.6), p0[1] + o[1] * 18], [gx, cy - Math.max(30, (cy - p0[1]) * 0.4)], [gx, cy]],
+        [[gx, cy], [gx + (p6[0] - gx) * 0.55, cy], [p6[0], cy - 2], p6]
+      ];
+    }
+    // Side to side: across to the gap, along it to the target's height, and
+    // across into the target, each turn rounded.
+    var r0 = Math.min(14, Math.abs(gx - p0[0]) / 2, Math.abs(p6[1] - p0[1]) / 4 + 1);
+    var r1 = Math.min(14, Math.abs(gx - p6[0]) / 2, Math.abs(p6[1] - p0[1]) / 4 + 1);
+    var sxa = gx >= p0[0] ? 1 : -1, sxb = p6[0] >= gx ? 1 : -1;
+    return [
+      [p0, [p0[0] + sxa * (Math.abs(gx - p0[0]) - r0) / 2, p0[1]], [gx - sxa * r0, p0[1]], [gx, p0[1] + down * r0]],
+      [[gx, p0[1] + down * r0], [gx, mid[1]], [gx, mid[1]], [gx, p6[1] - down * r1]],
+      [[gx, p6[1] - down * r1], [gx, p6[1]], [gx + sxb * r1, p6[1]], [p6[0] - sxb * Math.max(0, Math.abs(p6[0] - gx) - r1) / 2, p6[1]]],
+      [[p6[0] - sxb * Math.max(0, Math.abs(p6[0] - gx) - r1) / 2, p6[1]], [p6[0] - e[0] * 0, p6[1]], [p6[0] + e[0] * 6, p6[1]], p6]
+    ];
+  }
+  // A box (or point) with its axes swapped, and the sides that become.
+  var G_TSIDE = { l: 't', t: 'l', r: 'b', b: 'r' };
+  function gT(o) { return { x: o.y, y: o.x, w: o.h, h: o.w }; }
+  // The curves of a route between two boxes, with its ports at fa and fb.
+  // The frame a gap route is worked out in: turned a quarter for lanes as
+  // columns, upside down for a target above. `box` maps a real box in,
+  // `pt` a point back out, `side` a side back out.
+  function gTx(H, up) {
+    var span = H ? gst.size.w : gst.size.h, flipS = { t: 'b', b: 't', l: 'l', r: 'r' };
+    return {
+      box: function (o) {
+        var t = H ? gT(o) : { x: o.x, y: o.y, w: o.w, h: o.h };
+        return up ? { x: t.x, y: span - t.y - t.h, w: t.w, h: t.h } : t;
+      },
+      pt: function (q) {
+        var y = up ? span - q[1] : q[1];
+        return H ? [y, q[0]] : [q[0], y];
+      },
+      side: function (sd) {
+        var s0 = up ? flipS[sd] : sd;
+        return H ? G_TSIDE[s0] : s0;
+      }
+    };
+  }
+  function gSegs(a, b, route, fa, fb) {
+    if (route.via !== undefined && route.tside) {
+      var tx = gTx(route.h, route.up);
+      return gViaPath(tx.box(a), tx.box(b), route.tside, route.via, fa, fb).map(function (seg) {
+        return seg.map(tx.pt);
+      });
+    }
+    return [gCurve(gPort(a, route.side[0], fa), route.side[0], gPort(b, route.side[1], fb), route.side[1], route.bow)];
+  }
+  function gPathD(segs) {
+    return segs.map(function (p, i) {
+      return (i === 0 ? 'M' + r1(p[0][0]) + ' ' + r1(p[0][1]) : '') + 'C' + r1(p[1][0]) + ' ' + r1(p[1][1]) + ' ' + r1(p[2][0]) + ' ' + r1(p[2][1]) + ' ' + r1(p[3][0]) + ' ' + r1(p[3][1]);
+    }).join('');
   }
   function gGeom() {
     var B = gst.boxes, out = [], ports = {};
@@ -6413,7 +6844,7 @@
       var a = B[l.from], b = B[l.to];
       if (!a || !b) return;
       var route = gRoute(a, b), side = route.side;
-      var g = { i: i, l: l, a: a, b: b, side: side, bow: route.bow };
+      var g = { i: i, l: l, a: a, b: b, side: side, bow: route.bow, route: route };
       out.push(g);
       (ports[l.from + side[0]] = ports[l.from + side[0]] || []).push([g, 0]);
       (ports[l.to + side[1]] = ports[l.to + side[1]] || []).push([g, 1]);
@@ -6428,8 +6859,34 @@
       });
       list.forEach(function (p, j) { p[0][p[1] === 0 ? 'f0' : 'f1'] = 0.2 + 0.6 * (j + 1) / (list.length + 1); });
     });
+    // Lines sharing a gap run side by side in it, not on top of each other.
+    var byGap = {};
+    out.forEach(function (g) { if (g.route.via !== undefined) (byGap[g.route.via] = byGap[g.route.via] || []).push(g); });
+    Object.keys(byGap).forEach(function (x) {
+      var list = byGap[x];
+      list.sort(function (p, q) { return (p.a.x - q.a.x) || p.i - q.i; });
+      list.forEach(function (g, j) {
+        g.plain = g.route;
+        g.route = Object.assign({}, g.route, { via: g.route.via + Math.max(-9, Math.min(9, (j - (list.length - 1) / 2) * 5)) });
+      });
+    });
     out.forEach(function (g) {
-      g.p = gCurve(gPort(g.a, g.side[0], g.f0), g.side[0], gPort(g.b, g.side[1], g.f1), g.side[1], g.bow);
+      var others = gOthers(g.a, g.b);
+      g.pp = gSegs(g.a, g.b, g.route, g.f0, g.f1);
+      var hits = gRouteHits(g.pp, g.a, g.b, others).hits;
+      // The ports (or its place in a shared gap) moved the line: if that
+      // takes it through a card, try it unmoved, then route again from
+      // where it now leaves and enters; the fewest cards crossed wins.
+      var tries = [];
+      if (hits > 0 && g.plain) tries.push(g.plain);
+      if (hits > 0) tries.push(gRoute(g.a, g.b, g.f0, g.f1));
+      tries.forEach(function (r) {
+        if (hits === 0) return;
+        var pp = gSegs(g.a, g.b, r, g.f0, g.f1), h = gRouteHits(pp, g.a, g.b, others).hits;
+        if (h < hits) { hits = h; g.route = r; g.side = r.side; g.pp = pp; }
+      });
+      // The curve its label sits on: the first.
+      g.p = g.pp[0];
     });
     return out;
   }
@@ -6463,6 +6920,7 @@
     // Lane headings are text too.
     gst.lanes.forEach(function (ln) { obst.push({ x: ln.x, y: ln.y - 2, w: Math.max(ln.w, 120), h: 20 }); });
     var placed = [];
+    var sc = gScale(), mx = Math.max(0, (sc.w / sc.k - gst.size.w) / 2), my = Math.max(0, (sc.h / sc.k - gst.size.h) / 2);
     var ts = [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82];
     // Busiest first, so the strongest links keep the best spots.
     geoms.slice().sort(function (a, b) { return b.l.count - a.l.count || a.i - b.i; }).forEach(function (g) {
@@ -6473,7 +6931,9 @@
         var tries = [[m[0] - w / 2, m[1] - h / 2], [m[0] - w / 2, m[1] - h - 3], [m[0] - w / 2, m[1] + 3]];
         for (var j = 0; j < tries.length; j++) {
           var r = { x: tries[j][0], y: tries[j][1], w: w, h: h };
-          if (!gHits(r, obst) && !gHits(r, placed)) { g.lbl = r; placed.push(r); break; }
+          // Inside what the map's area shows: past it a label is cut off.
+          var inside = r.x >= 2 - mx && r.y >= 2 - my && r.x + r.w <= gst.size.w - 2 + mx && r.y + r.h <= gst.size.h - 2 + my;
+          if (inside && !gHits(r, obst) && !gHits(r, placed)) { g.lbl = r; placed.push(r); break; }
         }
       }
       g.text = text;
@@ -6503,15 +6963,20 @@
     var cls = 'g-card ' + (box.chip ? 'g-chip' : n.lane === 'lib' ? 'g-lib' : n.kind === 'module' ? 'g-mod' : 'g-app') +
       (gst.sel === n.id ? ' sel' : '') + (dim ? ' dim' : '');
     var style = 'transform:translate(' + box.x + 'px,' + box.y + 'px);width:' + box.w + 'px;height:' + box.h + 'px';
-    var kind = n.kind === 'infra' ? 'infra' : n.kind === 'module' ? 'module' : (KIND_LABEL[n.kind] || n.kind);
+    var kind = n.kind === 'infra' ? 'infra' : n.kind === 'module' ? 'module' : n.kind === 'resource' ? n.res.noun : (KIND_LABEL[n.kind] || n.kind);
     var lang = n.langs && n.langs.length ? n.langs.slice(0, 2).join(' · ') : '';
+    if (n.kind === 'resource') cls = cls.replace(' g-chip', ' g-res g-r-' + n.res.cat);
     var html = '<article class="' + cls + '" style="' + style + '" data-g="' + n.id + '" tabindex="0" role="listitem" aria-label="' +
       esc(n.name + ', ' + kind + '. ' + n.sentence) + '" title="' + esc(n.sentence) + '">';
-    if (box.chip) {
+    if (n.kind === 'resource') {
+      html += '<div class="g-k"><span>' + esc(kind) + '</span></div><h3>' + esc(n.name) + '</h3><p>' + esc(gResLine(n)) + '</p>';
+    } else if (box.chip) {
       html += '<h3>' + esc(n.name) + '</h3><p>' + esc(plural(n.units.length, 'folder', 'folders')) + '</p>';
     } else {
       html += '<div class="g-k"><span>' + esc(kind) + '</span>' + (lang ? '<span class="g-lang">' + esc(lang) + '</span>' : '') + '</div>';
-      html += '<h3>' + esc(n.name) + '</h3><p class="g-sent">' + esc(n.sentence) + '</p>';
+      var badges = gBadgesOf(n.id);
+      html += '<h3>' + esc(n.name) + '</h3><p class="g-sent' + (badges.length ? ' g-sent2' : '') + '">' + esc(n.sentence) + '</p>';
+      if (badges.length) html += gBadgesHtml(badges, box.w - 22);
     }
     // Flow steps that happen inside this card.
     if (gActiveFlow() !== null) {
@@ -6519,6 +6984,42 @@
       if (nums.length) html += '<span class="g-nums">' + nums.map(function (k) { return '<b class="g-num' + (gst.flow !== null && k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>'; }).join('') + '</span>';
     }
     return html + '</article>';
+  }
+  // A card's tags for the shared resources it uses, as many as fit one
+  // line and a count of the rest; each in its resource's colour.
+  // The tags that fit two lines of `room` pixels (the last keeping room
+  // for a "+N"), and how many lines they take.
+  function gBadgeFit(ids, room) {
+    var font = '600 11px ' + SANS, gap = 6, used = 0, line = 1, shown = [];
+    for (var i = 0; i < ids.length; i++) {
+      var w = Math.min(room, Math.ceil(gTextW(gNode(ids[i]).name, font)) + 14);
+      var rest = i < ids.length - 1 ? Math.ceil(gTextW('+' + (ids.length - i - 1), font)) + gap : 0;
+      if (used > 0 && used + w > room) { if (line === 2) break; line = 2; used = 0; }
+      if (line === 2 && used + w + rest > room && used > 0) break;
+      if (line === 2 && used === 0 && w + rest > room && i < ids.length - 1) break;
+      shown.push(ids[i]); used += w + gap;
+    }
+    return { shown: shown, lines: shown.length ? line : 0 };
+  }
+  function gBadgesHtml(ids, room) {
+    var shown = gBadgeFit(ids, room).shown;
+    var all = ids.map(function (id) { return gNode(id).name; }).join(', ');
+    return '<div class="g-badges" title="' + esc('Uses ' + all + '. Point at the card to draw these lines.') + '">' + shown.map(function (id) {
+      var r = gNode(id);
+      return '<span class="g-badge g-r-' + esc(r.res.cat) + '" data-gb="' + id + '">' + esc(r.name) + '</span>';
+    }).join('') + (ids.length > shown.length ? '<span class="g-badge-more">+' + (ids.length - shown.length) + '</span>' : '') + '</div>';
+  }
+  // A resource card's second line: what it holds and who uses it.
+  function gResLine(n) {
+    var users = {};
+    GL.links.forEach(function (l) { if (l.to === n.id) users[l.from] = 1; });
+    var k = Object.keys(users).length, parts = [], kinds = {};
+    (n.res.items || []).forEach(function (it) { if (it[1] !== 'call' && it[1] !== 'object') kinds[it[1]] = (kinds[it[1]] || 0) + 1; });
+    var top = Object.keys(kinds).sort(function (a, b) { return kinds[b] - kinds[a] || (a < b ? -1 : 1); })[0];
+    if (top) parts.push(plural(kinds[top], top, top + 's'));
+    var one = GL.mode === 'modules' ? 'part' : 'app';
+    parts.push(k ? 'used by ' + plural(k, one, one + 's') : 'not used here');
+    return parts.join(' · ');
   }
   // Steps of the current flow shown on a card: those that stay in it.
   function gFlowBadges(node) {
@@ -6544,9 +7045,26 @@
       var geoms = gGeom();
       gPlaceLabels(geoms);
       gst.drawn = geoms;
-      var html = '';
+      var html = '', noted = false;
       gst.lanes.forEach(function (ln) {
-        html += '<div class="g-lane" style="transform:translate(' + ln.x + 'px,' + ln.y + 'px);width:' + Math.max(ln.w, 120) + 'px">' + esc(ln.label) + ' <span>' + ln.n + '</span></div>';
+        // A deployment's apps sit in a frame: the place they run.
+        if (ln.group) {
+          var gb = null;
+          Object.keys(gst.boxes).forEach(function (k) {
+            var b = gst.boxes[k];
+            if (b.lane !== ln.id) return;
+            gb = gb ? { x0: Math.min(gb.x0, b.x), y0: Math.min(gb.y0, b.y), x1: Math.max(gb.x1, b.x + b.w), y1: Math.max(gb.y1, b.y + b.h) } : { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h };
+          });
+          if (gb) html += '<div class="g-group" style="transform:translate(' + (gb.x0 - 10) + 'px,' + (gb.y0 - 10) + 'px);width:' + (gb.x1 - gb.x0 + 20) + 'px;height:' + (gb.y1 - gb.y0 + 20) + 'px" title="' + esc(ln.group.sentence) + '"></div>';
+        }
+        // Where the lines to shared resources went: tags on the cards.
+        var more = ln.more ? ' <button type="button" class="g-lanemore" data-gall="1" title="Show every resource">+' + ln.more + ' more</button>' : '';
+        var noteText = 'Coloured tags on a card stand for its lines here: point at the card to draw them';
+        var note = !noted && (ln.id === 'data' || ln.id === 'ext') && Object.keys(gst.boxes).some(function (k) { return gst.boxes[k].lane === ln.id && gHasTagged(+k); }) &&
+          gTextW(ln.label + ' ' + ln.n + (ln.more ? ' +' + ln.more + ' more' : '') + '  ' + noteText, '600 11px ' + SANS) * 1.2 + 40 < Math.max(ln.w, 120)
+          ? '<span class="g-lanenote">' + esc(noteText) + '</span>' : '';
+        if (note) noted = true;
+        html += '<div class="g-lane' + (ln.group ? ' g-dlane' : '') + '" style="transform:translate(' + ln.x + 'px,' + ln.y + 'px);width:' + Math.max(ln.w, 120) + 'px">' + esc(ln.label) + ' <span>' + ln.n + '</span>' + more + note + '</div>';
       });
       Object.keys(gst.boxes).forEach(function (k) { html += gCardHtml(gNode(+k), gst.boxes[k]); });
       gCards.innerHTML = html;
@@ -6556,6 +7074,21 @@
     }
     renderGlanceSide();
   }
+  // The pointer (or focus) on a card: its lines to shared resources, or a
+  // shared resource's lines to its users, drawn until it moves off.
+  function gHover(id) {
+    if (id === gst.hover) return;
+    var touches = function (h) { return h !== null && gHasTagged(h); };
+    var redraw = touches(gst.hover) || touches(id);
+    gst.hover = id;
+    if (redraw && !gWorld.hidden && glanceEl && !glanceEl.hidden) gRedrawLinks();
+  }
+  function gRedrawLinks() {
+    var geoms = gGeom();
+    gPlaceLabels(geoms);
+    gst.drawn = geoms;
+    renderGlanceLinks(geoms);
+  }
   function renderGlanceLinks(geoms) {
     var keep = gst.keep, svg = '';
     var flowPairs = gFlowPairs();
@@ -6563,13 +7096,15 @@
     geoms.forEach(function (g) {
       var l = g.l, on = keep && keep.indexOf(l.from) >= 0 && keep.indexOf(l.to) >= 0;
       var dim = keep && !on;
+      // Lines drawn for the card under the pointer stay bright.
+      if (gst.hover !== null && gSharedLink(l) && (l.from === gst.hover || l.to === gst.hover)) dim = false;
       if (flowing) dim = !flowPairs[l.from + '>' + l.to];
-      var d = 'M' + r1(g.p[0][0]) + ' ' + r1(g.p[0][1]) + 'C' + r1(g.p[1][0]) + ' ' + r1(g.p[1][1]) + ' ' + r1(g.p[2][0]) + ' ' + r1(g.p[2][1]) + ' ' + r1(g.p[3][0]) + ' ' + r1(g.p[3][1]);
-      var end = g.p[3], c = g.p[2], ang = Math.atan2(end[1] - c[1], end[0] - c[0]), s = 7;
+      var d = gPathD(g.pp), lastSeg = g.pp[g.pp.length - 1];
+      var end = lastSeg[3], c = lastSeg[2], ang = Math.atan2(end[1] - c[1], end[0] - c[0]), s = 7;
       var ah = 'M' + r1(end[0]) + ' ' + r1(end[1]) + 'L' + r1(end[0] - s * Math.cos(ang - 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang - 0.42)) +
         'L' + r1(end[0] - s * Math.cos(ang + 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang + 0.42)) + 'Z';
       svg += '<g class="g-ln f-' + esc(l.family) + (dim ? ' dim' : '') + (gst.link === g.i ? ' sel' : '') + '" data-gl="' + g.i + '" style="--w:' + gWidth(l.count, l.family) + '">' +
-        '<path class="ln" d="' + d + '"/><path class="ah" d="' + ah + '"/><path class="hit" d="' + d + '"><title>' + esc(gNode(l.from).name + ' ' + l.label + ' ' + gNode(l.to).name) + '</title></path>';
+        '<path class="ln" d="' + d + '"/><path class="ah" d="' + ah + '"/><path class="hit" d="' + d + '"><title>' + esc(gNode(l.from).name + ' → ' + gNode(l.to).name + ': ' + l.label) + '</title></path>';
       if (g.lbl) svg += '<text class="lbl" x="' + r1(g.lbl.x + g.lbl.w / 2) + '" y="' + r1(g.lbl.y + 13) + '" text-anchor="middle">' + esc(g.text) + '</text>';
       svg += '</g>';
     });
@@ -6608,11 +7143,12 @@
       if (a === b || !B[a] || !B[b]) continue;
       var key = a + '>' + b, rep = seen[key] || 0;
       seen[key] = rep + 1;
-      var route = gRoute(B[a], B[b]), side = route.side, off = 0.5 + rep * 0.12;
-      var p = gCurve(gPort(B[a], side[0], off), side[0], gPort(B[b], side[1], off), side[1], route.bow);
+      var route = gRoute(B[a], B[b]), off = 0.5 + rep * 0.12;
+      var segs = gSegs(B[a], B[b], route, off, off);
       var cur = gst.flow !== null && k === gst.step, past = gst.flow === null || k < gst.step;
-      var d = 'M' + r1(p[0][0]) + ' ' + r1(p[0][1]) + 'C' + r1(p[1][0]) + ' ' + r1(p[1][1]) + ' ' + r1(p[2][0]) + ' ' + r1(p[2][1]) + ' ' + r1(p[3][0]) + ' ' + r1(p[3][1]);
-      var m = gBez(p, 0.5);
+      var d = gPathD(segs);
+      // The number sits halfway: on the one curve, or where two meet.
+      var m = segs.length === 1 ? gBez(segs[0], 0.5) : segs[0][3];
       svg += '<g class="g-fl' + (cur ? ' cur' : past ? ' past' : '') + (f.steps[k].probable ? ' probable' : '') + '" data-gstep="' + k + '">' +
         '<path class="fl" d="' + d + '"/><circle cx="' + r1(m[0]) + '" cy="' + r1(m[1]) + '" r="11"/>' +
         '<text x="' + r1(m[0]) + '" y="' + r1(m[1] + 4) + '" text-anchor="middle">' + (k + 1) + '</text></g>';
@@ -6641,11 +7177,17 @@
     }).join('') + (libs.length > shown.length ? '<span class="g-more">+' + (libs.length - shown.length) + ' more</span>' : '');
   }
   // The map scaled to its area, up to G_MAX_K: text stays text-sized.
-  function gFit() {
-    var r = gMap.getBoundingClientRect(), stripH = gStrip.hidden ? 0 : 44;
+  // The map's area and the scale it is drawn at: fitted whole when that
+  // keeps text readable; otherwise at the readable scale (or the width, on
+  // a narrow screen) and scrolling.
+  function gScale() {
+    var r = gMap.getBoundingClientRect(), stripH = GL.mode === 'apps' && gStripItems().length ? 44 : 0;
     var w = Math.max(r.width, 200), h = Math.max(r.height - stripH, 200);
     var k = Math.min(G_MAX_K, w / gst.size.w, h / gst.size.h);
-    k = Math.max(k, 0.55);
+    return { w: w, h: h, stripH: stripH, k: Math.max(k, Math.min(G_MIN_K, w / gst.size.w), 0.55) };
+  }
+  function gFit() {
+    var sc = gScale(), w = sc.w, h = sc.h, stripH = sc.stripH, k = sc.k;
     gst.cam.k = k;
     gst.cam.x = Math.max(0, Math.round((w - gst.size.w * k) / 2));
     gst.cam.y = Math.max(0, Math.round((h - gst.size.h * k) / 2));
@@ -6653,7 +7195,8 @@
     gWorld.style.width = gst.size.w + 'px';
     gWorld.style.height = gst.size.h + 'px';
     // Too big to fit at a readable size: the map scrolls.
-    gMap.classList.toggle('scrolls', gst.size.w * k > w + 1 || gst.size.h * k > h + 1);
+    gScroll.style.bottom = stripH + 'px';
+    gScroll.classList.toggle('scrolls', gst.size.w * k > w + 1 || gst.size.h * k > h + 1);
   }
 
   // ----- header and tours strip
@@ -6672,11 +7215,18 @@
       if (by.apps) counts.push(plural(by.apps, 'app', 'apps'));
       if (by.lib) counts.push(plural(by.lib, 'library', 'libraries'));
     }
+    var resN = GL.nodes.filter(function (n) { return n.kind === 'resource' && n.lane === 'data'; }).length;
+    var extN = GL.nodes.filter(function (n) { return n.kind === 'resource' && n.lane === 'ext'; }).length;
+    if (resN) counts.push(plural(resN, 'data or messaging resource', 'data and messaging resources'));
+    if (extN) counts.push(plural(extN, 'external system', 'external systems'));
     var infra = GL.nodes.filter(function (n) { return n.lane === 'infra'; }).map(function (n) { return n.name; });
     if (infra.length) counts.push(infra.join(', '));
     var hidden = GL.hidden || {};
     var note = '';
-    if (hidden.cards) note += '<button type="button" class="g-link" data-gall="1">' + (gst.all ? 'Show the ' + fmt(GL.nodes.filter(function (n) { return n.place === 'card' || n.place === 'chip'; }).length) + ' main parts' : 'Show all ' + fmt(hidden.cards + GL.nodes.filter(function (n) { return n.place === 'card'; }).length) + ' (' + fmt(hidden.cards) + ' hidden)') + '</button>';
+    // Cards past the cap and every resource not on the map wait for "show all".
+    var hiddenAll = (hidden.cards || 0) + GL.nodes.filter(function (n) { return n.kind === 'resource' && n.place === 'off'; }).length;
+    if (hiddenAll) note += '<button type="button" class="g-link" data-gall="1">' + (gst.all ? 'Show the ' + fmt(GL.nodes.filter(function (n) { return n.place === 'card' || n.place === 'chip'; }).length) + ' main parts' : 'Show all ' + fmt(hiddenAll + GL.nodes.filter(function (n) { return n.place === 'card'; }).length) + ' (' + fmt(hiddenAll) + ' hidden)') + '</button>';
+    if (gDeployUseful()) note += '<button type="button" class="g-link g-dtoggle" data-gdeploy="1" aria-pressed="' + !!gst.deploy + '" title="Group the apps by where they run (D)">Where it runs</button>';
     if (hidden.tests) note += '<span class="g-dim">' + esc(plural(hidden.tests, 'test, docs or tooling unit', 'test, docs and tooling units')) + ' left out</span>';
     var from = GL.summary.from && GL.summary.from !== 'template' ? '<span class="g-src">from ' + esc(GL.summary.from) + '</span>' : '';
     gHead.innerHTML = '<div class="g-row"><div class="g-title"><h2>' + esc(META.repo) + '</h2><span class="g-counts">' + esc(counts.join(' · ')) + '</span>' + note + '</div>' +
@@ -6728,6 +7278,7 @@
     else if (gst.question !== null) html = gQuestionSide();
     else if (gst.link !== null) html = gLinkSide(gst.link);
     else if (gst.sel !== null) html = gNodeSide(gst.sel);
+    else if (gst.deploy && GL.deploy && GL.deploy.length) html = gDeploySide();
     else html = gStartHere();
     gSide.innerHTML = html;
   }
@@ -6785,7 +7336,7 @@
   }
   function gNodeSide(i) {
     var n = gNode(i);
-    var kind = n.kind === 'infra' ? 'infrastructure' : n.kind === 'module' ? 'module' : (KIND_LABEL[n.kind] || n.kind);
+    var kind = n.kind === 'infra' ? 'infrastructure' : n.kind === 'module' ? 'module' : n.kind === 'resource' ? n.res.noun : (KIND_LABEL[n.kind] || n.kind);
     var html = '<button type="button" class="g-backlink" data-gclear="1">‹ Start here</button>';
     html += '<h2 class="g-h">' + esc(n.name) + ' <span>' + esc(kind + (n.langs.length ? ' · ' + n.langs.join(', ') : '')) + '</span></h2>';
     html += '<p class="g-lead">' + esc(n.sentence) + '</p>';
@@ -6802,7 +7353,11 @@
       }).join('') + '</ul>';
     };
     if (out.length) html += '<dt>Talks to</dt><dd>' + linkList(out, 'to') + '</dd>';
-    if (inn.length) html += '<dt>Called by</dt><dd>' + linkList(inn, 'from') + '</dd>';
+    if (inn.length) html += '<dt>' + (n.kind === 'resource' ? 'Used by' : 'Called by') + '</dt><dd>' + linkList(inn, 'from') + '</dd>';
+    if (n.kind === 'resource') html += gResSide(n);
+    if (n.other && n.other.total) html += '<dt>Also declares</dt><dd><ul>' + n.other.types.map(function (t) { return '<li><code>' + esc(t[0]) + '</code> <span class="g-dim">×' + fmt(t[1]) + '</span></li>'; }).join('') + (n.other.types.length < n.other.total ? '' : '') + '</ul></dd>';
+    if (n.other && n.other.runtimes && n.other.runtimes.length) html += '<dt>Runs code on</dt><dd>' + esc(n.other.runtimes.join(', ')) + '</dd>';
+    if (n.deploy && n.deploy.length && GL.deploy) html += '<dt>Runs in</dt><dd><ul>' + n.deploy.map(function (gi) { var g = GL.deploy[gi]; return '<li>' + esc(g.label) + '</li>'; }).join('') + '</ul></dd>';
     if (n.used_by && n.used_by.length) html += '<dt>Used by</dt><dd>' + n.used_by.map(gNodeBtn).join(', ') + '</dd>';
     if (n.key_types.length) html += '<dt>Key types</dt><dd><ul>' + n.key_types.map(function (c) { return '<li><b>' + esc(c.name) + '</b> <span class="g-dim">×' + fmt(c.uses) + '</span> ' + gCode(c.file, c.line) + '</li>'; }).join('') + '</ul></dd>';
     if (n.flows.length) html += '<dt>Flows</dt><dd><ul>' + n.flows.map(function (fi) { return '<li><button type="button" class="g-follow" data-gflow="' + fi + '">' + esc(GL.flows[fi].title) + ' ▸</button></li>'; }).join('') + '</ul></dd>';
@@ -6811,10 +7366,34 @@
     if (n.units.length && n.kind !== 'infra') html += '<div class="g-actions"><button type="button" class="pri" data-gopen="' + i + '">Open in Explore ▸</button></div>';
     return html;
   }
+  // A resource: what it holds, where it is declared.
+  function gResSide(n) {
+    var r = n.res, html = '', byKind = {};
+    (r.items || []).forEach(function (it) { (byKind[it[1]] = byKind[it[1]] || []).push(it[0]); });
+    Object.keys(byKind).sort().forEach(function (k) {
+      var list = byKind[k], title = k === 'call' ? 'Calls' : k === 'object' ? 'Objects used' : k.charAt(0).toUpperCase() + k.slice(1) + 's';
+      html += '<dt>' + esc(title) + '</dt><dd><ul class="g-items">' + list.slice(0, 12).map(function (x) { return '<li><code>' + esc(x) + '</code></li>'; }).join('') +
+        (list.length > 12 ? '<li class="g-dim">+' + (list.length - 12) + ' more</li>' : '') + '</ul></dd>';
+    });
+    if (r.total_items > (r.items || []).length) html += '<dd class="g-dim">' + esc(plural(r.total_items - r.items.length, 'more item', 'more items')) + '</dd>';
+    if (r.declared && r.declared.length) html += '<dt>Declared in</dt><dd><ul>' + r.declared.map(function (e) { return '<li>' + gCode(e.file, e.line) + ' <span class="g-dim">' + esc(e.text) + '</span></li>'; }).join('') + '</ul></dd>';
+    if (r.kinds && r.kinds.length) html += '<dt>Types</dt><dd><ul>' + r.kinds.map(function (k) { return '<li><code>' + esc(k[0]) + '</code> <span class="g-dim">×' + fmt(k[1]) + '</span></li>'; }).join('') + '</ul></dd>';
+    if (!r.tech) html += '<dd class="g-note">No file here names its technology, so it is shown as a plain ' + esc(r.noun) + '.</dd>';
+    return html;
+  }
+  // "Where it runs": the deployments and the apps each runs.
+  function gDeploySide() {
+    var html = '<h2 class="g-h">Where it runs</h2><p class="g-lead">The apps grouped by the files that deploy them. An app several files deploy sits in the biggest group; its card lists the rest.</p>';
+    GL.deploy.forEach(function (g) {
+      html += '<section><h3>' + esc(g.label) + '</h3><p>' + esc(g.sentence) + '</p><p>' + g.nodes.map(gNodeBtn).join(', ') + '</p>' +
+        (g.files.length ? '<p>' + g.files.map(function (f) { return gCode(f, 0); }).join(' ') + '</p>' : '') + '</section>';
+    });
+    return html + '<p class="g-hint">Press <kbd>D</kbd> or "Where it runs" again for the roles.</p>';
+  }
   function gLinkSide(li) {
     var l = GL.links[li];
     var html = '<button type="button" class="g-backlink" data-gclear="1">‹ Start here</button>';
-    html += '<h2 class="g-h">' + gNodeBtn(l.from) + ' → ' + gNodeBtn(l.to) + '</h2><p class="g-lead">' + esc(gNode(l.from).name + ' ' + l.label + ' ' + gNode(l.to).name) + '.</p>';
+    html += '<h2 class="g-h">' + gNodeBtn(l.from) + ' → ' + gNodeBtn(l.to) + '</h2><p class="g-lead">' + esc(l.label.charAt(0).toUpperCase() + l.label.slice(1)) + '.</p>';
     html += '<h3>The calls behind it</h3><ul class="g-calls">';
     l.calls.forEach(function (c) {
       if (c.key !== undefined) {
@@ -6835,9 +7414,11 @@
     switch (s.via) {
       case 'http': return from + ' calls ' + here + ' over HTTP';
       case 'rpc': return from + ' calls ' + here + ' over RPC';
-      case 'bus': return from + ' publishes; ' + here + ' picks the message up';
-      case 'config': return from + ' reads config from ' + here;
-      case 'db': return from + ' reaches the database in ' + here;
+      case 'publish': return from + ' publishes ' + s.name + ' to ' + here;
+      case 'bus': return gNode(prev.node).kind === 'resource' ? here + ' picks ' + prev.name + ' up from ' + from : from + ' publishes; ' + here + ' picks the message up';
+      case 'config': return from + ' reads ' + (s.name.indexOf('secret ') === 0 ? s.name : 'config') + ' from ' + here;
+      case 'db': return gNode(s.node).kind === 'resource' ? from + ' reads and writes ' + here : from + ' reaches the database in ' + here;
+      case 'res': return from + ' uses ' + here;
       default: return prev.node === s.node ? s.name + ' runs in ' + here : from + ' calls into ' + here;
     }
   }
@@ -6849,7 +7430,7 @@
       (s.probable ? '<p class="g-prob">Probable: this call was matched by name only.</p>' : '') + '</div>';
     html += '<ol class="g-chain">' + f.steps.map(function (st0, k) {
       return '<li class="' + (k === gst.step ? 'cur' : '') + (st0.probable ? ' probable' : '') + '"><button type="button" data-gstep="' + k + '"><b class="g-num' + (k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>' +
-        '<span class="g-cn">' + esc(st0.name) + '</span><span class="g-dim">' + esc(gNode(st0.node).name) + (st0.via !== 'call' && st0.via !== 'start' ? ' · ' + VIA[st0.via] : '') + '</span></button></li>';
+        '<span class="g-cn">' + esc(st0.name) + '</span><span class="g-dim">' + esc(gNode(st0.node).name) + (st0.via !== 'call' && st0.via !== 'start' ? ' · ' + gVia(st0) : '') + '</span></button></li>';
     }).join('') + '</ol>';
     if (f.ends === 'unresolved') html += '<p class="g-note">The trace stops here: the next calls could not be resolved to code in the index.</p>';
     if (f.probable) html += '<p class="g-note">Dashed steps are probable: their calls were matched by name only.</p>';
@@ -6899,7 +7480,7 @@
     f.steps.forEach(function (s, k) {
       var y = top + k * rowH + 20, cur = k === gst.step ? ' cur' : '', prob = s.probable ? ' probable' : '';
       var from = k === 0 ? s.node : f.steps[k - 1].node, x0 = x(from), x1 = x(s.node);
-      var label = (k + 1) + '  ' + s.name + (s.via !== 'call' && s.via !== 'start' ? '  · ' + VIA[s.via] : '');
+      var label = (k + 1) + '  ' + s.name + (s.via !== 'call' && s.via !== 'start' ? '  · ' + gVia(s) : '');
       svg += '<g class="sq-msg' + cur + prob + '" data-gstep="' + k + '">';
       if (k === 0 || from === s.node) {
         svg += '<path class="sq-ln" d="M' + r1(x1) + ' ' + r1(y - 10) + 'h26v20h-26"/><path class="sq-ah" d="M' + r1(x1) + ' ' + r1(y + 10) + 'l7 -4v8z"/>' +
@@ -7001,6 +7582,7 @@
     if ((k === 'e' || k === 'E') && !ev.shiftKey) { gExplore(gst.sel); return; }
     if (k === 's' && gst.flow !== null) { gst.seq = !gst.seq; renderGlance(); return; }
     if (k === 't' && gst.tour === null && GL.tour.length) { gTour(0); return; }
+    if ((k === 'd' || k === 'D') && gDeployUseful()) { gst.deploy = !gst.deploy; renderGlance(); return; }
     // A focused card: Enter selects it, Enter again opens it in Explore.
     if ((k === 'Enter' || k === ' ') && ev.target && ev.target.dataset && ev.target.dataset.g !== undefined && ev.target.tagName === 'ARTICLE') {
       ev.preventDefault();
@@ -7015,6 +7597,7 @@
     if (d.gexplore !== undefined) { gExplore(gst.sel); return true; }
     if (d.gopen !== undefined) { gExplore(+d.gopen); return true; }
     if (d.gall !== undefined) { gst.all = !gst.all; renderGlance(); return true; }
+    if (d.gdeploy !== undefined) { gst.deploy = !gst.deploy; renderGlance(); return true; }
     if (d.gtstart !== undefined) { gTour(0); return true; }
     if (d.gtour !== undefined) { gTour(+d.gtour); return true; }
     if (d.gtnav !== undefined) { gTourNav(+d.gtnav); return true; }
@@ -7033,7 +7616,7 @@
   }
   if (glanceEl) {
     glanceEl.addEventListener('click', function (ev) {
-      var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gq], [data-gclear]');
+      var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gdeploy], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gq], [data-gclear]');
       if (t) { glanceClick(t); return; }
       // The paper: back to Start here (a flow or a tour keeps going).
       if (ev.target.closest('#g-map') && gst.flow === null && gst.tour === null && (gst.sel !== null || gst.link !== null || gst.question !== null)) {
@@ -7048,7 +7631,14 @@
     glanceEl.addEventListener('mouseover', function (ev) {
       var hit = ev.target.closest('.g-ln');
       gSvg.classList.toggle('hovering', !!hit);
+      var card = ev.target.closest('#g-cards [data-g]');
+      gHover(card ? +card.dataset.g : hit ? gst.hover : null);
     });
+    glanceEl.addEventListener('focusin', function (ev) {
+      var card = ev.target.closest && ev.target.closest('#g-cards [data-g]');
+      gHover(card ? +card.dataset.g : null);
+    });
+    if (gMap) gMap.addEventListener('mouseleave', function () { gHover(null); });
   }
   var lvlGlance = document.getElementById('lvl-glance');
   if (lvlGlance) lvlGlance.addEventListener('click', function () { setLevel('glance'); });
@@ -7221,14 +7811,15 @@
       state: function () {
         return {
           sel: gst.sel === null ? null : gNode(gst.sel).name, link: gst.link, flow: gst.flow, step: gst.step, seq: gst.seq,
-          tour: gst.tour, resume: gst.resume, question: gst.question, all: gst.all,
+          tour: gst.tour, resume: gst.resume, question: gst.question, all: gst.all, deploy: gst.deploy,
           dim: Object.keys(gst.boxes).filter(function (k) { return gst.keep && gst.keep.indexOf(+k) < 0; }).map(function (k) { return gNode(+k).name; }).sort()
         };
       },
       cards: function () {
         return Object.keys(gst.boxes).map(function (k) { var b = gst.boxes[k]; return { name: gNode(+k).name, lane: gNode(+k).lane, chip: !!b.chip, x: b.x, y: b.y, w: b.w, h: b.h }; });
       },
-      lanes: function () { return gst.lanes.map(function (l) { return { id: l.id, label: l.label, n: l.n }; }); },
+      lanes: function () { return gst.lanes.map(function (l) { return { id: l.id, label: l.label, n: l.n, more: l.more || 0 }; }); },
+      toggleDeploy: function () { glanceClick({ dataset: { gdeploy: '1' } }); },
       links: function () {
         var labelled = {};
         gst.labels.forEach(function (x) { labelled[x.i] = x; });
@@ -7239,13 +7830,15 @@
       // Every drawn curve: the links, then the active flow's numbered
       // arrows, each with the boxes of its two ends.
       curves: function () {
-        var out = gst.drawn.map(function (g) { return { from: gNode(g.l.from).name, to: gNode(g.l.to).name, p: g.p }; });
+        var out = gst.drawn.map(function (g) { return { from: gNode(g.l.from).name, to: gNode(g.l.to).name, p: g.p, pp: g.pp }; });
         var fi = gActiveFlow();
         if (fi !== null) {
           var f = GL.flows[fi];
           (gSvg.innerHTML.match(/data-gstep="\d+"><path class="fl" d="[^"]+"/g) || []).forEach(function (m) {
             var k = +m.match(/data-gstep="(\d+)"/)[1], n = m.match(/d="([^"]+)"/)[1].match(/-?[\d.]+/g).map(Number);
-            out.push({ from: gNode(f.steps[k - 1].node).name, to: gNode(f.steps[k].node).name, p: [[n[0], n[1]], [n[2], n[3]], [n[4], n[5]], [n[6], n[7]]] });
+            var pp = [];
+            for (var j = 0; j + 7 < n.length; j += 6) pp.push([[n[j], n[j + 1]], [n[j + 2], n[j + 3]], [n[j + 4], n[j + 5]], [n[j + 6], n[j + 7]]]);
+            out.push({ from: gNode(f.steps[k - 1].node).name, to: gNode(f.steps[k].node).name, p: pp[0], pp: pp });
           });
         }
         return out;
@@ -7255,9 +7848,9 @@
         var keep = [gst.boxes, gst.size];
         gst.boxes = boxes; gst.size = size; gst.dir = 'v';
         var r = gRoute(boxes[from], boxes[to]);
-        var p = gCurve(gPort(boxes[from], r.side[0], 0.5), r.side[0], gPort(boxes[to], r.side[1], 0.5), r.side[1], r.bow);
+        var pp = gSegs(boxes[from], boxes[to], r, 0.5, 0.5);
         gst.boxes = keep[0]; gst.size = keep[1];
-        return { side: r.side, bow: r.bow, p: p, plain: gSides(boxes[from], boxes[to]) };
+        return { side: r.side, bow: r.bow, p: pp[0], pp: pp, via: r.via === undefined ? null : r.via, plain: gSides(boxes[from], boxes[to]) };
       },
       strip: function () { return gStrip.hidden ? [] : GL.nodes.filter(function (n) { return n.place === 'strip'; }).map(function (n) { return n.name; }); },
       html: function () { return { head: gHead.innerHTML, tours: gTours.innerHTML, cards: gCards.innerHTML, links: gSvg.innerHTML, side: gSide.innerHTML, seq: gSeq.innerHTML, strip: gStrip.innerHTML }; },
@@ -7265,6 +7858,9 @@
       tours: function () { return gTours.textContent; },
       seqLanes: function () { return gst.seq ? (gst.seqLanes || []) : []; },
       select: function (name) { var n = GL.nodes.find(function (x) { return x.name === name; }); if (!n) return false; glanceClick({ dataset: { g: String(n.id) } }); return true; },
+      // The pointer on a card (by name), or off every card (null).
+      hover: function (name) { var n = name === null ? null : GL.nodes.find(function (x) { return x.name === name; }); gHover(n ? n.id : null); },
+      relayout: function () { renderGlance(); },
       selectLink: function (i) { glanceClick({ dataset: { gl: String(i) } }); },
       dblclick: function (name) { var n = GL.nodes.find(function (x) { return x.name === name; }); if (!n) return false; gExplore(n.id); return true; },
       explore: function () { glanceClick({ dataset: { gexplore: '1' } }); },
