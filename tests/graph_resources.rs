@@ -677,7 +677,10 @@ fn packages_images_and_imports_only_tests_or_tooling_use_are_not_resources() {
     let g = glance_at(&root, &db);
     assert_eq!(res_names(&g), strs(&["MongoDB"]));
     // The code reads and writes it; the test stack's wiring is not a use.
-    assert_eq!(uses_of(&g), own3(&[("src", "MongoDB", "reads/writes")]));
+    assert_eq!(
+        uses_of(&g),
+        own3(&[("src", "MongoDB", "reads/writes data")])
+    );
     let calls: Vec<(String, String)> = link(&g, "src", "MongoDB")["calls"]
         .as_array()
         .unwrap()
@@ -846,8 +849,8 @@ fn each_compose_file_wires_its_own_services() {
     assert_eq!(
         uses_of(&g),
         own3(&[
-            ("orders", "MariaDB", "uses"),
-            ("orders", "PostgreSQL", "uses")
+            ("orders", "MariaDB", "reads/writes data"),
+            ("orders", "PostgreSQL", "reads/writes data")
         ])
     );
 }
@@ -872,8 +875,8 @@ fn a_redis_or_mysql_client_reaches_the_compatible_server_compose_runs() {
     assert_eq!(
         uses_of(&g),
         own3(&[
-            ("orders", "Valkey", "uses"),
-            ("orders", "MariaDB", "reads/writes")
+            ("orders", "Valkey", "caches data"),
+            ("orders", "MariaDB", "reads/writes data")
         ])
     );
 }
@@ -1020,10 +1023,10 @@ fn sql_reaches_the_one_sql_database_and_an_interface_lends_no_resources() {
         uses_of(&g),
         own3(&[
             // The packages, then the commands that run them.
-            ("reader", "MongoDB", "reads/writes"),
-            ("writer", "PostgreSQL", "reads/writes"),
-            ("reader", "MongoDB", "reads/writes via shop"),
-            ("writer", "PostgreSQL", "reads/writes via shop"),
+            ("reader", "MongoDB", "reads/writes data"),
+            ("writer", "PostgreSQL", "reads/writes data"),
+            ("reader", "MongoDB", "reads/writes data via shop"),
+            ("writer", "PostgreSQL", "reads/writes data via shop"),
         ])
     );
     // The folder of SQL is PostgreSQL's, not a database of no technology.
