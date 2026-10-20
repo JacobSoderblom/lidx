@@ -1753,3 +1753,239 @@ fn crafted_routes_and_readmes_render_as_text_everywhere_on_the_landing_page() {
         assert!(html.contains(text), "{text} not shown:\n{html}");
     }
 }
+
+/// The cubic Bézier `p` at `t`.
+fn bez(p: &Value, t: f64) -> (f64, f64) {
+    let c = |i: usize, k: usize| p[i][k].as_f64().unwrap();
+    let u = 1.0 - t;
+    let at = |k| {
+        u * u * u * c(0, k)
+            + 3.0 * u * u * t * c(1, k)
+            + 3.0 * u * t * t * c(2, k)
+            + t * t * t * c(3, k)
+    };
+    (at(0), at(1))
+}
+
+/// Curves (`{from, to, p}`) that run through a box (`{name, x, y, w, h}`)
+/// other than their own two, or do not start on `from` and end on `to`.
+fn unclear_curves(cards: &Value, curves: &Value) -> Vec<String> {
+    let boxes: Vec<(String, [f64; 4])> = cards
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            let f = |k: &str| c[k].as_f64().unwrap();
+            (
+                c["name"].as_str().unwrap().to_string(),
+                [f("x"), f("y"), f("w"), f("h")],
+            )
+        })
+        .collect();
+    let find = |n: &str| boxes.iter().find(|(m, _)| m == n).unwrap().1;
+    let on_edge = |(x, y): (f64, f64), b: [f64; 4]| {
+        let inside =
+            x >= b[0] - 1.5 && x <= b[0] + b[2] + 1.5 && y >= b[1] - 1.5 && y <= b[1] + b[3] + 1.5;
+        let edge = (x - b[0]).abs() < 1.5
+            || (x - b[0] - b[2]).abs() < 1.5
+            || (y - b[1]).abs() < 1.5
+            || (y - b[1] - b[3]).abs() < 1.5;
+        inside && edge
+    };
+    let mut bad = Vec::new();
+    for c in curves.as_array().unwrap() {
+        let (from, to) = (c["from"].as_str().unwrap(), c["to"].as_str().unwrap());
+        if !on_edge(bez(&c["p"], 0.0), find(from)) || !on_edge(bez(&c["p"], 1.0), find(to)) {
+            bad.push(format!("{from}>{to} does not start and end on its cards"));
+        }
+        for k in 1..100 {
+            let (x, y) = bez(&c["p"], k as f64 / 100.0);
+            if let Some((n, _)) = boxes.iter().find(|(n, b)| {
+                n != from
+                    && n != to
+                    && x > b[0] + 2.0
+                    && x < b[0] + b[2] - 2.0
+                    && y > b[1] + 2.0
+                    && y < b[1] + b[3] - 2.0
+            }) {
+                bad.push(format!("{from}>{to} through {n}"));
+                break;
+            }
+        }
+    }
+    bad
+}
+
+/// A line between two cards with a third between them goes round it, not
+/// behind it: one leaving A for B skips M (below A, above B) and the card
+/// N beside M, through the narrow gap between them.
+#[test]
+fn a_line_goes_round_the_cards_between_its_ends() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-groute-");
+    let b = |x: f64, y: f64| serde_json::json!({ "x": x, "y": y, "w": 196.0, "h": 98.0 });
+    let layouts = [
+        // A, M and B in one column; N in the next, 40 px away.
+        serde_json::json!({
+            "boxes": { "A": b(260.0, 24.0), "M": b(260.0, 168.0), "B": b(260.0, 312.0), "N": b(24.0, 312.0) },
+            "size": { "w": 480.0, "h": 434.0 }, "from": "A", "to": "B"
+        }),
+        // A row: A, M and B side by side, B two columns on.
+        serde_json::json!({
+            "boxes": { "A": b(24.0, 60.0), "M": b(260.0, 60.0), "B": b(496.0, 60.0), "N": b(260.0, 204.0) },
+            "size": { "w": 716.0, "h": 326.0 }, "from": "A", "to": "B"
+        }),
+    ];
+    for layout in layouts {
+        let r = run(&p, "glance-route", &layout.to_string());
+        let cards: Vec<Value> = layout["boxes"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(n, v)| {
+                let mut v = v.clone();
+                v["name"] = Value::String(n.clone());
+                v
+            })
+            .collect();
+        let curves = serde_json::json!([{ "from": "A", "to": "B", "p": r["p"] }]);
+        assert_eq!(
+            unclear_curves(&Value::Array(cards.clone()), &curves),
+            Vec::<String>::new(),
+            "{r}"
+        );
+        // The plain sides alone would have crossed M.
+        let plain = r["plain"].as_array().unwrap();
+        let side = |v: &Value| v.as_str().unwrap().to_string();
+        assert_ne!(
+            (side(&plain[0]), side(&plain[1])),
+            (side(&r["side"][0]), side(&r["side"][1])),
+            "{r}"
+        );
+    }
+}
+
+/// The landing map grows to use its area, up to a third larger than the
+/// cards' own size, and no line or flow arrow runs through a card it does
+/// not connect.
+#[test]
+fn the_landing_map_uses_its_area_and_its_lines_stay_clear() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    for (files, prefix) in [
+        (common::glance_fixtures::MULTI, "lidx-viewer-gcurve-m-"),
+        (common::glance_fixtures::CLI, "lidx-viewer-gcurve-c-"),
+        (common::glance_fixtures::LIBS, "lidx-viewer-gcurve-l-"),
+    ] {
+        let (_tmp, p) = glance_page(files, prefix);
+        let r = run(&p, "glance-curves", "");
+        let k = r["landing"]["cam"]["k"].as_f64().unwrap();
+        assert!(k > 1.0 && k <= 1.35, "{prefix}: scale {k}: {r}");
+        assert_eq!(
+            unclear_curves(&r["landing"]["cards"], &r["landing"]["curves"]),
+            Vec::<String>::new(),
+            "{prefix}: {r}"
+        );
+        for f in r["flows"].as_array().unwrap() {
+            assert_eq!(
+                unclear_curves(&f["cards"], &f["curves"]),
+                Vec::<String>::new(),
+                "{prefix}: {f}"
+            );
+        }
+    }
+}
+
+/// Two front ends, a service calling another beside one that calls none,
+/// and two workers: few lanes of few cards. The map lays each lane out as
+/// one band, so it is drawn at the largest scale instead of as a tall stack.
+const SHOP: &[(&str, &str)] = &[
+    (
+        "web/package.json",
+        "{ \"name\": \"web\", \"scripts\": { \"dev\": \"vite\" }, \"dependencies\": { \"react\": \"18.0.0\" } }\n",
+    ),
+    (
+        "web/src/api.ts",
+        "export async function order() {\n  return fetch(\"/orders\", { method: \"POST\" });\n}\n",
+    ),
+    (
+        "admin/package.json",
+        "{ \"name\": \"admin\", \"scripts\": { \"dev\": \"vite\" }, \"dependencies\": { \"react\": \"18.0.0\" } }\n",
+    ),
+    (
+        "admin/src/api.ts",
+        "export async function stock() {\n  return fetch(\"/stock\");\n}\n",
+    ),
+    (
+        "orders/pyproject.toml",
+        "[project]\nname = \"orders\"\ndependencies = [\"fastapi\", \"requests\"]\n",
+    ),
+    (
+        "orders/orders/main.py",
+        "import requests\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.post(\"/orders\")\ndef place():\n    return requests.get(\"/stock\")\n",
+    ),
+    (
+        "stock/pyproject.toml",
+        "[project]\nname = \"stock\"\ndependencies = [\"fastapi\"]\n",
+    ),
+    (
+        "stock/stock/main.py",
+        "from fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/stock\")\ndef level():\n    return 1\n",
+    ),
+    (
+        "mailer/pyproject.toml",
+        "[project]\nname = \"mailer\"\ndependencies = [\"fastapi\"]\n",
+    ),
+    (
+        "mailer/mailer/main.py",
+        "from fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.post(\"/mail\")\ndef send():\n    return 1\n",
+    ),
+    (
+        "sync/pyproject.toml",
+        "[project]\nname = \"sync\"\n\n[project.scripts]\nsync = \"sync.main:run\"\n",
+    ),
+    ("sync/sync/main.py", "def run():\n    return 1\n"),
+    (
+        "audit/pyproject.toml",
+        "[project]\nname = \"audit\"\n\n[project.scripts]\naudit = \"audit.main:run\"\n",
+    ),
+    ("audit/audit/main.py", "def run():\n    return 1\n"),
+];
+
+#[test]
+fn a_few_lanes_of_a_few_cards_are_drawn_as_bands_at_full_scale() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(SHOP, "lidx-viewer-gbands-");
+    let r = run(&p, "glance-curves", "");
+    let cards = r["landing"]["cards"].as_array().unwrap();
+    let row = |name: &str| {
+        cards
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("{name}: {r}"))["y"]
+            .as_f64()
+            .unwrap()
+    };
+    // One band per lane: the services side by side, the workers too.
+    assert_eq!(row("orders"), row("stock"), "{r}");
+    assert_eq!(row("stock"), row("mailer"), "{r}");
+    assert_eq!(row("sync"), row("audit"), "{r}");
+    assert!(
+        row("web") < row("orders") && row("orders") < row("sync"),
+        "{r}"
+    );
+    assert_eq!(r["landing"]["cam"]["k"], 1.35, "{r}");
+    assert_eq!(
+        unclear_curves(&r["landing"]["cards"], &r["landing"]["curves"]),
+        Vec::<String>::new(),
+        "{r}"
+    );
+}

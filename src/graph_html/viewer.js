@@ -6116,6 +6116,9 @@
   var gHead = document.getElementById('g-head'), gStrip = document.getElementById('g-strip');
   var gSeq = document.getElementById('g-seq');
   var G_CARD = { w: 196, h: 98 }, G_CHIP = { w: 176, h: 44 }, G_GAP = { x: 128, y: 18 }, G_HEAD = 30, G_PAD = 24;
+  // Largest scale the map is drawn at: a small map grows to use its area,
+  // with cards and text no more than a third larger than their own size.
+  var G_MAX_K = 1.35;
   var gst = {
     sel: null, link: null, flow: null, step: 0, seq: false, tour: null, resume: null, question: null,
     all: false, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
@@ -6239,6 +6242,43 @@
     var size2 = { w: Math.max(w + G_PAD + (V ? 0 : 0), 200), h: h + G_PAD + (V ? 30 : 0) };
     return { boxes: boxes, lanes: lanes, size: size2, dir: dir };
   }
+  // Lanes as rows, each one band of cards left to right in the order of
+  // its layers (cards no drawn line touches last): a few lanes of a few
+  // cards stay a few bands instead of a tall stack of rows, so the map can
+  // use a wide area. `null` when a lane does not fit one band: its layers
+  // then say more than a wrapped row.
+  function gRowsLayout(area) {
+    var gx = 84, gyIn = 18, gyLane = 40;
+    var linked = {};
+    gDrawnEdges().forEach(function (e) { linked[e[0]] = 1; linked[e[1]] = 1; });
+    var room = Math.max(area.width, 360) - G_PAD * 2;
+    var boxes = {}, lanes = [], y = G_PAD, wraps = false;
+    GL.lanes.forEach(function (lane) {
+      var members = GL.nodes.filter(function (n) { return n.lane === lane.id && gShown(n); });
+      if (!members.length) return;
+      var chip = lane.id === 'infra', size = chip ? G_CHIP : G_CARD;
+      members.sort(function (a, b) {
+        return (chip ? 0 : (linked[b.id] ? 1 : 0) - (linked[a.id] ? 1 : 0)) ||
+          (chip ? 0 : gLayer(a) - gLayer(b) || gOrder(a) - gOrder(b)) || (a.name < b.name ? -1 : 1);
+      });
+      var stepX = size.w + (chip ? 14 : gx), per = Math.max(1, Math.floor((room + (chip ? 14 : gx)) / stepX));
+      if (!chip && members.length > per) wraps = true;
+      lanes.push({ id: lane.id, label: lane.label, x: G_PAD, y: y, w: 0, n: members.length });
+      y += G_HEAD;
+      members.forEach(function (n, k) {
+        var c = k % per, r = Math.floor(k / per);
+        boxes[n.id] = { x: G_PAD + c * stepX, y: y + r * (size.h + gyIn), w: size.w, h: size.h, chip: chip, line: 'b' + lanes.length, lane: lane.id };
+      });
+      y += Math.ceil(members.length / per) * (size.h + gyIn) - gyIn + gyLane;
+    });
+    if (wraps) return null;
+    // Each lane centred on the widest.
+    var laneW = {}, w = 0, h = 0;
+    Object.keys(boxes).forEach(function (k) { var b = boxes[k]; laneW[b.lane] = Math.max(laneW[b.lane] || 0, b.x + b.w); w = Math.max(w, b.x + b.w); });
+    Object.keys(boxes).forEach(function (k) { var b = boxes[k]; b.x += Math.round((w - laneW[b.lane]) / 2); h = Math.max(h, b.y + b.h); });
+    lanes.forEach(function (ln) { ln.w = w - G_PAD; });
+    return { boxes: boxes, lanes: lanes, size: { w: Math.max(w + G_PAD, 200), h: h + G_PAD }, dir: 'v' };
+  }
   function gGridLayout(area) {
     var boxes = {}, lanes = [], y = G_PAD, gx = 64, gy = 52;
     var aspect = Math.max(area.width, 200) / Math.max(area.height, 200);
@@ -6266,8 +6306,10 @@
   function gLayout() {
     var area = gMap.getBoundingClientRect();
     var stripH = GL.mode === 'apps' && gStripItems().length ? 46 : 0;
-    var fitK = function (L) { return Math.min(1, Math.max(area.width, 200) / L.size.w, Math.max(area.height - stripH, 200) / L.size.h); };
-    var h = gLayoutFor('h', area), v = gLayoutFor('v', area);
+    var fitK = function (L) { return Math.min(G_MAX_K, Math.max(area.width, 200) / L.size.w, Math.max(area.height - stripH, 200) / L.size.h); };
+    var h = gLayoutFor('h', area), v = gLayoutFor('v', area), r = gRowsLayout(area);
+    // Lanes as rows: layers in rows or in columns, whichever fits larger.
+    if (r && fitK(r) > fitK(v)) v = r;
     // Left to right reads as a flow; it wins unless top to bottom is clearly larger.
     var L = fitK(v) > fitK(h) * 1.12 ? v : h;
     // A dense web of in-process links (one unit's modules) gains little from
@@ -6320,11 +6362,49 @@
     if (side === 'b') return [box.x + box.w * f, box.y + box.h];
     return [box.x + box.w * f, box.y];
   }
-  function gCurve(p0, s0, p1, s1) {
-    var d = Math.max(40, Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) * 0.4);
+  function gCurve(p0, s0, p1, s1, bow) {
+    var d = Math.max(bow && bow < 0.3 ? 24 : 40, Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) * (bow || 0.4));
     var dirOf = function (s) { return s === 'r' ? [1, 0] : s === 'l' ? [-1, 0] : s === 'b' ? [0, 1] : [0, -1]; };
     var a = dirOf(s0), b = dirOf(s1);
     return [p0, [p0[0] + a[0] * d, p0[1] + a[1] * d], [p1[0] + b[0] * d, p1[1] + b[1] * d], p1];
+  }
+  // The sides and bow of a line from box a to box b that passes no other
+  // card: the usual sides first (gSides), then every other pair of sides,
+  // then curves bowed tighter (through a narrow gap) or wider, the
+  // shortest clear one winning. With none
+  // clear, the one crossing fewest cards. A line never runs behind a card
+  // it does not connect, so it visibly starts and ends at its own.
+  var G_BOWS = [0.4, 0.15, 0.08, 0.75, 1.1];
+  function gRoute(a, b) {
+    var B = gst.boxes, others = [];
+    Object.keys(B).forEach(function (k) { var o = B[k]; if (o !== a && o !== b) others.push(o); });
+    var pref = gSides(a, b), sides = ['r', 'l', 'b', 't'], best = null;
+    var cands = [[pref[0], pref[1]]];
+    sides.forEach(function (s0) { sides.forEach(function (s1) { if (s0 !== pref[0] || s1 !== pref[1]) cands.push([s0, s1]); }); });
+    G_BOWS.forEach(function (bow, bi) {
+      cands.forEach(function (sd, ci) {
+        var p = gCurve(gPort(a, sd[0], 0.5), sd[0], gPort(b, sd[1], 0.5), sd[1], bow);
+        var hits = 0, len = 0, prev = p[0];
+        for (var t = 1; t < 40; t++) {
+          var q = gBez(p, t / 40);
+          len += Math.hypot(q[0] - prev[0], q[1] - prev[1]);
+          prev = q;
+          for (var i = 0; i < others.length; i++) {
+            var o = others[i];
+            if (q[0] > o.x - 3 && q[0] < o.x + o.w + 3 && q[1] > o.y - 3 && q[1] < o.y + o.h + 3) { hits++; break; }
+          }
+          // Off the map, where it is cut.
+          if (q[0] < 2 || q[1] < 2 || q[0] > gst.size.w - 2 || q[1] > gst.size.h - 2) hits++;
+          // Back through one of its own cards: as unclear as another's.
+          if (t > 2 && t < 38 && [a, b].some(function (o) { return q[0] > o.x + 2 && q[0] < o.x + o.w - 2 && q[1] > o.y + 2 && q[1] < o.y + o.h - 2; })) hits++;
+        }
+        // Fewest cards crossed, then the shortest; the usual sides win
+        // among clear routes unless another is much shorter.
+        var cost = hits * 1e6 + len * (ci === 0 ? 0.8 : 1) + bi * 40;
+        if (!best || cost < best.cost) best = { side: sd, bow: bow, cost: cost };
+      });
+    });
+    return best;
   }
   function gGeom() {
     var B = gst.boxes, out = [], ports = {};
@@ -6332,8 +6412,8 @@
       if (!gLinkOn(l, i)) return;
       var a = B[l.from], b = B[l.to];
       if (!a || !b) return;
-      var side = gSides(a, b);
-      var g = { i: i, l: l, a: a, b: b, side: side };
+      var route = gRoute(a, b), side = route.side;
+      var g = { i: i, l: l, a: a, b: b, side: side, bow: route.bow };
       out.push(g);
       (ports[l.from + side[0]] = ports[l.from + side[0]] || []).push([g, 0]);
       (ports[l.to + side[1]] = ports[l.to + side[1]] || []).push([g, 1]);
@@ -6349,7 +6429,7 @@
       list.forEach(function (p, j) { p[0][p[1] === 0 ? 'f0' : 'f1'] = 0.2 + 0.6 * (j + 1) / (list.length + 1); });
     });
     out.forEach(function (g) {
-      g.p = gCurve(gPort(g.a, g.side[0], g.f0), g.side[0], gPort(g.b, g.side[1], g.f1), g.side[1]);
+      g.p = gCurve(gPort(g.a, g.side[0], g.f0), g.side[0], gPort(g.b, g.side[1], g.f1), g.side[1], g.bow);
     });
     return out;
   }
@@ -6528,8 +6608,8 @@
       if (a === b || !B[a] || !B[b]) continue;
       var key = a + '>' + b, rep = seen[key] || 0;
       seen[key] = rep + 1;
-      var side = gSides(B[a], B[b]), off = 0.5 + rep * 0.12;
-      var p = gCurve(gPort(B[a], side[0], off), side[0], gPort(B[b], side[1], off), side[1]);
+      var route = gRoute(B[a], B[b]), side = route.side, off = 0.5 + rep * 0.12;
+      var p = gCurve(gPort(B[a], side[0], off), side[0], gPort(B[b], side[1], off), side[1], route.bow);
       var cur = gst.flow !== null && k === gst.step, past = gst.flow === null || k < gst.step;
       var d = 'M' + r1(p[0][0]) + ' ' + r1(p[0][1]) + 'C' + r1(p[1][0]) + ' ' + r1(p[1][1]) + ' ' + r1(p[2][0]) + ' ' + r1(p[2][1]) + ' ' + r1(p[3][0]) + ' ' + r1(p[3][1]);
       var m = gBez(p, 0.5);
@@ -6560,11 +6640,11 @@
         nums.map(function (k) { return '<b class="g-num' + (gst.flow !== null && k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>'; }).join('') + '</button>';
     }).join('') + (libs.length > shown.length ? '<span class="g-more">+' + (libs.length - shown.length) + ' more</span>' : '');
   }
-  // The map scaled to its area, never above 1: text stays text-sized.
+  // The map scaled to its area, up to G_MAX_K: text stays text-sized.
   function gFit() {
     var r = gMap.getBoundingClientRect(), stripH = gStrip.hidden ? 0 : 44;
     var w = Math.max(r.width, 200), h = Math.max(r.height - stripH, 200);
-    var k = Math.min(1, w / gst.size.w, h / gst.size.h);
+    var k = Math.min(G_MAX_K, w / gst.size.w, h / gst.size.h);
     k = Math.max(k, 0.55);
     gst.cam.k = k;
     gst.cam.x = Math.max(0, Math.round((w - gst.size.w * k) / 2));
@@ -7153,6 +7233,31 @@
         var labelled = {};
         gst.labels.forEach(function (x) { labelled[x.i] = x; });
         return gst.drawn.map(function (g) { return { from: gNode(g.l.from).name, to: gNode(g.l.to).name, family: g.l.family, label: g.l.label, shown: !!labelled[g.i], box: labelled[g.i] ? labelled[g.i].box : null }; });
+      },
+      // The scale the map is drawn at, and its size.
+      camera: function () { return { k: gst.cam.k, w: gst.size.w, h: gst.size.h, dir: gst.dir }; },
+      // Every drawn curve: the links, then the active flow's numbered
+      // arrows, each with the boxes of its two ends.
+      curves: function () {
+        var out = gst.drawn.map(function (g) { return { from: gNode(g.l.from).name, to: gNode(g.l.to).name, p: g.p }; });
+        var fi = gActiveFlow();
+        if (fi !== null) {
+          var f = GL.flows[fi];
+          (gSvg.innerHTML.match(/data-gstep="\d+"><path class="fl" d="[^"]+"/g) || []).forEach(function (m) {
+            var k = +m.match(/data-gstep="(\d+)"/)[1], n = m.match(/d="([^"]+)"/)[1].match(/-?[\d.]+/g).map(Number);
+            out.push({ from: gNode(f.steps[k - 1].node).name, to: gNode(f.steps[k].node).name, p: [[n[0], n[1]], [n[2], n[3]], [n[4], n[5]], [n[6], n[7]]] });
+          });
+        }
+        return out;
+      },
+      // The route between two of `boxes` ({name: {x, y, w, h}}) on a map of `size`.
+      route: function (boxes, size, from, to) {
+        var keep = [gst.boxes, gst.size];
+        gst.boxes = boxes; gst.size = size; gst.dir = 'v';
+        var r = gRoute(boxes[from], boxes[to]);
+        var p = gCurve(gPort(boxes[from], r.side[0], 0.5), r.side[0], gPort(boxes[to], r.side[1], 0.5), r.side[1], r.bow);
+        gst.boxes = keep[0]; gst.size = keep[1];
+        return { side: r.side, bow: r.bow, p: p, plain: gSides(boxes[from], boxes[to]) };
       },
       strip: function () { return gStrip.hidden ? [] : GL.nodes.filter(function (n) { return n.place === 'strip'; }).map(function (n) { return n.name; }); },
       html: function () { return { head: gHead.innerHTML, tours: gTours.innerHTML, cards: gCards.innerHTML, links: gSvg.innerHTML, side: gSide.innerHTML, seq: gSeq.innerHTML, strip: gStrip.innerHTML }; },

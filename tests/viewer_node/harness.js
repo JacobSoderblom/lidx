@@ -377,6 +377,17 @@ if (scenario === 'focus') {
   const q = { state: gl.state(), side: gl.side() };
   gl.key('Escape'); flush(5);
   out = { card, link, q, cleared: gl.state() };
+} else if (scenario === 'glance-curves') {
+  // The landing page's curves and scale, then those of each flow.
+  const gl = g.glance, flows = [];
+  const landing = { cam: gl.camera(), cards: gl.cards(), curves: gl.curves() };
+  gl.data().flows.forEach((_, i) => { gl.openFlow(i); flush(2); flows.push({ cards: gl.cards(), curves: gl.curves() }); gl.key('Escape'); flush(2); });
+  out = { landing, flows };
+} else if (scenario === 'glance-route') {
+  // A route between two boxes laid out by the test: `arg` is
+  // {boxes, size, from, to} as JSON.
+  const a = JSON.parse(arg);
+  out = g.glance.route(a.boxes, a.size, a.from, a.to);
 } else if (scenario === 'glance-everything') {
   // Every view of the landing page rendered once: each card, line,
   // question, flow step (on the map and as a sequence) and tour step. The
