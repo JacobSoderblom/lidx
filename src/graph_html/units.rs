@@ -1275,12 +1275,27 @@ fn skip_link(chars: &[char], open: usize) -> Option<usize> {
     Some(end + 1)
 }
 
-/// The first sentence of a README's first prose paragraph (two when the
-/// first is short), with Markdown removed. Headings, badges, HTML blocks,
-/// lists, tables, quotes and code are skipped.
+/// The first sentence of a README's first paragraph that says what the
+/// project is (two when the first is short), with Markdown removed.
+/// Headings, badges, HTML blocks, lists, tables, quotes and code are
+/// skipped. Only the introduction (before any heading but the title) and
+/// sections that describe the project (About, Overview, Features, ...) are
+/// read, never one on working on it (Installation, Getting started,
+/// Development, ...), and a paragraph opening on tooling ("This repository
+/// uses uv as the package manager and a Makefile...") is skipped. `None`
+/// when no paragraph says what the project is, so the caller falls back to
+/// a manifest or a template.
 pub fn readme_summary(text: &str) -> Option<String> {
     let mut fence = false;
     let mut para: Vec<String> = Vec::new();
+    // The section the lines are in: its level, and whether it describes
+    // the project; a subsection about setup (`### Install`) is skipped too.
+    let mut section: Option<(usize, bool)> = None;
+    let mut sub_ok = true;
+    let mut titled = false;
+    let skipped = |section: Option<(usize, bool)>, sub_ok: bool| {
+        !(section.is_none_or(|(_, ok)| ok) && sub_ok)
+    };
     let mut lines = text.lines().peekable();
     // YAML front matter.
     if lines.peek().is_some_and(|l| l.trim() == "---") {
@@ -1302,8 +1317,38 @@ pub fn readme_summary(text: &str) -> Option<String> {
         if fence {
             continue;
         }
-        let skip = l.starts_with('#')
-            || l.starts_with("[![")
+        // An underlined (setext / rST) heading: the one line before is its title.
+        let rule = l.len() >= 2
+            && ['=', '-', '~', '^']
+                .iter()
+                .any(|&c| l.chars().all(|x| x == c));
+        let heading = if l.starts_with('#') {
+            if let Some(text) = prose_paragraph(&para, skipped(section, sub_ok)) {
+                chosen = Some(text);
+                break;
+            }
+            para.clear();
+            let level = l.chars().take_while(|&c| c == '#').count();
+            Some((level, l.trim_start_matches('#').trim().to_string()))
+        } else if rule && para.len() == 1 {
+            let level = if l.starts_with('=') { 1 } else { 2 };
+            Some((level, std::mem::take(&mut para).remove(0)))
+        } else {
+            None
+        };
+        if let Some((level, title)) = heading {
+            match section {
+                // The title: the introduction follows.
+                None if level == 1 && !titled => titled = true,
+                Some((at, _)) if level > at => sub_ok = !is_setup_heading(&title),
+                _ => {
+                    section = Some((level, is_descriptive_heading(&title)));
+                    sub_ok = true;
+                }
+            }
+            continue;
+        }
+        let skip = l.starts_with("[![")
             || l.starts_with("![")
             || l.starts_with('<')
             || l.starts_with('|')
@@ -1315,47 +1360,288 @@ pub fn readme_summary(text: &str) -> Option<String> {
             || l.chars().next().is_some_and(|c| c.is_ascii_digit()) && l.contains(". ")
             || (!l.is_empty() && l.chars().all(|c| matches!(c, '=' | '-' | '~' | '^' | '*')));
         if l.is_empty() || skip {
-            if !para.is_empty() {
-                let text = strip_inline(&para.join(" "));
-                let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                // Prose, not a line of badges, a bare link, an instruction
-                // leading into a code block ("Run the following:") or words
-                // about the document itself ("This page contains...").
-                if text.chars().filter(|c| c.is_alphabetic()).count() >= 20
-                    && text.contains(' ')
-                    && !text.ends_with(':')
-                    && !about_the_document(&text)
-                {
-                    chosen = Some(text);
-                    break;
-                }
-                para.clear();
+            if let Some(text) = prose_paragraph(&para, skipped(section, sub_ok)) {
+                chosen = Some(text);
+                break;
             }
+            para.clear();
             continue;
         }
-        // An underlined (setext / rST) heading: the line before is a title.
         para.push(l.to_string());
     }
-    if chosen.is_none() && !para.is_empty() {
-        let text = strip_inline(&para.join(" "));
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if text.chars().filter(|c| c.is_alphabetic()).count() >= 20
-            && !text.ends_with(':')
-            && !about_the_document(&text)
-        {
-            chosen = Some(text);
-        }
+    if chosen.is_none() {
+        chosen = prose_paragraph(&para, skipped(section, sub_ok));
     }
     let text = chosen?;
     let first = first_sentence(&text);
     let out = if first.chars().count() < 40 && first.len() < text.len() {
         let rest = text[first.len()..].trim_start();
         let second = first_sentence(rest);
-        format!("{first} {second}")
+        if is_setup_sentence(second) {
+            first.to_string()
+        } else {
+            format!("{first} {second}")
+        }
     } else {
         first.to_string()
     };
     clean_description(&out)
+}
+
+/// A README paragraph as one line of plain text, when it is prose that
+/// says what the project is: not a line of badges, a bare link, an
+/// instruction leading into a code block ("Run the following:"), words
+/// about the document itself ("This page contains..."), or a paragraph
+/// opening on setup or tooling. Nothing in a `skipped` section counts.
+fn prose_paragraph(para: &[String], skipped: bool) -> Option<String> {
+    if skipped || para.is_empty() {
+        return None;
+    }
+    let text = strip_inline(&para.join(" "));
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let prose = text.chars().filter(|c| c.is_alphabetic()).count() >= 20
+        && text.contains(' ')
+        && !text.ends_with(':')
+        && !about_the_document(&text)
+        && !is_setup_sentence(first_sentence(&text));
+    prose.then_some(text)
+}
+
+/// Lowercase words of `s`, `-` kept inside words (`pre-commit`, `apt-get`).
+fn plain_words(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .map(|w| w.trim_matches('-').to_string())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Whether `words` holds `phrase` (one or more words) in a row.
+fn has_phrase(words: &[String], phrase: &str) -> bool {
+    let p: Vec<&str> = phrase.split(' ').collect();
+    words
+        .windows(p.len())
+        .any(|w| w.iter().zip(&p).all(|(a, b)| a == b))
+}
+
+/// A heading of a section on what the project is.
+fn is_descriptive_heading(title: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "about",
+        "overview",
+        "introduction",
+        "intro",
+        "what",
+        "why",
+        "description",
+        "summary",
+        "features",
+        "motivation",
+        "architecture",
+        "background",
+        "concepts",
+        "design",
+        "purpose",
+        "goals",
+    ];
+    !is_setup_heading(title)
+        && plain_words(title)
+            .iter()
+            .any(|w| WORDS.contains(&w.as_str()))
+}
+
+/// A heading of a section on working on the project rather than on what it
+/// is: installing, setting up, building, testing, contributing, licensing.
+fn is_setup_heading(title: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "install",
+        "installation",
+        "installing",
+        "setup",
+        "quickstart",
+        "prerequisites",
+        "requirements",
+        "development",
+        "developing",
+        "build",
+        "building",
+        "usage",
+        "running",
+        "testing",
+        "tests",
+        "lint",
+        "linting",
+        "formatting",
+        "deploy",
+        "deploying",
+        "deployment",
+        "configuration",
+        "bootstrap",
+        "contributing",
+        "contributors",
+        "license",
+        "licence",
+        "changelog",
+        "troubleshooting",
+        "faq",
+        "documentation",
+        "docs",
+        "local",
+    ];
+    const PHRASES: &[&str] = &[
+        "getting started",
+        "get started",
+        "quick start",
+        "set up",
+        "how to run",
+        "code quality",
+        "type checking",
+    ];
+    let words = plain_words(title);
+    words.iter().any(|w| WORDS.contains(&w.as_str()))
+        || PHRASES.iter().any(|p| has_phrase(&words, p))
+}
+
+/// A sentence about setting the project up rather than about what it does:
+/// an instruction ("Install it with pip", "To get started, clone..."), a
+/// call for contributions or a license, or one naming its tooling ("This
+/// repository uses uv as the Python package manager and a Makefile..."). A
+/// sentence defining something ("pnpm is a fast package manager") is the
+/// project's own description and is kept.
+fn is_setup_sentence(sentence: &str) -> bool {
+    /// Package managers and build tools.
+    const TOOLS: &[&str] = &[
+        "uv",
+        "pip",
+        "pipx",
+        "poetry",
+        "pipenv",
+        "conda",
+        "virtualenv",
+        "venv",
+        "npm",
+        "npx",
+        "yarn",
+        "pnpm",
+        "bun",
+        "cargo",
+        "rustup",
+        "brew",
+        "homebrew",
+        "apt",
+        "apt-get",
+        "nuget",
+        "dotnet",
+        "gradle",
+        "maven",
+        "mvn",
+        "cmake",
+        "bazel",
+        "docker",
+        "docker-compose",
+        "nvm",
+        "pyenv",
+        "tox",
+        "nox",
+        "pre-commit",
+        "justfile",
+        "vcpkg",
+    ];
+    /// Words only setup talk uses.
+    const SETUP: &[&str] = &[
+        "install",
+        "installs",
+        "installed",
+        "installing",
+        "installation",
+        "setup",
+        "set up",
+        "clone",
+        "cloning",
+        "prerequisite",
+        "prerequisites",
+        "package manager",
+        "toolchain",
+        "virtual environment",
+        "development",
+        "makefile",
+        "dependencies",
+        "repository root",
+    ];
+    /// The first word of an instruction.
+    const IMPERATIVE: &[&str] = &[
+        "install",
+        "clone",
+        "run",
+        "build",
+        "download",
+        "ensure",
+        "configure",
+        "execute",
+        "navigate",
+        "cd",
+        "setup",
+    ];
+    /// One of these is enough.
+    const META: &[&str] = &[
+        "contribution",
+        "contributions",
+        "contributing",
+        "pull request",
+        "pull requests",
+        "licensed under",
+        "code of conduct",
+        "make sure",
+        "you need",
+        "you will need",
+        "you'll need",
+        "you must",
+        "to get started",
+        "get started",
+    ];
+    let words = plain_words(sentence);
+    let Some(first) = words.first() else {
+        return false;
+    };
+    let lower = sentence.to_lowercase();
+    if IMPERATIVE.contains(&first.as_str())
+        || (first == "to"
+            && words
+                .get(1)
+                .is_some_and(|w| IMPERATIVE.contains(&w.as_str())))
+        || (first == "set" && words.get(1).is_some_and(|w| w == "up"))
+        || META.iter().any(|m| lower.contains(m))
+    {
+        return true;
+    }
+    let tools = TOOLS
+        .iter()
+        .filter(|t| words.iter().any(|w| w == *t))
+        .count();
+    let setup = SETUP.iter().filter(|s| has_phrase(&words, s)).count();
+    if !((setup >= 1 && tools + setup >= 2) || tools >= 2) {
+        return false;
+    }
+    // "X is a ...": a definition, unless X is the repository itself.
+    let verb = words.iter().take(6).position(|w| w == "is" || w == "are");
+    match verb {
+        Some(i) => {
+            let subject = words[..i].join(" ");
+            matches!(
+                subject.as_str(),
+                "this repository"
+                    | "this repo"
+                    | "this project"
+                    | "this monorepo"
+                    | "this workspace"
+                    | "this codebase"
+                    | "the repository"
+                    | "the repo"
+                    | "the project"
+            )
+        }
+        None => true,
+    }
 }
 
 /// A sentence about the README rather than the project: "This page
@@ -2442,6 +2728,71 @@ mod tests {
             cut.ends_with('…') && cut.chars().count() <= MAX_DESCRIPTION + 1,
             "{cut}"
         );
+    }
+
+    /// Words on setting the project up are not what it is: a paragraph
+    /// opening on tooling and the sections on working on it are skipped,
+    /// a section describing it is read, and a README that never says what
+    /// the project is gives none (the caller then uses a template).
+    #[test]
+    fn readme_summaries_skip_setup_and_tooling() {
+        let tooling = "# Builder\n\nThis repository uses [uv](https://x) as the Python package\nmanager and a Makefile to standardize development tasks. All commands run\nfrom the repository root.\n\n---\n\n## Setup\n\nWe publish the package to a private feed so builds stay reproducible here.\n\n### Bootstrap\n\nThe bootstrap target creates the virtual environment for every package.\n\n## Agent skills\n\nProject agent skills are managed via a lock file in the root folder.\n\n## Overview\n\nThe builder turns table definitions into deployable data pipelines.\n";
+        assert_eq!(
+            readme_summary(tooling).as_deref(),
+            Some("The builder turns table definitions into deployable data pipelines.")
+        );
+        // Nothing but setup: no summary.
+        let setup_only = "# Builder\n\nThis repository uses uv as the Python package manager and a Makefile.\n\n## Installation\n\nThe package is published to a private registry for the whole team.\n\n## Development\n\nThe linters and formatters are run through make on every commit.\n";
+        assert_eq!(readme_summary(setup_only), None);
+        // Instructions and calls for contributions are skipped; the
+        // definition of a package manager is its own description.
+        for (md, want) in [
+            (
+                "Install it with pip, then run the server on any machine.\n\nThe service stores uploaded images and serves thumbnails.\n",
+                Some("The service stores uploaded images and serves thumbnails."),
+            ),
+            (
+                "To get started, clone the repository and run make in it.\n\nShortener turns long links into short ones and counts visits.\n",
+                Some("Shortener turns long links into short ones and counts visits."),
+            ),
+            (
+                "Contributions are welcome, please open a pull request first.\n\nThe library parses calendars in the iCalendar format.\n",
+                Some("The library parses calendars in the iCalendar format."),
+            ),
+            (
+                "pnpm is a fast, disk space efficient package manager that installs dependencies once.\n",
+                Some(
+                    "pnpm is a fast, disk space efficient package manager that installs dependencies once.",
+                ),
+            ),
+            (
+                "## Getting started\n\nThe first run downloads the models into a cache folder.\n\n## Features\n\nThe editor highlights code in forty languages as you type.\n",
+                Some("The editor highlights code in forty languages as you type."),
+            ),
+        ] {
+            assert_eq!(readme_summary(md).as_deref(), want, "{md}");
+        }
+        // A short first sentence keeps a second one only when it is not setup.
+        assert_eq!(
+            readme_summary("A tiny web server. Install it with npm and run it anywhere.\n")
+                .as_deref(),
+            Some("A tiny web server.")
+        );
+        assert!(is_setup_sentence("Run `make build` to compile everything."));
+        assert!(is_setup_sentence(
+            "This project is set up with poetry and pre-commit hooks."
+        ));
+        assert!(!is_setup_sentence(
+            "A CLI tool and Go library for generating an SBOM from container images."
+        ));
+        assert!(!is_setup_sentence(
+            "Docker CLI plugin for extended build capabilities."
+        ));
+        assert!(is_setup_heading("Getting Started"));
+        assert!(is_setup_heading("Local development"));
+        assert!(!is_setup_heading("How it works"));
+        assert!(is_descriptive_heading("What is it?"));
+        assert!(!is_descriptive_heading("Why install it"));
     }
 
     #[test]
