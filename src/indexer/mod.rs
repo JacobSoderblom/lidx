@@ -58,7 +58,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 54;
+pub const EXTRACTOR_VERSION: i64 = 55;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 /// `meta` key of the Cargo manifest view (`rust_workspace`) the Rust files
 /// were last extracted against.
