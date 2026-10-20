@@ -727,6 +727,9 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-badges { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; overflow: hidden; white-space: nowrap; }
 .g-badge { flex: none; max-width: 100%; overflow: hidden; display: inline-flex; align-items: center; height: 19px; padding: 0 5px 0 4px; font: 600 11px var(--sans); color: var(--ink);
   background: color-mix(in oklch, var(--rc) 13%, var(--paper)); border: 1px solid color-mix(in oklch, var(--rc) 45%, transparent); border-left: 3px solid var(--rc); border-radius: 4px; }
+/* An app the card's part also calls, past the apps its drawn lines reach. */
+.g-badge.g-r-app { --rc: var(--bridge); background: var(--paper); border-left-width: 1px; }
+.g-badge.g-r-app::before { content: "→"; margin-right: 3px; color: var(--rc); font-weight: 700; }
 .g-badge-more { flex: none; font: 600 11px var(--sans); color: var(--ink-3); line-height: 19px; }
 .g-sent.g-sent2 { -webkit-line-clamp: 2; }
 .g-lane .g-lanenote { font-weight: 500; letter-spacing: 0.01em; text-transform: none; margin-left: 10px; color: var(--ink-3); }

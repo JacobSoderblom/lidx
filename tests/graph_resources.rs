@@ -193,7 +193,7 @@ fn a_compose_stack_shows_each_resource_category_with_verbs_and_evidence() {
     assert_eq!(
         res_links(&g),
         own4(&[
-            ("web", "api.payhub.io", "ext", "calls over HTTP ×1"),
+            ("web", "api.payhub.io", "ext", "calls over HTTP"),
             ("orders", "PostgreSQL", "data", "reads/writes data"),
             ("orders", "Redis", "data", "caches data"),
             ("orders", "RabbitMQ", "msg", "publishes ordercreated"),

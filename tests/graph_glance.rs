@@ -200,7 +200,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             (
                 "portal".into(),
                 "ingest-api".into(),
-                "calls over HTTP ×1".into(),
+                "calls over HTTP".into(),
                 false
             ),
             (
@@ -306,7 +306,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
         g.g()["questions"][1]["a"],
         "ingest-api publishes fileuploaded; validator subscribes to fileuploaded."
     );
-    assert_eq!(g.g()["questions"][2]["a"], "portal calls over HTTP ×1.");
+    assert_eq!(g.g()["questions"][2]["a"], "portal calls over HTTP.");
     assert_eq!(
         g.g()["read_first"],
         serde_json::json!([{ "path": "README.md", "note": "what the project is" }])
@@ -346,9 +346,9 @@ fn a_single_command_line_app_is_shown_as_its_modules() {
     assert_eq!(
         g.links(),
         vec![
-            ("src/*".into(), "cli".into(), "calls ×1".into(), false),
-            ("cli".into(), "report".into(), "calls ×1".into(), false),
-            ("cli".into(), "store".into(), "calls ×1".into(), false),
+            ("src/*".into(), "cli".into(), "calls".into(), false),
+            ("cli".into(), "report".into(), "calls".into(), false),
+            ("cli".into(), "store".into(), "calls".into(), false),
             ("report".into(), "store".into(), "imports ×2".into(), false),
         ]
     );

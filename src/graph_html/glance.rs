@@ -2324,7 +2324,7 @@ impl ResAgg {
             Cat::Ext => {
                 let calls = self.named(Verb::Calls);
                 if !calls.is_empty() {
-                    format!("calls over HTTP ×{}", calls.len())
+                    times("calls over HTTP", calls.len())
                 } else if code {
                     "calls its API".to_string()
                 } else {
@@ -2813,8 +2813,8 @@ pub fn process_label(family: &str, keys: &BTreeSet<String>) -> String {
             .unwrap_or_default()
     };
     match family {
-        "http" => format!("calls over HTTP ×{n}"),
-        "rpc" => format!("calls RPC ×{n}"),
+        "http" => times("calls over HTTP", n),
+        "rpc" => times("calls RPC", n),
         "bus" if n == 1 => format!("publishes {}", one()),
         "bus" => format!("publishes {n} topics"),
         "config" => {
@@ -2831,7 +2831,16 @@ pub fn process_label(family: &str, keys: &BTreeSet<String>) -> String {
                 ),
             }
         }
-        _ => format!("{family} ×{n}"),
+        _ => times(family, n),
+    }
+}
+
+/// A verb with how many times, the count left out when it is one.
+fn times(verb: &str, n: usize) -> String {
+    if n == 1 {
+        verb.to_string()
+    } else {
+        format!("{verb} ×{n}")
     }
 }
 
@@ -2856,7 +2865,7 @@ pub fn code_label(kinds: &BTreeMap<String, usize>) -> String {
         .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
         .map(|(v, _)| *v)
         .unwrap_or("references");
-    format!("{verb} ×{total}")
+    times(verb, total)
 }
 
 /// What lies behind a link: per key, the sending and receiving symbol.
@@ -4840,7 +4849,7 @@ mod tests {
             process_label("http", &keys(&["/a", "/b"])),
             "calls over HTTP ×2"
         );
-        assert_eq!(process_label("rpc", &keys(&["/s/m"])), "calls RPC ×1");
+        assert_eq!(process_label("rpc", &keys(&["/s/m"])), "calls RPC");
         assert_eq!(process_label("bus", &keys(&["orders"])), "publishes orders");
         assert_eq!(
             process_label("bus", &keys(&["a", "b", "c"])),

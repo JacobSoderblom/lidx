@@ -412,6 +412,17 @@ if (scenario === 'focus') {
   const gl = g.glance;
   gl.relayout(); flush(5);
   out = { cam: gl.camera(), cards: gl.cards(), lanes: gl.lanes(), links: gl.links(), curves: gl.curves(), html: gl.html().cards };
+} else if (scenario === 'glance-area-hover') {
+  // The landing page on a map area of "width,height", at rest and then
+  // with the pointer on each card named after it ("w,h,name,name").
+  const [w, h, ...names] = arg.split(',');
+  element('g-map').rect = { left: 0, top: 0, right: +w, bottom: +h, width: +w, height: +h };
+  const gl = g.glance, steps = [];
+  gl.relayout(); flush(5);
+  const look = () => ({ cam: gl.camera(), cards: gl.cards(), lanes: gl.lanes(), links: gl.links(), curves: gl.curves(), html: gl.html().cards });
+  steps.push(look());
+  names.forEach((name) => { gl.hover(name === '' ? null : name); flush(2); steps.push(look()); });
+  out = { steps };
 } else if (scenario === 'glance-route') {
   // A route between two boxes laid out by the test: `arg` is
   // {boxes, size, from, to} as JSON.
