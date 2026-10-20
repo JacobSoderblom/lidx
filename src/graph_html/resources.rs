@@ -933,6 +933,13 @@ pub fn aws_services(line: &str) -> Vec<(Cat, &'static str)> {
 pub fn imports_of(lang: &str, line: &str, in_go_block: bool) -> Vec<String> {
     let t = line.trim();
     let mut out = Vec::new();
+    // A commented-out import (`// import x from 'y'`, a JSDoc ` * require('y')`
+    // line, a Go `// "path"` in an import block) imports nothing.
+    if matches!(lang, "javascript" | "typescript" | "tsx" | "jsx" | "go")
+        && (t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+    {
+        return out;
+    }
     match lang {
         "python" => {
             if let Some(rest) = t.strip_prefix("from ") {
@@ -2194,6 +2201,32 @@ pub fn serverless_code(file: &str, handler: &str) -> String {
     }
 }
 
+/// A file only tests run: a test file or folder (`tests/`, `*_test.go`,
+/// `*.test.ts`, `test_*.py`), pytest's `conftest.py`, or a compose file
+/// for a test or CI stack (`docker-compose.test.yml`,
+/// `docker-compose.ci.yml`). What it uses or declares is not a resource of
+/// the system.
+pub fn test_only(path: &str) -> bool {
+    if crate::indexer::test_detection::is_test_file(path) {
+        return true;
+    }
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    if name == "conftest.py" {
+        return true;
+    }
+    let stem = name
+        .strip_prefix("docker-compose")
+        .or_else(|| name.strip_prefix("compose"));
+    stem.is_some_and(|rest| {
+        rest.split(['.', '-', '_']).any(|w| {
+            matches!(
+                w,
+                "test" | "tests" | "testing" | "ci" | "e2e" | "integration"
+            )
+        })
+    })
+}
+
 fn dir_of(path: &str) -> String {
     path.rsplit_once('/')
         .map(|(a, _)| format!("{a}/"))
@@ -2251,7 +2284,11 @@ pub(super) fn find(inp: &Input) -> Found {
         (m.len() == 1).then(|| m[0])
     };
     for (u, unit) in units.iter().enumerate() {
-        for d in &unit.decls {
+        for d in unit
+            .decls
+            .iter()
+            .filter(|d| !test_only(&d.ev.file) && scoped(&d.ev.file))
+        {
             let lname = d.name.to_ascii_lowercase();
             match d.source {
                 "bicep" | "terraform" | "cfn" => {
@@ -2481,10 +2518,33 @@ pub(super) fn find(inp: &Input) -> Found {
             })
             .clone()
     };
+    // Go has no dev dependencies: `go.mod` requires what only `_test.go`
+    // files import too. A module counts once code outside tests imports it.
+    let mut go_imports: BTreeSet<String> = BTreeSet::new();
+    for (path, lang, _) in inp.files {
+        if lang != "go" || test_only(path) || !scoped(path) {
+            continue;
+        }
+        let Some(text) = read(path) else { continue };
+        let mut in_block = false;
+        for line in text.lines() {
+            let t = line.trim();
+            if t.starts_with("import (") {
+                in_block = true;
+                continue;
+            }
+            if in_block && t.starts_with(')') {
+                in_block = false;
+                continue;
+            }
+            go_imports.extend(imports_of("go", line, in_block));
+        }
+    }
     for (u, unit) in units.iter().enumerate() {
         if !code_unit(u) {
             continue;
         }
+        let go = unit.manifests.iter().any(|m| m.ends_with("go.mod"));
         let mut manifests = unit.manifests.clone();
         for req in ["requirements.txt", "requirements.in"] {
             manifests.push(format!("{}{req}", unit.root));
@@ -2493,6 +2553,13 @@ pub(super) fn find(inp: &Input) -> Found {
             let Some((cat, tech)) = classify_package(p) else {
                 continue;
             };
+            if go
+                && !go_imports
+                    .iter()
+                    .any(|m| m == p || m.starts_with(&format!("{p}/")))
+            {
+                continue;
+            }
             if cat == Cat::Ext && tech.is_empty() {
                 continue;
             }
@@ -2523,7 +2590,7 @@ pub(super) fn find(inp: &Input) -> Found {
     // Files whose own code uses a resource: (cat, tech, verb).
     let mut file_res: HashMap<String, BTreeSet<(Cat, String, Verb)>> = HashMap::new();
     for (path, lang, _) in inp.files {
-        if !CODE.contains(&lang.as_str()) || !scoped(path) {
+        if !CODE.contains(&lang.as_str()) || !scoped(path) || test_only(path) {
             continue;
         }
         let Some(u) = own(path).filter(|&u| code_unit(u)) else {
@@ -2604,7 +2671,7 @@ pub(super) fn find(inp: &Input) -> Found {
             (&x.bus, Verb::Subscribes, "subscribes to"),
         ] {
             for (k, (_, syms)) in &usage.keys {
-                let Some((q, f, l)) = syms.first() else {
+                let Some((q, f, l)) = syms.iter().find(|(_, f, _)| !test_only(f)) else {
                     continue;
                 };
                 file_res
@@ -2629,7 +2696,7 @@ pub(super) fn find(inp: &Input) -> Found {
             }
         }
         for (k, (_, syms)) in &x.secrets.keys {
-            let Some((q, f, l)) = syms.first() else {
+            let Some((q, f, l)) = syms.iter().find(|(_, f, _)| !test_only(f)) else {
                 continue;
             };
             // Only a secret the repository's infrastructure provides.

@@ -16,9 +16,14 @@ fn glance(files: &[(&str, &str)]) -> Value {
 }
 
 fn glance_at(root: &Path, db: &Path) -> Value {
+    glance_with(root, db, &[])
+}
+
+fn glance_with(root: &Path, db: &Path, extra: &[&str]) -> Value {
     let out = root.join("glance-out.html");
     let res = Command::new(env!("CARGO_BIN_EXE_lidx"))
         .arg("graph")
+        .args(extra)
         .arg("--repo")
         .arg(root)
         .arg("--db")
@@ -605,4 +610,179 @@ fn resources_past_the_cap_wait_behind_show_all() {
         .map(|r| r.0.as_str())
         .collect();
     assert_eq!(hidden, ["PostgreSQL", "Redis", "RabbitMQ"], "{all:?}");
+}
+
+/// Names of the resource nodes, in the order the page lists them.
+fn res_names(g: &Value) -> Vec<String> {
+    resources(g).into_iter().map(|r| r.0).collect()
+}
+
+/// A Node API whose only resource is MongoDB. Redis, PostgreSQL, Kafka and
+/// RabbitMQ appear only where tests, dev tooling, lockfiles and comments
+/// name them.
+const NODE_TEST_ONLY: &[(&str, &str)] = &[
+    (
+        "package.json",
+        "{\n  \"name\": \"shop\",\n  \"scripts\": { \"start\": \"node src/server.js\" },\n  \"dependencies\": { \"express\": \"4\", \"mongodb\": \"6\" },\n  \"devDependencies\": { \"ioredis\": \"5\", \"pg\": \"8\", \"jest\": \"29\" }\n}\n",
+    ),
+    (
+        "src/server.js",
+        "const express = require('express');\nconst { MongoClient } = require('mongodb');\n// const Redis = require('ioredis');\n// import { Kafka } from 'kafkajs';\n/* import amqp from 'amqplib'; */\n/**\n * import { Client } from 'pg';\n */\nconst app = express();\napp.get('/orders', (req, res) => res.send(new MongoClient('x')));\napp.listen(3000);\n",
+    ),
+    (
+        "test/cache.test.js",
+        "const Redis = require('ioredis');\ntest('cache', () => new Redis());\n",
+    ),
+    (
+        "src/__tests__/db.spec.ts",
+        "import { Client } from 'pg';\nit('db', () => new Client());\n",
+    ),
+    ("src/orders.test.ts", "import { Kafka } from 'kafkajs';\n"),
+    (
+        "src/billing.test.js",
+        "test('charge', async () => {\n  bus.publish('order-created', {});\n  await fetch('https://api.stripe.com/v1/charges', { method: 'POST' });\n});\n",
+    ),
+    (
+        "spec/support/broker.js",
+        "const amqp = require('amqplib');\nmodule.exports = amqp;\n",
+    ),
+    (
+        "package-lock.json",
+        "{ \"name\": \"shop\", \"lockfileVersion\": 3, \"packages\": { \"node_modules/ioredis\": {}, \"node_modules/kafkajs\": {} } }\n",
+    ),
+    (
+        "yarn.lock",
+        "ioredis@^5:\n  version \"5.0.0\"\nkafkajs@^2:\n  version \"2.0.0\"\n",
+    ),
+    (
+        "pnpm-lock.yaml",
+        "lockfileVersion: '6.0'\npackages:\n  /amqplib@0.10.0:\n    resolution: {integrity: x}\n  /pg@8.0.0:\n    resolution: {integrity: y}\n",
+    ),
+    (
+        "docker-compose.yml",
+        "services:\n  api:\n    build: .\n    depends_on:\n      - mongo\n  mongo:\n    image: mongo:7\n#  redis:\n#    image: redis:7\n  # broker:\n  #   image: rabbitmq:3\n",
+    ),
+    (
+        "docker-compose.test.yml",
+        "services:\n  redis:\n    image: redis:7\n",
+    ),
+    (
+        "docker-compose.ci.yml",
+        "services:\n  pg:\n    image: postgres:16\n",
+    ),
+    (
+        "tests/docker-compose.yml",
+        "services:\n  mq:\n    image: rabbitmq:3\n",
+    ),
+];
+
+#[test]
+fn packages_images_and_imports_only_tests_or_tooling_use_are_not_resources() {
+    let (_tmp, root, db) = common::index_repo("lidx-res-", NODE_TEST_ONLY);
+    assert_eq!(res_names(&glance_at(&root, &db)), strs(&["MongoDB"]));
+    // Showing every file at first does not make test code a user of one.
+    assert_eq!(
+        res_names(&glance_with(&root, &db, &["--scope", "all"])),
+        strs(&["MongoDB"])
+    );
+}
+
+#[test]
+fn python_test_and_dev_dependencies_are_not_resources() {
+    let g = glance(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"api\"\ndependencies = [\"fastapi\", \"psycopg\"]\n\n[project.optional-dependencies]\ntest = [\"redis\", \"pytest\"]\ndev = [\"pymongo\"]\n\n[dependency-groups]\ntesting = [\"pika\"]\n\n[tool.poetry.group.dev.dependencies]\nkafka-python = \"*\"\n\n[tool.poetry.dev-dependencies]\nelasticsearch = \"*\"\n",
+        ),
+        ("requirements-dev.txt", "boto3\nredis\n"),
+        ("dev-requirements.txt", "pymysql\n"),
+        (
+            "poetry.lock",
+            "[[package]]\nname = \"redis\"\nversion = \"5.0.0\"\n",
+        ),
+        (
+            "uv.lock",
+            "[[package]]\nname = \"pymongo\"\nversion = \"4.0.0\"\n",
+        ),
+        (
+            "api/main.py",
+            "import psycopg\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/orders\")\ndef orders():\n    return psycopg.connect(\"\")\n",
+        ),
+        ("conftest.py", "import pymongo\n"),
+        ("tests/conftest.py", "import redis\n"),
+        (
+            "tests/test_cache.py",
+            "import redis\n\n\ndef test_cache():\n    redis.Redis()\n",
+        ),
+        ("api/test_search.py", "import elasticsearch\n"),
+        ("api/broker_test.py", "import pika\n"),
+    ]);
+    assert_eq!(res_names(&g), strs(&["PostgreSQL"]));
+}
+
+#[test]
+fn a_go_module_only_tests_import_is_not_a_resource() {
+    let g = glance(&[
+        (
+            "go.mod",
+            "module example.com/orders\n\ngo 1.22\n\nrequire (\n\tgithub.com/redis/go-redis/v9 v9.5.0\n\tgithub.com/jackc/pgx/v5 v5.5.0\n\tgithub.com/segmentio/kafka-go v0.4.47\n)\n",
+        ),
+        (
+            "go.sum",
+            "go.mongodb.org/mongo-driver v1.15.0 h1:x\ngithub.com/redis/go-redis/v9 v9.5.0 h1:y\n",
+        ),
+        (
+            "main.go",
+            "package main\n\nimport (\n\t\"net/http\"\n\n\t\"github.com/segmentio/kafka-go\"\n\t// \"go.mongodb.org/mongo-driver/mongo\"\n)\n\nfunc main() {\n\t_ = kafka.Writer{}\n\thttp.HandleFunc(\"/orders\", nil)\n\thttp.ListenAndServe(\":8080\", nil)\n}\n",
+        ),
+        (
+            "cache_test.go",
+            "package main\n\nimport (\n\t\"testing\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\nfunc TestCache(t *testing.T) { _ = redis.NewClient(nil) }\n",
+        ),
+        (
+            "store_test.go",
+            "package main\n\nimport \"github.com/jackc/pgx/v5\"\n\nvar _ = pgx.Connect\n",
+        ),
+    ]);
+    assert_eq!(res_names(&g), strs(&["Kafka"]));
+}
+
+#[test]
+fn rust_dev_dependencies_and_dotnet_test_projects_are_not_resources() {
+    let g = glance(&[
+        (
+            "svc/Cargo.toml",
+            "[package]\nname = \"svc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\naxum = \"0.7\"\nrdkafka = \"0.36\"\n\n[dev-dependencies]\nredis = \"0.25\"\ntokio-postgres = \"0.7\"\n",
+        ),
+        (
+            "svc/src/main.rs",
+            "use rdkafka::config::ClientConfig;\n\nfn main() {}\n",
+        ),
+        ("svc/tests/it.rs", "use redis::Client;\n\nfn helper() {}\n"),
+        (
+            "Cargo.lock",
+            "[[package]]\nname = \"mongodb\"\nversion = \"2.0.0\"\n",
+        ),
+        (
+            "src/Api/Api.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n  <ItemGroup>\n    <PackageReference Include=\"Swashbuckle.AspNetCore\" Version=\"6.0.0\" />\n  </ItemGroup>\n</Project>\n",
+        ),
+        (
+            "src/Api/Program.cs",
+            "var app = WebApplication.Create();\napp.MapGet(\"/orders\", () => 1);\napp.Run();\n",
+        ),
+        (
+            "src/Api/packages.lock.json",
+            "{ \"version\": 1, \"dependencies\": { \"net8.0\": { \"StackExchange.Redis\": { \"type\": \"Transitive\" } } } }\n",
+        ),
+        (
+            "tests/Api.Tests/Api.Tests.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <PackageReference Include=\"xunit\" Version=\"2.0.0\" />\n    <PackageReference Include=\"StackExchange.Redis\" Version=\"2.0.0\" />\n    <PackageReference Include=\"Npgsql\" Version=\"8.0.0\" />\n  </ItemGroup>\n</Project>\n",
+        ),
+        (
+            "tests/Api.Tests/CacheTests.cs",
+            "using StackExchange.Redis;\nusing Npgsql;\n\npublic class CacheTests { }\n",
+        ),
+    ]);
+    assert_eq!(res_names(&g), strs(&["Kafka"]));
 }
