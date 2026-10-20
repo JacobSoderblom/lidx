@@ -187,3 +187,44 @@ pub const K8S_NS: &[(&str, &str)] = &[
         "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: front\n  namespace: shop\nspec:\n  template:\n    metadata:\n      labels:\n        app: front\n    spec:\n      containers:\n        - name: front\n          image: registry.example.com/front:1.0\n          env:\n            - name: CART_ADDR\n              value: \"cart:8080\"\n",
     ),
 ];
+
+/// Three APIs sharing a RabbitMQ broker, one of them also using Redis on
+/// its own, and a hub API using five resources no other app uses.
+pub const SHARED: &[(&str, &str)] = &[
+    (
+        "docker-compose.yml",
+        "services:\n  a:\n    build: ./a\n    depends_on:\n      - mq\n  b:\n    build: ./b\n    depends_on:\n      - mq\n  c:\n    build: ./c\n    depends_on:\n      - mq\n  mq:\n    image: rabbitmq:3-management\n",
+    ),
+    (
+        "a/pyproject.toml",
+        "[project]\nname = \"a\"\ndependencies = [\"fastapi\", \"pika\", \"redis\"]\n",
+    ),
+    (
+        "a/a/main.py",
+        "import pika\nimport redis\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/a\")\ndef get():\n    return 1\n",
+    ),
+    (
+        "b/pyproject.toml",
+        "[project]\nname = \"b\"\ndependencies = [\"fastapi\", \"pika\"]\n",
+    ),
+    (
+        "b/b/main.py",
+        "import pika\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/b\")\ndef get():\n    return 1\n",
+    ),
+    (
+        "c/pyproject.toml",
+        "[project]\nname = \"c\"\ndependencies = [\"fastapi\", \"pika\"]\n",
+    ),
+    (
+        "c/c/main.py",
+        "import pika\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/c\")\ndef get():\n    return 1\n",
+    ),
+    (
+        "hub/pyproject.toml",
+        "[project]\nname = \"hub\"\ndependencies = [\"fastapi\", \"psycopg\", \"boto3\", \"elasticsearch\", \"stripe\", \"azure-keyvault-secrets\"]\n",
+    ),
+    (
+        "hub/hub/main.py",
+        "import psycopg\nimport boto3\nimport stripe\nfrom elasticsearch import Elasticsearch\nfrom azure.keyvault.secrets import SecretClient\nfrom fastapi import FastAPI\n\napp = FastAPI()\ns3 = boto3.client(\"s3\")\n\n\n@app.get(\"/hub\")\ndef get():\n    return 1\n",
+    ),
+];

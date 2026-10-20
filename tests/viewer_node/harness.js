@@ -397,6 +397,21 @@ if (scenario === 'focus') {
   const before = { lanes: gl.lanes(), cards: gl.cards().length };
   gl.showAll(); flush(5);
   out = { before, after: { lanes: gl.lanes(), cards: gl.cards().length } };
+} else if (scenario === 'glance-hover') {
+  // Lines with the pointer on each named card in turn (`arg`: names joined
+  // by commas, an empty name for off every card), then with one selected.
+  const gl = g.glance, steps = [];
+  const look = () => ({ links: gl.links().map((l) => l.from + '>' + l.to), cards: gl.cards(), curves: gl.curves() });
+  steps.push(look());
+  arg.split(',').forEach((name) => { gl.hover(name === '' ? null : name); flush(2); steps.push(look()); });
+  out = { steps, html: gl.html().cards };
+} else if (scenario === 'glance-area') {
+  // The landing page on a map area of `arg` ("width,height").
+  const [w, h] = arg.split(',').map(Number);
+  element('g-map').rect = { left: 0, top: 0, right: w, bottom: h, width: w, height: h };
+  const gl = g.glance;
+  gl.relayout(); flush(5);
+  out = { cam: gl.camera(), cards: gl.cards(), lanes: gl.lanes(), links: gl.links(), curves: gl.curves(), html: gl.html().cards };
 } else if (scenario === 'glance-route') {
   // A route between two boxes laid out by the test: `arg` is
   // {boxes, size, from, to} as JSON.
@@ -423,6 +438,13 @@ if (scenario === 'focus') {
     gl.tourStart(); flush(2); grab();
     d.tour.forEach(() => { gl.tourNext(); flush(2); grab(); });
   }
+  // The pointer on each card, then "Where it runs" with each card selected.
+  gl.clear(); flush(2);
+  d.nodes.forEach((n) => { gl.hover(n.name); flush(2); grab(); });
+  gl.hover(null); flush(2);
+  gl.toggleDeploy(); flush(2); grab();
+  d.nodes.forEach((n) => { gl.select(n.name); flush(2); grab(); });
+  gl.toggleDeploy(); flush(2);
   out = { html: parts.join('\n'), flows: d.flows.length, tour: d.tour.length, links: d.links.length };
 } else {
   throw new Error('unknown scenario ' + scenario);

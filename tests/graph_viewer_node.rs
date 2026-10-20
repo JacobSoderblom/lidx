@@ -1665,7 +1665,7 @@ fn a_card_a_line_and_a_question_each_explain_themselves() {
     );
     let side = r["link"]["side"].as_str().unwrap();
     assert!(
-        side.starts_with("‹ Start hereportal → ingest-apiportal calls over HTTP ×1 ingest-api.The calls behind it/uploadsfrom ui/src/api.sendUpload ui/src/api.ts:1to ingest_api.main.upload api/ingest_api/main.py:6"),
+        side.starts_with("‹ Start hereportal → ingest-apiCalls over HTTP ×1.The calls behind it/uploadsfrom ui/src/api.sendUpload ui/src/api.ts:1to ingest_api.main.upload api/ingest_api/main.py:6"),
         "{side}"
     );
     assert_eq!(r["q"]["state"]["question"], 0);
@@ -2329,4 +2329,301 @@ fn a_line_with_no_clear_curve_runs_down_a_gap() {
         Vec::<String>::new(),
         "{r}"
     );
+}
+
+/// Cards (`{name, x, y, w, h}`) that overlap another, as "a/b" pairs.
+fn overlapping(cards: &Value) -> Vec<String> {
+    let c = cards.as_array().unwrap();
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+    let mut bad = Vec::new();
+    for (i, a) in c.iter().enumerate() {
+        for b in &c[i + 1..] {
+            if f(a, "x") < f(b, "x") + f(b, "w")
+                && f(b, "x") < f(a, "x") + f(a, "w")
+                && f(a, "y") < f(b, "y") + f(b, "h")
+                && f(b, "y") < f(a, "y") + f(a, "h")
+            {
+                bad.push(format!("{}/{}", a["name"], b["name"]));
+            }
+        }
+    }
+    bad
+}
+
+/// A resource three apps use is a coloured tag on each of their cards, and
+/// so are the resources of an app with more than four of its own: their
+/// lines wait for the pointer (or the selection) on one end. A resource
+/// with one or two users of a quieter app keeps its line.
+#[test]
+fn shared_and_hub_resources_are_tags_whose_lines_wait_for_a_focus() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::SHARED, "lidx-viewer-gtag-");
+    let r = run(&p, "glance-hover", "a,RabbitMQ,,hub,");
+    let steps = r["steps"].as_array().unwrap();
+    let links = |i: usize| -> Vec<String> {
+        let mut v: Vec<String> = steps[i]["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    // At rest: only the line a quiet app keeps to a resource of its own.
+    assert_eq!(links(0), vec!["a>Redis"], "{r}");
+    // On a: its line to the shared broker too, not the other users'.
+    assert_eq!(links(1), vec!["a>RabbitMQ", "a>Redis"], "{r}");
+    // On the broker: every user's line.
+    assert_eq!(
+        links(2),
+        vec!["a>RabbitMQ", "a>Redis", "b>RabbitMQ", "c>RabbitMQ"],
+        "{r}"
+    );
+    // Off every card: back to rest.
+    assert_eq!(links(3), vec!["a>Redis"], "{r}");
+    // On the hub: its five resources.
+    assert_eq!(
+        links(4),
+        vec![
+            "a>Redis",
+            "hub>Amazon S3",
+            "hub>Azure Key Vault",
+            "hub>Elasticsearch",
+            "hub>PostgreSQL",
+            "hub>Stripe"
+        ],
+        "{r}"
+    );
+    assert_eq!(links(5), vec!["a>Redis"], "{r}");
+    // Lines drawn for a focus stay clear of the cards too.
+    for s in steps {
+        assert_eq!(
+            unclear_curves(&s["cards"], &s["curves"]),
+            Vec::<String>::new(),
+            "{s}"
+        );
+    }
+    // The tags: each in its resource's colour, the broker on all three
+    // users, and the hub's (with what does not fit as "+N").
+    let html = r["html"].as_str().unwrap();
+    let tags = |name: &str| -> Vec<String> {
+        let start = html
+            .find(&format!("<h3>{name}</h3>"))
+            .unwrap_or_else(|| panic!("{name}: {html}"));
+        let card = &html[start..start + html[start..].find("</article>").unwrap()];
+        let mut out = Vec::new();
+        let mut rest = card;
+        while let Some(i) = rest.find("<span class=\"g-badge ") {
+            rest = &rest[i + 21..];
+            let cls = &rest[..rest.find('"').unwrap()];
+            let name = &rest[rest.find('>').unwrap() + 1..rest.find("</span>").unwrap()];
+            out.push(format!("{cls}:{name}"));
+        }
+        if let Some(i) = card.find("<span class=\"g-badge-more\">") {
+            let more = &card[i + 27..];
+            out.push(more[..more.find("</span>").unwrap()].to_string());
+        }
+        out
+    };
+    assert_eq!(tags("a"), vec!["g-r-bus:RabbitMQ"]);
+    assert_eq!(tags("b"), vec!["g-r-bus:RabbitMQ"]);
+    assert_eq!(tags("c"), vec!["g-r-bus:RabbitMQ"]);
+    // The hub's: as many as fit two lines, then how many more.
+    assert_eq!(
+        tags("hub"),
+        vec![
+            "g-r-secrets:Azure Key Vault",
+            "g-r-search:Elasticsearch",
+            "+3"
+        ]
+    );
+    assert!(
+        html.contains("title=\"Uses Azure Key Vault, Elasticsearch, PostgreSQL, Amazon S3, Stripe. Point at the card to draw these lines.\""),
+        "{html}"
+    );
+    // The lane says what the tags are, once.
+    assert_eq!(
+        html.matches("Coloured tags on a card stand for its lines here")
+            .count(),
+        1,
+        "{html}"
+    );
+}
+
+/// Four front ends each calling one of eight services, in the reverse of
+/// their name order. Every layout puts the callers in the order of what
+/// they call, so no two lines cross. Where the map fits, it is drawn larger
+/// than 1:1; on an area too short for it at 1:1 (card text at its own 11px
+/// and up), it scrolls instead of shrinking: as wide as the area, its
+/// lanes in rows of the area's width, each caller over its service.
+#[test]
+fn a_big_map_stays_readable_and_its_lines_do_not_cross() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let mut owned: Vec<(String, String)> = Vec::new();
+    for i in 0..8 {
+        owned.push((
+            format!("s{i:02}/pyproject.toml"),
+            format!("[project]\nname = \"s{i:02}\"\ndependencies = [\"fastapi\"]\n"),
+        ));
+        owned.push((
+            format!("s{i:02}/s{i:02}/main.py"),
+            format!("from fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get(\"/s{i:02}\")\ndef get():\n    return 1\n"),
+        ));
+    }
+    for (f, s) in [(0, 7), (1, 6), (2, 5), (3, 4)] {
+        owned.push((
+            format!("f{f}/package.json"),
+            format!("{{ \"name\": \"f{f}\", \"scripts\": {{ \"dev\": \"vite\" }}, \"dependencies\": {{ \"react\": \"18.0.0\" }} }}\n"),
+        ));
+        owned.push((
+            format!("f{f}/src/api.ts"),
+            format!("export async function go() {{\n  return fetch(\"/s{s:02}\");\n}}\n"),
+        ));
+    }
+    let files: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (_tmp, p) = glance_page(&files, "lidx-viewer-gbig-");
+    let calls = [("f0", "s07"), ("f1", "s06"), ("f2", "s05"), ("f3", "s04")];
+    let card = |r: &Value, n: &str| {
+        r["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("{n}: {r}"))
+            .clone()
+    };
+    let mid = |c: &Value, x: &str, w: &str| c[x].as_f64().unwrap() + c[w].as_f64().unwrap() / 2.0;
+    // The map's area in a 1400×900 window, beside the side column: left
+    // to right, larger than 1:1.
+    let r = run(&p, "glance-area", "1040,650");
+    assert_eq!(r["cam"]["dir"], "h", "{r}");
+    assert!(r["cam"]["k"].as_f64().unwrap() > 1.0, "{r}");
+    // Callers top to bottom in the order of what they call: no crossing.
+    let order = |names: Vec<&str>| {
+        let mut v: Vec<(f64, usize)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (mid(&card(&r, n), "y", "h"), i))
+            .collect();
+        v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        v.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        order(calls.iter().map(|c| c.0).collect()),
+        order(calls.iter().map(|c| c.1).collect()),
+        "{r}"
+    );
+    assert_eq!(overlapping(&r["cards"]), Vec::<String>::new());
+    assert_eq!(
+        unclear_curves(&r["cards"], &r["curves"]),
+        Vec::<String>::new(),
+        "{r}"
+    );
+    // An area too short for it: 1:1, scrolling.
+    let r = run(&p, "glance-area", "1040,420");
+    let cam = &r["cam"];
+    assert_eq!(cam["k"].as_f64().unwrap(), 1.0, "{r}");
+    let w = cam["w"].as_f64().unwrap();
+    assert!(w <= 1040.0 && w > 900.0, "as wide as the area: {w}");
+    assert!(cam["h"].as_f64().unwrap() > 420.0, "taller: it scrolls");
+    assert_eq!(overlapping(&r["cards"]), Vec::<String>::new());
+    assert_eq!(
+        unclear_curves(&r["cards"], &r["curves"]),
+        Vec::<String>::new(),
+        "{r}"
+    );
+    for (f, s) in calls {
+        let (a, b) = (card(&r, f), card(&r, s));
+        assert!(
+            (mid(&a, "x", "w") - mid(&b, "x", "w")).abs() < 1.0,
+            "{f} over {s}: {r}"
+        );
+    }
+    // Eight services in rows of four.
+    let rows: std::collections::BTreeSet<i64> = r["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["lane"] == "svc")
+        .map(|c| c["y"].as_f64().unwrap() as i64)
+        .collect();
+    assert_eq!(rows.len(), 2, "{r}");
+}
+
+/// Names from deployment files and URLs reach the landing page as text in
+/// every view: a Kubernetes namespace and a compose file's folder in the
+/// "Where it runs" groups, compose service names in a shared resource
+/// (shown as tags), with the pointer on each card. A URL whose host is not
+/// a host name makes no resource at all.
+#[test]
+fn crafted_deployment_and_resource_names_render_as_text() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let mut owned: Vec<(String, String)> = vec![(
+        "ops\"&'<x>/docker-compose.yml".to_string(),
+        "services:\n  c:\n    build: ../c\n    depends_on:\n      - \"<i>pg</i>\"\n  \"<i>pg</i>\":\n    image: postgres:16\n".to_string(),
+    )];
+    for x in ["a", "b", "c"] {
+        owned.push((
+            format!("{x}/pyproject.toml"),
+            format!("[project]\nname = \"{x}\"\ndependencies = [\"psycopg\", \"requests\"]\n\n[project.scripts]\n{x} = \"{x}.main:run\"\n"),
+        ));
+        owned.push((
+            format!("{x}/{x}/main.py"),
+            "import psycopg\nimport requests\n\n\ndef run():\n    return requests.get('https://q\"onmouseover=alert(6)&x.evil.io/a')\n".to_string(),
+        ));
+        owned.push((format!("{x}/Dockerfile"), "FROM python:3\n".to_string()));
+    }
+    for x in ["a", "b"] {
+        owned.push((
+            format!("deploy/{x}.yaml"),
+            format!("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {x}\n  namespace: \"<u onmouseover=alert(5)>ns</u>\"\nspec:\n  template:\n    spec:\n      containers:\n        - name: {x}\n          image: registry.example.com/{x}:1.0\n"),
+        ));
+    }
+    let files: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (_tmp, p) = glance_page(&files, "lidx-viewer-gesc4-");
+    let r = run(&p, "glance-everything", "");
+    let html = r["html"].as_str().unwrap();
+    for bad in ["<u on", "<i>", "<x>", "q\"onmouseover", "ops\"", "&x.evil"] {
+        assert!(!html.contains(bad), "{bad} reached the page as markup");
+    }
+    assert!(
+        html.contains("Kubernetes namespace &lt;u onmouseover=alert(5)&gt;ns&lt;/u&gt;"),
+        "the namespace is shown, escaped"
+    );
+    assert!(
+        html.contains("Docker Compose (ops&quot;&amp;&#39;&lt;x&gt;/docker-compose.yml)"),
+        "the compose file's folder is shown, escaped"
+    );
+    assert!(
+        html.contains("&lt;i&gt;pg&lt;/i&gt;"),
+        "the compose service is shown, escaped"
+    );
+    assert!(
+        html.contains("<span class=\"g-badge g-r-db\" data-gb="),
+        "the shared database is a tag"
+    );
+    assert!(
+        !html.contains("evil.io"),
+        "no resource for a host that is not one"
+    );
+    let page = std::fs::read_to_string(&p).unwrap();
+    let start = page.find("id=\"lidx-graph-data\"").unwrap();
+    let end = start + page[start..].find("</script>").unwrap();
+    assert!(!page[start..end].contains("<u"), "script context escaped");
 }
