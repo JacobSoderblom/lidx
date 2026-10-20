@@ -377,6 +377,28 @@ if (scenario === 'focus') {
   const q = { state: gl.state(), side: gl.side() };
   gl.key('Escape'); flush(5);
   out = { card, link, q, cleared: gl.state() };
+} else if (scenario === 'glance-everything') {
+  // Every view of the landing page rendered once: each card, line,
+  // question, flow step (on the map and as a sequence) and tour step. The
+  // markup of all of them, to check that data stays text.
+  const gl = g.glance, d = gl.data(), parts = [];
+  const grab = () => { const h = gl.html(); parts.push(Object.keys(h).map((k) => h[k]).join('\n')); };
+  grab();
+  d.nodes.forEach((n) => { gl.select(n.name); flush(2); grab(); });
+  d.links.forEach((_, i) => { gl.selectLink(i); flush(2); grab(); });
+  d.questions.forEach((_, i) => { gl.question(i); flush(2); grab(); });
+  gl.clear(); flush(2);
+  d.flows.forEach((f, i) => {
+    gl.openFlow(i); flush(2); grab();
+    f.steps.forEach(() => { gl.key('ArrowRight'); flush(2); grab(); });
+    gl.toggleSeq(); flush(2); grab(); gl.toggleSeq(); flush(2);
+    gl.key('Escape'); flush(2);
+  });
+  if (d.tour.length) {
+    gl.tourStart(); flush(2); grab();
+    d.tour.forEach(() => { gl.tourNext(); flush(2); grab(); });
+  }
+  out = { html: parts.join('\n'), flows: d.flows.length, tour: d.tour.length, links: d.links.length };
 } else {
   throw new Error('unknown scenario ' + scenario);
 }

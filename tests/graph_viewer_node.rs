@@ -1693,3 +1693,63 @@ fn crafted_descriptions_render_as_text_on_the_landing_page() {
         "as text: {side}"
     );
 }
+
+/// Every string the landing page shows from the repository is text: a
+/// README summary, a route path and a manifest description, on
+/// the map, the side column, flows, sequences, tour steps and questions.
+#[test]
+fn crafted_routes_and_readmes_render_as_text_everywhere_on_the_landing_page() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    // No spaces: a route with one is no longer matched across apps.
+    const ROUTE: &str = "/uploads/<img/src=x/onerror=alert(1)>";
+    let api = common::glance_fixtures::MULTI
+        .iter()
+        .find(|(p, _)| *p == "api/ingest_api/main.py")
+        .unwrap()
+        .1
+        .replace("/uploads", ROUTE);
+    let ui = common::glance_fixtures::MULTI
+        .iter()
+        .find(|(p, _)| *p == "ui/src/api.ts")
+        .unwrap()
+        .1
+        .replace("/uploads", ROUTE);
+    let mut files: Vec<(&str, &str)> = common::glance_fixtures::MULTI
+        .iter()
+        .filter(|(p, _)| {
+            !matches!(
+                *p,
+                "README.md" | "api/ingest_api/main.py" | "ui/src/api.ts" | "api/pyproject.toml"
+            )
+        })
+        .copied()
+        .collect();
+    files.push((
+        "README.md",
+        "# Uploads\n\nUploads checks that 1 < 2 & 3 > 2 for \"every\" partner's file before storing it.\n",
+    ));
+    files.push(("api/ingest_api/main.py", &api));
+    files.push(("ui/src/api.ts", &ui));
+    files.push((
+        "api/pyproject.toml",
+        "[project]\nname = \"ingest-api\"\ndescription = \"Queues <script>alert(3)</script> uploads.\"\ndependencies = [\"fastapi>=0.110\"]\n",
+    ));
+    let (_tmp, p) = glance_page(&files, "lidx-viewer-gesc2-");
+    let r = run(&p, "glance-everything", "");
+    let html = r["html"].as_str().unwrap();
+    assert!(r["flows"].as_u64().unwrap() >= 1, "no flow to check: {r}");
+    assert!(r["tour"].as_u64().unwrap() >= 1, "no tour to check: {r}");
+    for raw in ["<img", "<script"] {
+        assert!(!html.contains(raw), "{raw} as markup:\n{html}");
+    }
+    for text in [
+        "1 &lt; 2 &amp; 3 &gt; 2 for &quot;every&quot; partner&#39;s file",
+        "&lt;img/src=x/onerror=alert(1)&gt;",
+        "&lt;script&gt;alert(3)&lt;/script&gt;",
+    ] {
+        assert!(html.contains(text), "{text} not shown:\n{html}");
+    }
+}
