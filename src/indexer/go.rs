@@ -285,7 +285,10 @@ struct Context {
 
 #[derive(Clone)]
 struct GrpcServerInfo {
-    service: String,
+    /// The services the struct serves: one per embedded
+    /// `pkg.UnimplementedXxxServer`, with the package it names (`pb`), or the
+    /// one its own name gives (`GreeterServer`, no package).
+    services: Vec<(String, Option<String>)>,
 }
 
 #[derive(Clone)]
@@ -498,12 +501,16 @@ fn collect_grpc_servers_from_type_decl(
                 continue;
             };
 
-            if type_node.kind() == "struct_type"
-                && is_grpc_server_struct(type_node, source)
-                && let Some(service) = embedded_grpc_service(type_node, source)
-                    .or_else(|| extract_grpc_service_from_server_name(&name))
-            {
-                servers.insert(name, GrpcServerInfo { service });
+            if type_node.kind() == "struct_type" && is_grpc_server_struct(type_node, source) {
+                let mut services = embedded_grpc_services(type_node, source);
+                if services.is_empty()
+                    && let Some(service) = extract_grpc_service_from_server_name(&name)
+                {
+                    services.push((service, None));
+                }
+                if !services.is_empty() {
+                    servers.insert(name, GrpcServerInfo { services });
+                }
             }
         }
     }
@@ -2672,13 +2679,14 @@ fn grpc_impl_edge(
     if !rpc_name.starts_with(|c: char| c.is_ascii_uppercase()) {
         return None;
     }
-    let (raw_path, normalized) = proto::normalize_rpc_path(None, &server_info.service, rpc_name)?;
+    let service = grpc_impl_service(node, source, &server_info.services)?;
+    let (raw_path, normalized) = proto::normalize_rpc_path(None, service, rpc_name)?;
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     let detail = json!({
         "framework": "grpc-go",
         "role": "server",
-        "service": server_info.service.as_str(),
+        "service": service,
         "rpc": rpc_name,
         "raw": raw_path,
     })
@@ -2827,10 +2835,10 @@ fn extract_grpc_service_from_client_call(node: Node<'_>, source: &str) -> Option
         }
         "call_expression" => {
             let function = node.child_by_field_name("function")?;
-            let method_name = match function.kind() {
-                "identifier" => node_text(function, source),
-                _ => split_selector_expr(function, source)?.1,
-            };
+            // Only `pkg.NewXxxClient(..)`: generated clients live in their
+            // own package, while a bare `NewNVDAPIClient()` is the
+            // package's own constructor (an HTTP client, a wrapper).
+            let (_pkg, method_name) = split_selector_expr(function, source)?;
             let service = method_name.strip_prefix("New")?.strip_suffix("Client")?;
             (!service.is_empty()).then(|| service.to_string())
         }
@@ -2887,18 +2895,54 @@ fn is_grpc_server_struct(struct_node: Node<'_>, source: &str) -> bool {
     false
 }
 
-/// The service a gRPC server struct implements, from the embedded
-/// `pb.UnimplementedCheckoutServiceServer` (`CheckoutService`), so a struct
-/// named `checkoutService` still serves it.
-fn embedded_grpc_service(struct_node: Node<'_>, source: &str) -> Option<String> {
+/// The services a gRPC server struct implements, from each embedded
+/// `pb.UnimplementedCheckoutServiceServer` (`CheckoutService`, package `pb`),
+/// so a struct named `checkoutService` still serves it.
+fn embedded_grpc_services(struct_node: Node<'_>, source: &str) -> Vec<(String, Option<String>)> {
     let text = node_text(struct_node, source);
-    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
-        .filter_map(|word| {
-            let ty = word.rsplit('.').next()?;
-            let service = ty.strip_prefix("Unimplemented")?.strip_suffix("Server")?;
-            (!service.is_empty()).then(|| service.to_string())
-        })
-        .next()
+    let mut services: Vec<(String, Option<String>)> = Vec::new();
+    for word in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
+        let (pkg, ty) = match word.rsplit_once('.') {
+            Some((pkg, ty)) => (Some(pkg.to_string()), ty),
+            None => (None, word),
+        };
+        if let Some(service) = ty
+            .strip_prefix("Unimplemented")
+            .and_then(|t| t.strip_suffix("Server"))
+            .filter(|s| !s.is_empty())
+            && !services.iter().any(|(s, _)| s == service)
+        {
+            services.push((service.to_string(), pkg));
+        }
+    }
+    services
+}
+
+/// The service a server method serves. A service embedded from a package
+/// serves the methods whose parameters use that package's types: a struct
+/// embedding `pb.UnimplementedCheckoutServiceServer` whose `Check` takes a
+/// `*healthpb.HealthCheckRequest` serves the health service, not checkout's.
+/// A method naming no package's types takes the first service.
+fn grpc_impl_service<'a>(
+    method: Node<'_>,
+    source: &str,
+    services: &'a [(String, Option<String>)],
+) -> Option<&'a str> {
+    let params = method
+        .child_by_field_name("parameters")
+        .map(|p| node_text(p, source))
+        .unwrap_or_default();
+    let packages: HashSet<&str> = params
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .filter_map(|word| word.split_once('.').map(|(pkg, _)| pkg))
+        .filter(|pkg| *pkg != "context")
+        .collect();
+    services
+        .iter()
+        .find(|(_, pkg)| pkg.as_deref().is_some_and(|p| packages.contains(p)))
+        .or_else(|| services.iter().find(|(_, pkg)| pkg.is_none()))
+        .or_else(|| packages.is_empty().then(|| services.first()).flatten())
+        .map(|(service, _)| service.as_str())
 }
 
 fn extract_grpc_service_from_server_name(name: &str) -> Option<String> {
@@ -3577,6 +3621,78 @@ func (cs *checkoutService) getUserCart(ctx context.Context, id string) ([]*pb.Ca
             keys(proto::RPC_IMPL_KIND),
             vec!["/checkoutservice/placeorder"]
         );
+    }
+
+    /// A method serves the embedded service whose package its parameters
+    /// use: the health `Check` of a checkout server is not a checkout RPC.
+    /// A bare `NewNVDAPIClient()` is the package's own constructor, not a
+    /// generated gRPC client.
+    #[test]
+    fn grpc_server_methods_serve_the_service_of_their_package() {
+        let source = r#"
+package main
+
+type checkoutService struct {
+    pb.UnimplementedCheckoutServiceServer
+}
+
+type both struct {
+    pb.UnimplementedGreeterServer
+    healthpb.UnimplementedHealthServer
+}
+
+func (cs *checkoutService) Check(ctx context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+    return nil, nil
+}
+
+func (cs *checkoutService) Watch(req *healthpb.HealthCheckRequest, ws healthpb.Health_WatchServer) error {
+    return nil
+}
+
+func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb.PlaceOrderResponse, error) {
+    return nil, nil
+}
+
+func (cs *checkoutService) ListOrders(req *pb.ListOrdersRequest, stream grpc.ServerStreamingServer[pb.Order]) error {
+    return nil
+}
+
+func (b *both) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloReply, error) {
+    return nil, nil
+}
+
+func (b *both) Check(ctx context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+    return nil, nil
+}
+
+func fetch(ctx context.Context) {
+    api := NewNVDAPIClient()
+    api.FetchProducts(ctx)
+    NewStoreClient(conn).GetItem(ctx)
+}
+"#;
+        let mut extractor = GoExtractor::new().unwrap();
+        let file = extractor.extract(source, "main").unwrap();
+        let keys = |kind: &str| -> Vec<String> {
+            let mut k: Vec<String> = file
+                .edges
+                .iter()
+                .filter(|e| e.kind == kind)
+                .filter_map(|e| e.target_qualname.clone())
+                .collect();
+            k.sort();
+            k
+        };
+        assert_eq!(
+            keys(proto::RPC_IMPL_KIND),
+            vec![
+                "/checkoutservice/listorders",
+                "/checkoutservice/placeorder",
+                "/greeter/sayhello",
+                "/health/check",
+            ]
+        );
+        assert!(keys(proto::RPC_CALL_KIND).is_empty());
     }
 
     /// `r.HandleFunc(base + "/cart", svc.viewCart)`: the route is `/cart`, and
