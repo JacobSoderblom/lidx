@@ -3429,6 +3429,137 @@ mod tests {
     }
 
     #[test]
+    fn go_broker_cache_and_database_clients_name_their_resource() {
+        let go = |m: &str| classify_import("go", m);
+        assert_eq!(
+            go("github.com/segmentio/kafka-go"),
+            Some((Cat::Bus, "Kafka"))
+        );
+        assert_eq!(
+            go("github.com/confluentinc/confluent-kafka-go/v2/kafka"),
+            Some((Cat::Bus, "Kafka"))
+        );
+        assert_eq!(go("github.com/IBM/sarama"), Some((Cat::Bus, "Kafka")));
+        assert_eq!(go("github.com/Shopify/sarama"), Some((Cat::Bus, "Kafka")));
+        assert_eq!(
+            go("github.com/nats-io/nats.go/jetstream"),
+            Some((Cat::Bus, "NATS"))
+        );
+        assert_eq!(
+            go("github.com/rabbitmq/amqp091-go"),
+            Some((Cat::Bus, "RabbitMQ"))
+        );
+        assert_eq!(
+            go("github.com/go-redis/redis/v8"),
+            Some((Cat::Cache, "Redis"))
+        );
+        assert_eq!(
+            go("go.mongodb.org/mongo-driver/v2/mongo"),
+            Some((Cat::Db, "MongoDB"))
+        );
+        assert_eq!(
+            go("github.com/jackc/pgx/v4/pgxpool"),
+            Some((Cat::Db, "PostgreSQL"))
+        );
+        assert_eq!(go("github.com/lib/pq"), Some((Cat::Db, "PostgreSQL")));
+        assert_eq!(go("github.com/jackc/pgxlisten"), None);
+        assert!(sql_client("go", "database/sql"));
+        assert!(sql_client("go", "github.com/jmoiron/sqlx/types"));
+        assert!(sql_client("python", "sqlalchemy.orm"));
+        assert!(!sql_client("go", "go.mongodb.org/mongo-driver/mongo"));
+    }
+
+    #[test]
+    fn settings_name_databases_and_celery_brokers() {
+        assert_eq!(
+            django_engines("        \"ENGINE\": \"django.db.backends.postgresql\","),
+            [(Cat::Db, "PostgreSQL")]
+        );
+        assert_eq!(
+            django_engines(
+                "'ENGINE': 'django.contrib.gis.db.backends.postgis', 'X': 'django.db.backends.sqlite3'"
+            ),
+            [(Cat::Db, "SQLite"), (Cat::Db, "PostgreSQL")]
+        );
+        assert_eq!(
+            django_engines("# set ENGINE to django.db.backends.mysql"),
+            []
+        );
+        assert_eq!(django_engines("\"django.db.backends.dummy\""), []);
+        assert_eq!(
+            celery_broker_in("CELERY_BROKER_URL = \"redis://cache:6379/0\""),
+            Some((Cat::Cache, "Redis"))
+        );
+        assert_eq!(
+            celery_broker_in("app = Celery('x', broker='pyamqp://guest@mq//')"),
+            Some((Cat::Bus, "RabbitMQ"))
+        );
+        assert_eq!(
+            celery_broker_in("broker_url = 'sqs://'"),
+            Some((Cat::Bus, "Amazon SQS"))
+        );
+        assert_eq!(celery_broker_in("result_backend = 'redis://cache'"), None);
+        assert_eq!(celery_broker_in("CELERY_BROKER_URL = env('BROKER')"), None);
+        assert_eq!(
+            celery_broker_extra("  \"celery[redis]~=5.6\","),
+            Some((Cat::Cache, "Redis"))
+        );
+        assert_eq!(
+            celery_broker_extra("celery[msgpack,sqs]==5"),
+            Some((Cat::Bus, "Amazon SQS"))
+        );
+        assert_eq!(celery_broker_extra("celery[msgpack]"), None);
+        assert_eq!(celery_broker_extra("celery>=5"), None);
+    }
+
+    #[test]
+    fn test_files_and_commented_imports_name_nothing() {
+        for p in [
+            "tests/test_cache.py",
+            "conftest.py",
+            "app/conftest.py",
+            "cache_test.go",
+            "src/db.test.ts",
+            "src/__tests__/db.ts",
+            "spec/support/redis.js",
+            "docker-compose.test.yml",
+            "docker-compose.ci-test.yml",
+            "compose.e2e.yaml",
+            "docker-compose.integration.yml",
+            "tests/docker-compose.yml",
+        ] {
+            assert!(test_only(p), "{p}");
+        }
+        for p in [
+            "docker-compose.yml",
+            "docker-compose.prod.yml",
+            "compose.yaml",
+            "docker-compose.mariadb.yml",
+            "src/latest.py",
+            "deploy/contest.yaml",
+        ] {
+            assert!(!test_only(p), "{p}");
+        }
+        let none = Vec::<String>::new();
+        assert_eq!(
+            imports_of("javascript", "// const r = require('ioredis');", false),
+            none
+        );
+        assert_eq!(
+            imports_of("typescript", " * import { Client } from 'pg';", false),
+            none
+        );
+        assert_eq!(
+            imports_of("typescript", "/* import amqp from 'amqplib'; */", false),
+            none
+        );
+        assert_eq!(
+            imports_of("go", "\t// \"github.com/redis/go-redis/v9\"", true),
+            none
+        );
+    }
+
+    #[test]
     fn infrastructure_names_its_resource() {
         assert_eq!(
             classify_iac("Microsoft.ServiceBus/namespaces/topics@2022-10-01"),
