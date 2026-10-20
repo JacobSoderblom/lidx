@@ -318,18 +318,30 @@ pub(super) enum DispatchSeed {
     BasesCross(String),
 }
 
+/// The queried members as SQL: one member is the bound `:id`, so a
+/// traversal that asks once per node reuses one prepared plan instead of
+/// parsing these large statements again for every node (an equality on a
+/// bound value plans like the literal); several are a literal list.
+fn seed_list(ids: &[i64]) -> String {
+    if ids.len() == 1 {
+        ":id".to_string()
+    } else {
+        ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+    }
+}
+
 impl DispatchSeed {
-    /// `id, id, ..` list of the queried members.
+    /// `id, id, ..` list of the queried members (see [`seed_list`]).
     pub(super) fn impls(ids: &[i64]) -> Self {
-        Self::Impls(id_list(ids))
+        Self::Impls(seed_list(ids))
     }
 
     pub(super) fn bases(ids: &[i64]) -> Self {
-        Self::Bases(id_list(ids))
+        Self::Bases(seed_list(ids))
     }
 
     pub(super) fn bases_cross(ids: &[i64]) -> Self {
-        Self::BasesCross(id_list(ids))
+        Self::BasesCross(seed_list(ids))
     }
 
     /// Whether the query starts from the classes (and walks to members).
@@ -378,10 +390,6 @@ impl DispatchSeed {
             ),
         }
     }
-}
-
-fn id_list(ids: &[i64]) -> String {
-    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
 }
 
 /// `FROM` clause of the one dispatch query (issues #122, #185), shared by
@@ -548,7 +556,16 @@ impl Db {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        let list = seed_list(ids);
+        // `:id` when `list` names it (one member), else nothing to bind.
+        let bind = |stmt: &mut rusqlite::CachedStatement<'_>| -> rusqlite::Result<()> {
+            if ids.len() == 1
+                && let Some(i) = stmt.parameter_index(":id")?
+            {
+                stmt.raw_bind_parameter(i, ids[0])?;
+            }
+            Ok(())
+        };
         // One statement per side: an `OR` across `cm.id` / `im.id` would
         // defeat the rowid lookup and scan every symbol.
         let conn = self.read_conn()?;
@@ -560,10 +577,11 @@ impl Db {
         ] {
             let from = dispatch_pairs_from(graph_version, &seed);
             let sql = format!("SELECT DISTINCT im.id, cm.id {from} AND {side}.id IN ({list})");
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
-            for row in rows {
-                pairs.push(row?);
+            let mut stmt = conn.prepare_cached(&sql)?;
+            bind(&mut stmt)?;
+            let mut rows = stmt.raw_query();
+            while let Some(r) = rows.next()? {
+                pairs.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?));
             }
         }
         // Rust: an `impl Trait for Ty` method carries its own member-level
@@ -577,16 +595,18 @@ impl Db {
                    JOIN symbols a ON a.id = e.source_symbol_id
                    JOIN symbols b ON b.id = e.target_symbol_id
                    JOIN files fa ON fa.id = a.file_id
-                  WHERE e.kind = 'IMPLEMENTS' AND e.graph_version = ?1
+                  WHERE e.kind = 'IMPLEMENTS' AND e.graph_version = :gv
                     AND a.kind = 'method' AND b.kind = 'method' AND fa.language = 'rust'
                     AND {side} IN ({list})"
             );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([graph_version], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })?;
-            for row in rows {
-                pairs.push(row?);
+            let mut stmt = conn.prepare_cached(&sql)?;
+            if let Some(i) = stmt.parameter_index(":gv")? {
+                stmt.raw_bind_parameter(i, graph_version)?;
+            }
+            bind(&mut stmt)?;
+            let mut rows = stmt.raw_query();
+            while let Some(r) = rows.next()? {
+                pairs.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?));
             }
         }
         pairs.sort_unstable();

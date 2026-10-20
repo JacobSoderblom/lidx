@@ -3,6 +3,7 @@
 // so an unused one there is expected, not a real dead-code bug.
 #![allow(dead_code)]
 
+pub mod glance_fixtures;
 pub mod golden;
 
 use golden::EdgeKey;

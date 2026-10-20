@@ -29,15 +29,15 @@ const MAX_SYMS: usize = 12;
 const MAX_KEYS: usize = 400;
 const MAX_EVIDENCE: usize = 8;
 
-type SymRef = (String, String, i64);
+pub(super) type SymRef = (String, String, i64);
 /// A code target: uses, and a sample call site (file, line, snippet).
 type Target = (usize, String, i64, String);
 
 /// Keys (routes, topics, config keys) a unit uses, with the symbols that
 /// use each.
 #[derive(Default)]
-struct Usage {
-    keys: BTreeMap<String, (usize, Vec<SymRef>)>,
+pub(super) struct Usage {
+    pub(super) keys: BTreeMap<String, (usize, Vec<SymRef>)>,
 }
 
 impl Usage {
@@ -72,16 +72,28 @@ impl Usage {
 }
 
 #[derive(Default)]
-struct UnitUse {
-    http: Usage,
-    rpc: Usage,
-    bus: Usage,
-    provides: Usage,
+pub(super) struct UnitUse {
+    pub(super) http: Usage,
+    pub(super) rpc: Usage,
+    pub(super) bus: Usage,
+    pub(super) provides: Usage,
     declares: Usage,
-    config: Usage,
-    secrets: Usage,
-    topics: Usage,
-    calls: Usage,
+    pub(super) config: Usage,
+    pub(super) secrets: Usage,
+    pub(super) topics: Usage,
+    pub(super) calls: Usage,
+}
+
+/// A link of the app view as the glance page reads it.
+pub(super) struct LinkView {
+    pub(super) from: usize,
+    pub(super) to: usize,
+    pub(super) family: &'static str,
+    pub(super) keys: Vec<String>,
+    pub(super) evidence: Vec<(String, String, i64)>,
+    /// A code link both manifests declare (or a non-code link).
+    pub(super) declared: bool,
+    pub(super) kinds: BTreeMap<String, usize>,
 }
 
 /// A link between two units being built.
@@ -95,7 +107,7 @@ struct Link {
     evidence: Vec<(String, String, i64)>,
 }
 
-fn is_secret(key: &str) -> bool {
+pub(super) fn is_secret(key: &str) -> bool {
     let scheme = key.split("://").next().unwrap_or("");
     key.contains("://") && scheme.to_ascii_lowercase().contains("secret")
 }
@@ -130,7 +142,7 @@ pub(super) fn is_key_link(kind: &str) -> bool {
 }
 
 /// The part of a key people read: `secret://db-conn` -> `db-conn`.
-fn short_key(key: &str) -> &str {
+pub(super) fn short_key(key: &str) -> &str {
     key.split_once("://").map(|(_, r)| r).unwrap_or(key)
 }
 
@@ -158,12 +170,12 @@ fn label(family: &str, link: &Link) -> String {
             if calls * 2 >= n {
                 format!("calls ×{n}")
             } else {
-                format!("uses ×{n}")
+                format!("references ×{n}")
             }
         }
-        "depends" => "references".to_string(),
-        "http" => format!("HTTP ×{n}"),
-        "rpc" => format!("RPC ×{n}"),
+        "depends" => "depends on".to_string(),
+        "http" => format!("calls over HTTP ×{n}"),
+        "rpc" => format!("calls RPC ×{n}"),
         "declares" => format!("declares RPC ×{n}"),
         "bus" if n == 1 => one("publishes to topic"),
         "bus" => format!("publishes to {n} topics"),
@@ -443,6 +455,19 @@ pub(crate) fn apps_json(
         })
         .collect();
 
+    let link_views: Vec<LinkView> = links
+        .iter()
+        .map(|((a, b, family), link)| LinkView {
+            from: *a,
+            to: *b,
+            family,
+            keys: link.keys.iter().cloned().collect(),
+            evidence: link.evidence.clone(),
+            declared: *family != "code" || declared(*a, *b),
+            kinds: link.kinds.clone(),
+        })
+        .collect();
+
     // Package groups, and chips for the ones several units share.
     let packages = units::external_packages(&list);
     let groups: Vec<BTreeMap<String, BTreeSet<String>>> = packages
@@ -547,6 +572,22 @@ pub(crate) fn apps_json(
         if let Some(note) = note {
             out["zoom"]["note"] = json!(note);
         }
+        // The landing page: built only for the whole-repo app view.
+        out["glance"] = super::glance::glance_json(
+            ctx,
+            &super::glance::Input {
+                repo_root,
+                units: &list,
+                owners: &owners,
+                uses: &uses,
+                links: &link_views,
+                langs: &langs,
+                file_count: &file_count,
+                sym_count: &sym_count,
+                files,
+                rows,
+            },
+        )?;
     }
     Ok(out)
 }
@@ -592,6 +633,7 @@ fn unit_json(
         "app": u.kind.is_app(),
         "manifests": u.manifests,
         "dockerfiles": u.dockerfiles,
+        "description": u.description,
         "entries": u.entries,
         "files": files,
         "symbols": symbols,
