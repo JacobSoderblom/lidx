@@ -1103,6 +1103,40 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         }
     }
 
+    // How the landing page counts each unit, so Explore counts it the same
+    // way, and why a unit it leaves out is not on it.
+    let unit_class: Vec<&'static str> = (0..n)
+        .map(|u| {
+            if units[u].kind.hidden() {
+                return "hidden";
+            }
+            if Some(u) == main_unit || unit_node[u].is_none() {
+                return if is_app(u) {
+                    "app"
+                } else if is_lib(u) {
+                    "lib"
+                } else {
+                    "off"
+                };
+            }
+            let nd = &nodes[unit_node[u].unwrap_or(0)];
+            match nd.lane {
+                "infra" => "infra",
+                "data" | "ext" => "res",
+                "lib" => "lib",
+                _ if is_app(u) => "app",
+                _ => "lib",
+            }
+        })
+        .collect();
+    let left_out: Vec<Value> = (0..n)
+        .filter(|&u| unit_class[u] == "off")
+        .map(|u| {
+            let unindexed = unindexed_language(&scan_extensions(inp.repo_root, &units[u].root));
+            json!([u, left_out_reason(&inp.langs[u], unindexed)])
+        })
+        .collect();
+
     // The node of a file: its module in modules mode, else its unit's.
     let node_of_file = |path: &str| -> Option<usize> {
         let u = inp.owners.owner(path)?;
@@ -2223,10 +2257,117 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             "entries": entries.len().saturating_sub(entries_json_len(&entries)),
             "traced": traced,
         },
+        "unit_class": unit_class,
+        "left_out": left_out,
     });
     doc["tour"] = json!(tour(&doc));
     doc["questions"] = json!(questions(&doc));
     Ok(doc)
+}
+
+/// Languages lidx does not index, by file extension.
+const UNINDEXED_EXT: &[(&str, &str)] = &[
+    ("java", "Java"),
+    ("kt", "Kotlin"),
+    ("kts", "Kotlin"),
+    ("scala", "Scala"),
+    ("groovy", "Groovy"),
+    ("rb", "Ruby"),
+    ("php", "PHP"),
+    ("swift", "Swift"),
+    ("m", "Objective-C"),
+    ("mm", "Objective-C"),
+    ("c", "C"),
+    ("cc", "C++"),
+    ("cpp", "C++"),
+    ("cxx", "C++"),
+    ("hpp", "C++"),
+    ("dart", "Dart"),
+    ("ex", "Elixir"),
+    ("exs", "Elixir"),
+    ("erl", "Erlang"),
+    ("clj", "Clojure"),
+    ("hs", "Haskell"),
+    ("fs", "F#"),
+    ("vb", "Visual Basic"),
+    ("zig", "Zig"),
+    ("pl", "Perl"),
+    ("r", "R"),
+    ("jl", "Julia"),
+];
+
+/// Most entries a scan for unindexed source files looks at.
+const SCAN_LIMIT: usize = 4000;
+
+/// File extensions (lower case) under `dir` of the repository, counted:
+/// hidden folders and build or dependency output skipped, at most
+/// [`SCAN_LIMIT`] entries looked at.
+fn scan_extensions(repo_root: &Path, dir: &str) -> BTreeMap<String, usize> {
+    let mut out: BTreeMap<String, usize> = BTreeMap::new();
+    if dir.is_empty() {
+        return out;
+    }
+    let mut stack = vec![repo_root.join(dir)];
+    let mut seen = 0usize;
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            seen += 1;
+            if seen > SCAN_LIMIT {
+                return out;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                if !name.starts_with('.')
+                    && !matches!(
+                        name.as_str(),
+                        "node_modules" | "target" | "build" | "bin" | "obj" | "vendor" | "dist"
+                    )
+                {
+                    stack.push(entry.path());
+                }
+            } else if let Some((_, ext)) = name.rsplit_once('.') {
+                *out.entry(ext.to_ascii_lowercase()).or_default() += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The language most of a folder's unindexed source files are in.
+pub fn unindexed_language(exts: &BTreeMap<String, usize>) -> Option<&'static str> {
+    let mut by: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for (ext, n) in exts {
+        if let Some((_, lang)) = UNINDEXED_EXT.iter().find(|(e, _)| e == ext) {
+            *by.entry(lang).or_default() += n;
+        }
+    }
+    by.into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(l, _)| l)
+}
+
+/// Why the landing page leaves a unit out, in a few words: its code is in
+/// a language lidx does not index, or it holds no code at all.
+pub fn left_out_reason(langs: &BTreeMap<String, i64>, unindexed: Option<&str>) -> String {
+    if let Some(l) = unindexed {
+        return format!("{l}, not indexed");
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for l in langs.keys() {
+        let nm = lang_name(l);
+        if l != "external" && !names.contains(&nm) {
+            names.push(nm);
+        }
+    }
+    if names.is_empty() {
+        "no indexed files".to_string()
+    } else {
+        format!("only {} files", names.join(" and "))
+    }
 }
 
 /// The resource a resource node stands for.
@@ -5099,5 +5240,38 @@ mod tests {
             entry_label("CHANNEL_SUBSCRIBE", "topic://jobs", None),
             "on jobs"
         );
+    }
+
+    #[test]
+    fn a_unit_left_off_the_map_says_why() {
+        let ext = |l: &[(&str, usize)]| -> BTreeMap<String, usize> {
+            l.iter().map(|(e, n)| (e.to_string(), *n)).collect()
+        };
+        assert_eq!(
+            unindexed_language(&ext(&[("java", 9), ("proto", 1), ("gradle", 2)])),
+            Some("Java")
+        );
+        // Most files win; Kotlin's two extensions count together.
+        assert_eq!(
+            unindexed_language(&ext(&[("java", 2), ("kt", 2), ("kts", 1)])),
+            Some("Kotlin")
+        );
+        assert_eq!(unindexed_language(&ext(&[("md", 3), ("yaml", 1)])), None);
+        let langs = |l: &[&str]| -> BTreeMap<String, i64> {
+            l.iter().map(|x| (x.to_string(), 1)).collect()
+        };
+        assert_eq!(
+            left_out_reason(&langs(&["proto"]), Some("Java")),
+            "Java, not indexed"
+        );
+        assert_eq!(
+            left_out_reason(&langs(&["proto"]), None),
+            "only Protobuf files"
+        );
+        assert_eq!(
+            left_out_reason(&langs(&["markdown", "yaml"]), None),
+            "only Markdown and YAML files"
+        );
+        assert_eq!(left_out_reason(&langs(&[]), None), "no indexed files");
     }
 }

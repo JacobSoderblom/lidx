@@ -381,7 +381,16 @@ fn an_app_card_zooms_down_to_its_symbols_and_back() {
     let r = run(&p, "zoom-drill", "shared-utils");
     assert_eq!(names(&r["top"]["items"], "dir"), ["shared_utils/"], "{r}");
     assert_eq!(r["top"]["crumbs"], serde_json::json!(["shared-utils"]));
-    assert_eq!(r["top"]["hash"], "#zoom=shared-utils");
+    // Opening the card selects it: its panel is in the link.
+    assert_eq!(r["top"]["hash"], "#zoom=shared-utils&panel=shared-utils");
+    // The panel follows each level opened: the card, its folder, its file.
+    let starts = |level: &str, with: &str| {
+        let t = r[level]["panel"].as_str().unwrap();
+        assert!(t.starts_with(with), "{level} panel: {t}");
+    };
+    starts("top", "shared-utils");
+    starts("dir", "shared_utils/ folder");
+    starts("file", "fmt.py file");
     assert_eq!(r["dirOpened"], true);
     assert_eq!(names(&r["dir"]["items"], "file"), ["fmt.py"], "{r}");
     assert_eq!(names(&r["dir"]["items"], "frame"), ["shared_utils/"], "{r}");
@@ -1101,11 +1110,12 @@ fn stubs_keep_off_the_title_and_the_status_line() {
             assert!(py >= hy - 1e-6, "pushed down, below the header: {s}");
         }
     }
-    // The file's foot just above the status line: the labels stay clear of it.
+    // The file's foot at the view's foot: the labels stay in the view. The
+    // status line is a bar under the sheet (viewer.css), never over it.
     let r = run(
         &p,
         "zoom-stubs-ui",
-        "orders-api,orders_api/main.py,1.2,,830",
+        "orders-api,orders_api/main.py,1.2,,890",
     );
     let (k, cy) = (
         r["cam"]["k"].as_f64().unwrap(),
@@ -1122,8 +1132,8 @@ fn stubs_keep_off_the_title_and_the_status_line() {
         let l = &s["label"];
         assert!(l.is_array(), "labelled: {s}");
         assert!(
-            f(l, 3) * k + cy <= 900.0 - 36.0 + 0.5,
-            "label over the status line: {s} {r}"
+            f(l, 3) * k + cy <= 900.0 + 0.5,
+            "label out of the view: {s} {r}"
         );
     }
 }
@@ -3170,4 +3180,263 @@ fn field_strings(v: &Value) -> Vec<String> {
         .iter()
         .map(|x| x.as_str().unwrap().to_string())
         .collect()
+}
+
+/// Explore counts and bands units the way the overview does: the same apps
+/// and tools, a band for what the overview leaves out (each saying why),
+/// infrastructure folded into one card per tool until it is shown.
+#[test]
+fn explore_counts_and_bands_follow_the_overview() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let files = common::glance_fixtures::explore();
+    let (_tmp, p) = glance_page(&files, "lidx-viewer-exsheet-");
+    let r = run(&p, "explore-sheet", "Kubernetes manifests");
+    let meta = r["first"]["meta"].as_str().unwrap();
+    assert!(
+        meta.starts_with(
+            "Explore · 3 apps · Kubernetes manifests (2 folders) · +1 not on the overview: ads (Java, not indexed) · 1 test, docs or tooling folder hidden · "
+        ),
+        "{meta}"
+    );
+    let band = |sheet: &Value, name: &str| -> Option<String> {
+        sheet["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .map(|c| c["band"].as_str().unwrap().to_string())
+    };
+    let first = &r["first"]["sheet"];
+    assert_eq!(band(first, "ads").as_deref(), Some("off"), "{first}");
+    assert_eq!(
+        band(first, "Kubernetes manifests").as_deref(),
+        Some("infra")
+    );
+    assert_eq!(
+        band(first, "deploy/k8s"),
+        None,
+        "folded into its tool: {first}"
+    );
+    assert_eq!(band(first, "deploy/overlays"), None);
+    assert_eq!(band(first, "validator").as_deref(), Some("svc"));
+    // A folded tool's folders link as its card: its deployment of the
+    // validator starts at the tool, no line runs from a hidden folder.
+    let links = first["links"].as_array().unwrap();
+    assert!(
+        links
+            .iter()
+            .any(|l| l["from"] == "g0" && l["family"] == "deploys"),
+        "{first}"
+    );
+    let k8s = first["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["key"] != "u4");
+    assert!(k8s, "{first}");
+    assert!(
+        links.iter().all(|l| first["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["key"] == l["from"])),
+        "every link starts at a drawn card: {first}"
+    );
+    assert_eq!(r["first"]["cam"]["k"], 1.0, "opens at 1:1: {r}");
+    let open = &r["open"]["sheet"];
+    assert_eq!(band(open, "Kubernetes manifests").as_deref(), Some("infra"));
+    assert_eq!(band(open, "deploy/k8s").as_deref(), Some("infra"), "{open}");
+    assert_eq!(band(open, "deploy/overlays").as_deref(), Some("infra"));
+    let panel = r["open"]["panel"].as_str().unwrap();
+    assert!(
+        panel.starts_with("Kubernetes manifests infrastructure"),
+        "{panel}"
+    );
+    assert!(
+        panel.contains("Folders · 2") && panel.contains("deploy/overlays"),
+        "{panel}"
+    );
+    assert_eq!(band(&r["folded"], "deploy/k8s"), None);
+    // Going to a folder of a folded tool shows the tool's folders.
+    let name = r["revealedName"].as_str().unwrap();
+    assert_eq!(band(&r["revealed"], name).as_deref(), Some("infra"), "{r}");
+}
+
+/// With nothing chosen, Explore opens at 1:1 on the top left of a sheet too
+/// big for the view (band titles in view); Fit still frames all of it.
+#[test]
+fn explore_opens_at_a_readable_scale() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-exhome-");
+    // Wide enough for the rows, too short for the bands.
+    let r = run(&p, "explore-home", "800,300");
+    let full = r["sheet"]["w"].as_f64().unwrap() + 168.0;
+    assert!(r["sheet"]["h"].as_f64().unwrap() > 260.0, "{r}");
+    assert_eq!(r["home"]["k"], 1.0, "{r}");
+    let x = ((800.0 - full) / 2.0).max(16.0) + 168.0;
+    assert_eq!(r["home"]["x"].as_f64().unwrap(), x.round(), "{r}");
+    assert_eq!(r["home"]["y"], 44.0, "room above for arcs: {r}");
+    // A phone: the top left, close under the bar.
+    let r = run(&p, "explore-home", "500,300");
+    assert_eq!(r["home"]["k"], 1.0, "{r}");
+    assert_eq!(r["home"]["x"], 16.0 + 168.0, "{r}");
+    assert_eq!(r["home"]["y"], 12.0, "{r}");
+    assert!(
+        r["fit"]["k"].as_f64().unwrap() < 1.0,
+        "Fit frames it all: {r}"
+    );
+    // A card double-clicked on the overview opens at 1:1 too.
+    let r = run(&p, "glance-dblclick", "validator");
+    assert_eq!(r["cam"]["k"], 1.0, "{r}");
+    assert!(r["panel"].as_str().unwrap().starts_with("validator"), "{r}");
+}
+
+/// One click on a folder or file opens it and the panel follows it; the
+/// second click of a double-click and the double-click itself do nothing
+/// more; a click on a symbol selects it; Escape goes back up a level.
+#[test]
+fn one_click_opens_a_box_and_the_panel_follows() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-zclick-", ZOOM_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-click", "shared-utils");
+    let crumbs = |v: &Value| serde_json::to_string(v).unwrap();
+    let starts = |v: &Value, with: &str| v.as_str().unwrap().starts_with(with);
+    assert_eq!(crumbs(&r["top"]["crumbs"]), r#"["shared-utils"]"#, "{r}");
+    assert_eq!(crumbs(&r["second"]), r#"["shared-utils"]"#, "{r}");
+    assert_eq!(crumbs(&r["dbl"]), r#"["shared-utils"]"#, "{r}");
+    assert_eq!(
+        crumbs(&r["opened"]["crumbs"]),
+        r#"["shared-utils","shared_utils/"]"#,
+        "{r}"
+    );
+    assert!(starts(&r["opened"]["panel"], "shared_utils/ folder"), "{r}");
+    assert_eq!(r["opened"]["sel"], Value::Null, "{r}");
+    assert_eq!(
+        crumbs(&r["fileOpened"]["crumbs"]),
+        r#"["shared-utils","shared_utils/","fmt.py"]"#,
+        "{r}"
+    );
+    assert!(starts(&r["fileOpened"]["panel"], "fmt.py file"), "{r}");
+    assert_eq!(r["symSel"]["sel"]["type"], "sym", "{r}");
+    let sym = r["symSel"]["sel"]["name"].as_str().unwrap();
+    assert!(starts(&r["symSel"]["panel"], sym), "{r}");
+    assert_eq!(
+        crumbs(&r["esc"]["crumbs"]),
+        r#"["shared-utils","shared_utils/"]"#,
+        "{r}"
+    );
+    assert!(starts(&r["esc"]["panel"], "shared_utils/ folder"), "{r}");
+}
+
+/// Stubs are drawn neutral; only the one clicked is marked selected.
+#[test]
+fn only_the_clicked_stub_is_marked() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo("lidx-viewer-zstubsel-", ZOOM_FILES);
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "zoom-stub-sel", "shared-utils");
+    let before = r["before"].as_str().unwrap();
+    let after = r["after"].as_str().unwrap();
+    assert!(before.contains("class=\"zstub conn"), "{before}");
+    assert!(!before.contains(" sel\""), "{before}");
+    assert_eq!(after.matches(" on sel\"").count(), 1, "{after}");
+}
+
+/// A sheet label with no free spot waits for a focus: those shown never
+/// overlap.
+#[test]
+fn crowded_sheet_labels_wait_for_a_focus() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-crowd-");
+    let one = run(&p, "labels-crowd", "1");
+    assert_eq!(one[0]["crowded"], false, "{one}");
+    let r = run(&p, "labels-crowd", "30");
+    let all = r.as_array().unwrap();
+    let shown: Vec<&Value> = all.iter().filter(|l| l["crowded"] == false).collect();
+    assert!(shown.len() > 1 && shown.len() < all.len(), "{r}");
+    let b = |v: &Value, i: usize| v["box"][i].as_f64().unwrap();
+    for (i, x) in shown.iter().enumerate() {
+        for y in &shown[i + 1..] {
+            let apart = b(x, 2) <= b(y, 0)
+                || b(y, 2) <= b(x, 0)
+                || b(x, 3) <= b(y, 1)
+                || b(y, 3) <= b(x, 1);
+            assert!(apart, "{x} and {y} overlap");
+        }
+    }
+}
+
+/// Explore's stylesheet keeps the rules the critique found broken: the
+/// status line under the sheet, no map text below 11px, stubs and lines
+/// that touch the selection in ink, orange only for the one picked.
+#[test]
+fn explore_styles_keep_the_design_rules() {
+    let css = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/graph_html/viewer.css"),
+    )
+    .unwrap();
+    let rule = |sel: &str| -> String {
+        let at = css
+            .find(&format!("{sel} {{"))
+            .unwrap_or_else(|| panic!("no rule {sel}"));
+        css[at..at + css[at..].find('}').unwrap()].to_string()
+    };
+    assert!(rule(".stage.app-mode .apps").contains("bottom: 28px"));
+    assert!(rule(".stage.app-mode .status").contains("height: 28px"));
+    for sel in [".card .k", ".card dt", ".zi .zk", ".z-others .tw"] {
+        assert!(
+            rule(sel).contains("font-size: 11px"),
+            "{sel}: {}",
+            rule(sel)
+        );
+    }
+    assert!(rule(".z-row .g, .vt-row .g").contains("11px var(--mono)"));
+    for sel in [
+        ".zedges .zstub .pbg",
+        ".zedges .zstub.on .pbg",
+        ".zedges .zl.on .ln",
+        ".zi.zhl",
+    ] {
+        assert!(
+            !rule(sel).contains("--focus"),
+            "{sel} is orange: {}",
+            rule(sel)
+        );
+    }
+    assert!(rule(".zedges .zstub.sel .pbg").contains("--focus"));
+    assert!(rule(".zedges .zl.sel .ln").contains("--focus"));
+}
+
+/// A double-click on an overview card as a browser sends it: the first
+/// click selects (and re-draws the cards), the second click, detail 2,
+/// opens that card in Explore at 1:1.
+#[test]
+fn a_second_click_on_a_card_opens_it_in_explore() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gclick2-");
+    let r = run(&p, "glance-click2", "validator");
+    assert_eq!(r["first"]["level"], "glance", "{r}");
+    assert_eq!(r["first"]["sel"], "validator", "{r}");
+    assert_eq!(r["level"], "app", "{r}");
+    assert_eq!(r["open"], serde_json::json!(["validator"]), "{r}");
+    assert_eq!(r["k"], 1.0, "{r}");
 }
