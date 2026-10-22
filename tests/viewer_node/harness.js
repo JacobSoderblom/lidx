@@ -92,7 +92,8 @@ const sandbox = {
   cancelAnimationFrame: (id) => { cancelled.add(id); },
   getComputedStyle: () => ({ getPropertyValue: () => '#808080' }),
   // REDUCE=1 in the environment: reduced motion, camera moves at once.
-  matchMedia: (q) => ({ matches: !!process.env.REDUCE && String(q).indexOf('reduced-motion') >= 0, addEventListener() {} }),
+  // NARROW=1: a phone-width window (the max-width queries match).
+  matchMedia: (q) => ({ matches: (!!process.env.REDUCE && String(q).indexOf('reduced-motion') >= 0) || (!!process.env.NARROW && String(q).indexOf('max-width') >= 0), addEventListener() {} }),
   addEventListener: (type, fn) => { (windowListeners[type] = windowListeners[type] || []).push(fn); },
   devicePixelRatio: 1,
   // HASH=... starts the page at that URL fragment (the zoom state).
@@ -380,6 +381,9 @@ if (scenario === 'focus') {
   const n = +arg, conns = [];
   for (let i = 0; i < n; i++) conns.push({ skip: false, fam: 'http', weight: 1, label: 'calls over HTTP x' + i, parts: [], ax: 100, ay: 0, bx: 100, by: 200, c1y: 60, c2y: 140 });
   out = g.placeLabels(conns, {});
+} else if (scenario === 'labels-text') {
+  // One Explore link labelled `arg`: the text its label shows.
+  out = g.placeLabels([{ skip: false, fam: 'http', weight: 1, label: arg, parts: [], ax: 100, ay: 0, bx: 100, by: 200, c1y: 60, c2y: 140 }], {})[0];
 } else if (scenario === 'glance-landing') {
   // The landing page as it opens: the map, its links, the side column.
   const gl = g.glance;
@@ -502,7 +506,7 @@ if (scenario === 'focus') {
   // A card, then a line, then a question: what stays lit and what the side says.
   const gl = g.glance;
   gl.select(arg); flush(5);
-  const card = { state: gl.state(), side: gl.side() };
+  const card = { state: gl.state(), side: gl.side(), sideHtml: gl.html().side };
   gl.selectLink(0); flush(5);
   const link = { state: gl.state(), side: gl.side() };
   gl.question(0); flush(5);
@@ -558,7 +562,7 @@ if (scenario === 'focus') {
   // Lines with the pointer on each named card in turn (`arg`: names joined
   // by commas, an empty name for off every card), then with one selected.
   const gl = g.glance, steps = [];
-  const look = () => ({ links: gl.links().map((l) => l.from + '>' + l.to), cards: gl.cards(), curves: gl.curves() });
+  const look = () => ({ links: gl.links().map((l) => l.from + '>' + l.to), labelled: gl.links().filter((l) => l.shown).map((l) => l.from + '>' + l.to), cards: gl.cards(), curves: gl.curves(), lanes: gl.lanes(), html: gl.html().cards });
   steps.push(look());
   arg.split(',').forEach((name) => { gl.hover(name === '' ? null : name); flush(2); steps.push(look()); });
   out = { steps, html: gl.html().cards };
@@ -569,6 +573,31 @@ if (scenario === 'focus') {
   const gl = g.glance;
   gl.relayout(); flush(5);
   out = { cam: gl.camera(), cards: gl.cards(), lanes: gl.lanes(), links: gl.links(), curves: gl.curves(), html: gl.html().cards };
+} else if (scenario === 'glance-pure') {
+  // The landing page's pure helpers on `arg` (JSON {short, cut, below}).
+  const a = JSON.parse(arg), gl = g.glance;
+  out = {
+    short: (a.short || []).map((x) => gl.short(x)),
+    cut: (a.cut || []).map((x) => gl.stripCut(x[0], x[1])),
+    below: (a.below || []).map((x) => gl.below(x[0], x[1], x[2], x[3])),
+  };
+} else if (scenario === 'glance-geometry') {
+  // Routes, labels and fold plans on geometry the test lays out (`arg`:
+  // JSON {orth: [boxes, size, heads, list], labels: [boxes, size, lines], fold: [[sizes]]}).
+  const a = JSON.parse(arg), gl = g.glance;
+  out = {
+    orth: a.orth ? gl.orth(a.orth[0], a.orth[1], a.orth[2], a.orth[3]) : null,
+    labels: a.labels ? gl.labels(a.labels[0], a.labels[1], a.labels[2]) : null,
+    fold: (a.fold || []).map((x) => gl.foldPlan(x)),
+  };
+} else if (scenario === 'glance-narrow') {
+  // The landing page in a phone-width window (NARROW=1), its map area `arg`
+  // ("width,height"): the map takes its drawing's height.
+  const [w, h] = arg.split(',').map(Number);
+  element('g-map').rect = { left: 0, top: 0, right: w, bottom: h, width: w, height: h };
+  const gl = g.glance;
+  gl.relayout(); flush(5);
+  out = { cam: gl.camera(), mapHeight: gl.mapHeight(), cards: gl.cards() };
 } else if (scenario === 'glance-area-hover') {
   // The landing page on a map area of "width,height", at rest and then
   // with the pointer on each card named after it ("w,h,name,name").

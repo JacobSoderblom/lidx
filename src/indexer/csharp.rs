@@ -3500,16 +3500,16 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     let client = http_client_label(target.receiver.as_deref(), &target.full)?;
     let args = call_arguments(node);
     let (method, raw_path) = if target.name == "SendAsync" || target.name == "Send" {
-        http_request_message_parts(args.first().copied()?, source)?
+        http_request_message_parts(args.first().copied()?, ctx, source)?
     } else if let Some(method) = normalize_http_method_name(&target.name) {
         let raw_path = args
             .first()
-            .and_then(|arg| extract_string_literal(*arg, source))?;
+            .and_then(|arg| http_path_arg(*arg, ctx, source))?;
         (method, raw_path)
     } else {
         return None;
     };
-    let normalized = http::normalize_path(&raw_path)?;
+    let normalized = http::normalize_path(&relative_to_base(&raw_path))?;
     let detail = http::build_call_detail(&method, &normalized, &raw_path, client);
     Some(EdgeInput {
         kind: http::HTTP_CALL_KIND.to_string(),
@@ -4365,7 +4365,11 @@ fn grpc_service_from_client_binding(
     ctx.grpc_clients.get(last).cloned()
 }
 
-fn http_request_message_parts(node: Node<'_>, source: &str) -> Option<(String, String)> {
+fn http_request_message_parts(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+) -> Option<(String, String)> {
     if node.kind() != "object_creation_expression" {
         return None;
     }
@@ -4383,8 +4387,115 @@ fn http_request_message_parts(node: Node<'_>, source: &str) -> Option<(String, S
         .and_then(|arg| extract_method_from_expr(*arg, source))?;
     let raw_path = args
         .get(1)
-        .and_then(|arg| extract_string_literal(*arg, source))?;
+        .and_then(|arg| http_path_arg(*arg, ctx, source))?;
     Some((method, raw_path))
+}
+
+/// The path an HTTP call's URL argument statically denotes: a literal; a
+/// same-file constant or readonly field, or a local bound once (see
+/// `string_consts`); or an interpolated string whose holes are such
+/// values (`$"{remoteServiceBaseUrl}items/{id}"` with `remoteServiceBaseUrl
+/// = "api/catalog/"` is `api/catalog/items/{hole}`). A hole with no static
+/// value is kept as `{hole}` only where it fills a whole path segment or
+/// sits in the query; anywhere else the path is unknown and this is None.
+fn http_path_arg(arg: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
+    if let Some(raw) = extract_string_literal(arg, source) {
+        return Some(raw);
+    }
+    let hole = |h: &str| -> Option<String> {
+        let l = csharp_local_binding(arg, h, source);
+        ctx.string_consts.resolve_arg(h, &l)
+    };
+    let text = node_text(arg, source);
+    if let Some(v) = hole(&text) {
+        return Some(v);
+    }
+    // A local bound once to an interpolated string, or one written here.
+    match csharp_local_binding(arg, &text, source) {
+        LocalBinding::Value(init) => interpolated_path(&init, &hole),
+        _ => interpolated_path(&text, &hole),
+    }
+}
+
+/// An interpolated string literal (`$"..."`, `$@"..."`) with each hole
+/// filled by `hole` (its expression, format and alignment dropped), under
+/// the rules of `http_path_arg`. None for anything else.
+fn interpolated_path(text: &str, hole: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let t = text.trim();
+    let body = ["$@\"", "@$\"", "$\""]
+        .iter()
+        .find_map(|p| t.strip_prefix(p))?
+        .strip_suffix('"')?;
+    let mut out = String::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                out.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                out.push('}');
+            }
+            '{' => {
+                let mut depth = 1;
+                let mut expr = String::new();
+                for d in chars.by_ref() {
+                    match d {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    expr.push(d);
+                }
+                if depth != 0 {
+                    return None;
+                }
+                let expr = expr
+                    .split([':', ','])
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if let Some(v) = hole(&expr) {
+                    out.push_str(&v);
+                    continue;
+                }
+                // Unknown: a whole segment or in the query only.
+                let in_query = out.contains('?');
+                let starts_segment = out.ends_with('/');
+                let ends_segment = matches!(chars.peek(), None | Some('/') | Some('?'));
+                if !(in_query || (starts_segment && ends_segment)) {
+                    return None;
+                }
+                out.push_str("{hole}");
+            }
+            _ => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// A path relative to an `HttpClient`'s base address (`api/catalog/items`)
+/// as the absolute path it requests (`/api/catalog/items`). Only a path of
+/// two or more segments that starts with a letter: a bare word stays as it
+/// is (and is no route).
+fn relative_to_base(raw: &str) -> String {
+    let t = raw.trim();
+    let path = t.split(['?', '#']).next().unwrap_or("");
+    if t.starts_with(|c: char| c.is_ascii_alphabetic())
+        && !t.contains("://")
+        && path.trim_end_matches('/').contains('/')
+    {
+        return format!("/{t}");
+    }
+    t.to_string()
 }
 
 fn call_arguments(node: Node<'_>) -> Vec<Node<'_>> {
@@ -4490,6 +4601,8 @@ fn handler_name_from_expr(node: Node<'_>, ctx: &Context, source: &str) -> Option
 }
 
 fn normalize_http_method_name(name: &str) -> Option<String> {
+    // `GetFromJsonAsync<CatalogItem>` names the method `GetFromJsonAsync`.
+    let name = name.split('<').next().unwrap_or(name).trim();
     if let Some(method) = http::normalize_method(name) {
         return Some(method);
     }
@@ -7325,6 +7438,106 @@ client.GetAsync("/api/users/123");
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/api/users/{}"))
         );
+    }
+
+    /// A typed HttpClient's calls: the path through a readonly field, a
+    /// const, a local bound once to an interpolated string, and a generic
+    /// method name; relative to the base address (`api/...` is `/api/...`).
+    /// A hole that is not a whole segment, or a path built by a call, is no
+    /// call at all.
+    #[test]
+    fn httpclient_paths_resolve_through_fields_locals_and_interpolation() {
+        let source = r#"
+public class CatalogService(HttpClient httpClient)
+{
+    private readonly string remoteServiceBaseUrl = "api/catalog/";
+    private const string Orders = "/api/Orders/";
+
+    public Task<Item?> GetItem(int id)
+    {
+        var uri = $"{remoteServiceBaseUrl}items/{id}?api-version=2.0";
+        return httpClient.GetFromJsonAsync<Item>(uri);
+    }
+
+    public Task<Item[]> GetOrders()
+    {
+        return httpClient.GetFromJsonAsync<Item[]>(Orders);
+    }
+
+    public Task<Item> GetBrands()
+    {
+        return httpClient.GetFromJsonAsync<Item>($"{remoteServiceBaseUrl}catalogBrands");
+    }
+
+    public Task<Item> Glued(string x)
+    {
+        return httpClient.GetAsync($"{remoteServiceBaseUrl}items{x}");
+    }
+
+    public Task<Item> Built(int p)
+    {
+        var uri = Build(remoteServiceBaseUrl, p);
+        return httpClient.GetAsync(uri);
+    }
+
+    public Task<Item> Word()
+    {
+        return httpClient.GetAsync("health");
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let mut calls: Vec<(String, String)> = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == http::HTTP_CALL_KIND)
+            .map(|edge| {
+                (
+                    edge.source_qualname.clone().unwrap_or_default(),
+                    edge.target_qualname.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        calls.sort();
+        assert_eq!(
+            calls,
+            vec![
+                (
+                    "module.CatalogService.GetBrands".to_string(),
+                    "/api/catalog/catalogbrands".to_string()
+                ),
+                (
+                    "module.CatalogService.GetItem".to_string(),
+                    "/api/catalog/items/{}".to_string()
+                ),
+                (
+                    "module.CatalogService.GetOrders".to_string(),
+                    "/api/orders".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_paths_keep_only_whole_segment_and_query_holes() {
+        let known = |h: &str| (h == "base").then(|| "api/x/".to_string());
+        assert_eq!(
+            interpolated_path("$\"{base}items/{id}?v={v}\"", &known).as_deref(),
+            Some("api/x/items/{hole}?v={hole}")
+        );
+        assert_eq!(
+            interpolated_path("$\"{base}{{lit}}/{id:D2}\"", &known).as_deref(),
+            Some("api/x/{lit}/{hole}")
+        );
+        assert_eq!(interpolated_path("$\"{base}items{id}\"", &known), None);
+        assert_eq!(interpolated_path("$\"{other}/items\"", &known), None);
+        assert_eq!(interpolated_path("\"plain\"", &known), None);
+        assert_eq!(relative_to_base("api/catalog/items"), "/api/catalog/items");
+        assert_eq!(relative_to_base("health"), "health");
+        assert_eq!(relative_to_base("health/?x=1"), "health/?x=1");
+        assert_eq!(relative_to_base("https://h/api/x"), "https://h/api/x");
+        assert_eq!(relative_to_base("/api/x"), "/api/x");
     }
 
     #[test]
