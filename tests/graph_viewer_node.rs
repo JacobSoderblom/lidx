@@ -2414,7 +2414,11 @@ fn shared_and_hub_resources_are_tags_whose_lines_wait_for_a_focus() {
         let start = html
             .find(&format!("<h3>{name}</h3>"))
             .unwrap_or_else(|| panic!("{name}: {html}"));
-        let card = &html[start..start + html[start..].find("</article>").unwrap()];
+        let card = &html[start
+            ..start
+                + html[start..]
+                    .find("<div class=\"g-card")
+                    .unwrap_or(html.len() - start)];
         let mut out = Vec::new();
         let mut rest = card;
         while let Some(i) = rest.find("<span class=\"g-badge ") {
@@ -2818,7 +2822,11 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
     // how many more), named in full in their title; their lines on hover.
     let html = rest["html"].as_str().unwrap();
     let start = html.find("<h3>gateway</h3>").unwrap();
-    let gw = &html[start..start + html[start..].find("</article>").unwrap()];
+    let gw = &html[start
+        ..start
+            + html[start..]
+                .find("<div class=\"g-card")
+                .unwrap_or(html.len() - start)];
     let tags = gw.matches("<span class=\"g-badge g-r-app\"").count();
     let pat = "<span class=\"g-badge-more\">+";
     let more = gw
@@ -2907,4 +2915,259 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
             }
         }
     }
+}
+
+/// Reading order of the landing cards: lane by lane (top to bottom, then
+/// left to right), row by row, left to right.
+fn reading_order(cards: &Value) -> Vec<String> {
+    let list = cards.as_array().unwrap();
+    let f = |c: &Value, k: &str| c[k].as_f64().unwrap();
+    let mut lane_at: Vec<(String, f64, f64)> = Vec::new();
+    for c in list {
+        let lane = c["lane"].as_str().unwrap().to_string();
+        match lane_at.iter_mut().find(|l| l.0 == lane) {
+            Some(l) => {
+                if (f(c, "y"), f(c, "x")) < (l.1, l.2) {
+                    l.1 = f(c, "y");
+                    l.2 = f(c, "x");
+                }
+            }
+            None => lane_at.push((lane, f(c, "y"), f(c, "x"))),
+        }
+    }
+    lane_at.sort_by(|a, b| (a.1, a.2).partial_cmp(&(b.1, b.2)).unwrap());
+    let rank = |c: &Value| {
+        lane_at
+            .iter()
+            .position(|l| l.0 == c["lane"].as_str().unwrap())
+            .unwrap()
+    };
+    let mut sorted: Vec<&Value> = list.iter().collect();
+    sorted.sort_by(|a, b| {
+        rank(a).cmp(&rank(b)).then_with(|| {
+            if (f(a, "y") - f(b, "y")).abs() > 8.0 {
+                f(a, "y").partial_cmp(&f(b, "y")).unwrap()
+            } else {
+                f(a, "x").partial_cmp(&f(b, "x")).unwrap()
+            }
+        })
+    });
+    sorted
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A landing card is one button (selected = pressed), the Tab order is the
+/// order the eye reads the map, every action says something meaningful in
+/// the live region, and the legend names exactly the line styles and
+/// resource kinds this map draws.
+#[test]
+fn the_landing_cards_are_buttons_in_reading_order_and_the_legend_keys_the_map() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-ga11y-");
+    let r = run(&p, "glance-a11y", "validator");
+    let html = r["order"].as_str().unwrap();
+    assert!(
+        !html.contains("role=\"listitem\"") && !html.contains("<article"),
+        "{html}"
+    );
+    let cards = r["cards"].as_array().unwrap().len();
+    assert!(cards >= 4, "{r}");
+    assert_eq!(
+        html.matches("role=\"button\" aria-pressed=\"false\"")
+            .count(),
+        cards,
+        "{html}"
+    );
+    assert_eq!(html.matches("tabindex=\"0\"").count(), cards, "{html}");
+    // Tab order = reading order.
+    let in_dom: Vec<String> = html
+        .split("<h3>")
+        .skip(1)
+        .map(|t| t[..t.find("</h3>").unwrap()].to_string())
+        .collect();
+    assert_eq!(in_dom, reading_order(&r["cards"]), "{r}");
+    // Selecting presses the card, and says what it is.
+    let sel = r["card"]["html"].as_str().unwrap();
+    assert_eq!(sel.matches("aria-pressed=\"true\"").count(), 1, "{sel}");
+    assert!(
+        r["card"]["live"]
+            .as_str()
+            .unwrap()
+            .starts_with("validator: Python worker"),
+        "{}",
+        r["card"]["live"]
+    );
+    let line = r["link"]["live"].as_str().unwrap();
+    assert!(
+        line.starts_with("Line from ")
+            && line.contains(" to ")
+            && line.contains(": ")
+            && (line.ends_with(" call") || line.ends_with(" calls")),
+        "{line}"
+    );
+    assert_ne!(line, "depth 1");
+    assert!(
+        r["question"]["live"]
+            .as_str()
+            .unwrap()
+            .starts_with("Question: "),
+        "{r}"
+    );
+    // The legend: closed first, then a flat key of this map's own styles.
+    assert_eq!(r["closed"]["hidden"], true);
+    assert_eq!(r["closed"]["key"], "");
+    let head = r["closed"]["head"].as_str().unwrap();
+    assert!(
+        head.contains("data-gkey=\"1\" aria-expanded=\"false\" aria-controls=\"g-key\""),
+        "{head}"
+    );
+    assert_eq!(r["open"]["hidden"], false);
+    assert_eq!(r["open"]["state"]["key"], true);
+    assert!(
+        r["open"]["head"]
+            .as_str()
+            .unwrap()
+            .contains("aria-expanded=\"true\"")
+    );
+    let key = r["open"]["key"].as_str().unwrap();
+    // Only the styles this map draws, each with its own dash class and a word.
+    for (class, word) in [
+        ("f-http", "HTTP request"),
+        ("f-bus", "message bus"),
+        ("f-config", "reads config"),
+    ] {
+        assert!(
+            key.contains(&format!("<g class=\"g-ln {class}\" style=\"--w:2\"><path class=\"ln\" d=\"M1 5H37\"/></g></svg>{word}</li>")),
+            "{class}: {key}"
+        );
+    }
+    for absent in [
+        "RPC call",
+        "calls code",
+        "reads secrets",
+        "reads or writes data",
+        "outside system",
+    ] {
+        assert!(!key.contains(absent), "{absent}: {key}");
+    }
+    assert!(
+        key.contains(
+            "<span class=\"g-sw-res g-r-bus\" aria-hidden=\"true\"></span>message bus</li>"
+        ),
+        "{key}"
+    );
+    assert_eq!(key.matches("g-sw-res").count(), 1, "{key}");
+    assert!(key.contains("<span class=\"g-sw-frame\""), "{key}");
+    assert_eq!(r["shut"]["hidden"], true);
+    assert_eq!(r["shut"]["key"], "");
+}
+
+/// On the Explore sheet a closed card is one button (no button nested in
+/// it), an open card is a group of its own controls, and the Tab order is
+/// the sheet's reading order, not the order the units were found in.
+#[test]
+fn explore_cards_are_buttons_and_tab_in_sheet_order() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, root, db) = common::index_repo(
+        "lidx-viewer-aa11y-",
+        &[
+            (
+                "web/Web.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n  <ItemGroup>\n    <ProjectReference Include=\"..\\core\\Core.csproj\" />\n  </ItemGroup>\n</Project>\n",
+            ),
+            (
+                "web/Program.cs",
+                "using Core;\n\nnamespace Web\n{\n    public class Api\n    {\n        public int Get() { return new Repo().Load(); }\n    }\n}\n",
+            ),
+            ("web/Dockerfile", "FROM scratch\n"),
+            (
+                "core/Core.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+            ),
+            (
+                "core/Repo.cs",
+                "namespace Core\n{\n    public class Repo\n    {\n        public int Load() { return 1; }\n    }\n}\n",
+            ),
+            (
+                "ui/package.json",
+                "{ \"name\": \"ui\", \"scripts\": { \"dev\": \"vite\" }, \"dependencies\": { \"react\": \"18.0.0\" } }\n",
+            ),
+            (
+                "ui/src/app.ts",
+                "export function boot() {\n  return 1;\n}\n",
+            ),
+        ],
+    );
+    let p = page(&root, &db, &[]);
+    let r = run(&p, "apps-a11y", "Web");
+    let closed = r["closed"].as_str().unwrap();
+    let n = r["apps"]["cards"].as_array().unwrap().len();
+    assert!(n >= 3, "{r}");
+    assert!(
+        !closed.contains("<article") && !closed.contains("role=\"listitem\""),
+        "{closed}"
+    );
+    assert_eq!(
+        closed
+            .matches("role=\"button\" aria-expanded=\"false\" aria-pressed=\"false\"")
+            .count(),
+        n,
+        "{closed}"
+    );
+    assert!(
+        !closed.contains("<button"),
+        "no button nested in a button: {closed}"
+    );
+    if closed.contains("zexp") {
+        assert!(
+            closed.contains("<span class=\"zexp\"") && closed.contains("aria-hidden=\"true\""),
+            "{closed}"
+        );
+    }
+    // Reading order: row by row (top to bottom), left to right.
+    let mut cards: Vec<(String, f64, f64)> = r["apps"]["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["name"].as_str().unwrap().to_string(),
+                c["y"].as_f64().unwrap(),
+                c["x"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    cards.sort_by(|a, b| {
+        if (a.1 - b.1).abs() > 8.0 {
+            a.1.partial_cmp(&b.1).unwrap()
+        } else {
+            a.2.partial_cmp(&b.2).unwrap()
+        }
+    });
+    let expect: Vec<String> = cards.into_iter().map(|c| c.0).collect();
+    assert_eq!(field_strings(&r["apps"]["tabOrder"]), expect, "{r}");
+    // Open, the card holds buttons of its own: a group, not a button.
+    let open = r["open"].as_str().unwrap();
+    assert!(open.contains("role=\"group\""), "{open}");
+    assert_eq!(
+        open.matches("role=\"button\"").count(),
+        n - 1,
+        "the open card is no longer a button: {open}"
+    );
+}
+
+fn field_strings(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect()
 }

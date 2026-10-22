@@ -377,6 +377,31 @@ if (scenario === 'focus') {
   const q = { state: gl.state(), side: gl.side() };
   gl.key('Escape'); flush(5);
   out = { card, link, q, cleared: gl.state() };
+} else if (scenario === 'glance-a11y') {
+  // What a screen reader and the keyboard meet: the cards' roles and order,
+  // what the live region says after each action, the legend.
+  const gl = g.glance;
+  const live = () => element('live').textContent;
+  const html0 = gl.html();
+  gl.select(arg); flush(5);
+  const card = { live: live(), html: gl.html().cards, state: gl.state() };
+  gl.selectLink(0); flush(5);
+  const link = { live: live(), state: gl.state() };
+  gl.question(0); flush(5);
+  const question = { live: live() };
+  gl.key('Escape'); flush(5);
+  const closed = { key: gl.html().key, hidden: gl.html().keyHidden, head: gl.html().head, state: gl.state() };
+  gl.toggleKey(); flush(5);
+  const open = { key: gl.html().key, hidden: gl.html().keyHidden, head: gl.html().head, state: gl.state() };
+  gl.toggleKey(); flush(5);
+  const shut = { key: gl.html().key, hidden: gl.html().keyHidden, state: gl.state() };
+  out = { cards: gl.cards(), lanes: gl.lanes(), order: html0.cards, card, link, question, closed, open, shut };
+} else if (scenario === 'apps-a11y') {
+  // The sheet's cards as the accessibility tree sees them, closed and open.
+  const closed = element('apps-cards').innerHTML;
+  const apps = g.apps();
+  g.openUnit(arg); flush(40);
+  out = { closed, apps, open: element('apps-cards').innerHTML, openApps: g.apps() };
 } else if (scenario === 'glance-curves') {
   // The landing page's curves and scale, then those of each flow.
   const gl = g.glance, flows = [];
