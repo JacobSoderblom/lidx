@@ -582,7 +582,7 @@ pub(crate) fn apps_json(
         "links": rows.is_some(),
     });
     if let (Some(files), Some(rows), Some(max)) = (files, rows, max_symbols) {
-        let (zoom, note) = super::zoom::zoom_json(ctx, &owners, n, files, rows, max)?;
+        let (zoom, note) = super::zoom::zoom_json(repo_root, ctx, &owners, n, files, rows, max)?;
         out["zoom"] = zoom;
         if let Some(note) = note {
             out["zoom"]["note"] = json!(note);

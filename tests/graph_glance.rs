@@ -319,9 +319,37 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
         vec![
             "Where do secrets come from?",
             "What reacts to file-uploaded?",
+            // One arrow into ingest-api and one into validator: the map
+            // draws those answers, so they are no questions.
             "What uses Message bus?",
-            "What talks to ingest-api?",
-            "What talks to validator?"
+        ]
+    );
+    let kinds: Vec<(String, String, String)> = g.g()["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| {
+            (
+                q["kind"].as_str().unwrap().to_string(),
+                q["group"].as_str().unwrap().to_string(),
+                q["subject"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ("secrets".into(), "Data and messaging".into(), "".into()),
+            (
+                "reacts".into(),
+                "Data and messaging".into(),
+                "file-uploaded".into()
+            ),
+            (
+                "uses".into(),
+                "Data and messaging".into(),
+                "Message bus".into()
+            ),
         ]
     );
     assert_eq!(
@@ -332,7 +360,6 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
         g.g()["questions"][2]["a"],
         "ingest-api publishes file-uploaded; validator subscribes to file-uploaded."
     );
-    assert_eq!(g.g()["questions"][3]["a"], "portal calls over HTTP.");
     assert_eq!(
         g.g()["read_first"],
         serde_json::json!([{ "path": "README.md", "note": "what the project is" }])

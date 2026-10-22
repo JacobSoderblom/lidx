@@ -240,6 +240,27 @@ if (scenario === 'focus') {
   g.choose(0); flush(40);
   const z = g.zoom;
   out.crumbs = z.crumbs(); out.sel = z.selected(); out.panel = g.panelText(); out.level = g.level(); out.hash = z.hash();
+} else if (scenario === 'search-nav') {
+  // A query, then keys pressed in the search box one by one: the list as it
+  // stands after each. `arg`: query;key;key...
+  const [q, ...keys] = arg.split(';');
+  const rows = g.search(q);
+  const steps = keys.map((k) => {
+    let prevented = false;
+    (element('search').listeners.keydown || []).forEach((fn) => fn({ key: k, preventDefault() { prevented = true; } }));
+    flush(2);
+    return { key: k, prevented, state: g.searchState() };
+  });
+  out = { rows, steps };
+} else if (scenario === 'search-click') {
+  // A query, then the row at index `arg` clicked (a mousedown on it).
+  const [q, i] = arg.split(';');
+  g.search(q);
+  const li = { dataset: { i } };
+  const ev = { target: { closest: (sel) => (sel === 'li[data-i]' ? li : null) }, preventDefault() {} };
+  (element('search-list').listeners.mousedown || []).forEach((fn) => fn(ev));
+  flush(40);
+  out = { state: g.searchState(), level: g.level() };
 } else if (scenario === 'zoom-wheel') {
   // A trackpad's scroll into a folder: wheel events a frame apart, past
   // the point the folder opens; then zoomed in far, and Fit pressed.
@@ -476,6 +497,40 @@ if (scenario === 'focus') {
 } else if (scenario === 'glance-idle-tours') {
   // The tours strip at rest with `arg` flows as pills, its menu open.
   out = { html: g.glance.idleTours(+arg, true), all: g.glance.data().flows.map((f) => f.title) };
+} else if (scenario === 'glance-menu') {
+  // The More questions menu: its sections with `arg` flows as pills, a
+  // picked list with and without a filter, and the menu's state after the
+  // picks. `arg`: flows;kind;filter
+  const [flows, kind, filter] = arg.split(';');
+  const gl = g.glance;
+  out = {
+    questions: gl.data().questions.map((q) => q.q),
+    sections: gl.menuSections(+flows),
+    all: gl.pickList(kind, ''),
+    filtered: gl.pickList(kind, filter),
+    none: gl.pickList(kind, 'zzzz'),
+  };
+  out.opened = gl.pick(kind);
+  out.back = gl.pick('');
+} else if (scenario === 'glance-menu-many') {
+  // Nine more questions of one kind: the picked list shows six and counts
+  // the rest; a filter narrows it.
+  const gl = g.glance, d = gl.data();
+  for (let i = 1; i <= 9; i++) {
+    d.questions.push({ id: 'talks-x' + i, kind: 'talks', group: 'Who talks to whom', subject: 'svc' + i, q: 'What talks to svc' + i + '?', a: '', nodes: [], items: [] });
+  }
+  const titles = ['GET /a → one', 'GET /b → two', 'GET /c → three'];
+  d.flows = titles.map((title) => ({ title, steps: [] }));
+  out = { sections: gl.menuSections(0), all: gl.pickList('talks', ''), filtered: gl.pickList('talks', ' SVC7 '), few: gl.pickList('talks', 'svc'), flows: gl.pickList('flows', '', 1), flowsAll: gl.pickList('flows', '', 0) };
+  // The entries name what the overview calls its parts.
+  d.mode = 'modules';
+  out.modules = gl.menuSections(3).filter((x) => x.title === 'Who talks to whom').map((x) => x.items.map((i) => i[0])).flat();
+  d.mode = 'packages';
+  out.packages = gl.menuSections(3).filter((x) => x.title === 'Who talks to whom').map((x) => x.items.map((i) => i[0])).flat();
+} else if (scenario === 'search-folder') {
+  // The folder map's own search: nodes of generated files are listed apart.
+  g.setLevel('folder'); flush(20);
+  out = { rows: g.search(arg) };
 } else if (scenario === 'glance-explore') {
   const gl = g.glance;
   const before = g.level();
