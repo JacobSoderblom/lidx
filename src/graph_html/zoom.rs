@@ -7,7 +7,8 @@
 //! string lives once in `s` and is referenced by index (`-1`: absent).
 //!
 //! - files: `f_unit`, `f_path`, `f_lang`, `f_syms` (its symbols),
-//!   `f_emb` (1 when those symbols are embedded)
+//!   `f_emb` (1 when those symbols are embedded), `f_gen` (1 for generated
+//!   code, by its name or its header: the overview's own test)
 //! - symbols: `y_file`, `y_kind`, `y_name`, `y_qual`, `y_line`, `y_parent`
 //!   (the enclosing embedded symbol, `-1` at file level), `y_sig`. A
 //!   qualname ending in the name is stored as its prefix: `y_qual >= 0` is
@@ -29,10 +30,12 @@
 
 use super::apps::{is_key_link, is_probe};
 use super::build::{AggInput, Ctx, Leaf, RepoFile, RepoRow, derive_leaf_bridges, receiving};
+use super::glance::Generated;
 use super::units::Owners;
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 /// Kinds that are not drawn as symbols: files and namespaces are the boxes
 /// around them, externals belong to no unit.
@@ -138,6 +141,7 @@ fn fill(unit_files: &[Vec<usize>], sizes: &[usize], allow: &[usize], cap: usize)
 
 /// The `zoom` section, and a note when `max_symbols` left symbols out.
 pub(crate) fn zoom_json(
+    repo_root: &Path,
     ctx: &Ctx,
     owners: &Owners,
     units: usize,
@@ -364,6 +368,8 @@ pub(crate) fn zoom_json(
     let f_path: Vec<i64> = file_list.iter().map(|f| s.id(&f.0)).collect();
     let f_lang: Vec<i64> = file_list.iter().map(|f| s.id(&f.1)).collect();
     let f_emb: Vec<u8> = embedded.iter().map(|&b| b as u8).collect();
+    let made = Generated::new(repo_root);
+    let f_gen: Vec<u8> = file_list.iter().map(|f| made.is(&f.0) as u8).collect();
 
     let y_file: Vec<usize> = syms.iter().map(|y| y.file).collect();
     let y_kind: Vec<i64> = syms.iter().map(|y| s.id(&y.kind)).collect();
@@ -401,6 +407,7 @@ pub(crate) fn zoom_json(
             "f_lang": f_lang,
             "f_syms": f_syms,
             "f_emb": f_emb,
+            "f_gen": f_gen,
             "y_file": y_file,
             "y_kind": y_kind,
             "y_name": y_name,

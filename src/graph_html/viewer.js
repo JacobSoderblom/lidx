@@ -2735,39 +2735,114 @@
 
   // ----------------------------------------------------------------- search
   var search = document.getElementById('search'), list = document.getElementById('search-list');
-  var results = [], active = -1;
+  var results = [], active = -1, hits = [], openCopies = {};
   var groupNames = ALL_PREFIXES.filter(function (p) { return p.charAt(p.length - 1) === '/' || PSEUDO[p]; });
+  // The groups a query's results fall into, in the order they are listed:
+  // what a person named (apps, folders, files, symbols) before generated
+  // code, which only echoes it. `cap` is the rows a group lists.
+  var SEARCH_GROUPS = [
+    { id: 'apps', label: 'Apps', cap: 5 }, { id: 'folders', label: 'Folders', cap: 3 }, { id: 'files', label: 'Files', cap: 4 },
+    { id: 'symbols', label: 'Symbols', cap: 8 }, { id: 'generated', label: 'Generated', cap: 4 }
+  ];
+  var SEARCH_CAP = 40;
   function runSearch() {
     var q = search.value.trim().toLowerCase();
-    results = []; active = -1;
+    results = []; hits = []; active = -1;
     if (!q) { closeList(); return; }
     var scored = [], onSheet = st.level === 'app' || st.level === 'glance';
+    var add = function (grp, s, tie, r) { scored.push({ grp: grp, s: s, tie: tie, r: r }); };
     // On the sheet, the symbols and files embedded for the zoom come first:
     // picking one opens its card down to it. A folder-map node they stand
     // for is not listed twice.
     var zq = HAS_APPS && ZR ? zoomMatches(q) : null;
-    if (zq) zq.forEach(function (m) { scored.push([m[0] + (onSheet ? -0.5 : 0.25), m[1], m[2]]); });
+    // Off the sheet a folder-map node is the better pick: the embedded
+    // symbol or file it stands for is not listed too.
+    var drawn = zq && !onSheet ? new Set(N.map(function (n) { return n.qual; })) : null;
+    if (zq) zq.forEach(function (m) { if (!drawn || !drawn.has(m[4])) add(m[3], m[0] + (onSheet ? -0.5 : 0.25), m[1], m[2]); });
+    var z = zdata(), made = new Set();
+    if (z) z.files.forEach(function (f) { if (f.gen) made.add(f.path); });
     N.forEach(function (n) {
       if (zq && onSheet && (zq.quals.has(n.qual) || (n.kind === 'file' && zq.paths.has(n.file || n.qual)))) return;
       var s = matchTier(n.name.toLowerCase(), n.qual.toLowerCase(), q);
       if (s < 0) return;
       if (has(n, F.halo) || has(n, F.scope_out)) s += 0.5;
-      scored.push([s, n.qual.length, n]);
+      add(made.has(n.file) ? 'generated' : n.kind === 'file' ? 'files' : 'symbols', s, n.qual.length, n);
     });
-    groupNames.forEach(function (g) { if (g.toLowerCase().indexOf(q) >= 0) scored.push([5, g.length, { group: g }]); });
+    // A folder an app stands on is listed as that app.
+    groupNames.forEach(function (g) {
+      if (g.toLowerCase().indexOf(q) >= 0 && !(HAS_APPS && AU.some(function (u) { return u.dir === g; }))) add('folders', 5, g.length, { group: g });
+    });
     if (HAS_APPS) {
       AU.forEach(function (u) {
         var nm = u.name.toLowerCase(), s = nm === q ? 0 : nm.indexOf(q) === 0 ? 1 : nm.indexOf(q) >= 0 ? 3 : u.root.toLowerCase().indexOf(q) >= 0 ? 4 : -1;
         if (s < 0) return;
-        // On the sheet, units come first.
-        scored.push([s - (onSheet ? 1 : 0.25) + (u.hidden ? 0.5 : 0), u.name.length, { unit: u.id }]);
+        add('apps', s + (u.hidden ? 0.5 : 0), u.name.length, { unit: u.id });
       });
     }
-    scored.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
-    results = scored.slice(0, SEARCH_CAP).map(function (s) { return s[2]; });
+    scored.sort(function (a, b) { return a.s - b.s || a.tie - b.tie; });
+    var total = 0;
+    SEARCH_GROUPS.forEach(function (g) {
+      var rows = scored.filter(function (x) { return x.grp === g.id; }).map(function (x) { return x.r; });
+      // Copies of one generated name (a message in every service's stubs)
+      // are one row that opens onto them.
+      if (g.id === 'generated' || g.id === 'symbols') rows = collapseCopies(rows, g.id === 'generated');
+      rows = rows.slice(0, Math.min(g.cap, SEARCH_CAP - total));
+      total += rows.length;
+      if (rows.length) hits.push({ id: g.id, label: g.label, rows: rows });
+    });
+    flattenHits();
     renderList();
   }
-  var SEARCH_CAP = 40;
+  // Rows that are one thing found in several places join into one row that
+  // opens onto its copies: generated code by name (a message in every
+  // service's stubs), a hand-written symbol by qualname when its copies lie
+  // in different apps (a proto message each service keeps its own copy of).
+  function collapseCopies(rows, generated) {
+    var by = {}, out = [];
+    rows.forEach(function (r) {
+      var k = copyKey(r, generated);
+      if (k === null) { out.push(r); return; }
+      if (by[k]) { by[k].copies.push(r); return; }
+      by[k] = { copies: [r], name: resultName(r), key: k, generated: generated };
+      out.push(by[k]);
+    });
+    var res = [];
+    out.forEach(function (c) {
+      if (!c.copies) { res.push(c); return; }
+      var apps = {};
+      c.copies.forEach(function (x) { apps[resultUnit(x)] = true; });
+      if (c.copies.length > 1 && (generated || Object.keys(apps).length > 1)) res.push(c);
+      else c.copies.forEach(function (x) { res.push(x); });
+    });
+    return res;
+  }
+  function copyKey(r, generated) {
+    var z = zdata();
+    if (generated) return 'g:' + resultName(r).toLowerCase();
+    return r.zsym !== undefined ? 's:' + z.syms[r.zsym].kind + ':' + z.syms[r.zsym].qual : null;
+  }
+  function resultUnit(r) {
+    var z = zdata();
+    if (r.zsym !== undefined) return z.files[z.syms[r.zsym].file].unit;
+    return r.zfile !== undefined ? z.files[r.zfile].unit : -1;
+  }
+  function resultName(r) {
+    var z = zdata();
+    if (r.zsym !== undefined) return z.syms[r.zsym].name;
+    if (r.zfile !== undefined) { var p = z.files[r.zfile].path; return p.slice(p.lastIndexOf('/') + 1); }
+    return r.name;
+  }
+  // The rows on screen, top down: an open copies row is followed by its copies.
+  function flattenHits() {
+    results = [];
+    hits.forEach(function (g) {
+      g.rows.forEach(function (r) {
+        r.grp = g.id;
+        results.push(r);
+        if (r.copies && openCopies[r.key]) r.copies.forEach(function (c) { c.grp = g.id; c.child = r.key; results.push(c); });
+      });
+    });
+  }
   // 0 exact name, 1 name prefix, 2 qualname suffix, 3 in the name, 4 in the
   // qualname; -1 no match.
   function matchTier(nm, qn, q) {
@@ -2792,42 +2867,81 @@
       var s = matchTier(y.name.toLowerCase(), y.qual.toLowerCase(), q);
       if (s < 0) return;
       var bias = KIND_BIAS[y.kind];
-      out.push([s + (bias === undefined ? 0.3 : bias) + (AU[z.files[y.file].unit].hidden ? 0.5 : 0), y.qual.length, { zsym: y.i }]);
+      out.push([s + (bias === undefined ? 0.3 : bias) + (AU[z.files[y.file].unit].hidden ? 0.5 : 0), y.qual.length, { zsym: y.i }, z.files[y.file].gen ? 'generated' : 'symbols', y.qual]);
       out.quals.add(y.qual);
     });
     z.files.forEach(function (f) {
       var base = f.path.slice(f.path.lastIndexOf('/') + 1).toLowerCase(), s = matchTier(base, f.path.toLowerCase(), q);
       if (s < 0) return;
       // A file lists after the symbols of its name: SyncService finds the class first.
-      out.push([s + 0.35 + (f.syms ? 0 : 0.3) + (AU[f.unit].hidden ? 0.5 : 0), f.path.length, { zfile: f.i }]);
+      out.push([s + 0.35 + (f.syms ? 0 : 0.3) + (AU[f.unit].hidden ? 0.5 : 0), f.path.length, { zfile: f.i }, f.gen ? 'generated' : 'files', f.path]);
       out.paths.add(f.path);
     });
     return out;
   }
+  // The unit a folder path lies in (the deepest one), or null.
+  function unitOfDir(path) {
+    var best = null;
+    AU.forEach(function (u) { if (u.dir && path.indexOf(u.dir) === 0 && (!best || u.dir.length > best.dir.length)) best = u; });
+    return best;
+  }
+  // "not on the overview: Java, not indexed" for a unit the landing page
+  // leaves out, else ''.
+  function offNote(u) {
+    return u && HAS_APPS && unitClass(u) === 'off' ? 'not on the overview: ' + (leftOutWhy(u) || 'no indexed code') : '';
+  }
+  // One row of the list as { nm, kd, qn, note }.
+  function resultRow(r) {
+    var z = zdata(), u, note;
+    if (r.copies) {
+      var units = [];
+      r.copies.forEach(function (c) {
+        var f = c.zsym !== undefined ? z.files[z.syms[c.zsym].file] : c.zfile !== undefined ? z.files[c.zfile] : null;
+        var nm = f ? AU[f.unit].name : '';
+        if (nm && units.indexOf(nm) < 0) units.push(nm);
+      });
+      return { nm: r.name + ' · ' + r.copies.length + (r.generated ? ' generated copies' : ' copies'), kd: openCopies[r.key] ? 'hide' : 'show', qn: units.length ? 'in ' + units.slice(0, 3).join(', ') + (units.length > 3 ? ', +' + (units.length - 3) : '') : '' };
+    }
+    if (r.group) {
+      u = HAS_APPS ? unitOfDir(r.group) : null;
+      note = offNote(u);
+      return { nm: r.group, kd: 'folder', qn: note };
+    }
+    if (r.unit !== undefined) {
+      u = AU[r.unit]; note = offNote(u);
+      return { nm: u.name, kd: unitKind(u) + (u.hidden ? ' · hidden' : ''), qn: note ? note + ' · ' + u.root : u.root };
+    }
+    if (r.zsym !== undefined || r.zfile !== undefined) {
+      var y = r.zsym !== undefined ? z.syms[r.zsym] : null, f = y ? z.files[y.file] : z.files[r.zfile];
+      return { nm: y ? y.name : f.path.slice(f.path.lastIndexOf('/') + 1), kd: (y ? y.kind : 'file') + ' · ' + AU[f.unit].name, qn: y ? y.qual : f.path };
+    }
+    return { nm: r.name, kd: r.kind + (V.leafTo[r.i] < 0 ? ' · hidden' : ''), qn: r.qual };
+  }
+  // A row as the tests read it: what it is, its group and its labels.
+  function searchRow(r) {
+    var z = zdata(), row = resultRow(r), o = { group: r.grp, label: row.nm, hint: row.kd, detail: row.qn, copy: !!r.child };
+    if (r.copies) { o.type = 'copies'; o.name = r.name; o.count = r.copies.length; o.open = !!openCopies[r.key]; }
+    else if (r.zsym !== undefined) { var y = z.syms[r.zsym]; o.type = 'symbol'; o.name = y.name; o.kind = y.kind; o.qual = y.qual; o.unit = AU[z.files[y.file].unit].name; }
+    else if (r.zfile !== undefined) { var f = z.files[r.zfile]; o.type = 'file'; o.name = f.path.slice(f.path.lastIndexOf('/') + 1); o.qual = f.path; o.unit = AU[f.unit].name; }
+    else if (r.unit !== undefined) { o.type = 'unit'; o.name = AU[r.unit].name; }
+    else if (r.group) { o.type = 'folder'; o.name = r.group; }
+    else { o.type = 'node'; o.name = r.name; o.kind = r.kind; o.qual = r.qual; }
+    return o;
+  }
   function renderList() {
     if (!results.length) list.innerHTML = '<li class="empty" role="option" aria-disabled="true">No matches. Try part of a name or a folder path.</li>';
     else {
-      list.innerHTML = results.map(function (r, i) {
-        if (r.group) {
-          return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
-            '<span class="nm">' + esc(r.group) + '</span><span class="kd">folder</span></li>';
+      var i = 0;
+      list.innerHTML = hits.map(function (g) {
+        var html = '<li role="presentation"><ul role="group" aria-labelledby="sg-' + g.id + '"><li role="presentation" class="hd" id="sg-' + g.id + '">' + esc(g.label) + '</li>';
+        while (i < results.length && results[i].grp === g.id) {
+          var r = results[i], row = resultRow(r);
+          html += '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '"' + (r.child ? ' class="child"' : r.copies ? ' class="copies"' : '') + '>' +
+            '<span class="nm">' + esc(row.nm) + '</span><span class="kd">' + esc(row.kd) + '</span>' +
+            (row.qn ? '<span class="qn">' + esc(row.qn) + '</span>' : '') + '</li>';
+          i++;
         }
-        if (r.unit !== undefined) {
-          var u = AU[r.unit];
-          return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
-            '<span class="nm">' + esc(u.name) + '</span><span class="kd">' + esc(unitKind(u)) + (u.hidden ? ' · hidden' : '') + '</span>' +
-            '<span class="qn">' + esc(u.root) + '</span></li>';
-        }
-        if (r.zsym !== undefined || r.zfile !== undefined) {
-          var z = zdata(), y = r.zsym !== undefined ? z.syms[r.zsym] : null, f = y ? z.files[y.file] : z.files[r.zfile];
-          return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
-            '<span class="nm">' + esc(y ? y.name : f.path.slice(f.path.lastIndexOf('/') + 1)) + '</span><span class="kd">' + esc((y ? y.kind : 'file') + ' · ' + AU[f.unit].name) + '</span>' +
-            '<span class="qn">' + esc(y ? y.qual : f.path) + '</span></li>';
-        }
-        var hiddenTag = V.leafTo[r.i] < 0 ? ' · hidden' : '';
-        return '<li role="option" id="sr-' + i + '" data-i="' + i + '" aria-selected="' + (i === active) + '">' +
-          '<span class="nm">' + esc(r.name) + '</span><span class="kd">' + esc(r.kind + hiddenTag) + '</span>' +
-          '<span class="qn">' + esc(r.qual) + '</span></li>';
+        return html + '</ul></li>';
       }).join('');
     }
     list.hidden = false;
@@ -2839,9 +2953,21 @@
     } else search.removeAttribute('aria-activedescendant');
   }
   function closeList() { list.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute('aria-activedescendant'); }
+  // Opens or shuts the copies row `r` (or the one a copy belongs to), keeping
+  // the list open with that row active.
+  function toggleCopies(r, open) {
+    var key = r.copies ? r.key : r.child;
+    if (open === undefined) open = !openCopies[key];
+    if (!!openCopies[key] === open) return;
+    openCopies[key] = open;
+    flattenHits();
+    active = results.findIndex(function (x) { return x.copies && x.key === key; });
+    renderList();
+  }
   function choose(i) {
     var r = results[i];
     if (!r) return;
+    if (r.copies) { toggleCopies(r); return; }
     closeList();
     if (r.unit !== undefined) {
       if (st.level !== 'app') setLevel('app');
@@ -2871,11 +2997,13 @@
     focusLeaf(r.i);
     canvas.focus();
   }
-  search.addEventListener('input', runSearch);
+  search.addEventListener('input', function () { openCopies = {}; runSearch(); });
   search.addEventListener('focus', function () { if (search.value.trim()) runSearch(); });
   search.addEventListener('keydown', function (ev) {
     if (ev.key === 'ArrowDown') { ev.preventDefault(); if (results.length) { active = (active + 1) % results.length; renderList(); } }
     else if (ev.key === 'ArrowUp') { ev.preventDefault(); if (results.length) { active = active <= 0 ? results.length - 1 : active - 1; renderList(); } }
+    else if (ev.key === 'ArrowRight' && results[active] && results[active].copies && !openCopies[results[active].key]) { ev.preventDefault(); toggleCopies(results[active], true); }
+    else if (ev.key === 'ArrowLeft' && results[active] && (results[active].child || (results[active].copies && openCopies[results[active].key]))) { ev.preventDefault(); toggleCopies(results[active], false); }
     else if (ev.key === 'Enter') { ev.preventDefault(); choose(active >= 0 ? active : 0); }
     else if (ev.key === 'Escape') { if (!list.hidden) closeList(); else { search.value = ''; canvas.focus(); } }
   });
@@ -4639,7 +4767,7 @@
     var s = ZR.s, nf = ZR.f_path.length, ny = ZR.y_file.length;
     var files = new Array(nf), syms = new Array(ny);
     for (var f = 0; f < nf; f++) {
-      files[f] = { i: f, unit: ZR.f_unit[f], path: s[ZR.f_path[f]], lang: s[ZR.f_lang[f]], syms: ZR.f_syms[f], emb: !!ZR.f_emb[f], top: [] };
+      files[f] = { i: f, unit: ZR.f_unit[f], path: s[ZR.f_path[f]], lang: s[ZR.f_lang[f]], syms: ZR.f_syms[f], emb: !!ZR.f_emb[f], gen: !!(ZR.f_gen && ZR.f_gen[f]), top: [] };
     }
     for (var y = 0; y < ny; y++) {
       syms[y] = {
@@ -6380,7 +6508,7 @@
   // Least room between two line labels side by side.
   var G_LABEL_GAP = 14;
   var gst = {
-    sel: null, link: null, flow: null, step: 0, seq: false, tour: null, resume: null, question: null,
+    sel: null, link: null, flow: null, step: 0, seq: false, tour: null, resume: null, question: null, qpick: '', qfilter: '',
     all: false, deploy: false, key: false, hover: null, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
   };
   var VIA = {
@@ -8352,13 +8480,86 @@
     var rest = GL.flows.slice(n, 3);
     if (GL.questions.length || rest.length) {
       html += '<span class="g-q"><button type="button" data-gqmenu="1" aria-haspopup="true" aria-expanded="' + !!gst.qmenu + '">More questions ▾</button>';
-      if (gst.qmenu) {
-        html += '<div class="g-qmenu" role="menu">' + rest.map(function (f, j) {
-          return '<button type="button" role="menuitem" data-gflow="' + (n + j) + '" title="' + esc(flowTitle(f)) + '">Follow ' + esc(gShort(f.title)) + '</button>';
-        }).join('') + GL.questions.map(function (q, i) { return '<button type="button" role="menuitem" data-gq="' + i + '">' + esc(q.q) + '</button>'; }).join('') + '</div>';
-      }
+      if (gst.qmenu) html += gQMenu(rest, n, flowTitle);
       html += '</span>';
     }
+    return html;
+  }
+
+  // ----- the More questions menu: sections, with the questions that come
+  // one per app, event, resource or library behind a single entry that lists
+  // them (a short list to filter), so no step shows more than a few options.
+  var Q_SECTIONS = ['Data and messaging', 'Who talks to whom', 'Code'];
+  // The entry that stands for a whole kind of question, naming what the
+  // overview calls its parts (apps, modules, packages).
+  function qPick(kind) {
+    var n = { apps: 'app', modules: 'module', packages: 'package' }[GL.mode] || 'part';
+    return {
+      flows: 'Follow a request', reacts: 'What reacts to an event?', uses: 'What uses a resource?',
+      talks: 'What talks to ' + (/^[aeiou]/.test(n) ? 'an ' : 'a ') + n + '?', shares: 'Which ' + n + 's share a library?'
+    }[kind];
+  }
+  var Q_PICK_ROWS = 6;
+  // The sections of the menu as { title, items: [{ label, attrs, count }] }.
+  function gQSections(rest, n, flowTitle) {
+    var out = [], flows = rest.map(function (f, j) {
+      return { label: 'Follow ' + gShort(f.title), attrs: 'data-gflow="' + (n + j) + '" title="' + esc(flowTitle(f)) + '"' };
+    });
+    // More than a couple of flows wait behind one entry, as the questions do.
+    if (flows.length > 2) out.push({ title: 'Flows', items: [{ label: qPick('flows'), attrs: 'data-gqpick="flows"', count: flows.length }] });
+    else if (flows.length) out.push({ title: 'Flows', items: flows });
+    Q_SECTIONS.forEach(function (title) {
+      var items = [], kinds = {};
+      GL.questions.forEach(function (q, i) {
+        if (q.group !== title) return;
+        (kinds[q.kind] = kinds[q.kind] || []).push(i);
+      });
+      GL.questions.forEach(function (q, i) {
+        if (q.group !== title) return;
+        var all = kinds[q.kind];
+        if (all.length === 1 || !qPick(q.kind)) items.push({ label: q.q, attrs: 'data-gq="' + i + '"' });
+        else if (all[0] === i) items.push({ label: qPick(q.kind), attrs: 'data-gqpick="' + esc(q.kind) + '"', count: all.length });
+      });
+      if (items.length) out.push({ title: title, items: items });
+    });
+    return out;
+  }
+  function gQMenu(rest, n, flowTitle) {
+    if (gst.qpick) {
+      return '<div class="g-qmenu" role="menu"><button type="button" class="g-qback" role="menuitem" data-gqpick="">‹ All questions</button>' +
+        '<h3 class="g-qh">' + esc(qPick(gst.qpick)) + '</h3>' +
+        '<input type="search" class="g-qfilter" autocomplete="off" spellcheck="false" placeholder="Filter by name" aria-label="Filter: ' + esc(qPick(gst.qpick)) + '" value="' + esc(gst.qfilter) + '">' +
+        '<div class="g-qlist" role="group" aria-label="' + esc(qPick(gst.qpick)) + '">' + gPickList(n) + '</div></div>';
+    }
+    return '<div class="g-qmenu" role="menu">' + gQSections(rest, n, flowTitle).map(function (sec, si) {
+      return '<div role="group" aria-labelledby="gqs-' + si + '"><h3 class="g-qh" id="gqs-' + si + '">' + esc(sec.title) + '</h3>' + sec.items.map(function (it) {
+        return '<button type="button" role="menuitem" ' + it.attrs + '>' + esc(it.label) + (it.count ? ' <span class="g-qn">' + it.count + ' ›</span>' : '') + '</button>';
+      }).join('') + '</div>';
+    }).join('') + '</div>';
+  }
+  // What the picked entry lists: the flows past the `n` pills, or the
+  // questions of its kind, each as { label, attrs, title }.
+  function gPickItems(n) {
+    if (gst.qpick === 'flows') {
+      return GL.flows.slice(n, 3).map(function (f, j) {
+        return { label: gShort(f.title), attrs: 'data-gflow="' + (n + j) + '"', title: 'Follow this request through the system: ' + f.title };
+      });
+    }
+    var out = [];
+    GL.questions.forEach(function (q, i) { if (q.kind === gst.qpick) out.push({ label: q.subject, attrs: 'data-gq="' + i + '"', title: q.q }); });
+    return out;
+  }
+  // Those matching the filter: the first few and how many more there are.
+  function gPickHits(n) {
+    var f = gst.qfilter.trim().toLowerCase();
+    var hit = gPickItems(n).filter(function (it) { return !f || it.label.toLowerCase().indexOf(f) >= 0; });
+    return { shown: hit.slice(0, Q_PICK_ROWS), more: Math.max(0, hit.length - Q_PICK_ROWS) };
+  }
+  function gPickList(n) {
+    var h = gPickHits(n);
+    var html = h.shown.map(function (it) { return '<button type="button" role="menuitem" ' + it.attrs + ' title="' + esc(it.title) + '">' + esc(it.label) + '</button>'; }).join('');
+    if (!h.shown.length) html = '<p class="g-qmore">Nothing matches.</p>';
+    else if (h.more) html += '<p class="g-qmore">' + fmt(h.more) + ' more: type to narrow the list.</p>';
     return html;
   }
 
@@ -8853,7 +9054,7 @@
     renderGlance();
   }
   function gQuestion(i) {
-    gst.question = i; gst.qmenu = false; gst.sel = null; gst.link = null; renderGlance();
+    gst.question = i; gst.qmenu = false; gst.qpick = ''; gst.sel = null; gst.link = null; renderGlance();
     if (GL.questions[i]) live.textContent = 'Question: ' + GL.questions[i].q;
   }
   // Into Explore, at the card (and folder) this node stands for.
@@ -8902,12 +9103,42 @@
     }
     animateCam(to(), to);
   }
+  // Focus into the open menu: its filter when a list is picked, else its first entry.
+  function gFocusMenu(filter) {
+    var el = gTours.querySelector(filter ? '.g-qfilter' : '.g-qmenu button');
+    if (el && el.focus) el.focus();
+  }
+  // Arrow keys walk the open menu's entries; Esc closes it, back on its button.
+  gTours.addEventListener('keydown', function (ev) {
+    var menu = ev.target.closest && ev.target.closest('.g-qmenu');
+    if (!menu) return;
+    var k = ev.key;
+    if (k === 'Escape') {
+      ev.preventDefault(); ev.stopPropagation();
+      gst.qmenu = false; gst.qpick = ''; renderGlanceTours();
+      var b = gTours.querySelector('[data-gqmenu]');
+      if (b && b.focus) b.focus();
+      return;
+    }
+    var steps = { ArrowDown: 1, ArrowUp: -1, Home: 'first', End: 'last' };
+    if (steps[k] === undefined || (ev.target.tagName === 'INPUT' && (k === 'Home' || k === 'End'))) return;
+    ev.preventDefault();
+    var items = [].slice.call(menu.querySelectorAll('button, input')), at = items.indexOf(ev.target);
+    var to = k === 'Home' ? 0 : k === 'End' ? items.length - 1 : Math.max(0, Math.min(items.length - 1, at + steps[k]));
+    if (items[to]) items[to].focus();
+  });
+  gTours.addEventListener('input', function (ev) {
+    if (!ev.target.classList || !ev.target.classList.contains('g-qfilter')) return;
+    gst.qfilter = ev.target.value;
+    var list = gTours.querySelector('.g-qlist');
+    if (list) list.innerHTML = gPickList(gst.flowsShown);
+  });
   function glanceKey(ev) {
     var k = ev.key;
     if (gst.flow !== null && (k === 'ArrowRight' || k === 'ArrowLeft')) { ev.preventDefault(); gStep(k === 'ArrowRight' ? 1 : -1); return; }
     if (gst.tour !== null && (k === 'ArrowRight' || k === 'ArrowLeft')) { ev.preventDefault(); gTourNav(k === 'ArrowRight' ? 1 : -1); return; }
     if (k === 'Escape') {
-      if (gst.qmenu) { gst.qmenu = false; renderGlanceTours(); return; }
+      if (gst.qmenu) { gst.qmenu = false; gst.qpick = ''; renderGlanceTours(); return; }
       if (gst.flow !== null) { gLeaveFlow(); return; }
       if (gst.tour !== null) { gTourExit(false); return; }
       if (gst.sel !== null || gst.link !== null || gst.question !== null) { gst.sel = null; gst.link = null; gst.question = null; renderGlance(); }
@@ -8947,7 +9178,12 @@
     if (d.gstepnav !== undefined) { gStep(+d.gstepnav); return true; }
     if (d.gstep !== undefined && gst.flow !== null) { gGoStep(+d.gstep); return true; }
     if (d.gseq !== undefined) { gSetSeq(d.gseq === '1' ? true : d.gseq === '0' ? false : !gst.seq); return true; }
-    if (d.gqmenu !== undefined) { gst.qmenu = !gst.qmenu; renderGlanceTours(); return true; }
+    if (d.gqmenu !== undefined) {
+      gst.qmenu = !gst.qmenu; gst.qpick = ''; gst.qfilter = ''; renderGlanceTours();
+      if (gst.qmenu) gFocusMenu(false);
+      return true;
+    }
+    if (d.gqpick !== undefined) { gst.qpick = d.gqpick; gst.qfilter = ''; renderGlanceTours(); gFocusMenu(!!gst.qpick); return true; }
     if (d.gstrip !== undefined) {
       gst.stripOpen = !gst.stripOpen; renderGlanceStrip();
       var sb = gStrip.querySelector('[data-gstrip]');
@@ -8969,7 +9205,7 @@
   }
   if (glanceEl) {
     glanceEl.addEventListener('click', function (ev) {
-      var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gdeploy], [data-gkey], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gstrip], [data-gq], [data-gclear]');
+      var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gdeploy], [data-gkey], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gqpick], [data-gstrip], [data-gq], [data-gclear]');
       // The second click of a double-click on a card opens it in Explore:
       // the first one re-drew the cards, so the browser may send no
       // dblclick to the new element under the pointer.
@@ -8979,7 +9215,7 @@
       if (ev.target.closest('#g-map') && gst.flow === null && gst.tour === null && (gst.sel !== null || gst.link !== null || gst.question !== null)) {
         gst.sel = null; gst.link = null; gst.question = null; renderGlance();
       }
-      if (gst.qmenu && !ev.target.closest('.g-q')) { gst.qmenu = false; renderGlanceTours(); }
+      if (gst.qmenu && !ev.target.closest('.g-q')) { gst.qmenu = false; gst.qpick = ''; renderGlanceTours(); }
     });
     glanceEl.addEventListener('dblclick', function (ev) {
       var c = ev.target.closest('[data-g]');
@@ -9286,6 +9522,20 @@
       openFlow: function (i) { glanceClick({ dataset: { gflow: String(i) } }); },
       key: function (k) { glanceKey({ key: k, target: document.body, preventDefault: function () {} }); },
       // The tours strip at rest with `n` flows as pills (the menu open or not).
+      // The menu's sections ({ title, items: [label, count] }) with `n` flows
+      // as pills, and the picked list's questions for a filter.
+      menuSections: function (n) {
+        var flowTitle = function (f) { return f.title; };
+        return gQSections(GL.flows.slice(n, 3), n, flowTitle).map(function (sec) { return { title: sec.title, items: sec.items.map(function (it) { return [it.label, it.count || 0]; }) }; });
+      },
+      pickList: function (kind, filter, n) {
+        var was = [gst.qpick, gst.qfilter];
+        gst.qpick = kind; gst.qfilter = filter || '';
+        var h = gPickHits(n || 0), out = { rows: h.shown.map(function (it) { return it.label; }), more: h.more };
+        gst.qpick = was[0]; gst.qfilter = was[1];
+        return out;
+      },
+      pick: function (kind) { glanceClick({ dataset: { gqpick: kind } }); return { pick: gst.qpick, menu: gst.qmenu }; },
       idleTours: function (n, menu) { var q = gst.qmenu; gst.qmenu = !!menu; var h = gIdleTours(n); gst.qmenu = q; return h; },
       toggleSeq: function () { glanceClick({ dataset: { gseq: gst.seq ? '0' : '1' } }); },
       tourStart: function () { glanceClick({ dataset: { gtstart: '1' } }); },
@@ -9472,16 +9722,12 @@
     // The search box: what a query lists, and picking one of them.
     search: function (q) {
       search.value = q;
+      openCopies = {};
       runSearch();
-      var z = zdata();
-      return results.map(function (r) {
-        if (r.zsym !== undefined) { var y = z.syms[r.zsym]; return { type: 'symbol', name: y.name, kind: y.kind, qual: y.qual, unit: AU[z.files[y.file].unit].name }; }
-        if (r.zfile !== undefined) { var f = z.files[r.zfile]; return { type: 'file', name: f.path.slice(f.path.lastIndexOf('/') + 1), qual: f.path, unit: AU[f.unit].name }; }
-        if (r.unit !== undefined) return { type: 'unit', name: AU[r.unit].name };
-        if (r.group) return { type: 'folder', name: r.group };
-        return { type: 'node', name: r.name, kind: r.kind, qual: r.qual };
-      });
+      return results.map(searchRow);
     },
+    // What the list shows now: its headings, rows and the active one.
+    searchState: function () { return { heads: hits.map(function (g) { return g.label; }), rows: results.map(searchRow), active: active, open: !list.hidden }; },
     choose: function (i) { choose(i); },
     selected: function () { return st.selected; },
     // A qualname drawn inside a folder the visible budget folded, if any.

@@ -4768,19 +4768,19 @@ pub fn has_generated_header(text: &str) -> bool {
 
 /// Generated code, by its name or by its header on disk; each file read
 /// once.
-struct Generated<'a> {
+pub(super) struct Generated<'a> {
     root: &'a Path,
     seen: std::cell::RefCell<HashMap<String, bool>>,
 }
 
 impl<'a> Generated<'a> {
-    fn new(root: &'a Path) -> Self {
+    pub(super) fn new(root: &'a Path) -> Self {
         Generated {
             root,
             seen: Default::default(),
         }
     }
-    fn is(&self, rel: &str) -> bool {
+    pub(super) fn is(&self, rel: &str) -> bool {
         if is_generated(rel) {
             return true;
         }
@@ -5503,6 +5503,7 @@ fn event_questions(nodes: &[Value]) -> Vec<Value> {
             ns.extend(ids(&e["subs"]));
             json!({
                 "id": format!("reacts-{broker}-{ev}"),
+                "kind": "reacts", "group": QUESTION_DATA, "subject": ev,
                 "q": format!("What reacts to {ev}?"),
                 "a": a, "nodes": ns, "items": items,
             })
@@ -5633,6 +5634,11 @@ fn data_step(nodes: &[Value], links: &[Value], mode: &str) -> Option<Value> {
     }))
 }
 
+/// The menu sections a question is listed under.
+const QUESTION_DATA: &str = "Data and messaging";
+const QUESTION_WHO: &str = "Who talks to whom";
+const QUESTION_CODE: &str = "Code";
+
 /// Questions with answers worked out in advance.
 fn questions(doc: &Value) -> Vec<Value> {
     let nodes = doc["nodes"].as_array().cloned().unwrap_or_default();
@@ -5755,7 +5761,7 @@ fn questions(doc: &Value) -> Vec<Value> {
         } else {
             secret_ns
         };
-        out.push(json!({ "id": "secrets", "q": "Where do secrets come from?", "a": a, "nodes": ns.into_iter().collect::<Vec<_>>(), "items": [], "groups": groups }));
+        out.push(json!({ "id": "secrets", "kind": "secrets", "group": QUESTION_DATA, "subject": "", "q": "Where do secrets come from?", "a": a, "nodes": ns.into_iter().collect::<Vec<_>>(), "items": [], "groups": groups }));
     }
     out.extend(event_questions(&nodes));
     // What talks to each card.
@@ -5803,8 +5809,16 @@ fn questions(doc: &Value) -> Vec<Value> {
             }
             items.truncate(40);
         }
+        // One line into the card, with nothing behind it to list: the map
+        // already draws the answer.
+        if inc.len() == 1 && items.is_empty() {
+            continue;
+        }
         out.push(json!({
             "id": format!("{}-{}", if resource { "uses" } else { "talks" }, id),
+            "kind": if resource { "uses" } else { "talks" },
+            "group": if resource { QUESTION_DATA } else { QUESTION_WHO },
+            "subject": n["name"],
             "q": if resource {
                 format!("What uses {}?", n["name"].as_str().unwrap_or(""))
             } else {
@@ -5831,6 +5845,7 @@ fn questions(doc: &Value) -> Vec<Value> {
         ns.extend(n["used_by"].as_array().cloned().unwrap_or_default());
         out.push(json!({
             "id": format!("shares-{}", n["id"]),
+            "kind": "shares", "group": QUESTION_CODE, "subject": n["name"],
             "q": format!("Which apps share {}?", n["name"].as_str().unwrap_or("")),
             "a": format!("{} is used by {}.", n["name"].as_str().unwrap_or(""), and_list(&users)),
             "nodes": ns, "items": [],
@@ -6796,6 +6811,61 @@ mod tests {
                 Some(&json!({ "name": "OrderPaid", "raw": "IConsumer<OrderPaid>" }))
             ),
             "on OrderPaid"
+        );
+    }
+
+    /// What each question is listed under, and that one a single arrow into
+    /// a card already answers is left out: the map draws it.
+    #[test]
+    fn questions_carry_their_menu_section_and_skip_what_the_map_shows() {
+        let node = |id: u64, name: &str, kind: &str, lane: &str| json!({ "id": id, "name": name, "kind": kind, "lane": lane, "place": "card", "used_by": [] });
+        let link = |from: u64, to: u64, label: &str| json!({ "from": from, "to": to, "family": "http", "label": label, "calls": [] });
+        let mut lib = node(4, "shared", "library", "lib");
+        lib["used_by"] = json!([0, 1]);
+        let doc = json!({
+            "nodes": [
+                node(0, "a", "service", "svc"),
+                node(1, "b", "service", "svc"),
+                node(2, "c", "service", "svc"),
+                node(3, "db", "resource", "data"),
+                lib,
+            ],
+            "links": [
+                link(0, 2, "calls over HTTP"),
+                link(1, 2, "calls over HTTP"),
+                link(0, 1, "calls over HTTP"),
+                link(2, 3, "reads and writes data"),
+            ],
+        });
+        let qs = questions(&doc);
+        let got: Vec<(String, String, String, String)> = qs
+            .iter()
+            .map(|q| {
+                (
+                    q["kind"].as_str().unwrap().to_string(),
+                    q["group"].as_str().unwrap().to_string(),
+                    q["subject"].as_str().unwrap().to_string(),
+                    q["q"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let t = |a: &str, b: &str, c: &str, d: &str| {
+            (a.to_string(), b.to_string(), c.to_string(), d.to_string())
+        };
+        assert_eq!(
+            got,
+            vec![
+                t(
+                    "secrets",
+                    "Data and messaging",
+                    "",
+                    "Where do secrets come from?"
+                ),
+                // c has two callers; b has one (a), db one (c) and no
+                // evidence to list: the map draws those arrows already.
+                t("talks", "Who talks to whom", "c", "What talks to c?"),
+                t("shares", "Code", "shared", "Which apps share shared?"),
+            ]
         );
     }
 }

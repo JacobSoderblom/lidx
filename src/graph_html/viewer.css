@@ -156,12 +156,19 @@ h1 .repo { color: var(--ink); }
 #search-list {
   position: absolute; z-index: 40; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px;
   list-style: none; background: var(--paper); border: 1px solid var(--rule); border-radius: 10px;
-  box-shadow: var(--shadow); max-height: min(60vh, 440px); overflow-y: auto;
+  box-shadow: var(--shadow); max-height: min(75vh, 640px); overflow-y: auto;
 }
-#search-list li {
+#search-list ul { list-style: none; margin: 0; padding: 0; }
+#search-list li[role="option"] {
   padding: 6px 9px; border-radius: 6px; cursor: pointer;
   display: grid; grid-template-columns: 1fr auto; gap: 0 10px; min-width: 0;
 }
+#search-list .hd {
+  padding: 8px 9px 3px; font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
+}
+#search-list > li:not(:first-child) { border-top: 1px solid var(--rule); margin-top: 4px; }
+#search-list li.child { padding-left: 24px; }
+#search-list li.copies .kd { text-decoration: underline; text-underline-offset: 2px; }
 #search-list li[aria-selected="true"] { background: var(--paper-2); box-shadow: inset 2px 0 0 var(--focus); }
 #search-list .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #search-list .qn {
@@ -728,9 +735,16 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-reads code { font-size: 11.5px; }
 .g-qgroup h3 span { font-weight: 500; letter-spacing: 0; }
 .g-q { position: relative; margin-left: auto; }
-.g-qmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; background: var(--paper); border: 1px solid var(--rule); border-radius: 9px; box-shadow: var(--shadow); padding: 5px; display: grid; min-width: 260px; max-height: 60vh; overflow-y: auto; }
+.g-qmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; background: var(--paper); border: 1px solid var(--rule); border-radius: 9px; box-shadow: var(--shadow); padding: 5px; display: grid; min-width: 300px; max-height: 60vh; overflow-y: auto; }
 .g-qmenu button { border: 0; border-radius: 6px; text-align: left; max-width: none; }
 .g-qmenu button:hover, .g-qmenu button:focus-visible { background: var(--paper-2); }
+.g-qmenu button { display: flex; justify-content: space-between; gap: 14px; }
+.g-qmenu .g-qh { margin: 0; padding: 8px 10px 3px; font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); }
+.g-qmenu [role="group"] + [role="group"] { border-top: 1px solid var(--rule); margin-top: 4px; }
+.g-qmenu .g-qn { color: var(--ink-3); opacity: 1; margin-left: 0; }
+.g-qmenu .g-qfilter { margin: 2px 4px 6px; min-height: 32px; padding: 3px 10px; font-size: 13px; background: var(--canvas); border: 1px solid var(--rule); border-radius: 8px; color: var(--ink); }
+.g-qmenu .g-qmore { margin: 0; padding: 4px 10px 6px; font-size: 12px; color: var(--ink-3); }
+.g-qmenu .g-qlist { display: grid; }
 
 /* The legend: a flat strip under the tours, so it never covers a card. Its
    swatches are the map's own lines and rules. */
