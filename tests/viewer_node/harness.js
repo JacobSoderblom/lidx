@@ -386,8 +386,11 @@ if (scenario === 'focus') {
   out = { level: g.level(), cards: gl.cards(), lanes: gl.lanes(), links: gl.links(), strip: gl.strip(), side: gl.side(), tours: gl.tours(), html: gl.html() };
 } else if (scenario === 'glance-flow') {
   // Into a flow, stepped with the arrow keys, then out with Escape.
+  // A flow opens as a sequence; this one is stepped on the map.
   const gl = g.glance, steps = [];
   gl.openFlow(+arg); flush(5);
+  const opened = gl.state();
+  gl.toggleSeq(); flush(5);
   steps.push(gl.state());
   gl.key('ArrowRight'); flush(5); steps.push(gl.state());
   gl.key('ArrowRight'); flush(5); steps.push(gl.state());
@@ -396,15 +399,56 @@ if (scenario === 'focus') {
   for (let i = 0; i < 9; i++) gl.key('ArrowRight');
   flush(5); steps.push(gl.state());
   gl.key('Escape'); flush(5); steps.push(gl.state());
-  out = { steps, side, html };
+  out = { steps, side, html, opened };
 } else if (scenario === 'glance-seq') {
   const gl = g.glance;
+  // Opens as a sequence; S shows it on the map, S again back.
   gl.openFlow(+arg); flush(5);
   gl.key('ArrowRight'); flush(5);
+  const on = { state: gl.state(), lanes: gl.seqLanes(), html: gl.html().seq, tours: gl.tours() };
+  gl.key('s'); flush(5);
+  const off = { state: gl.state(), lanes: gl.seqLanes(), cards: gl.cards().length, tours: gl.tours() };
+  gl.key('s'); flush(5);
+  out = { on, off, again: gl.state() };
+} else if (scenario === 'glance-reveal') {
+  // A map area of "width,height" too small for the map: every tour step
+  // and every flow step (on the map) scrolls its subject into view.
+  const [w, h] = arg.split(',').map(Number);
+  element('g-map').rect = { left: 0, top: 0, right: w, bottom: h, width: w, height: h };
+  const sc = element('g-scroll'), gl = g.glance, scrolls = [];
+  sc.clientWidth = w; sc.clientHeight = h; sc.scrollTop = 0; sc.scrollLeft = 0;
+  sc.scrollTo = (o) => { scrolls.push(o); sc.scrollTop = o.top; sc.scrollLeft = o.left; };
+  gl.relayout(); flush(5);
+  const cam = gl.camera();
+  sc.scrollHeight = Math.max(h, cam.h * cam.k); sc.scrollWidth = Math.max(w, cam.w * cam.k);
+  const box = {};
+  gl.cards().forEach((c) => { box[c.name] = c; });
+  // Whether a card is inside the scrolled view.
+  const seen = (name) => {
+    const c = box[name], k = cam.k;
+    if (!c) return null;
+    const y0 = c.y * k, y1 = (c.y + c.h) * k;
+    return y0 >= sc.scrollTop - 1 && y1 <= sc.scrollTop + h + 1;
+  };
+  const names = (ids) => ids.map((i) => gl.data().nodes[i].name);
+  const tour = [];
+  gl.tourStart(); flush(5);
+  for (let i = 0; i < gl.data().tour.length; i++) {
+    const t = gl.data().tour[i];
+    const subject = names(t.focus || (t.select !== undefined ? [t.select] : t.nodes)).filter((n) => box[n]);
+    tour.push({ id: t.id, top: sc.scrollTop, subject, seen: subject.map(seen) });
+    gl.tourNext(); flush(5);
+  }
+  const flow = [];
+  gl.openFlow(0); flush(5);
   gl.toggleSeq(); flush(5);
-  const on = { state: gl.state(), lanes: gl.seqLanes(), html: gl.html().seq };
-  gl.toggleSeq(); flush(5);
-  out = { on, off: { state: gl.state(), lanes: gl.seqLanes(), cards: gl.cards().length } };
+  const f = gl.data().flows[0];
+  for (let k = 0; k < f.steps.length; k++) {
+    const n = gl.data().nodes[f.steps[k].node].name;
+    flow.push({ step: k, node: n, top: sc.scrollTop, seen: seen(n) });
+    gl.key('ArrowRight'); flush(5);
+  }
+  out = { tour, flow, behavior: scrolls.map((s) => s.behavior), cam, h };
 } else if (scenario === 'glance-tour') {
   const gl = g.glance, seen = [];
   gl.tourStart(); flush(5);
@@ -425,6 +469,9 @@ if (scenario === 'focus') {
   gl.tourStart(); flush(5);
   for (let i = 0; i < at; i++) { gl.tourNext(); flush(2); }
   out = { at, state: gl.state(), side: gl.side(), links: gl.links().map((l) => l.from + '>' + l.to) };
+} else if (scenario === 'glance-idle-tours') {
+  // The tours strip at rest with `arg` flows as pills, its menu open.
+  out = { html: g.glance.idleTours(+arg, true), all: g.glance.data().flows.map((f) => f.title) };
 } else if (scenario === 'glance-explore') {
   const gl = g.glance;
   const before = g.level();
@@ -435,7 +482,11 @@ if (scenario === 'focus') {
 } else if (scenario === 'glance-dblclick') {
   const gl = g.glance;
   const ok = gl.dblclick(arg); flush(40);
-  out = { ok, level: g.level(), open: g.zoom.open_cards(), crumbs: g.zoom.crumbs(), cam: g.zoom.cam(), panel: g.panelText().slice(0, 60) };
+  out = { ok, level: g.level(), open: g.zoom.open_cards(), crumbs: g.zoom.crumbs(), cam: g.zoom.cam(), panel: g.panelText().slice(0, 60), crumbsThere: element('crumbs').textContent };
+  // Back on the overview, no breadcrumb from Explore is left.
+  g.setLevel('glance'); flush(5);
+  out.crumbsBack = element('crumbs').textContent;
+  out.crumbsHidden = element('crumbs').hidden;
 } else if (scenario === 'glance-click2') {
   // A real double-click on a card: the first click re-draws the cards, the
   // second (detail 2) lands on the new card and opens it in Explore.

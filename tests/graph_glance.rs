@@ -175,13 +175,13 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
                 "validator",
                 "card",
                 "work",
-                "Python worker subscribed to 1 topic; reads 1 config key, uses a message bus."
+                "Python worker subscribed to 1 topic; reads 1 secret, uses a message bus."
             ),
             (
                 "Kubernetes manifests",
                 "chip",
                 "infra",
-                "Kubernetes manifests in 1 folder providing 1 config key to 1 app."
+                "Kubernetes manifests in 1 folder providing 1 secret to 1 app."
             ),
             // No broker named anywhere: a plain message bus, not a guess.
             (
@@ -212,7 +212,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             (
                 "validator".into(),
                 "Kubernetes manifests".into(),
-                "reads config DB_PASSWORD".into(),
+                "reads secret DB_PASSWORD".into(),
                 false
             ),
             (
@@ -241,7 +241,10 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
     // The message crosses the bus as a step of its own.
     assert_eq!(
         g.titles(),
-        vec!["POST /uploads → ingest-api → Message bus → validator → Kubernetes manifests"]
+        // Named by where it goes: the manifests it reads config from are a
+        // step, not a destination; the broker and its subscriber are one
+        // branch, not two.
+        vec!["POST /uploads → ingest-api → Message bus → validator"]
     );
     assert_eq!(
         g.steps(0),
@@ -281,7 +284,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
     );
     assert_eq!(
         g.g()["tour"][4]["text"],
-        "The apps keep data and pass messages through 1 shared resource: Message bus (2 apps). Click a resource to see who uses it and how."
+        "The apps keep data and pass messages through 1 resource: Message bus (2 apps). Click a resource to see who uses it and how."
     );
     assert_eq!(
         g.g()["tour"][3]["text"],
@@ -362,10 +365,25 @@ fn a_single_command_line_app_is_shown_as_its_modules() {
     assert_eq!(
         g.titles(),
         vec![
-            "tally main → src/* → cli → report",
-            "tally main → src/* → cli → store"
+            // The request branches at cli: each flow says so, and which
+            // branch it follows.
+            "tally main → cli calls 2 parts; following report",
+            "tally main → cli calls 2 parts; following store"
         ]
     );
+    // The branch point and every part it reaches.
+    let name = |v: &serde_json::Value| -> String {
+        g.g()["nodes"][v.as_u64().unwrap() as usize]["name"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let fan = &g.g()["flows"][0]["fan"];
+    assert_eq!(fan.as_array().unwrap().len(), 1, "{fan}");
+    assert_eq!(name(&fan[0]["node"]), "cli");
+    let mut to: Vec<String> = fan[0]["to"].as_array().unwrap().iter().map(name).collect();
+    to.sort();
+    assert_eq!(to, vec!["report".to_string(), "store".to_string()]);
     assert_eq!(
         g.steps(1),
         own3(&[
@@ -452,8 +470,8 @@ fn a_library_workspace_without_ways_in_starts_its_flows_from_central_functions()
     assert_eq!(
         g.titles(),
         vec![
-            "summary → @kit/report → @kit/text → @kit/core",
-            "summary → @kit/report → @kit/core"
+            "summary → @kit/report calls 2 parts; following @kit/text → @kit/core",
+            "summary → @kit/report calls 2 parts; following @kit/core"
         ]
     );
     let t = g.tour();
@@ -807,7 +825,9 @@ fn services_that_talk_through_events_draw_who_publishes_to_whom() {
     assert_eq!(
         g.titles(),
         vec![
-            "on OrderPaidIntegrationEvent → RabbitMQ → Catalog",
+            // It ends back in Ordering, which hears StockLowIntegrationEvent:
+            // named by where it really ends.
+            "on OrderPaidIntegrationEvent → RabbitMQ → Catalog → Ordering",
             "on OrderStartedIntegrationEvent → RabbitMQ → Basket"
         ]
     );
@@ -833,5 +853,146 @@ fn services_that_talk_through_events_draw_who_publishes_to_whom() {
             st("RabbitMQ", "publish", "StockLowIntegrationEvent".into()),
             st("Ordering", "bus", "StockLowIntegrationEvent".into()),
         ]
+    );
+}
+
+/// Two Python apps: an API with a health probe, a route, a complex handler
+/// no code calls and a complex helper it calls, types it uses from a
+/// generated file and from its own; a worker reading a plain port and a
+/// password a Kubernetes Secret provides.
+const TRUTH: &[(&str, &str)] = &[
+    (
+        "api/pyproject.toml",
+        "[project]\nname = \"api\"\ndependencies = [\"fastapi>=0.110\"]\n",
+    ),
+    (
+        "api/api/main.py",
+        "from fastapi import FastAPI\nfrom api.models import Order\nfrom api.gen import Item\n\napp = FastAPI()\n\n\n@app.get(\"/healthz\")\ndef health():\n    return 1\n\n\n@app.get(\"/items\")\ndef items(a, b, c):\n    if a:\n        return 1\n    elif b:\n        return 2\n    elif c:\n        return 3\n    for x in a:\n        if x:\n            return x\n    return rank(a, b)\n\n\ndef rank(a, b):\n    if a and b:\n        return 1\n    if a or b:\n        return 2\n    for x in a:\n        if x > 1:\n            return x\n    while b:\n        b = b - 1\n    return Order(Item())\n",
+    ),
+    (
+        "api/api/report.py",
+        "from api.models import Order\nfrom api.gen import Item\n\n\ndef total(o: Order, i: Item):\n    return Order(Item())\n",
+    ),
+    (
+        "api/api/models.py",
+        "class Order:\n    def __init__(self, item):\n        self.item = item\n",
+    ),
+    (
+        "api/api/gen.py",
+        "# Code generated by a tool. DO NOT EDIT.\n\nclass Item:\n    pass\n",
+    ),
+    (
+        "worker/pyproject.toml",
+        "[project]\nname = \"worker\"\ndependencies = [\"pydantic\", \"requests\"]\n\n[project.scripts]\nworker = \"worker.main:run\"\n",
+    ),
+    (
+        "worker/worker/main.py",
+        "import os\nimport requests\n\n\ndef run():\n    port = os.environ[\"PORT\"]\n    password = os.environ[\"DB_PASSWORD\"]\n    return requests.get(\"/items\"), port, password\n",
+    ),
+    (
+        "deploy/worker.yaml",
+        "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: worker\nspec:\n  template:\n    spec:\n      containers:\n        - name: worker\n          image: registry.example.com/team/worker:1.0\n          env:\n            - name: PORT\n              value: \"8080\"\n            - name: DB_PASSWORD\n              valueFrom:\n                secretKeyRef:\n                  name: db-password\n                  key: value\n",
+    ),
+];
+
+/// What the guided path says is only what the index supports: secrets
+/// apart from plain config, no generated type among the core types, no
+/// code nobody calls among the risky, no health probe among the ways in.
+#[test]
+fn the_guided_path_tells_secrets_generated_code_and_callers_apart() {
+    let (_tmp, root, db) = common::index_repo("lidx-glance-truth-", TRUTH);
+    let apps = glance(&root, &db);
+    let g = G(&apps);
+    // Ways in: the route, not the probe.
+    let ways: Vec<(String, String, String)> =
+        g.entries().into_iter().filter(|e| e.0 == "api").collect();
+    assert_eq!(ways, own3(&[("api", "http", "GET /items")]));
+    // Core types: the app's own, never the generated one.
+    let core: Vec<String> = g.g()["core_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(core.contains(&"Order".to_string()), "{core:?}");
+    assert!(!core.contains(&"Item".to_string()), "{core:?}");
+    // Careful here: the helper something calls, not the uncalled handler.
+    let hot: Vec<(String, u64)> = g.g()["hotspots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                h["name"].as_str().unwrap().to_string(),
+                h["uses"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(hot, vec![("rank".to_string(), 1)]);
+    // Secrets: the password from the Secret, apart from the plain port.
+    let q = g.g()["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["id"] == "secrets")
+        .unwrap()
+        .clone();
+    let groups: Vec<(String, Vec<String>)> = q["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|gr| {
+            (
+                gr["title"].as_str().unwrap().to_string(),
+                gr["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| i["text"].as_str().unwrap().to_string())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        groups,
+        vec![
+            (
+                "Secrets".to_string(),
+                vec!["worker reads secret DB_PASSWORD from Kubernetes manifests".to_string()]
+            ),
+            (
+                "Plain config keys, not secrets".to_string(),
+                vec!["worker reads PORT from Kubernetes manifests".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        q["a"],
+        "worker reads 1 secret and 1 config key from Kubernetes manifests. 1 other key read is plain config, not secrets: listed apart below."
+    );
+    let config = g.g()["tour"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "config")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        config["text"],
+        "Config keys are set in Kubernetes manifests (read by 1 app). Secrets come from Kubernetes manifests (read by 1 app)."
+    );
+    let worker = g.nodes().into_iter().find(|n| n.0 == "worker").unwrap();
+    assert_eq!(
+        worker.3,
+        "Python command-line app installing `worker`; calls 1 app over HTTP, reads 1 config key, reads 1 secret."
+    );
+    let chip = g
+        .nodes()
+        .into_iter()
+        .find(|n| n.0 == "Kubernetes manifests")
+        .unwrap();
+    assert_eq!(
+        chip.3,
+        "Kubernetes manifests in 1 folder providing 1 secret and 1 config key to 1 app."
     );
 }

@@ -82,6 +82,9 @@ pub(super) struct UnitUse {
     pub(super) secrets: Usage,
     pub(super) topics: Usage,
     pub(super) calls: Usage,
+    /// Keys it provides from a secret: a Kubernetes env var set by
+    /// `secretKeyRef`. Read as plain config, they are secrets all the same.
+    pub(super) secret_sourced: BTreeSet<String>,
 }
 
 /// A link of the app view as the glance page reads it.
@@ -314,7 +317,16 @@ pub(crate) fn apps_json(
                     "HTTP_ROUTE" => u.http.add(&key, sym),
                     "RPC_IMPL" => u.rpc.add(&key, sym),
                     "CHANNEL_SUBSCRIBE" => u.bus.add(&key, sym),
-                    "CONFIG_SOURCE" => u.provides.add(&key, sym),
+                    "CONFIG_SOURCE" => {
+                        if r.detail
+                            .as_deref()
+                            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                            .is_some_and(|d| d["secret"].is_string())
+                        {
+                            u.secret_sourced.insert(key.clone());
+                        }
+                        u.provides.add(&key, sym)
+                    }
                     "RPC_ROUTE" => u.declares.add(&key, sym),
                     "CONFIG_READ" if is_secret(&key) => u.secrets.add(&key, sym),
                     "CONFIG_READ" => u.config.add(&key, sym),

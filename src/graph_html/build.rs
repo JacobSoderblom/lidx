@@ -1284,7 +1284,8 @@ pub(crate) struct RepoRow {
     pub ev: Option<String>,
     pub ev_line: Option<i64>,
     pub ev_file: String,
-    /// The edge's detail, kept for HTTP calls: the raw URL names its host.
+    /// The edge's detail, kept for HTTP calls (the raw URL names its host)
+    /// and config sources (a Kubernetes env var set from a Secret).
     pub detail: Option<String>,
 }
 
@@ -1330,7 +1331,7 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
     let sql = format!(
         "SELECT e.kind, sf.path, tf.path, tf.language, ts.qualname, e.target_qualname,
                 e.evidence_snippet, e.evidence_start_line, ef.path,
-                CASE WHEN e.kind IN ('XREF', 'HTTP_CALL') THEN e.detail END, ss.qualname, ss.start_line,
+                CASE WHEN e.kind IN ('XREF', 'HTTP_CALL', 'CONFIG_SOURCE') THEN e.detail END, ss.qualname, ss.start_line,
                 ss.id, ts.id
          FROM edges e
          JOIN symbols ss ON e.source_symbol_id = ss.id
@@ -1351,7 +1352,7 @@ pub(crate) fn repo_rows(ctx: &Ctx) -> Result<Vec<RepoRow>> {
     while let Some(r) = rows.next()? {
         let kind: String = r.get(0)?;
         let detail: Option<String> = r.get(9)?;
-        let http_detail = if kind == "HTTP_CALL" {
+        let http_detail = if kind == "HTTP_CALL" || kind == "CONFIG_SOURCE" {
             detail.clone()
         } else {
             None

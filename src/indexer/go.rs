@@ -2544,6 +2544,31 @@ fn named_type_text(node: Node<'_>, source: &str) -> Option<String> {
     }
 }
 
+/// The method a gorilla/mux route is limited to by a chained
+/// `.Methods(http.MethodPost)` or `.Methods("POST")`: the first one named.
+fn chained_methods(call: Node<'_>, source: &str) -> Option<String> {
+    let sel = call
+        .parent()
+        .filter(|p| p.kind() == "selector_expression")?;
+    if sel.child_by_field_name("operand").map(|o| o.id()) != Some(call.id()) {
+        return None;
+    }
+    let field = sel.child_by_field_name("field")?;
+    if node_text(field, source) != "Methods" {
+        return None;
+    }
+    let outer = sel.parent().filter(|p| p.kind() == "call_expression")?;
+    let arg = *call_arguments(outer).first()?;
+    let text = node_text(arg, source);
+    let name = text
+        .trim_matches(['"', '`'])
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("Method");
+    http::normalize_method(name)
+}
+
 fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
     let Some(function_node) = node.child_by_field_name("function") else {
@@ -2581,7 +2606,7 @@ fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
             None => return edges,
         }
     } else {
-        http::HTTP_ANY.to_string()
+        chained_methods(node, source).unwrap_or_else(|| http::HTTP_ANY.to_string())
     };
 
     let normalized = match http::normalize_path(&raw_path) {
@@ -3806,6 +3831,49 @@ func main() {
             vec![
                 ("/cart".to_string(), "viewCartHandler".to_string()),
                 ("/api/users".to_string(), "listUsers".to_string()),
+            ]
+        );
+    }
+
+    /// gorilla/mux: `r.HandleFunc("/cart", h).Methods(http.MethodPost)` is
+    /// a POST route; without `.Methods` it serves any method.
+    #[test]
+    fn mux_routes_take_their_method_from_a_chained_methods_call() {
+        let source = r#"
+package main
+
+func main() {
+    r := mux.NewRouter()
+    r.HandleFunc(baseURL+"/cart", svc.viewCartHandler).Methods(http.MethodGet, http.MethodHead)
+    r.HandleFunc(baseURL+"/cart", svc.addToCartHandler).Methods(http.MethodPost)
+    r.HandleFunc("/cart/empty", svc.emptyCartHandler).Methods("POST")
+    r.HandleFunc("/any", svc.anyHandler)
+    r.HandleFunc("/n", svc.nHandler).Name("n")
+}
+"#;
+        let mut extractor = GoExtractor::new().unwrap();
+        let file = extractor.extract(source, "main").unwrap();
+        let routes: Vec<(String, String)> = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == http::HTTP_ROUTE_KIND)
+            .map(|e| {
+                let d: serde_json::Value =
+                    serde_json::from_str(e.detail.as_deref().unwrap()).unwrap();
+                (
+                    d["handler"].as_str().unwrap_or("").to_string(),
+                    d["method"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            routes,
+            vec![
+                ("viewCartHandler".to_string(), "GET".to_string()),
+                ("addToCartHandler".to_string(), "POST".to_string()),
+                ("emptyCartHandler".to_string(), "POST".to_string()),
+                ("anyHandler".to_string(), http::HTTP_ANY.to_string()),
+                ("nHandler".to_string(), http::HTTP_ANY.to_string()),
             ]
         );
     }

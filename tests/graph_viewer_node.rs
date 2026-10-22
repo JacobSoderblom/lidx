@@ -1401,11 +1401,11 @@ fn the_landing_page_shows_a_small_labelled_map() {
         links,
         vec![
             ("calls over HTTP".to_string(), true),
-            ("reads config DB_PASSWORD".to_string(), true),
+            ("reads secret DB_PASSWORD".to_string(), true),
             ("publishes file-uploaded".to_string(), true),
-            // A short line between two stacked cards has no room for its
-            // label; its title still says it.
-            ("subscribes to file-uploaded".to_string(), false),
+            // Labels keep off other lines where they can, which leaves
+            // this short line a spot of its own.
+            ("subscribes to file-uploaded".to_string(), true),
         ]
     );
     // Labels keep off the cards and each other.
@@ -1450,7 +1450,7 @@ fn the_landing_page_shows_a_small_labelled_map() {
     );
     assert_eq!(
         r["tours"],
-        "ToursSystem tour 6 stepsPOST /uploads → ingest-api → Message bus → validator → Kubernetes manifestsMore questions ▾"
+        "ToursSystem tour 6 stepsPOST /uploads → ingest-api → Message bus → validatorMore questions ▾"
     );
     // Every string reaches the page escaped.
     let html = r["html"]["cards"].as_str().unwrap();
@@ -1467,6 +1467,9 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
     }
     let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gflow-");
     let r = run(&p, "glance-flow", "0");
+    // A flow opens as a sequence.
+    assert_eq!(r["opened"]["seq"], true, "{r}");
+    assert_eq!(r["opened"]["step"], 0, "{r}");
     let steps: Vec<(Value, Value, Value)> = r["steps"]
         .as_array()
         .unwrap()
@@ -1490,7 +1493,7 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
     // Step 3: the symbol, its file and line, and the chain so far.
     let side = r["side"].as_str().unwrap();
     assert!(
-        side.starts_with("POST /uploads → ingest-api → Message bus → validator → Kubernetes manifests3 store runs in ingest-api.ingest_api.main.storeapi/ingest_api/main.py:11"),
+        side.starts_with("POST /uploads → ingest-api → Message bus → validator3 store runs in ingest-api.ingest_api.main.storeapi/ingest_api/main.py:11"),
         "{side}"
     );
     // The message goes to the bus, then the worker takes it off.
@@ -1501,7 +1504,7 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
         "{side}"
     );
     assert!(
-        side.contains("7config DB_PASSWORDKubernetes manifests · reads config"),
+        side.contains("7secret DB_PASSWORDKubernetes manifests · reads the secret"),
         "{side}"
     );
     // Numbered crossings on the map, the current one marked.
@@ -1514,6 +1517,121 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
     assert!(links.contains("class=\"g-fl\" data-gstep=\"3\""), "{links}");
     let tours = r["html"]["tours"].as_str().unwrap();
     assert!(tours.contains("Step 3 of 7"), "{tours}");
+}
+
+/// Flows that do not fit the tours strip move into its menu, each as
+/// "Follow <title>"; Follow buttons say what they do.
+#[test]
+fn flows_past_the_strip_wait_in_the_menu_and_follow_says_what_it_does() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::CLI, "lidx-viewer-gidle-");
+    let r = run(&p, "glance-idle-tours", "0");
+    let all = r["all"].as_array().unwrap();
+    assert_eq!(all.len(), 2, "{r}");
+    let html = r["html"].as_str().unwrap();
+    // No pill: both flows are menu items, before the questions.
+    assert!(!html.contains("class=\"g-tour\" data-gflow"), "{html}");
+    let first = format!(
+        "role=\"menuitem\" data-gflow=\"0\" title=\"Follow this request through the system: {}\">Follow {}</button>",
+        all[0].as_str().unwrap(),
+        all[0].as_str().unwrap()
+    );
+    assert!(html.contains(&first), "{html}");
+    assert!(html.contains("data-gflow=\"1\""), "{html}");
+    let one = run(&p, "glance-idle-tours", "1");
+    let html = one["html"].as_str().unwrap();
+    assert!(html.contains("class=\"g-tour\" data-gflow=\"0\""), "{html}");
+    assert!(
+        html.contains("role=\"menuitem\" data-gflow=\"1\""),
+        "{html}"
+    );
+    assert!(
+        !html.contains("role=\"menuitem\" data-gflow=\"0\""),
+        "{html}"
+    );
+    // Start here: the Follow chip's name says where it goes.
+    let land = run(&p, "glance-landing", "");
+    let side = land["html"]["side"].as_str().unwrap_or("");
+    assert!(
+        side.contains("title=\"Follow this request through the system\" aria-label=\"Follow tally main through the system\">Follow ▸"),
+        "{side}"
+    );
+}
+
+/// A flow that branches lists where, and which branch it follows.
+#[test]
+fn a_branching_flow_lists_its_branch_points() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::CLI, "lidx-viewer-gfan-");
+    let r = run(&p, "glance-flow", "0");
+    let side = r["side"].as_str().unwrap();
+    assert!(
+        side.contains("Where the request branchescli reaches 2 parts: this flow follows report; it also reaches store."),
+        "{side}"
+    );
+}
+
+/// A map too tall for its area scrolls each tour step's subject and each
+/// flow step's part into view, smoothly unless motion is reduced.
+#[test]
+fn every_tour_and_flow_step_scrolls_its_subject_into_view() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-greveal-");
+    let r = run(&p, "glance-reveal", "900,150");
+    assert!(
+        r["cam"]["h"].as_f64().unwrap() > 300.0,
+        "the map must not fit: {r}"
+    );
+    let tour = r["tour"].as_array().unwrap();
+    assert!(tour.len() >= 5, "{r}");
+    for t in tour {
+        for (n, s) in t["subject"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(t["seen"].as_array().unwrap())
+        {
+            // A subject card taller than the view cannot be wholly in it.
+            if t["id"] != "lanes" {
+                assert_eq!(s, true, "tour step {} hides {n}: {r}", t["id"]);
+            }
+        }
+    }
+    // The data step is about the resources, at the foot of the map: it
+    // scrolls down to them.
+    let data = tour.iter().find(|t| t["id"] == "data").unwrap();
+    assert!(data["top"].as_f64().unwrap() > 0.0, "{r}");
+    for f in r["flow"].as_array().unwrap() {
+        assert_eq!(
+            f["seen"], true,
+            "flow step {} hides {}: {r}",
+            f["step"], f["node"]
+        );
+    }
+    let b = r["behavior"].as_array().unwrap();
+    assert!(!b.is_empty(), "{r}");
+    assert!(b.iter().all(|x| x == "smooth"), "{r}");
+    // Reduced motion: the same scrolls, at once.
+    let out = Command::new("node")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/viewer_node/harness.js"))
+        .arg(&p)
+        .arg("glance-reveal")
+        .arg("900,150")
+        .env("REDUCE", "1")
+        .output()
+        .unwrap();
+    let rr: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let b = rr["behavior"].as_array().unwrap();
+    assert!(!b.is_empty() && b.iter().all(|x| x == "auto"), "{rr}");
 }
 
 /// The sequence view: one lane per part in the order the flow reaches it.
@@ -1543,10 +1661,16 @@ fn the_sequence_toggle_draws_the_flow_in_lanes() {
         "{svg}"
     );
     assert!(svg.contains("2  upload  · calls over HTTP"), "{svg}");
-    // Off again: the map is back, the flow still open.
+    // The toggle: Sequence pressed, Map not.
+    let tours = r["on"]["tours"].as_str().unwrap();
+    assert!(tours.ends_with("SequenceMap"), "{tours}");
+    // S: the map, the flow still open; S again: the sequence.
     assert_eq!(r["off"]["state"]["seq"], false);
     assert_eq!(r["off"]["state"]["flow"], 0);
+    assert_eq!(r["off"]["state"]["step"], 1);
     assert_eq!(r["off"]["cards"], 5);
+    assert_eq!(r["again"]["seq"], true);
+    assert_eq!(r["again"]["step"], 1);
 }
 
 /// The system tour runs step by step, shows its progress, and exits with
@@ -1580,7 +1704,7 @@ fn the_tour_runs_and_exits_keeping_the_selection() {
         serde_json::json!(["Kubernetes manifests", "validator"])
     );
     assert!(
-        seen[2]["side"].as_str().unwrap().starts_with("System tour · step 3 of 6Follow one requestPOST /uploads → ingest-api → Message bus → validator → Kubernetes manifests: 7 steps across 5 parts."),
+        seen[2]["side"].as_str().unwrap().starts_with("System tour · step 3 of 6Follow one requestPOST /uploads → ingest-api → Message bus → validator: 7 steps across 5 parts."),
         "{}",
         seen[2]["side"]
     );
@@ -1626,6 +1750,14 @@ fn double_clicking_a_card_opens_it_in_explore() {
     assert_eq!(r["level"], "app");
     assert_eq!(r["open"], serde_json::json!(["validator"]));
     assert_eq!(r["crumbs"], serde_json::json!(["validator"]));
+    // The header's breadcrumb says where Explore is; back on the overview
+    // it is emptied and hidden, never left stale.
+    assert!(
+        r["crumbsThere"].as_str().unwrap().contains("validator"),
+        "{r}"
+    );
+    assert_eq!(r["crumbsBack"], "", "{r}");
+    assert_eq!(r["crumbsHidden"], true, "{r}");
     let (_tmp2, p2) = glance_page(common::glance_fixtures::CLI, "lidx-viewer-gdblm-");
     let r = run(&p2, "glance-dblclick", "store");
     assert_eq!(r["level"], "app", "{r}");
@@ -1651,17 +1783,18 @@ fn a_card_a_line_and_a_question_each_explain_themselves() {
     assert_eq!(r["card"]["state"]["dim"], serde_json::json!(["portal"]));
     let side = r["card"]["side"].as_str().unwrap();
     assert!(
-        side.starts_with("‹ Start herevalidator worker · PythonPython worker subscribed to 1 topic; reads 1 config key, uses a message bus.worker/Ways in1 subscriptionbuson file-uploaded"),
+        side.starts_with("‹ Start herevalidator worker · PythonPython worker subscribed to 1 topic; reads 1 secret, uses a message bus.worker/Ways in1 subscriptionbuson file-uploaded"),
         "{side}"
     );
     assert!(
-        side.contains("Talks toKubernetes manifests reads config DB_PASSWORDMessage bus subscribes to file-uploaded"),
+        // One row per verb, as the map says it.
+        side.contains("Talks toreads secret DB_PASSWORD Kubernetes manifestssubscribes to file-uploaded Message bus"),
         "{side}"
     );
     // Where it runs: the deployment that names its image.
     assert!(side.contains("Runs inKubernetes (deploy/)"), "{side}");
     assert!(
-        side.contains("Called byingest-api publishes file-uploaded"),
+        side.contains("Called bypublishes file-uploaded ingest-api"),
         "{side}"
     );
     assert!(
@@ -1683,7 +1816,8 @@ fn a_card_a_line_and_a_question_each_explain_themselves() {
         r["q"]["side"]
             .as_str()
             .unwrap()
-            .starts_with("‹ Start hereWhere do secrets come from?No code reads a secret."),
+            // A key a Kubernetes Secret sets is a secret, listed as one.
+            .starts_with("‹ Start hereWhere do secrets come from?validator reads secret DB_PASSWORD from Kubernetes manifests.Secrets 1validator reads secret DB_PASSWORD from Kubernetes manifestsworker/validator/main.py:9"),
         "{}",
         r["q"]["side"]
     );
