@@ -252,3 +252,31 @@ pub fn explore() -> Vec<(&'static str, &'static str)> {
     ]);
     v
 }
+
+const CSPROJ_RABBIT: &str = "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n  <ItemGroup>\n    <PackageReference Include=\"RabbitMQ.Client\" Version=\"6.8.1\" />\n  </ItemGroup>\n</Project>\n";
+
+/// Four .NET services that talk only through integration events on a
+/// RabbitMQ event bus: ordering publishes, the others react, and catalog
+/// answers ordering with an event of its own.
+pub const EVENTS: &[(&str, &str)] = &[
+    ("ordering/Ordering.csproj", CSPROJ_RABBIT),
+    (
+        "ordering/Api.cs",
+        "namespace Ordering;\n\npublic record OrderPaidIntegrationEvent(int Id) : IntegrationEvent;\npublic record OrderStartedIntegrationEvent(int Id) : IntegrationEvent;\npublic record StockLowIntegrationEvent(int Id) : IntegrationEvent;\n\npublic static class Api\n{\n    public static void Map(WebApplication app)\n    {\n        app.MapPost(\"/orders/{id}/pay\", Pay);\n    }\n\n    public static void Pay(IIntegrationEventService events, int id)\n    {\n        events.Save(new OrderPaidIntegrationEvent(id));\n        events.Save(new OrderStartedIntegrationEvent(id));\n    }\n}\n\npublic class StockLowHandler : IIntegrationEventHandler<StockLowIntegrationEvent>\n{\n    public Task Handle(StockLowIntegrationEvent e) => Task.CompletedTask;\n}\n",
+    ),
+    ("catalog/Catalog.csproj", CSPROJ_RABBIT),
+    (
+        "catalog/Handlers.cs",
+        "namespace Catalog;\n\npublic record OrderPaidIntegrationEvent(int Id) : IntegrationEvent;\npublic record StockLowIntegrationEvent(int Id) : IntegrationEvent;\n\npublic class OrderPaidHandler(IEventBus bus) : IIntegrationEventHandler<OrderPaidIntegrationEvent>\n{\n    public async Task Handle(OrderPaidIntegrationEvent e)\n    {\n        await bus.PublishAsync(new StockLowIntegrationEvent(e.Id));\n    }\n}\n",
+    ),
+    ("basket/Basket.csproj", CSPROJ_RABBIT),
+    (
+        "basket/Handlers.cs",
+        "namespace Basket;\n\npublic record OrderStartedIntegrationEvent(int Id) : IntegrationEvent;\n\npublic class OrderStartedHandler : IIntegrationEventHandler<OrderStartedIntegrationEvent>\n{\n    public Task Handle(OrderStartedIntegrationEvent e) => Task.CompletedTask;\n}\n",
+    ),
+    ("web/Web.csproj", CSPROJ_RABBIT),
+    (
+        "web/Handlers.cs",
+        "namespace Web;\n\npublic record OrderPaidIntegrationEvent(int Id) : IntegrationEvent;\n\npublic class OrderPaidHandler : IIntegrationEventHandler<OrderPaidIntegrationEvent>\n{\n    public Task Handle(OrderPaidIntegrationEvent e) => Task.CompletedTask;\n}\n",
+    ),
+];

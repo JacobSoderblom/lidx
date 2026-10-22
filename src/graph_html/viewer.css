@@ -785,6 +785,11 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-dtoggle[aria-pressed="true"] { color: var(--focus-ink); font-weight: 700; }
 .g-items { display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 0; list-style: none; }
 .g-items code { font-size: 11.5px; }
+.g-evapps, .g-events { margin: 0; padding: 0; list-style: none; }
+.g-evnames { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+.g-events li { padding: 3px 0; line-height: 1.4; overflow-wrap: anywhere; }
+.g-events code { font-size: 11.5px; }
+.g-dtn { font-weight: 500; letter-spacing: 0; }
 .g-card:hover { box-shadow: 0 0 0 3px var(--paper-3); }
 .g-card.sel { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-soft); }
 .g-card.dim, .g-libchip.dim { opacity: 0.28; }
@@ -877,7 +882,7 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-note { font-size: 12.5px; color: var(--ink-2); margin: 4px 0; }
 .g-hint { font-size: 12px; color: var(--ink-3); margin: 12px 0 0; }
 .g-kicker { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--focus-ink); margin: 0 0 4px; }
-.g-lead { font-size: 14px; line-height: 1.5; color: var(--ink-2); margin: 4px 0 10px; }
+.g-lead { font-size: 14px; line-height: 1.5; color: var(--ink-2); margin: 4px 0 10px; overflow-wrap: anywhere; }
 .g-dir { font: 11.5px var(--mono); color: var(--ink-3); margin: -4px 0 10px; overflow-wrap: anywhere; }
 .g-backlink { display: inline-flex; align-items: center; min-height: 24px; border: 0; background: none; padding: 0; color: var(--ink-3); font-size: 12.5px; margin-bottom: 6px; }
 .g-backlink:hover { color: var(--ink); }

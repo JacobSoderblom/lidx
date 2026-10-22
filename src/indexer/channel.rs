@@ -40,6 +40,16 @@ const BUS_RECEIVER_PATTERNS: &[&str] = &[
     "serviceBus",
     "_queue",
     "_channel",
+    // Kafka clients, by the names their docs give them.
+    "_consumer",
+    "consumer",
+    "_producer",
+    "producer",
+    // A NATS connection.
+    "nc",
+    "_nc",
+    "nats",
+    "_nats",
 ];
 
 /// Known publish method names
@@ -130,8 +140,27 @@ fn is_plausible_topic(s: &str) -> bool {
 /// same-file constant (see `string_consts`). A call, parameter, unknown
 /// name, foreign member access, interpolation with holes or mock matcher
 /// yields `None`; a name is never derived from expression text.
-pub fn resolve_topic(raw: &str, consts: &StringConsts, local: &LocalBinding) -> Option<String> {
-    normalize_channel_name(&consts.resolve_arg(raw, local)?)
+pub fn resolve_topic(raw: &str, consts: &StringConsts, local: &LocalBinding) -> Option<Topic> {
+    Topic::named(&consts.resolve_arg(raw, local)?)
+}
+
+/// A resolved topic: its join key and the name as the code writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Topic {
+    /// The normalized `channel://` key both sides of a bus meet on.
+    pub key: String,
+    /// The name as written (`OrderStartedIntegrationEvent`, `order-created`),
+    /// which people read; the key is lowercased for matching.
+    pub name: String,
+}
+
+impl Topic {
+    /// The topic a name denotes, if it is a plausible topic name.
+    pub fn named(name: &str) -> Option<Topic> {
+        let key = normalize_channel_name(name)?;
+        let name = strip_azure_prefix(strip_topic_container(name.trim())).to_string();
+        Some(Topic { key, name })
+    }
 }
 
 /// Strip known topic container prefix from a dotted expression.
@@ -179,93 +208,111 @@ pub fn is_subscribe_method(name: &str) -> bool {
 
 /// Broker SDK calls that name the topic or queue they send to or receive
 /// from, whatever the receiver is called: `(method, kind, framework,
-/// keyword)`. The topic is the keyword argument (Python), else the first
-/// argument.
-const SDK_CHANNEL_CALLS: &[(&str, &str, &str, &str)] = &[
+/// keyword, position)`. The topic is the keyword argument (Python), else the
+/// argument at `position` (a RabbitMQ publish names the exchange first and
+/// the routing key second).
+#[rustfmt::skip]
+const SDK_CHANNEL_CALLS: &[(&str, &str, &str, &str, usize)] = &[
     // Azure Service Bus: Python, .NET, JavaScript and Go clients.
-    (
-        "get_topic_sender",
-        CHANNEL_PUBLISH_KIND,
-        "azure-service-bus",
-        "topic_name",
-    ),
-    (
-        "get_queue_sender",
-        CHANNEL_PUBLISH_KIND,
-        "azure-service-bus",
-        "queue_name",
-    ),
-    (
-        "get_subscription_receiver",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "topic_name",
-    ),
-    (
-        "get_queue_receiver",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "queue_name",
-    ),
-    (
-        "CreateSender",
-        CHANNEL_PUBLISH_KIND,
-        "azure-service-bus",
-        "",
-    ),
-    (
-        "CreateProcessor",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "",
-    ),
-    (
-        "CreateSessionProcessor",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "",
-    ),
-    (
-        "CreateReceiver",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "",
-    ),
-    (
-        "createSender",
-        CHANNEL_PUBLISH_KIND,
-        "azure-service-bus",
-        "",
-    ),
-    (
-        "createReceiver",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "",
-    ),
-    ("NewSender", CHANNEL_PUBLISH_KIND, "azure-service-bus", ""),
-    (
-        "NewReceiverForQueue",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "",
-    ),
-    (
-        "NewReceiverForSubscription",
-        CHANNEL_SUBSCRIBE_KIND,
-        "azure-service-bus",
-        "",
-    ),
+    ("get_topic_sender", CHANNEL_PUBLISH_KIND, "azure-service-bus", "topic_name", 0),
+    ("get_queue_sender", CHANNEL_PUBLISH_KIND, "azure-service-bus", "queue_name", 0),
+    ("get_subscription_receiver", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "topic_name", 0),
+    ("get_queue_receiver", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "queue_name", 0),
+    ("CreateSender", CHANNEL_PUBLISH_KIND, "azure-service-bus", "", 0),
+    ("CreateProcessor", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "", 0),
+    ("CreateSessionProcessor", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "", 0),
+    ("CreateReceiver", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "", 0),
+    ("createSender", CHANNEL_PUBLISH_KIND, "azure-service-bus", "", 0),
+    ("createReceiver", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "", 0),
+    ("NewSender", CHANNEL_PUBLISH_KIND, "azure-service-bus", "", 0),
+    ("NewReceiverForQueue", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "", 0),
+    ("NewReceiverForSubscription", CHANNEL_SUBSCRIBE_KIND, "azure-service-bus", "", 0),
     // Kafka (Confluent .NET client).
-    ("ProduceAsync", CHANNEL_PUBLISH_KIND, "kafka", ""),
+    ("ProduceAsync", CHANNEL_PUBLISH_KIND, "kafka", "", 0),
+    // RabbitMQ: pika (Python), RabbitMQ.Client (.NET), amqp091-go (Go) and
+    // amqplib (JavaScript).
+    ("basic_publish", CHANNEL_PUBLISH_KIND, "rabbitmq", "routing_key", 1),
+    ("basic_consume", CHANNEL_SUBSCRIBE_KIND, "rabbitmq", "queue", 0),
+    ("BasicPublish", CHANNEL_PUBLISH_KIND, "rabbitmq", "", 1),
+    ("BasicPublishAsync", CHANNEL_PUBLISH_KIND, "rabbitmq", "", 1),
+    ("BasicConsume", CHANNEL_SUBSCRIBE_KIND, "rabbitmq", "", 0),
+    ("BasicConsumeAsync", CHANNEL_SUBSCRIBE_KIND, "rabbitmq", "", 0),
+    ("PublishWithContext", CHANNEL_PUBLISH_KIND, "rabbitmq", "", 2),
+    ("Consume", CHANNEL_SUBSCRIBE_KIND, "rabbitmq", "", 0),
+    ("consume", CHANNEL_SUBSCRIBE_KIND, "rabbitmq", "", 0),
+    ("sendToQueue", CHANNEL_PUBLISH_KIND, "rabbitmq", "", 0),
 ];
 
-/// A broker SDK call that names its topic: `(kind, framework, keyword)`.
-pub fn sdk_channel_call(method: &str) -> Option<(&'static str, &'static str, &'static str)> {
+/// A broker SDK call that names its topic: `(kind, framework, keyword,
+/// position)`.
+pub fn sdk_channel_call(method: &str) -> Option<(&'static str, &'static str, &'static str, usize)> {
     SDK_CHANNEL_CALLS
         .iter()
-        .find(|(m, _, _, _)| *m == method)
-        .map(|(_, k, f, kw)| (*k, *f, *kw))
+        .find(|(m, _, _, _, _)| *m == method)
+        .map(|(_, k, f, kw, pos)| (*k, *f, *kw, *pos))
+}
+
+/// Generic handler interfaces whose one type argument is the message a
+/// class receives off a bus: `(interface, framework)`. An event bus
+/// (`IIntegrationEventHandler<T>`, the .NET microservices guidance), a
+/// MassTransit consumer and an NServiceBus or Rebus handler. In-process
+/// mediators (MediatR's `INotificationHandler<T>`) cross no process and are
+/// not here.
+const MESSAGE_HANDLER_INTERFACES: &[(&str, &str)] = &[
+    ("IIntegrationEventHandler", "event-bus"),
+    ("IConsumer", "masstransit"),
+    ("IHandleMessages", "nservicebus"),
+];
+
+/// The framework of a message-handler interface, by its unqualified name.
+pub fn message_handler_framework(interface: &str) -> Option<&'static str> {
+    MESSAGE_HANDLER_INTERFACES
+        .iter()
+        .find(|(i, _)| *i == interface)
+        .map(|(_, f)| *f)
+}
+
+/// The methods of a message handler that take the message.
+pub const MESSAGE_HANDLER_METHODS: &[&str] = &["Handle", "HandleAsync", "Consume", "ConsumeAsync"];
+
+/// A .NET integration event type (`OrderStartedIntegrationEvent`): the
+/// event-bus convention names every message that leaves a service so.
+/// Creating one is publishing it, even through an outbox that sends it
+/// later. The base type `IntegrationEvent` itself is no event.
+pub fn is_integration_event_type(name: &str) -> bool {
+    const SUFFIX: &str = "IntegrationEvent";
+    name.len() > SUFFIX.len()
+        && name.ends_with(SUFFIX)
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Methods that put a message object on a bus: `bus.Publish(new X())`,
+/// MassTransit's `Publish<T>`, NServiceBus's `Send`/`SendLocal`.
+pub fn is_message_send_method(name: &str) -> bool {
+    matches!(
+        name,
+        "Publish" | "PublishAsync" | "Send" | "SendAsync" | "SendLocal"
+    )
+}
+
+/// Receivers a message is sent through besides a bus: a MassTransit
+/// endpoint, an NServiceBus session or handler context.
+pub fn is_message_session_receiver(receiver: &str) -> bool {
+    let last = receiver.rsplit('.').next().unwrap_or(receiver).trim();
+    let last = last.trim_start_matches('_');
+    let lower = last.to_ascii_lowercase();
+    is_bus_receiver(receiver)
+        || matches!(
+            lower.as_str(),
+            "context"
+                | "publishendpoint"
+                | "sendendpoint"
+                | "endpoint"
+                | "endpointinstance"
+                | "messagesession"
+                | "session"
+        )
 }
 
 /// Check if a raw topic value looks like a topic container member access.
@@ -274,9 +321,10 @@ pub fn topic_from_member_access(raw: &str) -> Option<String> {
     normalize_channel_name(raw)
 }
 
-pub fn build_publish_detail(channel: &str, raw: &str, framework: &str) -> String {
+pub fn build_publish_detail(topic: &Topic, raw: &str, framework: &str) -> String {
     json!({
-        "channel": channel,
+        "channel": topic.key,
+        "name": topic.name,
         "raw": raw,
         "framework": framework,
         "role": "publisher",
@@ -284,14 +332,24 @@ pub fn build_publish_detail(channel: &str, raw: &str, framework: &str) -> String
     .to_string()
 }
 
-pub fn build_subscribe_detail(channel: &str, raw: &str, framework: &str) -> String {
+pub fn build_subscribe_detail(topic: &Topic, raw: &str, framework: &str) -> String {
     json!({
-        "channel": channel,
+        "channel": topic.key,
+        "name": topic.name,
         "raw": raw,
         "framework": framework,
         "role": "subscriber",
     })
     .to_string()
+}
+
+/// The detail of a channel edge of either kind.
+pub fn build_detail(kind: &str, topic: &Topic, raw: &str, framework: &str) -> String {
+    if kind == CHANNEL_PUBLISH_KIND {
+        build_publish_detail(topic, raw, framework)
+    } else {
+        build_subscribe_detail(topic, raw, framework)
+    }
 }
 
 /// Bridge pair: given an edge kind, return the complementary kind(s) for traversal bridging.

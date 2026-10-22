@@ -1131,6 +1131,11 @@ fn handle_type(
     if type_kind != TypeKind::Enum {
         handle_base_list(node, &qualname, source, output, type_kind, ctx);
     }
+    if matches!(type_kind, TypeKind::Class | TypeKind::Record) {
+        output
+            .edges
+            .extend(message_handler_edges(node, &qualname, source));
+    }
     if type_kind == TypeKind::Record {
         let mut member_ctx = ctx.clone();
         member_ctx.type_stack.push(name.clone());
@@ -2144,6 +2149,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         output.edges.push(edge);
     }
     if let Some(edge) = channel_subscribe_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
+    if let Some(edge) = message_publish_edge(node, ctx, source) {
         output.edges.push(edge);
     }
     if let Some(edge) = config_read_edge(node, ctx, source) {
@@ -4014,12 +4022,12 @@ fn channel_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     let first_arg = args.first()?;
     let raw_topic = node_text(*first_arg, source);
     let local = csharp_local_binding(node, &raw_topic, source);
-    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
-    let detail = channel::build_publish_detail(&normalized, &raw_topic, "azure-service-bus");
+    let topic = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
+    let detail = channel::build_publish_detail(&topic, &raw_topic, "azure-service-bus");
     Some(EdgeInput {
         kind: channel::CHANNEL_PUBLISH_KIND.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
+        target_qualname: Some(topic.key),
         detail: Some(detail),
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),
@@ -4036,21 +4044,17 @@ fn channel_sdk_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeI
     }
     let target_node = node.child_by_field_name("function")?;
     let target = call_target_parts(target_node, source)?;
-    let (kind, framework, _) = channel::sdk_channel_call(&target.name)?;
+    let (kind, framework, _, pos) = channel::sdk_channel_call(&target.name)?;
     let args = call_arguments(node);
-    let first_arg = args.first()?;
-    let raw_topic = node_text(*first_arg, source);
+    let arg = args.get(pos)?;
+    let raw_topic = node_text(*arg, source);
     let local = csharp_local_binding(node, &raw_topic, source);
-    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
-    let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, framework)
-    } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
-    };
+    let topic = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
+    let detail = channel::build_detail(kind, &topic, &raw_topic, framework);
     Some(EdgeInput {
         kind: kind.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
+        target_qualname: Some(topic.key),
         detail: Some(detail),
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),
@@ -4075,13 +4079,146 @@ fn channel_subscribe_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option
     let first_arg = args.first()?;
     let raw_topic = node_text(*first_arg, source);
     let local = csharp_local_binding(node, &raw_topic, source);
-    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
-    let detail = channel::build_subscribe_detail(&normalized, &raw_topic, "azure-service-bus");
+    let topic = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
+    let detail = channel::build_subscribe_detail(&topic, &raw_topic, "azure-service-bus");
     Some(EdgeInput {
         kind: channel::CHANNEL_SUBSCRIBE_KIND.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
+        target_qualname: Some(topic.key),
         detail: Some(detail),
+        evidence_snippet: None,
+        evidence_start_line: Some(span(node).0),
+        evidence_end_line: Some(span(node).2),
+        ..Default::default()
+    })
+}
+
+/// The unqualified type a type text names: `Ns.T<U>` -> `T`. `None` for
+/// anything that is not a plain type name.
+fn simple_type_name(text: &str) -> Option<String> {
+    let t = strip_type_args(text.trim());
+    let t = t.trim_end_matches('?');
+    let last = t.rsplit('.').next().unwrap_or(t).trim();
+    let ok = last.starts_with(|c: char| c.is_ascii_uppercase())
+        && last.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    ok.then(|| last.to_string())
+}
+
+/// The one type argument of a generic name text: `IConsumer<Ns.T>` -> `T`.
+/// `None` for no type argument or several.
+fn single_type_arg(text: &str) -> Option<String> {
+    let open = text.find('<')?;
+    let close = text.rfind('>')?;
+    let inner = text.get(open + 1..close)?;
+    if inner.contains([',', '<']) {
+        return None;
+    }
+    simple_type_name(inner)
+}
+
+/// A message handler class (`class H : IIntegrationEventHandler<T>`, a
+/// MassTransit `IConsumer<T>`, an NServiceBus `IHandleMessages<T>`)
+/// subscribes to its message type `T`, from the method that takes it.
+fn message_handler_edges(node: Node<'_>, qualname: &str, source: &str) -> Vec<EdgeInput> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    let Some(list) = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "base_list")
+    else {
+        return out;
+    };
+    // The handling method, else the class itself.
+    let handler = node
+        .child_by_field_name("body")
+        .and_then(|body| {
+            let mut c = body.walk();
+            body.named_children(&mut c)
+                .filter(|m| m.kind() == "method_declaration")
+                .filter_map(|m| m.child_by_field_name("name"))
+                .map(|n| node_text(n, source))
+                .find(|n| channel::MESSAGE_HANDLER_METHODS.contains(&n.as_str()))
+        })
+        .map(|m| format!("{qualname}.{m}"))
+        .unwrap_or_else(|| qualname.to_string());
+    let line = span(list).0;
+    for base in base_list_types(list, source) {
+        let head = strip_type_args(&base);
+        let head = head.rsplit('.').next().unwrap_or(&head);
+        let Some(framework) = channel::message_handler_framework(head) else {
+            continue;
+        };
+        let Some(topic) = single_type_arg(&base).and_then(|t| channel::Topic::named(&t)) else {
+            continue;
+        };
+        out.push(EdgeInput {
+            kind: channel::CHANNEL_SUBSCRIBE_KIND.to_string(),
+            source_qualname: Some(handler.clone()),
+            detail: Some(channel::build_subscribe_detail(&topic, &base, framework)),
+            target_qualname: Some(topic.key),
+            evidence_snippet: None,
+            evidence_start_line: Some(line),
+            evidence_end_line: Some(line),
+            ..Default::default()
+        });
+    }
+    out
+}
+
+/// A message object put on a bus: creating an integration event
+/// (`new OrderStartedIntegrationEvent(..)`, published now or through an
+/// outbox), or sending a message object through a bus or a messaging
+/// session (`bus.Publish(new OrderPlaced())`, `context.Send<T>(..)`,
+/// `endpoint.Publish(evt)` with `var evt = new T(..)`). The topic is the
+/// message type.
+fn message_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let (ty, raw) = match node.kind() {
+        "object_creation_expression" => {
+            let raw = node_text(node.child_by_field_name("type")?, source);
+            let ty = simple_type_name(&raw)?;
+            (channel::is_integration_event_type(&ty).then_some(ty)?, raw)
+        }
+        "invocation_expression" => {
+            let function = node.child_by_field_name("function")?;
+            let target = call_target_parts(function, source)?;
+            let name = strip_type_args(&target.name);
+            if !channel::is_message_send_method(&name) {
+                return None;
+            }
+            let receiver = target.receiver.as_deref().unwrap_or("");
+            if !channel::is_message_session_receiver(receiver) {
+                return None;
+            }
+            let generic = single_type_arg(&target.name);
+            let from_arg = || -> Option<String> {
+                let arg = *call_arguments(node).first()?;
+                let text = node_text(arg, source);
+                let created = if arg.kind() == "object_creation_expression" {
+                    Some(text)
+                } else {
+                    match csharp_local_binding(node, &text, source) {
+                        LocalBinding::Value(init) => Some(init),
+                        _ => None,
+                    }
+                }?;
+                let rest = created.trim().strip_prefix("new ")?;
+                simple_type_name(rest.split(['(', '{']).next()?)
+            };
+            let ty = generic.or_else(from_arg)?;
+            // An integration event is published where it is created.
+            if channel::is_integration_event_type(&ty) {
+                return None;
+            }
+            (ty, node_text(function, source))
+        }
+        _ => return None,
+    };
+    let topic = channel::Topic::named(&ty)?;
+    Some(EdgeInput {
+        kind: channel::CHANNEL_PUBLISH_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        detail: Some(channel::build_publish_detail(&topic, &raw, "event-bus")),
+        target_qualname: Some(topic.key),
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),
         evidence_end_line: Some(span(node).2),

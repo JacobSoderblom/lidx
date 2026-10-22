@@ -418,6 +418,13 @@ if (scenario === 'focus') {
   gl.key('Escape'); flush(5);
   seen.push({ state: gl.state(), tours: gl.tours() });
   out = { seen, count: gl.data().tour.length };
+} else if (scenario === 'glance-tour-at') {
+  // The tour at the step whose id is `arg`: its side column and lines.
+  const gl = g.glance, d = gl.data();
+  const at = d.tour.findIndex((t) => t.id === arg);
+  gl.tourStart(); flush(5);
+  for (let i = 0; i < at; i++) { gl.tourNext(); flush(2); }
+  out = { at, state: gl.state(), side: gl.side(), links: gl.links().map((l) => l.from + '>' + l.to) };
 } else if (scenario === 'glance-explore') {
   const gl = g.glance;
   const before = g.level();

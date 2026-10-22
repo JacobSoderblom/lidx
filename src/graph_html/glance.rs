@@ -175,6 +175,8 @@ pub(crate) struct Step {
     pub via: &'static str,
     /// Reached over an edge bound by name only.
     pub probable: bool,
+    /// The topic or event a message step crossed the bus on, as written.
+    pub topic: Option<String>,
 }
 
 /// One scored path from an entry point.
@@ -201,6 +203,10 @@ struct OutLink {
     count: usize,
     quiet: bool,
     calls: Vec<Value>,
+    /// Which way messages run on a line to a broker: `out` (the app
+    /// publishes), `in` (it only subscribes: the broker delivers to it) or
+    /// `both`.
+    dir: &'static str,
 }
 
 /// A lane of code (apps, libraries, modules), not of infrastructure or
@@ -311,6 +317,8 @@ pub struct Facts {
     pub rpc_services: usize,
     pub topics_in: usize,
     pub topics_out: usize,
+    /// The topics are all named as event types: say "events".
+    pub events: bool,
     pub calls_http: usize,
     pub calls_rpc: usize,
     pub config_keys: usize,
@@ -368,7 +376,7 @@ pub fn card_sentence(f: &Facts) -> String {
     if f.topics_in > 0 {
         exposes.push(format!(
             "subscribed to {}",
-            count(f.topics_in, "topic", "topics")
+            count(f.topics_in, topic_word(f.events).0, topic_word(f.events).1)
         ));
     }
     if let Some(cmd) = &f.command {
@@ -393,7 +401,7 @@ pub fn card_sentence(f: &Facts) -> String {
     if f.topics_out > 0 {
         rest.push(format!(
             "publishes {}",
-            count(f.topics_out, "topic", "topics")
+            count(f.topics_out, topic_word(f.events).0, topic_word(f.events).1)
         ));
     }
     if f.config_keys > 0 {
@@ -769,8 +777,17 @@ fn entry_label(kind: &str, key: &str, detail: Option<&Value>) -> String {
             }
         }
         _ => {
-            // The topic as written (`"file-uploaded"`), not its matching key.
-            // A constant's name (`TOPIC_NAME`) is not the topic: its key is.
+            // The name the extractor read (a literal's or a constant's
+            // value, a message type), else the topic as written
+            // (`"file-uploaded"`), not its matching key. A constant's name
+            // (`TOPIC_NAME`) is not the topic: its key is.
+            if let Some(name) = detail
+                .and_then(|d| d.get("name"))
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty())
+            {
+                return format!("on {name}");
+            }
             let quoted = |r: &str| r.starts_with(['"', '\'', '`']);
             let raw = detail
                 .and_then(|d| d.get("raw"))
@@ -1212,6 +1229,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                     // would bury the rest.
                     quiet: family == "config" && config_links > 4,
                     calls,
+                    dir: "out",
                 });
             }
         }
@@ -1293,6 +1311,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                             .take(MAX_CALLS)
                             .map(|(t, f, l)| json!({ "text": t, "file": f, "line": l }))
                             .collect(),
+                        dir: "out",
                     }
                 })
                 .collect();
@@ -1346,6 +1365,10 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     }
     for ((a, rn), agg) in &ragg {
         let r = &found.res[found_index(&res_node, *rn)];
+        let (p, sb) = (
+            agg.verbs.contains(&Verb::Publishes),
+            agg.verbs.contains(&Verb::Subscribes),
+        );
         out_links.push(OutLink {
             from: *a,
             to: *rn,
@@ -1354,6 +1377,11 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             count: agg.items.len().max(1),
             quiet: false,
             calls: agg.calls(units),
+            dir: match (r.cat, p, sb) {
+                (Cat::Bus, true, true) => "both",
+                (Cat::Bus, false, true) => "in",
+                _ => "out",
+            },
         });
     }
     // Apps a deployment file wires to each other (an env value naming the
@@ -1393,6 +1421,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 .take(MAX_CALLS)
                 .map(|e| json!({ "text": format!("deployment: {}", e.text), "file": e.file, "line": e.line }))
                 .collect(),
+            dir: "out",
         });
     }
     // Apps that meet at a broker are drawn through it: their direct bus
@@ -1409,6 +1438,22 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             l.quiet = true;
         }
     }
+    let event_brokers = if mode == Mode::Apps {
+        let mut users: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        for ((a, rn), agg) in &ragg {
+            let bus =
+                nodes[*rn].lane == "data" && found.res[found_index(&res_node, *rn)].cat == Cat::Bus;
+            if bus
+                && (agg.verbs.contains(&Verb::Publishes) || agg.verbs.contains(&Verb::Subscribes))
+            {
+                users.entry(*rn).or_default().insert(*a);
+            }
+        }
+        let card = |i: usize| is_code_lane(nodes[i].lane) && nodes[i].place != Place::Strip;
+        draw_event_links(&mut out_links, &users, &card)
+    } else {
+        Vec::new()
+    };
     // A resource nothing on the map links to and no file declares is
     // only in the detail.
     let linked_res: HashSet<usize> = ragg.keys().map(|(_, rn)| *rn).collect();
@@ -1541,6 +1586,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                         kind: "CONFIG_READ".to_string(),
                         via: "config",
                         probable: false,
+                        topic: None,
                     });
                 }
             }
@@ -1569,7 +1615,32 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 .or_insert((q.clone(), x.ev.file.clone(), x.ev.line));
         }
     }
+    // A topic as written, from its matching key (`orderstarted` ->
+    // `OrderStarted`): a trace's hop names the key.
+    let mut written: HashMap<String, String> = HashMap::new();
+    for x in inp.uses {
+        for k in x.topics.keys.keys().chain(x.bus.keys.keys()) {
+            if let Some(key) = crate::indexer::channel::normalize_channel_name(short_key(k)) {
+                written
+                    .entry(short_key(&key).to_string())
+                    .or_insert_with(|| short_key(k).to_string());
+            }
+        }
+    }
+    let topic_of = |raw: &str| -> String {
+        let raw = short_key(raw);
+        written
+            .get(raw)
+            .or_else(|| {
+                crate::indexer::channel::normalize_channel_name(raw)
+                    .and_then(|k| written.get(short_key(&k)))
+            })
+            .cloned()
+            .unwrap_or_else(|| raw.to_string())
+    };
     let broker_of = |topic: &str| -> Option<Step> {
+        let topic = topic_of(topic);
+        let topic = topic.as_str();
         let (rn, file, line) = topic_at.get(topic)?.clone();
         Some(Step {
             node: rn,
@@ -1580,6 +1651,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             kind: "CHANNEL_PUBLISH".to_string(),
             via: "publish",
             probable: false,
+            topic: Some(topic.to_string()),
         })
     };
     // The resource a file's code uses, as the last step of a flow.
@@ -1619,11 +1691,13 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             kind: "USES".to_string(),
             via: if r.cat == Cat::Db { "db" } else { "res" },
             probable: false,
+            topic: None,
         })
     };
     let code_lanes: Vec<bool> = nodes.iter().map(|n| is_code_lane(n.lane)).collect();
     let code_node = |i: usize| code_lanes.get(i).copied().unwrap_or(false);
     let hooks = Hooks {
+        topic_of: &topic_of,
         config_of: &config_of,
         broker_of: &broker_of,
         res_of: &res_of,
@@ -1722,6 +1796,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                             kind: "ENTRY".to_string(),
                             via: "start",
                             probable: false,
+                            topic: None,
                         })
                     })
             } else if e.kind == "bus" {
@@ -1740,6 +1815,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                             kind: "ENTRY".to_string(),
                             via: "start",
                             probable: false,
+                            topic: None,
                         })
                     })
                     // No app on the map publishes it: the broker hands it over.
@@ -1841,6 +1917,40 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         hidden_cards += 1;
     }
 
+    // ---- the messages each broker carries: who publishes, who subscribes
+    let events_of = {
+        let at = |x: &resources::Use| -> Option<usize> {
+            let a = match mode {
+                Mode::Modules if Some(x.unit) == main_unit => node_of_file(&x.ev.file)?,
+                _ => unit_node[x.unit]?,
+            };
+            (is_code_lane(nodes[a].lane) && nodes[a].place != Place::Strip).then_some(a)
+        };
+        let mut uses: Vec<BusUse> = Vec::new();
+        for x in &found.uses {
+            let (Some(item), Some(rn)) = (&x.item, res_node[x.res]) else {
+                continue;
+            };
+            if !matches!(x.verb, Verb::Publishes | Verb::Subscribes)
+                || x.how != How::Edge
+                || units[x.unit].kind.hidden()
+            {
+                continue;
+            }
+            let Some(node) = at(x) else { continue };
+            uses.push(BusUse {
+                broker: rn,
+                topic: item.clone(),
+                node,
+                publishes: x.verb == Verb::Publishes,
+                qual: x.qual.clone().unwrap_or_default(),
+                file: x.ev.file.clone(),
+                line: x.ev.line,
+            });
+        }
+        broker_events(&uses)
+    };
+
     // ---- sentences
     let used_by: Vec<BTreeSet<usize>> = {
         let mut ub: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
@@ -1891,7 +2001,11 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 .map(|x| units[x.unit].name.clone())
                 .collect();
             nd.sentence = resource_sentence(r, &aggs, mode == Mode::Modules, &libs);
-            nd.res = Some(resource_json(r));
+            let mut res = resource_json(r);
+            if r.cat == Cat::Bus {
+                res["events"] = json!(events_of.get(&i).cloned().unwrap_or_default());
+            }
+            nd.res = Some(res);
             continue;
         }
         if nd.kind == "infra" {
@@ -1947,6 +2061,14 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 .len(),
             topics_in: x.bus.keys.len(),
             topics_out: x.topics.keys.len(),
+            events: topic_noun(
+                x.bus
+                    .keys
+                    .keys()
+                    .chain(x.topics.keys.keys())
+                    .map(|k| k.as_str()),
+            )
+            .0 == "event",
             calls_http: calls_to("http"),
             calls_rpc: calls_to("rpc"),
             config_keys: x.config.keys.len(),
@@ -2118,10 +2240,16 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 "nodes": f.seq,
                 "probable": f.steps.iter().any(|s| s.probable),
                 "ends": if f.unresolved_end { "unresolved" } else { "" },
-                "steps": f.steps.iter().map(|s| json!({
-                    "node": s.node, "name": s.name, "qual": s.qual, "file": s.file, "line": s.line,
-                    "kind": s.kind, "via": s.via, "probable": s.probable,
-                })).collect::<Vec<_>>(),
+                "steps": f.steps.iter().map(|s| {
+                    let mut v = json!({
+                        "node": s.node, "name": s.name, "qual": s.qual, "file": s.file, "line": s.line,
+                        "kind": s.kind, "via": s.via, "probable": s.probable,
+                    });
+                    if let Some(t) = &s.topic {
+                        v["topic"] = json!(t);
+                    }
+                    v
+                }).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -2231,10 +2359,14 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     let links_json: Vec<Value> = out_links
         .iter()
         .map(|l| {
-            json!({
+            let mut v = json!({
                 "from": l.from, "to": l.to, "family": l.family, "label": l.label, "count": l.count,
                 "quiet": l.quiet, "calls": l.calls,
-            })
+            });
+            if l.dir != "out" {
+                v["dir"] = json!(l.dir);
+            }
+            v
         })
         .collect();
     let mut doc = json!({
@@ -2250,6 +2382,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         "read_first": read_first,
         "central": central_used,
         "deploy": deploy.groups,
+        "event_brokers": event_brokers,
         "hidden": {
             "cards": hidden_cards,
             "resources": hidden_res,
@@ -2370,6 +2503,128 @@ pub fn left_out_reason(langs: &BTreeMap<String, i64>, unindexed: Option<&str>) -
     }
 }
 
+/// Least apps a broker carries messages between before its messages are
+/// drawn as lines between them: the Shared-Is-A-Tag threshold.
+pub const EVENT_USERS: usize = 3;
+/// Messages kept per broker in its detail.
+const MAX_EVENTS: usize = 60;
+/// "What reacts to E?" questions, for the messages most parts hear.
+const MAX_EVENT_QUESTIONS: usize = 5;
+
+/// One app publishing or subscribing to one topic on one broker.
+#[derive(Clone, Debug)]
+pub(crate) struct BusUse {
+    pub broker: usize,
+    pub topic: String,
+    pub node: usize,
+    pub publishes: bool,
+    pub qual: String,
+    pub file: String,
+    pub line: i64,
+}
+
+/// Each broker's messages, most connected first: who publishes each, who
+/// subscribes, and where (the first place per part and side).
+pub(crate) fn broker_events(uses: &[BusUse]) -> HashMap<usize, Vec<Value>> {
+    type Acc = (BTreeSet<usize>, BTreeSet<usize>, Vec<Value>);
+    let mut by: BTreeMap<(usize, &str), Acc> = BTreeMap::new();
+    let mut seen: HashSet<(usize, &str, usize, bool)> = HashSet::new();
+    let mut sorted: Vec<&BusUse> = uses.iter().collect();
+    sorted.sort_by(|a, b| (&a.file, a.line, &a.qual).cmp(&(&b.file, b.line, &b.qual)));
+    for u in sorted {
+        let e = by.entry((u.broker, u.topic.as_str())).or_default();
+        if u.publishes {
+            e.0.insert(u.node);
+        } else {
+            e.1.insert(u.node);
+        }
+        if seen.insert((u.broker, u.topic.as_str(), u.node, u.publishes)) {
+            e.2.push(json!({
+                "node": u.node, "role": if u.publishes { "pub" } else { "sub" },
+                "qual": u.qual, "file": u.file, "line": u.line,
+            }));
+        }
+    }
+    let mut out: HashMap<usize, Vec<(usize, usize, String, Value)>> = HashMap::new();
+    for ((broker, topic), (pubs, subs, at)) in by {
+        out.entry(broker).or_default().push((
+            pubs.len() + subs.len(),
+            subs.len(),
+            topic.to_string(),
+            json!({ "name": topic, "pubs": pubs, "subs": subs, "at": at }),
+        ));
+    }
+    out.into_iter()
+        .map(|(b, mut list)| {
+            list.sort_by(|x, y| {
+                y.0.cmp(&x.0)
+                    .then_with(|| y.1.cmp(&x.1))
+                    .then_with(|| x.2.cmp(&y.2))
+            });
+            list.truncate(MAX_EVENTS);
+            (b, list.into_iter().map(|(_, _, _, v)| v).collect())
+        })
+        .collect()
+}
+
+/// Apps that mostly talk through a broker: a broker that carries messages
+/// between at least [`EVENT_USERS`] of them, with at least as many pairs of
+/// apps messaging each other as pairs calling each other directly (HTTP,
+/// RPC, a deployment's wiring). Who publishes to whom is then the
+/// architecture: those message links are drawn, publisher to subscriber,
+/// rather than waiting for a focus. Of two apps that message each other the
+/// direction with more messages is drawn. A broker the apps only touch
+/// beside their calls stays a tag. Returns the brokers drawn so.
+fn draw_event_links(
+    links: &mut [OutLink],
+    users: &BTreeMap<usize, BTreeSet<usize>>,
+    is_card: &dyn Fn(usize) -> bool,
+) -> Vec<usize> {
+    let pair = |l: &OutLink| (l.from.min(l.to), l.from.max(l.to));
+    let direct: BTreeSet<(usize, usize)> = links
+        .iter()
+        .filter(|l| {
+            matches!(l.family, "http" | "rpc" | "wire")
+                && l.from != l.to
+                && is_card(l.from)
+                && is_card(l.to)
+        })
+        .map(pair)
+        .collect();
+    let mut out = Vec::new();
+    for (&broker, apps) in users {
+        if apps.len() < EVENT_USERS {
+            continue;
+        }
+        let idx: Vec<usize> = (0..links.len())
+            .filter(|&i| {
+                let l = &links[i];
+                l.family == "bus"
+                    && l.from != l.to
+                    && apps.contains(&l.from)
+                    && apps.contains(&l.to)
+                    && is_card(l.from)
+                    && is_card(l.to)
+            })
+            .collect();
+        let pairs: BTreeSet<(usize, usize)> = idx.iter().map(|&i| pair(&links[i])).collect();
+        if pairs.len() < 2 || pairs.len() < direct.len() {
+            continue;
+        }
+        out.push(broker);
+        for &i in &idx {
+            let back = idx.iter().any(|&j| {
+                links[j].from == links[i].to
+                    && links[j].to == links[i].from
+                    && (links[j].count, std::cmp::Reverse(j))
+                        > (links[i].count, std::cmp::Reverse(i))
+            });
+            links[i].quiet = back;
+        }
+    }
+    out
+}
+
 /// The resource a resource node stands for.
 fn found_index(res_node: &[Option<usize>], node: usize) -> usize {
     res_node.iter().position(|n| *n == Some(node)).unwrap_or(0)
@@ -2378,6 +2633,8 @@ fn found_index(res_node: &[Option<usize>], node: usize) -> usize {
 /// What a flow looks up as it is built: the config a symbol reads, the
 /// broker of a topic, the resource a file's code uses.
 struct Hooks<'a> {
+    /// A topic as written, from its key.
+    topic_of: &'a dyn Fn(&str) -> String,
     config_of: &'a dyn Fn(&str) -> Option<Step>,
     broker_of: &'a dyn Fn(&str) -> Option<Step>,
     res_of: &'a dyn Fn(&str) -> Option<Step>,
@@ -2431,17 +2688,15 @@ impl ResAgg {
         let base = match cat {
             Cat::Bus => {
                 let (p, s) = (self.named(Verb::Publishes), self.named(Verb::Subscribes));
+                let (one, many) = topic_noun(p.iter().chain(s.iter()).map(|k| k.as_str()));
                 match (p.len(), s.len()) {
                     (0, 0) if has(Verb::Subscribes) => "receives messages".to_string(),
                     (0, 0) => "exchanges messages".to_string(),
                     (1, 0) => format!("publishes {}", p[0]),
-                    (n, 0) => format!("publishes {n} topics"),
+                    (n, 0) => format!("publishes {n} {many}"),
                     (0, 1) => format!("subscribes to {}", s[0]),
-                    (0, n) => format!("subscribes to {n} topics"),
-                    (a, b) => format!(
-                        "publishes {}, subscribes to {b}",
-                        count(a, "topic", "topics")
-                    ),
+                    (0, n) => format!("subscribes to {n} {many}"),
+                    (a, b) => format!("publishes {}, subscribes to {b}", count(a, one, many)),
                 }
             }
             Cat::Secrets => {
@@ -2577,7 +2832,15 @@ fn resource_sentence(
             if names.len() > 3 {
                 list.push(format!("{} more", names.len() - 3));
             }
-            let plural = match *k {
+            // Topics named as event types are events.
+            let (k, ev) = match *k {
+                "topic" if topic_noun(names.iter().map(|n| n.as_str())).0 == "event" => {
+                    ("event", true)
+                }
+                k => (k, false),
+            };
+            let plural = match k {
+                _ if ev => "events",
                 "database" => "databases",
                 "topic" => "topics",
                 "queue" => "queues",
@@ -2957,7 +3220,10 @@ pub fn process_label(family: &str, keys: &BTreeSet<String>) -> String {
         "http" => times("calls over HTTP", n),
         "rpc" => times("calls RPC", n),
         "bus" if n == 1 => format!("publishes {}", one()),
-        "bus" => format!("publishes {n} topics"),
+        "bus" => format!(
+            "publishes {n} {}",
+            topic_noun(keys.iter().map(|k| short_key(k))).1
+        ),
         "config" => {
             let secrets = keys.iter().filter(|k| is_secret(k)).count();
             match (n, secrets) {
@@ -2973,6 +3239,32 @@ pub fn process_label(family: &str, keys: &BTreeSet<String>) -> String {
             }
         }
         _ => times(family, n),
+    }
+}
+
+/// What a set of bus keys are called: events when every one is named as an
+/// event type (`OrderStartedIntegrationEvent`), else topics.
+pub fn topic_noun<'a>(names: impl Iterator<Item = &'a str>) -> (&'static str, &'static str) {
+    let mut any = false;
+    for n in names {
+        any = true;
+        if !short_key(n).ends_with("Event") {
+            return ("topic", "topics");
+        }
+    }
+    if any {
+        ("event", "events")
+    } else {
+        ("topic", "topics")
+    }
+}
+
+/// The words for a card's topics.
+fn topic_word(events: bool) -> (&'static str, &'static str) {
+    if events {
+        ("event", "events")
+    } else {
+        ("topic", "topics")
     }
 }
 
@@ -3200,6 +3492,9 @@ fn best_path(
             "start"
         },
         probable: false,
+        topic: (caller.is_some() && e.kind == "bus")
+            .then(|| e.key.as_deref().map(|k| (hooks.topic_of)(k)))
+            .flatten(),
     };
     let mut best: BTreeMap<Vec<usize>, Candidate> = BTreeMap::new();
     let leaves: Vec<usize> = (0..hops.len())
@@ -3375,12 +3670,16 @@ fn best_path(
                 break;
             }
             // A message goes through its broker: a step of its own.
-            if via == "bus"
-                && let Some(topic) = h
-                    .protocol_context
-                    .as_ref()
-                    .and_then(|p| p["channel"].as_str())
-                && let Some(b) = (hooks.broker_of)(short_key(topic))
+            let topic = (via == "bus")
+                .then(|| {
+                    h.protocol_context
+                        .as_ref()
+                        .and_then(|p| p["channel"].as_str())
+                        .map(|t| (hooks.topic_of)(t))
+                })
+                .flatten();
+            if let Some(t) = &topic
+                && let Some(b) = (hooks.broker_of)(t)
             {
                 steps.push(b);
             }
@@ -3396,6 +3695,7 @@ fn best_path(
                     .resolution_kind
                     .as_deref()
                     .is_some_and(|k| probable_kinds.contains(&k)),
+                topic,
             });
             if steps.len() > TRACE_HOPS + 2 {
                 ok = false;
@@ -4318,6 +4618,10 @@ fn tour(doc: &Value) -> Vec<Value> {
             }));
         }
     }
+    // How messages flow through a broker three or more apps share.
+    if let Some(step) = events_step(&nodes, &links, mode) {
+        steps.push(step);
+    }
     // 5. Data and messaging: the resources the apps share.
     if let Some(step) = data_step(&nodes, &links, mode) {
         steps.push(step);
@@ -4445,6 +4749,225 @@ fn tour(doc: &Value) -> Vec<Value> {
         }));
     }
     steps
+}
+
+/// A broker's messages from the page document: `(broker, events)`, each
+/// event's publishers and subscribers on the map.
+fn doc_events(nodes: &[Value]) -> Vec<(u64, Vec<&Value>)> {
+    let on_map = |i: &Value| {
+        i.as_u64()
+            .and_then(|i| nodes.get(i as usize))
+            .is_some_and(|n| matches!(n["place"].as_str(), Some("card" | "chip")))
+    };
+    nodes
+        .iter()
+        .filter(|n| n["res"]["cat"] == "bus" && on_map(&n["id"]))
+        .filter_map(|n| {
+            let evs: Vec<&Value> = n["res"]["events"]
+                .as_array()?
+                .iter()
+                .filter(|e| {
+                    e["pubs"].as_array().into_iter().flatten().any(on_map)
+                        || e["subs"].as_array().into_iter().flatten().any(on_map)
+                })
+                .collect();
+            (!evs.is_empty()).then(|| (n["id"].as_u64().unwrap_or(0), evs))
+        })
+        .collect()
+}
+
+/// The ids in an event's `pubs` or `subs`.
+fn ids(v: &Value) -> Vec<u64> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .collect()
+}
+
+/// Names as prose, the first `max` and "N more".
+fn some_names(names: &[String], max: usize) -> String {
+    if names.len() <= max {
+        return and_list(names);
+    }
+    let mut shown: Vec<String> = names[..max].to_vec();
+    shown.push(format!("{} more", names.len() - max));
+    and_list(&shown)
+}
+
+/// The tour step on a broker that carries messages between three or more
+/// apps: who publishes, who subscribes, and the messages most parts hear.
+fn events_step(nodes: &[Value], links: &[Value], mode: &str) -> Option<Value> {
+    let name = |i: u64| nodes[i as usize]["name"].as_str().unwrap_or("").to_string();
+    let (one, many) = if mode == "apps" {
+        ("app", "apps")
+    } else {
+        ("part", "parts")
+    };
+    let mut best: Option<(u64, Vec<&Value>, BTreeSet<u64>)> = None;
+    for (broker, evs) in doc_events(nodes) {
+        let users: BTreeSet<u64> = evs
+            .iter()
+            .flat_map(|e| ids(&e["pubs"]).into_iter().chain(ids(&e["subs"])))
+            .collect();
+        if users.len() < EVENT_USERS {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| users.len() > b.2.len()) {
+            best = Some((broker, evs, users));
+        }
+    }
+    let (broker, evs, users) = best?;
+    // Publishers by how many messages they send, then subscribers.
+    let tally = |side: &str| -> Vec<String> {
+        let mut by: BTreeMap<u64, usize> = BTreeMap::new();
+        for e in &evs {
+            for i in ids(&e[side]) {
+                *by.entry(i).or_default() += 1;
+            }
+        }
+        let mut v: Vec<(u64, usize)> = by.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| name(a.0).cmp(&name(b.0))));
+        v.into_iter()
+            .map(|(i, c)| format!("{} ({c})", name(i)))
+            .collect()
+    };
+    let (pubs, subs) = (tally("pubs"), tally("subs"));
+    let names: Vec<&str> = evs.iter().filter_map(|e| e["name"].as_str()).collect();
+    let (ev1, evn) = topic_noun(names.iter().copied());
+    let mut text = format!(
+        "{} carries {} between {}.",
+        name(broker),
+        count(evs.len(), ev1, evn),
+        count(users.len(), one, many)
+    );
+    if !pubs.is_empty() {
+        text.push_str(&format!(" Publishing: {}.", some_names(&pubs, 4)));
+    }
+    if !subs.is_empty() {
+        text.push_str(&format!(" Subscribing: {}.", some_names(&subs, 4)));
+    }
+    let heard: Vec<String> = evs
+        .iter()
+        .filter(|e| !ids(&e["subs"]).is_empty())
+        .take(1)
+        .map(|e| {
+            let p: Vec<String> = ids(&e["pubs"]).into_iter().map(name).collect();
+            let s: Vec<String> = ids(&e["subs"]).into_iter().map(name).collect();
+            let from = if p.is_empty() {
+                String::new()
+            } else {
+                format!(" from {}", some_names(&p, 2))
+            };
+            format!(
+                "{}{from} to {}",
+                e["name"].as_str().unwrap_or(""),
+                some_names(&s, 3)
+            )
+        })
+        .collect();
+    if !heard.is_empty() {
+        text.push_str(&format!(" The most widely heard: {}.", heard.join("; ")));
+    }
+    let mut ns: Vec<u64> = vec![broker];
+    ns.extend(users.iter().copied());
+    let lines: Vec<usize> = links
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            let (a, b) = (
+                l["from"].as_u64().unwrap_or(0),
+                l["to"].as_u64().unwrap_or(0),
+            );
+            (b == broker && users.contains(&a))
+                || (l["family"] == "bus"
+                    && !l["quiet"].as_bool().unwrap_or(false)
+                    && users.contains(&a)
+                    && users.contains(&b))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    Some(json!({
+        "id": "events",
+        "title": format!("How {evn} flow"),
+        "text": text,
+        "nodes": ns, "links": lines, "select": broker, "panel": "events",
+    }))
+}
+
+/// "What reacts to E?" for the messages most parts subscribe to.
+fn event_questions(nodes: &[Value]) -> Vec<Value> {
+    let name = |i: u64| nodes[i as usize]["name"].as_str().unwrap_or("").to_string();
+    let mut all: Vec<(u64, &Value)> = Vec::new();
+    for (broker, evs) in doc_events(nodes) {
+        all.extend(
+            evs.into_iter()
+                .filter(|e| !ids(&e["subs"]).is_empty())
+                .map(|e| (broker, e)),
+        );
+    }
+    all.sort_by(|a, b| {
+        ids(&b.1["subs"])
+            .len()
+            .cmp(&ids(&a.1["subs"]).len())
+            .then_with(|| a.1["name"].as_str().cmp(&b.1["name"].as_str()))
+    });
+    all.into_iter()
+        .take(MAX_EVENT_QUESTIONS)
+        .map(|(broker, e)| {
+            let ev = e["name"].as_str().unwrap_or("");
+            let subs: Vec<String> = ids(&e["subs"]).into_iter().map(name).collect();
+            let pubs: Vec<String> = ids(&e["pubs"]).into_iter().map(name).collect();
+            let mut a = format!(
+                "{} {} to {ev} on {}",
+                and_list(&subs),
+                if subs.len() == 1 {
+                    "subscribes"
+                } else {
+                    "subscribe"
+                },
+                name(broker)
+            );
+            if pubs.is_empty() {
+                a.push_str("; no code here publishes it.");
+            } else {
+                a.push_str(&format!(
+                    "; {} {} it.",
+                    and_list(&pubs),
+                    if pubs.len() == 1 {
+                        "publishes"
+                    } else {
+                        "publish"
+                    }
+                ));
+            }
+            let items: Vec<Value> = e["at"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|x| {
+                    let who = name(x["node"].as_u64().unwrap_or(0));
+                    let verb = if x["role"] == "pub" {
+                        "publishes it in"
+                    } else {
+                        "handles it in"
+                    };
+                    json!({
+                        "text": format!("{who} {verb} {}", x["qual"].as_str().unwrap_or("")),
+                        "file": x["file"], "line": x["line"],
+                    })
+                })
+                .collect();
+            let mut ns: Vec<u64> = vec![broker];
+            ns.extend(ids(&e["pubs"]));
+            ns.extend(ids(&e["subs"]));
+            json!({
+                "id": format!("reacts-{broker}-{ev}"),
+                "q": format!("What reacts to {ev}?"),
+                "a": a, "nodes": ns, "items": items,
+            })
+        })
+        .collect()
 }
 
 /// Families of links to a resource.
@@ -4621,6 +5144,7 @@ fn questions(doc: &Value) -> Vec<Value> {
         items.truncate(40);
         out.push(json!({ "id": "secrets", "q": "Where do secrets come from?", "a": a, "nodes": ns.into_iter().collect::<Vec<_>>(), "items": items }));
     }
+    out.extend(event_questions(&nodes));
     // What talks to each card.
     let mut cards: Vec<&Value> = nodes
         .iter()
@@ -4859,6 +5383,7 @@ mod tests {
             kind: "CALLS".to_string(),
             via: "call",
             probable: false,
+            topic: None,
         }
     }
 
@@ -5273,5 +5798,209 @@ mod tests {
             "only Markdown and YAML files"
         );
         assert_eq!(left_out_reason(&langs(&[]), None), "no indexed files");
+    }
+
+    fn bus_link(from: usize, to: usize, count: usize) -> OutLink {
+        OutLink {
+            from,
+            to,
+            family: "bus",
+            label: String::new(),
+            count,
+            quiet: true,
+            calls: Vec::new(),
+            dir: "out",
+        }
+    }
+
+    fn call_link(from: usize, to: usize) -> OutLink {
+        OutLink {
+            family: "http",
+            quiet: false,
+            ..bus_link(from, to, 1)
+        }
+    }
+
+    fn users(rn: usize, apps: &[usize]) -> BTreeMap<usize, BTreeSet<usize>> {
+        BTreeMap::from([(rn, apps.iter().copied().collect())])
+    }
+
+    fn quiet(links: &[OutLink]) -> Vec<bool> {
+        links.iter().map(|l| l.quiet).collect()
+    }
+
+    #[test]
+    fn a_broker_most_apps_talk_through_draws_its_messages() {
+        // 0 publishes to 1 and 2; 2 answers 0 with more messages; one call.
+        let mut links = vec![
+            bus_link(0, 1, 1),
+            bus_link(0, 2, 1),
+            bus_link(2, 0, 2),
+            call_link(3, 1),
+        ];
+        let drawn = draw_event_links(&mut links, &users(9, &[0, 1, 2]), &|_| true);
+        assert_eq!(drawn, vec![9]);
+        // Of the pair that messages both ways, the heavier direction.
+        assert_eq!(quiet(&links), vec![false, true, false, false]);
+    }
+
+    #[test]
+    fn a_broker_beside_the_calls_stays_a_tag() {
+        // Two pairs message; three pairs call each other directly.
+        let mut links = vec![
+            bus_link(0, 1, 1),
+            bus_link(0, 2, 1),
+            call_link(0, 1),
+            call_link(1, 2),
+            call_link(2, 3),
+        ];
+        assert!(draw_event_links(&mut links, &users(9, &[0, 1, 2]), &|_| true).is_empty());
+        assert_eq!(quiet(&links)[..2], [true, true]);
+        // Fewer than three apps on the broker: a tag too.
+        let mut links = vec![bus_link(0, 1, 1), bus_link(1, 0, 1)];
+        assert!(draw_event_links(&mut links, &users(9, &[0, 1]), &|_| true).is_empty());
+        // Messages between apps off the map are not drawn.
+        let mut links = vec![bus_link(0, 1, 1), bus_link(0, 2, 1)];
+        assert!(
+            draw_event_links(&mut links, &users(9, &[0, 1, 2]), &|i| i != 2).is_empty(),
+            "one pair on the map is not a mesh"
+        );
+    }
+
+    fn bus_use(broker: usize, topic: &str, node: usize, publishes: bool, line: i64) -> BusUse {
+        BusUse {
+            broker,
+            topic: topic.to_string(),
+            node,
+            publishes,
+            qual: format!("q{node}"),
+            file: "f.cs".to_string(),
+            line,
+        }
+    }
+
+    #[test]
+    fn a_brokers_messages_say_who_publishes_and_who_subscribes() {
+        let uses = vec![
+            bus_use(9, "OrderPaid", 1, true, 10),
+            bus_use(9, "OrderPaid", 2, false, 20),
+            bus_use(9, "OrderPaid", 3, false, 30),
+            bus_use(9, "OrderPaid", 3, false, 31),
+            bus_use(9, "BasketCleared", 2, true, 40),
+            bus_use(8, "jobs", 4, false, 50),
+        ];
+        let ev = broker_events(&uses);
+        assert_eq!(
+            ev[&9],
+            vec![
+                json!({ "name": "OrderPaid", "pubs": [1], "subs": [2, 3], "at": [
+                    { "node": 1, "role": "pub", "qual": "q1", "file": "f.cs", "line": 10 },
+                    { "node": 2, "role": "sub", "qual": "q2", "file": "f.cs", "line": 20 },
+                    { "node": 3, "role": "sub", "qual": "q3", "file": "f.cs", "line": 30 },
+                ] }),
+                json!({ "name": "BasketCleared", "pubs": [2], "subs": [], "at": [
+                    { "node": 2, "role": "pub", "qual": "q2", "file": "f.cs", "line": 40 },
+                ] }),
+            ]
+        );
+        assert_eq!(ev[&8][0]["subs"], json!([4]));
+    }
+
+    fn events_doc() -> (Vec<Value>, Vec<Value>) {
+        let node =
+            |id: u64, name: &str, place: &str| json!({ "id": id, "name": name, "place": place });
+        let mut broker = node(3, "RabbitMQ", "card");
+        broker["res"] = json!({ "cat": "bus", "events": [
+            { "name": "OrderPaidEvent", "pubs": [0], "subs": [1, 2], "at": [
+                { "node": 0, "role": "pub", "qual": "Ordering.Pay", "file": "o.cs", "line": 3 },
+                { "node": 1, "role": "sub", "qual": "Catalog.Handle", "file": "c.cs", "line": 7 },
+            ] },
+            { "name": "StockLowEvent", "pubs": [1], "subs": [0], "at": [] },
+        ] });
+        let nodes = vec![
+            node(0, "Ordering", "card"),
+            node(1, "Catalog", "card"),
+            node(2, "Web", "card"),
+            broker,
+        ];
+        let links = vec![
+            json!({ "from": 0, "to": 3, "family": "msg", "quiet": false }),
+            json!({ "from": 0, "to": 1, "family": "bus", "quiet": false }),
+            json!({ "from": 1, "to": 0, "family": "bus", "quiet": true }),
+            json!({ "from": 2, "to": 1, "family": "http", "quiet": false }),
+        ];
+        (nodes, links)
+    }
+
+    #[test]
+    fn the_tour_shows_how_events_flow_through_a_shared_broker() {
+        let (nodes, links) = events_doc();
+        let step = events_step(&nodes, &links, "apps").unwrap();
+        assert_eq!(step["title"], "How events flow");
+        assert_eq!(
+            step["text"],
+            "RabbitMQ carries 2 events between 3 apps. Publishing: Catalog (1) and Ordering (1). \
+             Subscribing: Catalog (1), Ordering (1) and Web (1). The most widely heard: \
+             OrderPaidEvent from Ordering to Catalog and Web."
+        );
+        assert_eq!(step["nodes"], json!([3, 0, 1, 2]));
+        // The users' lines to the broker and the drawn message links.
+        assert_eq!(step["links"], json!([0, 1]));
+        assert_eq!(step["select"], 3);
+        assert_eq!(step["panel"], "events");
+        // Two apps on a broker: no step.
+        let (mut nodes, links) = events_doc();
+        nodes[3]["res"]["events"] = json!([{ "name": "x", "pubs": [0], "subs": [1], "at": [] }]);
+        assert!(events_step(&nodes, &links, "apps").is_none());
+    }
+
+    #[test]
+    fn what_reacts_to_an_event_names_its_subscribers_and_publishers() {
+        let (nodes, _) = events_doc();
+        let qs = event_questions(&nodes);
+        assert_eq!(qs.len(), 2);
+        assert_eq!(qs[0]["q"], "What reacts to OrderPaidEvent?");
+        assert_eq!(
+            qs[0]["a"],
+            "Catalog and Web subscribe to OrderPaidEvent on RabbitMQ; Ordering publishes it."
+        );
+        assert_eq!(
+            qs[0]["items"],
+            json!([
+                { "text": "Ordering publishes it in Ordering.Pay", "file": "o.cs", "line": 3 },
+                { "text": "Catalog handles it in Catalog.Handle", "file": "c.cs", "line": 7 },
+            ])
+        );
+        assert_eq!(qs[0]["nodes"], json!([3, 0, 1, 2]));
+        assert_eq!(
+            qs[1]["a"],
+            "Ordering subscribes to StockLowEvent on RabbitMQ; Catalog publishes it."
+        );
+    }
+
+    #[test]
+    fn messages_named_as_event_types_are_events() {
+        assert_eq!(
+            topic_noun(["OrderPaidIntegrationEvent", "channel://StockLowEvent"].into_iter()),
+            ("event", "events")
+        );
+        assert_eq!(
+            topic_noun(["OrderPaidEvent", "orders"].into_iter()),
+            ("topic", "topics")
+        );
+        assert_eq!(topic_noun(std::iter::empty()), ("topic", "topics"));
+        let keys: BTreeSet<String> = ["channel://AEvent", "channel://BEvent"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(process_label("bus", &keys), "publishes 2 events");
+        assert_eq!(
+            entry_label(
+                "CHANNEL_SUBSCRIBE",
+                "channel://orderpaid",
+                Some(&json!({ "name": "OrderPaid", "raw": "IConsumer<OrderPaid>" }))
+            ),
+            "on OrderPaid"
+        );
     }
 }
