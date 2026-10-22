@@ -228,3 +228,27 @@ pub const SHARED: &[(&str, &str)] = &[
         "import psycopg\nimport boto3\nimport stripe\nfrom elasticsearch import Elasticsearch\nfrom azure.keyvault.secrets import SecretClient\nfrom fastapi import FastAPI\n\napp = FastAPI()\ns3 = boto3.client(\"s3\")\n\n\n@app.get(\"/hub\")\ndef get():\n    return 1\n",
     ),
 ];
+
+/// `MULTI` plus what the overview leaves out or folds: a service whose code
+/// is Java (not indexed, only its proto is) and a second Kubernetes folder.
+#[allow(dead_code)]
+pub fn explore() -> Vec<(&'static str, &'static str)> {
+    let mut v = MULTI.to_vec();
+    v.extend_from_slice(&[
+        ("ads/Dockerfile", "FROM gradle\nCOPY . .\n"),
+        ("ads/src/main/java/Ads.java", "class Ads {}\n"),
+        (
+            "ads/src/main/proto/ads.proto",
+            "syntax = \"proto3\";\nservice Ads { rpc Get(Req) returns (Res); }\nmessage Req {}\nmessage Res {}\n",
+        ),
+        (
+            "deploy/overlays/a/kustomization.yaml",
+            "resources:\n- ../../k8s\n",
+        ),
+        (
+            "deploy/overlays/b/kustomization.yaml",
+            "resources:\n- ../../k8s\n",
+        ),
+    ]);
+    v
+}

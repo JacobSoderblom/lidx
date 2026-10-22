@@ -168,13 +168,13 @@ if (scenario === 'focus') {
   // Open a card, then a file, select a method, and back out with Escape.
   const z = g.zoom, steps = {};
   z.expand(arg); flush(20);
-  steps.top = { items: z.items(arg), crumbs: z.crumbs(), hash: z.hash(), links: z.links(), stubs: z.stubs() };
+  steps.top = { items: z.items(arg), crumbs: z.crumbs(), hash: z.hash(), links: z.links(), stubs: z.stubs(), panel: g.panelText().slice(0, 40) };
   const file = z.items(arg).find((i) => i.type === 'dir');
   steps.dirOpened = z.open(arg, file.name); flush(20);
-  steps.dir = { items: z.items(arg), crumbs: z.crumbs(), links: z.links(), stubs: z.stubs() };
+  steps.dir = { items: z.items(arg), crumbs: z.crumbs(), links: z.links(), stubs: z.stubs(), panel: g.panelText().slice(0, 40) };
   const f = z.items(arg).find((i) => i.type === 'file');
   steps.fileOpened = z.open(arg, file.name + f.name); flush(20);
-  steps.file = { items: z.items(arg), links: z.links(), stubs: z.stubs(), crumbs: z.crumbs(), rendered: z.rendered() };
+  steps.file = { items: z.items(arg), links: z.links(), stubs: z.stubs(), crumbs: z.crumbs(), rendered: z.rendered(), panel: g.panelText().slice(0, 40) };
   z.select(arg, file.name + f.name + '#render'); flush(10);
   steps.selected = { sel: z.selected(), panel: g.panelText(), hash: z.hash() };
   z.escape(); flush(10);
@@ -317,6 +317,69 @@ if (scenario === 'focus') {
   let html = '';
   elements.forEach((e) => { html += '\n' + e.innerHTML; });
   out = { open: g.zoom.open_cards(), crumbs: g.zoom.crumbs(), sel: g.zoom.selected(), panel: g.panelText(), html };
+} else if (scenario === 'explore-sheet') {
+  // The sheet's header and bands, an infrastructure tool's folders shown
+  // and folded, and a folder inside a folded tool revealed.
+  const z = g.zoom;
+  const first = { meta: g.meta(), sheet: g.apps(), cam: z.cam(), status: z.status() };
+  g.toggleGroup(arg); flush(10);
+  const open = { sheet: g.apps(), panel: g.panelText() };
+  g.toggleGroup(arg); flush(10);
+  const folded = g.apps();
+  const unit = open.sheet.cards.find((c) => c.key.charAt(0) === 'u' && c.band === 'infra');
+  g.selectUnit(unit ? unit.name : ''); flush(10);
+  out = { first, open, folded, revealed: g.apps(), revealedName: unit ? unit.name : null };
+} else if (scenario === 'explore-home') {
+  // The sheet in a small view (w,h): Explore opens at 1:1 at its top left;
+  // Fit still frames all of it.
+  const [w, h] = arg.split(',').map(Number);
+  element('apps').rect = { left: 0, top: 0, right: w, bottom: h, width: w, height: h };
+  g.setLevel('glance'); flush(5); g.setLevel('app'); flush(20);
+  const home = g.zoom.home();
+  const fit = g.zoom.fit();
+  out = { home, fit, sheet: { w: g.apps().width, h: g.apps().height } };
+} else if (scenario === 'zoom-click') {
+  // Clicks on boxes of an open card as the pointer sends them: the second
+  // click of a double-click does nothing, one click opens a folder or file
+  // and the panel follows; a click on a symbol selects it.
+  const z = g.zoom, apps = element('apps');
+  const fire = (type, key, detail) => {
+    const el = { dataset: { zu: String(key.u), zk: String(key.k) } };
+    const target = { closest: (sel) => (sel === '.zi' ? el : null), dataset: {}, classList: { contains: () => false } };
+    (apps.listeners[type] || []).forEach((fn) => fn({ type, target, detail, preventDefault() {}, stopPropagation() {} }));
+    flush(20);
+  };
+  z.expand(arg); flush(20);
+  const top = { crumbs: z.crumbs(), panel: g.panelText().slice(0, 40) };
+  const dir = z.itemKey(arg, z.items(arg).find((i) => i.type === 'dir').name);
+  fire('click', dir, 2);
+  const second = z.crumbs();
+  fire('dblclick', dir, 2);
+  const dbl = z.crumbs();
+  fire('click', dir, 1);
+  const opened = { crumbs: z.crumbs(), panel: g.panelText().slice(0, 40), sel: z.selected() };
+  const file = z.itemKey(arg, z.items(arg).find((i) => i.type === 'file').name);
+  fire('click', file, 1);
+  const fileOpened = { crumbs: z.crumbs(), panel: g.panelText().slice(0, 40) };
+  const sym = z.itemKey(arg, z.items(arg).find((i) => i.type === 'sym').name);
+  fire('click', sym, 1);
+  const symSel = { crumbs: z.crumbs(), panel: g.panelText().slice(0, 40), sel: z.selected() };
+  z.escape(); flush(10);
+  const esc = { crumbs: z.crumbs(), panel: g.panelText().slice(0, 40) };
+  out = { top, second, dbl, opened, fileOpened, symSel, esc };
+} else if (scenario === 'zoom-stub-sel') {
+  // Stubs are neutral until one is clicked: only that one is marked.
+  const z = g.zoom;
+  z.expand(arg); flush(20);
+  z.stubs();
+  const before = z.edgesHtml();
+  z.clickStub(0); flush(5);
+  out = { before, after: z.edgesHtml() };
+} else if (scenario === 'labels-crowd') {
+  // n links with one path: the labels that find no free spot are crowded.
+  const n = +arg, conns = [];
+  for (let i = 0; i < n; i++) conns.push({ skip: false, fam: 'http', weight: 1, label: 'calls over HTTP x' + i, parts: [], ax: 100, ay: 0, bx: 100, by: 200, c1y: 60, c2y: 140 });
+  out = g.placeLabels(conns, {});
 } else if (scenario === 'glance-landing') {
   // The landing page as it opens: the map, its links, the side column.
   const gl = g.glance;
@@ -365,7 +428,18 @@ if (scenario === 'focus') {
 } else if (scenario === 'glance-dblclick') {
   const gl = g.glance;
   const ok = gl.dblclick(arg); flush(40);
-  out = { ok, level: g.level(), open: g.zoom.open_cards(), crumbs: g.zoom.crumbs() };
+  out = { ok, level: g.level(), open: g.zoom.open_cards(), crumbs: g.zoom.crumbs(), cam: g.zoom.cam(), panel: g.panelText().slice(0, 60) };
+} else if (scenario === 'glance-click2') {
+  // A real double-click on a card: the first click re-draws the cards, the
+  // second (detail 2) lands on the new card and opens it in Explore.
+  const gl = g.glance, n = gl.data().nodes.find((x) => x.name === arg);
+  const card = { dataset: { g: String(n.id) }, closest: (sel) => (sel === '#g-map' ? {} : null) };
+  const target = { closest: (sel) => (sel === '.g-q' ? null : card) };
+  const fire = (detail) => { (element('glance').listeners.click || []).forEach((fn) => fn({ target, detail })); flush(20); };
+  fire(1);
+  const first = { level: g.level(), sel: gl.state().sel };
+  fire(2);
+  out = { first, level: g.level(), open: g.zoom.open_cards(), k: g.zoom.cam().k };
 } else if (scenario === 'glance-select') {
   // A card, then a line, then a question: what stays lit and what the side says.
   const gl = g.glance;

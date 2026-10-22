@@ -3434,6 +3434,8 @@
     { id: 'front', label: 'Front ends', kinds: { ui: 1, desktop: 1 } },
     { id: 'svc', label: 'APIs, services, workers and tools', kinds: { api: 1, service: 1, worker: 1, cli: 1 } },
     { id: 'lib', label: 'Libraries and shared code', kinds: { lib: 1, loose: 1 } },
+    // Units the overview leaves out (no indexed code), each saying why.
+    { id: 'off', label: 'Not on the overview', kinds: {} },
     { id: 'infra', label: 'Infrastructure and data', kinds: { infra: 1, data: 1 } },
     { id: 'hidden', label: 'Tests, examples, docs and tooling', kinds: { test: 1, example: 1, docs: 1, tooling: 1 } },
     { id: 'pkg', label: 'Shared external packages', kinds: {} }
@@ -3467,11 +3469,15 @@
     // Families drawn only around the card in focus: every app reads config
     // and is deployed, so drawn always they would bury the rest. The card
     // text says what they link to.
-    quiet: { config: true, deploys: true },
+    // Proto declarations too: the overview does not draw them, and every
+    // RPC app has one, so drawn always they cross the whole sheet.
+    quiet: { config: true, deploys: true, declares: true },
     on: {}, showKind: { test: false, example: false, docs: false, tooling: false },
     packages: false, undeclared: false, selected: null, selConn: null, hover: null,
     open: new Set(), cam: { k: 1, x: 0, y: 0 }, built: false, userMoved: false,
-    pos: {}, conns: [], lists: new Set()
+    pos: {}, conns: [], lists: new Set(),
+    // Infrastructure tools whose folders are shown (igroups).
+    infraOpen: new Set()
   };
   Object.keys(APP_FAM).forEach(function (f) { ast.on[f] = true; });
   var appsEl = document.getElementById('apps'), appsWorld = document.getElementById('apps-world');
@@ -3527,11 +3533,105 @@
   function deploysOf(u) {
     return AE.filter(function (e) { return e.from === u.id && e.family === 'deploys'; }).map(function (e) { return AU[e.to].name; });
   }
+  // How the overview counts a unit (app, lib, infra, res, off, hidden), so
+  // the sheet counts and bands it the same way; without an overview, by kind.
+  function unitClass(u) {
+    var g = APPS && APPS.glance;
+    if (g && g.unit_class && g.unit_class[u.id]) return g.unit_class[u.id];
+    return u.hidden ? 'hidden' : u.app ? 'app' : u.kind === 'infra' ? 'infra' : u.kind === 'data' ? 'res' : 'lib';
+  }
+  // Why the overview leaves a unit out ("Java, not indexed"), or null.
+  function leftOutWhy(u) {
+    var g = APPS && APPS.glance, hit = g && (g.left_out || []).find(function (x) { return x[0] === u.id; });
+    return hit ? hit[1] : null;
+  }
+  // Infrastructure folders grouped by tool, as the overview's chips: one
+  // card per tool on the sheet until it is expanded. A tool with a single
+  // folder is that folder's card.
+  var IGROUPS = null;
+  function igroups() {
+    if (IGROUPS) return IGROUPS;
+    var out = [], byName = {};
+    var g = APPS && APPS.glance;
+    if (g) {
+      g.nodes.forEach(function (n) { if (n.lane === 'infra' && n.units.length) out.push({ name: n.name, units: n.units.slice() }); });
+    } else {
+      AU.forEach(function (u) {
+        if (u.hidden || u.kind !== 'infra') return;
+        var t = (u.why || 'infra').split(', ')[0];
+        if (byName[t] === undefined) { byName[t] = out.length; out.push({ name: t, units: [] }); }
+        out[byName[t]].units.push(u.id);
+      });
+    }
+    var of = {};
+    out.forEach(function (gr, i) { gr.i = i; if (gr.units.length > 1) gr.units.forEach(function (id) { of[id] = i; }); });
+    IGROUPS = { list: out, of: of };
+    return IGROUPS;
+  }
+  // The card a unit is drawn as: its own, or its tool's while that is folded.
+  function shownKey(id) {
+    var gi = igroups().of[id];
+    return gi !== undefined && !ast.infraOpen.has(gi) ? 'g' + gi : 'u' + id;
+  }
+  // The overview's node standing for exactly this unit, for its sentence and tags.
+  function glanceNodeOf(u) {
+    var g = APPS && APPS.glance;
+    if (!g) return null;
+    return g.nodes.find(function (n) { return n.kind !== 'module' && n.kind !== 'infra' && n.kind !== 'resource' && n.units.length === 1 && n.units[0] === u.id; }) || null;
+  }
+  // The data stores, brokers and services a unit uses, as tags: the sheet
+  // draws no resource cards, so every one of them is a tag here.
+  function resourceTags(n) {
+    var g = APPS.glance, out = [];
+    g.links.forEach(function (l) { if (l.from === n.id && g.nodes[l.to].kind === 'resource' && out.indexOf(l.to) < 0) out.push(l.to); });
+    return out;
+  }
+  function groupHtml(gr) {
+    var open = ast.infraOpen.has(gr.i);
+    var dep = {};
+    gr.units.forEach(function (id) { deploysOf(AU[id]).forEach(function (nm) { dep[nm] = 1; }); });
+    var names = Object.keys(dep);
+    // A button like every closed card (Enter or a double-click shows or
+    // folds its folders); its "Show" line is a pointer shortcut for that.
+    return '<div role="button" class="card igroup" data-key="g' + gr.i + '" tabindex="0" aria-expanded="' + open + '" aria-pressed="' + (ast.selected === 'g' + gr.i) + '" aria-label="' +
+      esc(gr.name + ', infrastructure, ' + plural(gr.units.length, 'folder', 'folders') + (open ? ', shown' : '')) + '">' +
+      '<div class="k"><span>infra</span></div><h3>' + esc(gr.name) + '</h3>' +
+      '<p class="sub">' + esc(plural(gr.units.length, 'folder', 'folders') + (names.length ? ' · deploys ' + names.slice(0, 3).join(', ') + (names.length > 3 ? ' +' + (names.length - 3) : '') : '')) + '</p>' +
+      '<span class="gexp" data-igroup="' + gr.i + '" aria-hidden="true">' + (open ? 'Fold the ' + fmt(gr.units.length) + ' folders' : 'Show the ' + fmt(gr.units.length) + ' folders') + '</span></div>';
+  }
+  // The name on a sheet card by its key: a unit, a tool or a package.
+  function cardKeyName(k) {
+    var c = k.charAt(0), i = +k.slice(1);
+    return c === 'u' ? AU[i].name : c === 'g' ? igroups().list[i].name : CHIPS[i].name;
+  }
+  function toggleGroup(gi) {
+    pushHistory();
+    if (ast.infraOpen.has(gi)) ast.infraOpen.delete(gi); else ast.infraOpen.add(gi);
+    ast.selected = 'g' + gi; ast.selConn = null; ast.zlink = null; ast.zsel = null;
+    renderApps(true);
+    renderPanel();
+    var el = cardEl('g' + gi);
+    if (el && el.focus) el.focus({ preventScroll: true });
+    live.textContent = igroups().list[gi].name + (ast.infraOpen.has(gi) ? ' shown' : ' folded');
+  }
+  function groupPanel(gi) {
+    var gr = igroups().list[gi], open = ast.infraOpen.has(gi);
+    var html = '<div class="panel-head"><h2>' + esc(gr.name) + ' <span class="kind">infrastructure</span></h2>' +
+      '<button type="button" data-act="aclose" aria-label="Close details">×</button></div>';
+    html += '<p class="lead">' + esc(plural(gr.units.length, 'folder', 'folders')) + ', shown as one card' + (open ? ' with its folders beside it' : '') + '.</p>';
+    html += '<div class="actions"><button type="button" data-igroup="' + gi + '">' + (open ? 'Fold the folders' : 'Show the folders') + '</button></div>';
+    html += '<h3>Folders · ' + fmt(gr.units.length) + '</h3><ul class="unit-list">' + gr.units.map(function (id) {
+      var u = AU[id], dep = deploysOf(u);
+      return '<li><button type="button" class="lrow" data-unit="' + id + '"><span></span><span class="nm">' + esc(u.name) + '</span><span class="w">' +
+        esc(dep.length ? 'deploys ' + plural(dep.length, 'app', 'apps') : plural(u.files, 'file', 'files')) + '</span></button></li>';
+    }).join('') + '</ul>';
+    return html;
+  }
 
   function cardHtml(u) {
     var open = ast.open.has(u.id);
     var shape = u.app ? 'app' : (u.kind === 'infra' || u.kind === 'data') ? 'infra' : 'lib';
-    var cls = 'card ' + (shape === 'app' ? 'is-app' : shape) + (u.hidden ? ' hidden-kind' : '') + (open ? ' open' : '');
+    var cls = 'card ' + (shape === 'app' ? 'is-app' : shape) + (u.hidden ? ' hidden-kind' : '') + (unitClass(u) === 'off' ? ' off' : '') + (open ? ' open' : '');
     var langs = codeLangs(u);
     var dots = langs.map(function (l) {
       return '<i style="background:' + esc(langColor(l)) + '"></i>' + esc(langName(l));
@@ -3549,11 +3649,23 @@
     // The path is in the tooltip and the panel: on the sheet it costs a line
     // per card and says less than the name.
     if (open) html += '<div class="root">' + esc(u.root) + '</div>';
-    var ex = exposesList(u), co = consumesList(u), dep = deploysOf(u), dl = '';
-    if (ex.length) dl += '<dt>Exposes</dt><dd>' + esc(ex.join(' · ')) + '</dd>';
-    if (co.length) dl += '<dt>Uses</dt><dd>' + esc(co.join(' · ')) + '</dd>';
-    if (dep.length) dl += '<dt>Deploys</dt><dd>' + esc(dep.slice(0, 4).join(', ') + (dep.length > 4 ? ' +' + (dep.length - 4) : '')) + '</dd>';
-    if (dl) html += '<dl>' + dl + '</dl>';
+    // The overview's card language: one sentence, then the resources it
+    // uses as tags. A unit the overview has no card for says the same in
+    // its own facts.
+    var gn = glanceNodeOf(u), why = unitClass(u) === 'off' ? leftOutWhy(u) : null;
+    if (why) html += '<p class="off-why">Not on the overview: ' + esc(why) + '</p>';
+    var sent = gn && gn.sentence ? gn.sentence : '';
+    if (!sent) {
+      var ex = exposesList(u), co = consumesList(u), dep = deploysOf(u), facts = [];
+      if (ex.length) facts.push(ex.map(function (x) { return /^(declares|defines|provides|subscribes|CLI) /.test(x) ? x : 'exposes ' + x; }).join(', '));
+      if (co.length) facts.push('uses ' + co.join(', '));
+      if (dep.length) facts.push('deploys ' + dep.slice(0, 4).join(', ') + (dep.length > 4 ? ' +' + (dep.length - 4) : ''));
+      sent = facts.join('; ');
+      if (sent) sent = sent.charAt(0).toUpperCase() + sent.slice(1) + '.';
+    }
+    var tags = gn ? resourceTags(gn) : [];
+    if (sent) html += '<p class="g-sent' + (tags.length ? ' g-sent2' : '') + '">' + esc(sent) + '</p>';
+    if (tags.length) html += gBadgesHtml(tags, (u.app ? CARD_W.app : u.kind === 'infra' || u.kind === 'data' ? CARD_W.infra : CARD_W.lib) - 26);
     var mods = u.modules;
     if (open) {
       html += '<ul class="modlist" aria-label="Folders in ' + esc(u.name) + '">' + (mods.length ? mods.map(function (m) {
@@ -3579,8 +3691,11 @@
     var map = new Map(), out = [];
     AE.forEach(function (e, i) {
       if (!linkVisible(e)) return;
-      var k = e.from + '>' + e.to, c = map.get(k);
-      if (!c) { c = { a: 'u' + e.from, b: 'u' + e.to, parts: [] }; map.set(k, c); out.push(c); }
+      // A folded tool's folders link as its one card.
+      var a = shownKey(e.from), b = shownKey(e.to);
+      if (a === b) return;
+      var k = a + '>' + b, c = map.get(k);
+      if (!c) { c = { a: a, b: b, parts: [] }; map.set(k, c); out.push(c); }
       c.parts.push(i);
     });
     if (ast.packages) {
@@ -3597,9 +3712,17 @@
     });
     return out;
   }
+  function bandId(id) { for (var b = 0; b < BANDS.length; b++) if (BANDS[b].id === id) return b; return 2; }
   function bandIndex(key) {
     if (key.charAt(0) === 'p') return BANDS.length - 1;
-    var u = AU[+key.slice(1)];
+    if (key.charAt(0) === 'g') return bandId('infra');
+    var u = AU[+key.slice(1)], cls = unitClass(u);
+    // Bands follow the overview's count: an app is an app, a library a
+    // library, whatever its manifest says; what it leaves out has a band.
+    if (cls === 'off') return bandId('off');
+    if (cls === 'infra' || cls === 'res') return bandId('infra');
+    if (cls === 'lib') return bandId('lib');
+    if (cls === 'app') return BANDS[0].kinds[u.kind] ? 0 : 1;
     for (var b = 0; b < BANDS.length; b++) if (BANDS[b].kinds[u.kind]) return b;
     return 2;
   }
@@ -3609,6 +3732,7 @@
     if (key.charAt(0) === 'u' && ast.open.has(+key.slice(1)) && zoomable(AU[+key.slice(1)])) return zcardSize(+key.slice(1));
     if (el && el.offsetWidth > 0) return { w: el.offsetWidth, h: el.offsetHeight };
     if (key.charAt(0) === 'p') return { w: 150, h: 40 };
+    if (key.charAt(0) === 'g') return { w: CARD_W.lib, h: 92 };
     var u = AU[+key.slice(1)], open = ast.open.has(u.id);
     var w = open ? CARD_W.open : u.app ? CARD_W.app : u.kind === 'infra' || u.kind === 'data' ? CARD_W.infra : CARD_W.lib;
     var lines = 3 + exposesList(u).length + consumesList(u).length + (u.modules.length ? 1 : 0) + (open ? Math.min(14, u.modules.length) + 1 : 0);
@@ -3675,9 +3799,11 @@
       });
     }
     var GAP_X = 28, GAP_ROW = 30, GAP_LAYER = 76;
-    var sw = stage.getBoundingClientRect().width || 1400;
+    var sw = stageArea().w || 1400;
     // A phone gets a narrow sheet it can scroll down; a desk a wide one.
-    var maxW = sw < 760 ? 560 : Math.max(1100, Math.min(1800, Math.round(sw * 1.3)));
+    // Rows wrap to the view at 1:1 (less the band titles' margin), so the
+    // sheet reads without a sideways pan and scrolls down instead.
+    var maxW = sw < 760 ? 560 : Math.max(560, Math.round(sw - LANE_W - 56));
     var rows = [], P = {}, labels = [], y = 0, prevBand = -1, rowIdx = 0;
     layers.forEach(function (L) {
       var b = band[L[0]];
@@ -3767,12 +3893,12 @@
     });
     order.forEach(function (c) {
       var text = c.label.length > 48 ? c.label.slice(0, 47) + '…' : c.label;
-      var w = text.length * 6.3 + 6, h = 15, best = null;
+      var w = textWidth(text, '600 11px ' + SANS, 6.3) + 8, h = 15, best = null;
       // Along the curve first, then beside it.
       var spots = [];
       [0.5, 0.4, 0.6, 0.3, 0.7, 0.22, 0.78].forEach(function (t) { spots.push([t, 0]); });
       [0.5, 0.35, 0.65].forEach(function (t) { spots.push([t, 1], [t, -1]); });
-      spots.some(function (s) {
+      var free = spots.some(function (s) {
         var x = bez(c.ax, c.ax, c.bx, c.bx, s[0]) + s[1] * (w / 2 + 8), y = bez(c.ay, c.c1y, c.c2y, c.by, s[0]);
         var r = [x - w / 2, y - h / 2, x + w / 2, y + h / 2];
         var hit = function (b) { return r[0] < b[2] && r[2] > b[0] && r[1] < b[3] && r[3] > b[1]; };
@@ -3781,8 +3907,12 @@
         best = { x: x, y: y, r: r };
         return true;
       });
-      c.mx = best.x; c.my = best.y; c.text = text;
-      taken.push(best.r);
+      // No free spot: the label waits for a focus on the link (crowded),
+      // it never sits on another label or a card.
+      c.mx = best.x; c.my = best.y; c.text = text; c.crowded = !free; c.lbox = best.r;
+      // Only labels shown without a focus keep their spot from the rest.
+      var always = !(ast.quiet[c.fam] && c.parts.every(function (j) { return ast.quiet[AE[j].family]; }));
+      if (free && always) taken.push(best.r);
     });
   }
   function bez(p0, p1, p2, p3, t) {
@@ -3792,15 +3922,26 @@
   function connWidth(c) { return Math.min(5, 1 + Math.log2(Math.max(1, c.weight)) * 0.55); }
 
   function appKeys() {
-    var keys = AU.filter(unitVisible).map(function (u) { return 'u' + u.id; });
+    var keys = [], seen = {};
+    AU.filter(unitVisible).forEach(function (u) {
+      var gi = igroups().of[u.id];
+      // A tool's card stands where its first folder would, and stays when
+      // its folders are shown beside it.
+      if (gi !== undefined && !seen[gi]) { seen[gi] = 1; keys.push('g' + gi); }
+      if (gi === undefined || ast.infraOpen.has(gi)) keys.push('u' + u.id);
+    });
     if (ast.packages) CHIPS.forEach(function (c, i) { keys.push('p' + i); });
     return keys;
+  }
+  function keyHtml(k) {
+    var c = k.charAt(0), i = +k.slice(1);
+    return c === 'p' ? chipHtml(CHIPS[i], i) : c === 'g' ? groupHtml(igroups().list[i]) : cardHtml(AU[i]);
   }
   function renderApps(keepCam) {
     ast.built = true;
     var keys = appKeys();
     var html = '';
-    keys.forEach(function (k) { html += k.charAt(0) === 'p' ? chipHtml(CHIPS[+k.slice(1)], +k.slice(1)) : cardHtml(AU[+k.slice(1)]); });
+    keys.forEach(function (k) { html += keyHtml(k); });
     appsCards.innerHTML = html;
     var els = {};
     Array.prototype.forEach.call(appsCards.querySelectorAll('[data-key]'), function (el) { els[el.dataset.key] = el; });
@@ -3855,7 +3996,7 @@
       var quiet = ast.quiet[c.fam] && c.parts.every(function (j) { return ast.quiet[AE[j].family]; });
       // Next to an open card its own links, ending at its edge, say more.
       var under = c.a.charAt(0) === 'u' && c.b.charAt(0) === 'u' && (ast.open.has(+c.a.slice(1)) || ast.open.has(+c.b.slice(1))) && !!ZR;
-      svg += '<g class="conn f-' + c.fam + (named && !under ? ' named' : '') + (quiet ? ' quiet' : '') + (under ? ' under' : '') + '" data-conn="' + c.i + '" style="--w:' + r1(w) + '">' +
+      svg += '<g class="conn f-' + c.fam + (named && !under ? ' named' : '') + (quiet ? ' quiet' : '') + (under ? ' under' : '') + (c.crowded ? ' crowded' : '') + '" data-conn="' + c.i + '" style="--w:' + r1(w) + '">' +
         '<path class="ln" d="' + c.d + '" stroke-width="' + r1(w) + '"/><path class="ah" d="' + c.ah + '"/>' +
         '<path class="hit" d="' + c.d + '"/><text class="lbl" x="' + r1(c.mx) + '" y="' + r1(c.my) + '" text-anchor="middle" dy="0.35em">' +
         esc(c.text) + '</text></g>';
@@ -3868,7 +4009,7 @@
     buildZlinks();
     zRendered = null;
     updateAppEmphasis();
-    if (!keepCam || !ast.userMoved) fitApps();
+    if (!keepCam || !ast.userMoved) homeApps();
     else applyAppCam();
     renderZoomView(true);
     renderAppCrumbs();
@@ -3887,7 +4028,8 @@
   // The part of the stage the sheet can be seen in: all of it, less a
   // panel laid over it (on a phone the panel is a sheet over its foot).
   function stageArea() {
-    var r = stage.getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
+    // The sheet's own box: in the app view the status bar sits under it.
+    var r = (st.level === 'app' && appsEl ? appsEl : stage).getBoundingClientRect(), w = Math.max(1, r.width), h = Math.max(1, r.height);
     if (panel && !panel.hidden && panel.getBoundingClientRect) {
       var p = panel.getBoundingClientRect();
       if (p.width > 0 && p.height > 0 && p.left < r.right - 1 && p.right > r.left + 1 && p.top < r.bottom - 1 && p.bottom > r.top + 1) {
@@ -3911,6 +4053,24 @@
     ast.cam.y = Math.round(phone ? 12 : Math.max(20, (h - lay.height * k) / 2));
     ast.userMoved = false;
     zFit = { fn: null, at: performance.now() };
+    applyAppCam();
+  }
+  // The view Explore opens on: the whole sheet when it fits at a reading
+  // scale, else its top left at 1:1 (the band titles in view), the rest a
+  // pan away. Fit still frames everything, however small.
+  function homeApps() {
+    var lay = ast.sheet;
+    if (!lay) return;
+    stopCam();
+    var a = stageArea(), w = a.w, h = a.h, full = lay.width + LANE_W, phone = w < 760;
+    var k = Math.min(1, (w - (phone ? 16 : 40)) / Math.max(1, full), phone ? 1 : (h - 40) / Math.max(1, lay.height));
+    if (k >= READ_K) { fitApps(); zFit = { fn: null, home: true, at: performance.now() }; return; }
+    ast.cam.k = READ_K;
+    ast.cam.x = Math.round(Math.max(16, (w - full * READ_K) / 2) + LANE_W * READ_K);
+    // Room above the first row for the arcs between cards in one row.
+    ast.cam.y = phone ? 12 : 44;
+    ast.userMoved = false;
+    zFit = { fn: null, home: true, at: performance.now() };
     applyAppCam();
   }
   // Fit frames the current state: the focused card's deepest open level,
@@ -3969,7 +4129,7 @@
   function selectConn(i) {
     var cn = ast.conns[i];
     if (cn) {
-      var nameOf = function (k) { return k.charAt(0) === 'u' ? AU[+k.slice(1)].name : CHIPS[+k.slice(1)].name; };
+      var nameOf = cardKeyName;
       live.textContent = 'Link from ' + nameOf(cn.a) + ' to ' + nameOf(cn.b) + ': ' + cn.text;
     }
     ast.zlink = null;
@@ -3987,8 +4147,10 @@
     if (el) el.focus();
   }
   function revealUnit(id) {
-    var u = AU[id];
-    if (!unitVisible(u)) { ast.showKind[u.kind] = true; renderApps(true); renderLegend(); }
+    var u = AU[id], gi = igroups().of[id], redo = false;
+    if (gi !== undefined && !ast.infraOpen.has(gi)) { ast.infraOpen.add(gi); redo = true; }
+    if (!unitVisible(u)) { ast.showKind[u.kind] = true; redo = true; renderLegend(); }
+    if (redo) renderApps(true);
   }
   // Leave the sheet for the folder map, opened at `dir`.
   function openFolder(dir) {
@@ -4149,14 +4311,26 @@
     var k = ast.selected;
     if (!c && !k && !ast.zlink && !ast.zsel) { panel.hidden = true; return; }
     panel.hidden = false;
+    var deep = panelLevel();
     if (ast.zlink) panel.innerHTML = ast.zlink.stub ? stubPanel(ast.zlink.stub) : zlinkPanel(ast.zlink);
     else if (c) panel.innerHTML = connPanel(c);
     else if (ast.zsel && (ast.zpanelUnit === null || ast.zpanelUnit === undefined)) panel.innerHTML = zitemPanel(ast.zsel.u, ast.zsel.id);
     else if (!k) { panel.hidden = true; return; }
-    else panel.innerHTML = k.charAt(0) === 'p' ? chipPanel(+k.slice(1)) : unitPanel(AU[+k.slice(1)]);
+    else if (deep) panel.innerHTML = zitemPanel(deep.u, deep.id);
+    else panel.innerHTML = k.charAt(0) === 'p' ? chipPanel(+k.slice(1)) : k.charAt(0) === 'g' ? groupPanel(+k.slice(1)) : unitPanel(AU[+k.slice(1)]);
     renderTree();
   }
+  // The open folder or file the panel follows: the breadcrumb's last step
+  // in the selected card, unless the panel was sent back to the card
+  // ("‹ card") or something inside is selected.
+  function panelLevel() {
+    var k = ast.selected;
+    if (!k || k.charAt(0) !== 'u' || ast.zsel || (ast.zpanelUnit !== null && ast.zpanelUnit !== undefined)) return null;
+    var uid = +k.slice(1), path = ast.zpath[uid] || [];
+    return ast.open.has(uid) && path.length ? { u: uid, id: path[path.length - 1] } : null;
+  }
   function appPanelClick(b) {
+    if (b.dataset.igroup !== undefined) { toggleGroup(+b.dataset.igroup); return true; }
     if (b.dataset.unit !== undefined) { var id = +b.dataset.unit; revealUnit(id); selectUnit('u' + id, true); return true; }
     if (b.dataset.file !== undefined) { jumpToFile(b.dataset.file); return true; }
     if (b.dataset.folder !== undefined) { openFolder(b.dataset.folder); return true; }
@@ -4208,7 +4382,7 @@
       keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="' + esc(theme.paper) + '" stroke="' + esc(theme.ink) + '" stroke-width="1.6"/>') + '<span>application: something you deploy or run</span>' +
       keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="' + esc(theme['paper-2']) + '" stroke="' + esc(theme['ink-3']) + '"/>') + '<span>library or shared code</span>' +
       keySvg('<rect x="1.5" y="2.5" width="19" height="13" rx="2" fill="none" stroke="' + esc(theme['ink-3']) + '" stroke-dasharray="3 2"/>') + '<span>infrastructure or data</span>' +
-      '</div><p class="hint">' + (ZR ? 'Scroll into a card, or double-click it, to open its folders, files and symbols in place.' : 'Double-click a card to open its folders.') + '</p></details>';
+      '</div><p class="hint">' + (ZR ? 'Double-click a card (or press Enter on it) to open its folders, files and symbols in place; inside, one click opens a folder or file.' : 'Double-click a card to open its folders.') + '</p></details>';
     // Notes about the folder graph (dispatch hops, trims) do not apply here.
     legend.innerHTML = html;
   }
@@ -4250,8 +4424,9 @@
         var p = Array.from(appPointers.values());
         appDrag.pinch = { d: Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]), k: ast.cam.k };
       }
-      appsEl.classList.add('dragging');
-      if (appsEl.setPointerCapture) appsEl.setPointerCapture(ev.pointerId);
+      // Captured only once it drags: a capture taken at once would send the
+      // click (and double-click) to the sheet rather than the box under it.
+      appDrag.id = ev.pointerId;
     });
     appsEl.addEventListener('pointermove', function (ev) {
       if (appPointers.has(ev.pointerId)) appPointers.set(ev.pointerId, [ev.clientX, ev.clientY]);
@@ -4263,7 +4438,11 @@
           return;
         }
         var dx = ev.clientX - appDrag.x, dy = ev.clientY - appDrag.y;
-        if (Math.abs(dx) + Math.abs(dy) > 3) { appDrag.moved = true; ast.dragged = true; }
+        if (!appDrag.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+          appDrag.moved = true; ast.dragged = true;
+          appsEl.classList.add('dragging');
+          try { if (appsEl.setPointerCapture) appsEl.setPointerCapture(appDrag.id); } catch (e) { /* pointer gone */ }
+        }
         if (!appDrag.moved) return;
         if (zAnim || zFit) stopCam();
         ast.cam.x = appDrag.cx + dx; ast.cam.y = appDrag.cy + dy; ast.userMoved = true;
@@ -4314,6 +4493,8 @@
       if (ast.dragged) return;
       var b = ev.target.closest('button, [data-zexp]');
       if (b && b.dataset.zexp !== undefined) { zoomOpen(+b.dataset.zexp, []); return; }
+      var gx = ev.target.closest('.gexp');
+      if (gx && gx.dataset.igroup !== undefined) { toggleGroup(+gx.dataset.igroup); return; }
       if (b && b.dataset.zup !== undefined) { var uu = +b.dataset.zu; zoomTo(uu, (ast.zpath[uu] || []).indexOf(b.dataset.zup)); return; }
       if (b && b.dataset.zcrumb !== undefined) { zoomTo(+b.dataset.zcrumb, +b.dataset.depth); return; }
       if (b && appPanelClick(b)) return;
@@ -4321,26 +4502,29 @@
       var zi = ev.target.closest('.zi');
       if (zi) {
         var h = itemFromEl(zi);
-        // The "other files" box opens and folds on a click; the second click of a double-click is not a second toggle.
-        if (h && h.it && h.it.type === 'others') { if (!(ev.detail > 1)) zothersToggle(h.u, h.it.id); return; }
-        if (h && h.it) zselect(h.u, h.it.id);
+        // One click opens a folder or file (or lists an "other files" box)
+        // and selects anything else. The second click of a double-click
+        // lands on what just opened: it does nothing.
+        if (ev.detail > 1) return;
+        if (h && h.it) zclick(h.u, h.it);
         return;
       }
       var hit = ev.target.closest('.hit, .shit');
-      if (hit && hit.parentNode.dataset.zs !== undefined) { ast.zlink = { stub: ast.stubs[+hit.parentNode.dataset.zs] }; ast.selConn = null; renderPanel(); return; }
-      if (hit && hit.parentNode.dataset.zl !== undefined) { ast.zlink = ast.zlinks[+hit.parentNode.dataset.zl]; ast.selConn = null; renderPanel(); return; }
+      if (hit && hit.parentNode.dataset.zs !== undefined) { ast.zlink = { stub: ast.stubs[+hit.parentNode.dataset.zs] }; ast.selConn = null; renderPanel(); if (zRendered) renderZlinks(zRendered); return; }
+      if (hit && hit.parentNode.dataset.zl !== undefined) { ast.zlink = ast.zlinks[+hit.parentNode.dataset.zl]; ast.selConn = null; renderPanel(); if (zRendered) renderZlinks(zRendered); return; }
       if (hit) { selectConn(+hit.parentNode.dataset.conn); return; }
       if (ev.target.closest('.card.zoomed')) return;
       var card = ev.target.closest('.card');
       if (card) selectUnit(card.dataset.key, false);
     });
     appsEl.addEventListener('dblclick', function (ev) {
-      var zi = ev.target.closest('.zi');
-      if (zi) { var h = itemFromEl(zi); if (h && h.it && h.it.type !== 'others') zactivate(h.u, h.it); return; }
-      if (ev.target.closest('.card.zoomed')) return;
+      // Boxes inside an open card opened on the first click.
+      if (ev.target.closest('.zi') || ev.target.closest('.card.zoomed')) return;
       var card = ev.target.closest('.card');
-      if (!card || ev.target.closest('button') || card.dataset.key.charAt(0) !== 'u') return;
-      toggleOpen(+card.dataset.key.slice(1));
+      if (!card || ev.target.closest('button')) return;
+      var key = card.dataset.key;
+      if (key.charAt(0) === 'g') toggleGroup(+key.slice(1));
+      else if (key.charAt(0) === 'u') toggleOpen(+key.slice(1));
     });
     appsEl.addEventListener('mouseover', function (ev) {
       var card = ev.target.closest('.card');
@@ -4410,6 +4594,7 @@
       return;
     }
     if (k === 'Enter' && cur && cur.charAt(0) === 'u') { ev.preventDefault(); toggleOpen(+cur.slice(1)); return; }
+    if (k === 'Enter' && cur && cur.charAt(0) === 'g') { ev.preventDefault(); toggleGroup(+cur.slice(1)); return; }
     if (k === '+' || k === '=') { zoomApps(W / 2, H / 2, 1.25); return; }
     if (k === '-' || k === '_') { zoomApps(W / 2, H / 2, 0.8); return; }
     if (k === 'f' || k === 'F' || k === '0') { fitCurrent(); }
@@ -4659,7 +4844,8 @@
   function zcardSize(uid) {
     var z = zflatten(uid);
     // Room above and below for the names of links that leave the card.
-    return { w: Math.max(360, z.w + 2 * ZPAD), h: ZHEAD + z.h + ZPAD + (zdata().omitted[uid] ? 22 : 0), padT: 40, padB: 70 };
+    // Wide enough for its header on one line: name, counts and buttons.
+    return { w: Math.max(440, z.w + 2 * ZPAD), h: ZHEAD + z.h + ZPAD + (zdata().omitted[uid] ? 22 : 0), padT: 40, padB: 70 };
   }
   function zorigin(uid) {
     var p = ast.pos['u' + uid];
@@ -4691,7 +4877,10 @@
     }
     return { u: uid, it: null };
   }
-  function repKey(r) { return r.card !== undefined ? 'u' + r.card : r.it ? r.u + ':' + r.it.k : r.u + ':root'; }
+  // A closed card's key: a folded tool's folders are its one card.
+  function repKey(r) { return r.card !== undefined ? shownKey(r.card) : r.it ? r.u + ':' + r.it.k : r.u + ':root'; }
+  // The name on the card a unit is drawn as.
+  function cardName(uid) { var k = shownKey(uid); return k.charAt(0) === 'g' ? igroups().list[+k.slice(1)].name : AU[uid].name; }
   // Is item `a` inside item `b` (or the same) in one open card?
   function within(uid, a, b) {
     var items = ast.zitems[uid];
@@ -4805,7 +4994,7 @@
         var me = side[0], other = side[1];
         if (!side[2]) return;
         var t = stubTarget(other), key = me.u + '|' + repKey(t), s = map.get(key);
-        if (!s) { s = { u: me.u, target: t, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code' }; map.set(key, s); list.push(s); }
+        if (!s) { s = { key: key, u: me.u, target: t, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code' }; map.set(key, s); list.push(s); }
         if (side[3]) s.out = true; else s.inn = true;
         s.w += l.w;
         Object.keys(l.kinds).forEach(function (kk) { s.kinds[kk] = (s.kinds[kk] || 0) + l.kinds[kk]; });
@@ -4853,7 +5042,7 @@
       var cap = Math.min(STUBS_PER_SIDE, ast.stubCap[key] || Infinity);
       if (group.length > cap) {
         group.sort(function (a, b) { return b.w - a.w || a.ox - b.ox; });
-        var rest = group.slice(cap - 1), more = { u: rest[0].u, target: null, more: rest.length, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code', box: A, tbox: null, side: side, ox: Infinity };
+        var rest = group.slice(cap - 1), more = { key: key + '|more', u: rest[0].u, target: null, more: rest.length, out: false, inn: false, w: 0, kinds: {}, keys: [], members: [], links: [], fam: 'code', box: A, tbox: null, side: side, ox: Infinity };
         rest.forEach(function (s) {
           more.out = more.out || s.out; more.inn = more.inn || s.inn; more.w += s.w;
           Object.keys(s.kinds).forEach(function (kk) { more.kinds[kk] = (more.kinds[kk] || 0) + s.kinds[kk]; });
@@ -4906,7 +5095,7 @@
   }
   function targetName(s) {
     var t = s.target;
-    if (t.card !== undefined) return AU[t.card].name;
+    if (t.card !== undefined) return cardName(t.card);
     var nm = t.it.type === 'row' ? t.it.sym.name : t.it.node.name;
     return t.u !== s.u ? AU[t.u].name + ' › ' + nm : nm;
   }
@@ -4925,12 +5114,12 @@
   function labelWidth(text) { return textWidth(text, '700 11px ' + SANS, 6.55) + text.length * 0.25; }
   // `n`: the name cut to n characters, for a label short of room.
   function stubText(s, n) {
-    var t = s.target, hidden = !!t && t.card !== undefined && !ast.pos['u' + t.card], name = stubName(s, n && n < 14);
+    var t = s.target, hidden = !!t && t.card !== undefined && !ast.pos[shownKey(t.card)], name = stubName(s, n && n < 14);
     if (n) { if (s.target && name.length > n) name = name.slice(0, n - 1) + '…'; hidden = false; }
     return (s.out && s.inn ? '⇄ ' : s.out ? '→ ' : '← ') + name + ' ×' + fmt(s.w) + (hidden ? ' (hidden)' : '');
   }
   function endBox(r) {
-    if (r.card !== undefined) { var p = ast.pos['u' + r.card]; return p ? { x: p.x, y: p.y, w: p.w, h: p.h } : null; }
+    if (r.card !== undefined) { var p = ast.pos[shownKey(r.card)]; return p ? { x: p.x, y: p.y, w: p.w, h: p.h } : null; }
     return r.it ? itemBox(r.u, r.it) : null;
   }
   // A curve from box to box (or to a port point), leaving the facing sides.
@@ -4991,7 +5180,7 @@
       '<span class="zact"><button type="button" data-folder="' + esc(u.dir) + '" title="Show in the folder map">Folder map</button>' +
       '<button type="button" class="zclose" data-close-card="' + u.id + '" aria-label="Collapse ' + esc(u.name) + '" title="Collapse (Esc)">Collapse</button></span></div>';
     html += (ast.zpath[u.id] || []).length ? '<nav class="zcrumbs" aria-label="Path in ' + esc(u.name) + '">' + zcrumbs(u.id) + '</nav></div>'
-      : '<p class="zhint">Scroll into a folder or file, or double-click it, to open it. Esc goes back up.</p></div>';
+      : '<p class="zhint">Click a folder or file to open it · Esc goes back up</p></div>';
     html += '<div class="zin" data-zin="' + u.id + '"></div>';
     if (om) html += '<p class="zom">' + esc(plural(om.syms, 'symbol', 'symbols') + ' in ' + plural(om.files, 'file', 'files') + ' not embedded (--max-symbols ' + fmt(ZR.max_symbols) + '); see the panel') + '</p>';
     return html + '</div>';
@@ -5043,7 +5232,7 @@
         '<span class="nm">' + esc(n.name) + '</span></div>';
     }
     return '<div class="' + cls + (can ? '' : ' leafbox') + '"' + base.replace('tabindex="-1"', 'tabindex="-1" role="button"') + ' title="' + esc(n.rel || n.name) +
-      (can ? '. Double-click or Enter to open' : '') + '">' +
+      (can ? '. Click or press Enter to open' : '') + '">' +
       '<div class="nm">' + esc(n.name) + '</div><div class="n">' + esc(counts) + '</div></div>';
   }
   // What a folder or file box says under its name.
@@ -5056,8 +5245,13 @@
     var a = stageArea(), k = ast.cam.k || 1, m = (margin || 0) / k;
     return { x0: -ast.cam.x / k - m, y0: -ast.cam.y / k - m, x1: (a.w - ast.cam.x) / k + m, y1: (a.h - ast.cam.y) / k + m, k: k };
   }
-  // The view stubs and their labels keep to: clear of the status line.
-  var STATUS_ROOM = 36;
+  // The status line is a bar under the sheet, not over it: nothing to keep clear.
+  var STATUS_ROOM = 0;
+  // Text on the sheet is 11px and up at this scale: views Explore opens
+  // itself are never smaller (Fit, zooming out and pinching may be).
+  var READ_K = 1;
+  // Room kept beside a level for the stubs on its left and right edges.
+  var EDGE_ROOM = 56;
   function stubView() { var v = viewRect(0); v.y1 -= STATUS_ROOM / v.k; return v; }
   function hitRect(a, b) { return a.x < b.x1 && a.x + a.w > b.x0 && a.y < b.y1 && a.y + a.h > b.y0; }
   // The items and links in (and around) the view. Re-rendered when the view
@@ -5134,7 +5328,7 @@
       // Past the cap only the heaviest are drawn, and whatever touches the focus.
       if (!on && l.rank >= ZLINK_CAP) return;
       ast.zdrawn++;
-      svg += '<g class="zl conn f-' + l.fam + (on ? ' on' : '') + (cross ? ' cross named' : '') + (many ? ' many' : '') + '" data-zl="' + i + '" style="--w:' + r1(w) + '">' +
+      svg += '<g class="zl conn f-' + l.fam + (on ? ' on' : '') + (ast.zlink === l ? ' sel' : '') + (cross ? ' cross named' : '') + (many ? ' many' : '') + '" data-zl="' + i + '" style="--w:' + r1(w) + '">' +
         '<path class="ln" d="' + curveD(g) + '" stroke-width="' + r1(w) + '"/><path class="ah" d="' + arrowAt(g, 6) + '"/>' +
         '<path class="hit" d="' + curveD(g) + '"/></g>';
       if (on || cross) ast.zlabelled.push(i);
@@ -5213,6 +5407,8 @@
         return { text: t, tw: w, prefs: [[mx - w / 2, my - th / 2]] };
       }, mx, my, th, v, obst, placed);
       var box = spot.box, text = spot.text;
+      // No free room: the line goes unlabelled (its tooltip names it).
+      if (spot.fail) return;
       placed.push(box);
       out.push({ i: i, text: text, box: box, at: [mx, my] });
       svg += '<g class="zlbl' + (zlinkOn(l) ? ' on' : '') + '">' + leader(mx, my, box) + '<rect class="lbg" x="' + r1(box[0]) + '" y="' + r1(box[1]) + '" width="' + r1(box[2] - box[0]) +
@@ -5295,6 +5491,9 @@
     ast.stubs.forEach(function (s, i) {
       if (!s.box || s.x === undefined) return;
       var on = stubOn(s, i), text = stubText(s);
+      // Orange only for the stub clicked (its panel open); one touching the
+      // selection or the pointer is drawn in full ink.
+      var picked = !!(ast.zlink && ast.zlink.stub && ast.zlink.stub.key === s.key);
       var nx = s.side === 'l' ? -1 : s.side === 'r' ? 1 : 0, ny = s.side === 't' ? -1 : s.side === 'b' ? 1 : 0;
       var ex = s.x + nx * L, ey = s.y + ny * L;
       // The label beside the stub's end, else stepped outward and along the
@@ -5314,12 +5513,14 @@
         }
         return { text: t, tw: tw, prefs: prefs };
       }, ex, ey, th, v, obst, placed);
-      var box = spot.box;
+      // No free room for its label even after folding: the port and its
+      // line only (the tooltip and panel name it), never a label over a box.
+      var box = spot.fail ? null : spot.box;
       text = spot.text;
-      placed.push(box);
-      s.lbox = box; s.ltext = text; s.lfail = !!spot.fail;
+      if (box) placed.push(box);
+      s.lbox = box; s.ltext = box ? text : null; s.lfail = !!spot.fail;
       var w = zlinkWidth(s.w);
-      svg += '<g class="zstub conn f-' + s.fam + (on ? ' on' : '') + '" data-zs="' + i + '" style="--w:' + r1(w) + '">';
+      svg += '<g class="zstub conn f-' + s.fam + (on || picked ? ' on' : '') + (picked ? ' sel' : '') + '" data-zs="' + i + '" style="--w:' + r1(w) + '">';
       // On to the target, while hovered or selected and the target is in
       // view: one line for the whole bundle.
       if (on && s.tbox && boxInView(s.tbox, v)) {
@@ -5407,16 +5608,21 @@
     ast.open.add(uid);
     ast.zpath[uid] = (path || []).slice();
     ast.zfocus = uid;
+    // The panel follows the level opened: the card, or its open folder or
+    // file (panelLevel), unless the move selects something inside.
     if (opts.sel !== undefined) ast.zsel = opts.sel;
+    else { ast.zsel = null; ast.zpanelUnit = null; ast.zlink = null; ast.selConn = null; ast.selected = 'u' + uid; }
     renderApps(true);
     renderPanel();
     renderAppCrumbs();
     var target = opts.sel ? (ast.zitems[uid] && ast.zitems[uid].byId[opts.sel.id]) : null;
     var deepest = ast.zpath[uid].length ? ast.zitems[uid].byId[ast.zpath[uid][ast.zpath[uid].length - 1]] : null;
+    // At a reading scale: a level too big for the view at 1:1 shows its
+    // top left, the rest a pan away.
     if (opts.fit !== false) {
       if (target) fitItem(uid, target, deepest);
-      else if (deepest) fitBox(itemBox(uid, deepest), 0.9);
-      else fitBox(ast.pos['u' + uid], 0.9);
+      else if (deepest) fitBox(itemBox(uid, deepest), 0.9, null, READ_K);
+      else fitBox(ast.pos['u' + uid], 0.9, null, READ_K);
     }
     zCooldown = performance.now() + 450;
     writeHash();
@@ -5437,7 +5643,7 @@
     renderApps(true);
     renderPanel();
     renderAppCrumbs();
-    if (opts.fit !== false) fitBox(ast.pos['u' + uid], 0.5);
+    if (opts.fit !== false) fitBox(ast.pos['u' + uid], 0.5, null, READ_K);
     zCooldown = performance.now() + 450;
     writeHash();
     var el = cardEl('u' + uid);
@@ -5515,6 +5721,14 @@
     }
     zselect(uid, it.id);
   }
+  // A click on a box: a folder or file opens (a name tag above the open
+  // level too), an "other files" box lists or folds, the open level's own
+  // frame and everything else is selected.
+  function zclick(uid, it) {
+    if (it.type === 'others') { zothersToggle(uid, it.id); return; }
+    if ((it.type === 'dir' || it.type === 'file') && openable(it.node)) { zactivate(uid, it); return; }
+    zselect(uid, it.type === 'frame' ? null : it.id);
+  }
   // List or fold a level's "other files" box; it stays selected.
   function zothersToggle(uid, id) {
     var key = uid + ':' + id, it0 = ast.zitems[uid] && ast.zitems[uid].byId[id];
@@ -5543,13 +5757,15 @@
     var box = itemBox(uid, ast.zitems[uid].byId[target.parent] || target), row = itemBox(uid, target);
     var to = function () {
       var a = stageArea(), w = a.w, h = a.h;
-      var k = Math.max(0.3, Math.min(1.3, w * 0.7 / box.w, h * 0.85 / box.h));
+      var k = Math.max(READ_K, Math.min(1.3, w * 0.7 / box.w, h * 0.85 / box.h));
       return { k: k, x: w / 2 - (box.x + box.w / 2) * k, y: box.h * k > h * 0.9 ? h / 2 - (row.y + row.h / 2) * k : h / 2 - (box.y + box.h / 2) * k };
     };
     animateCam(to(), to);
   }
   // Animated camera fit onto a world box, in the visible part of the stage.
-  function fitBox(b, frac, ctx) {
+  // `minK`: no smaller than this scale (READ_K keeps text readable); a box
+  // too big for the view at it shows its top left.
+  function fitBox(b, frac, ctx, minK) {
     if (!b) return;
     var to = function () {
       // Room above and below the box for the stubs on its edges and their
@@ -5562,9 +5778,12 @@
         var kc = Math.min(w * 0.9 / Math.max(1, ctx.w), hv / Math.max(1, ctx.h));
         k = Math.max(Math.min(k, kc), Math.min(k, 0.7));
       }
+      if (minK) k = Math.max(k, minK);
       var t = { k: k, x: w / 2 - (b.x + b.w / 2) * k, y: padT + hv / 2 - (b.y + b.h / 2) * k };
-      // A tall box starts at its top, below the room for the stubs on its edge.
+      // A tall box starts at its top, below the room for the stubs on its
+      // edge; a wide one at its left, past the room for those on its side.
       if (b.h * k > hv) t.y = padT + 4 - b.y * k;
+      if (b.w * k > w - 2 * EDGE_ROOM) t.x = EDGE_ROOM - b.x * k;
       return t;
     };
     animateCam(to(), to);
@@ -5745,7 +5964,8 @@
       html += '<dt>Language</dt><dd>' + esc(langName(n.file.lang)) + '</dd><dt>Symbols</dt><dd>' + fmt(n.file.syms) + (n.file.emb ? '' : ', not embedded') + '</dd></dl>';
       if (!n.file.emb) html += '<p class="more">This file\'s symbols were left out by --max-symbols ' + fmt(ZR.max_symbols) + '. Regenerate with a higher --max-symbols to zoom into it.</p>';
     } else html += '<dt>Holds</dt><dd>' + esc(plural(n.files, 'file', 'files') + ' · ' + plural(n.syms, 'symbol', 'symbols')) + '</dd></dl>';
-    if (openable(n)) html += '<div class="actions"><button type="button" data-zopen="' + esc(n.id) + '" data-zu="' + uid + '">Open ' + esc(n.type === 'dir' ? 'folder' : 'file') + '</button></div>';
+    // The open level itself needs no "Open" (the breadcrumb closes it).
+    if (openable(n) && (ast.zpath[uid] || []).indexOf(n.id) < 0) html += '<div class="actions"><button type="button" data-zopen="' + esc(n.id) + '" data-zu="' + uid + '">Open ' + esc(n.type === 'dir' ? 'folder' : 'file') + '</button></div>';
     return html;
   }
 
@@ -5983,7 +6203,7 @@
   }
 
   function zendLabel(r) {
-    if (r.card !== undefined) return AU[r.card].name;
+    if (r.card !== undefined) return cardName(r.card);
     var it = r.it;
     if (!it) return AU[r.u].name;
     return it.type === 'row' ? it.sym.name : it.node.name;
@@ -8057,21 +8277,50 @@
     if (GL.questions[i]) live.textContent = 'Question: ' + GL.questions[i].q;
   }
   // Into Explore, at the card (and folder) this node stands for.
+  // The card's box on screen, where Explore grows it from.
   function gExplore(i) {
+    var el = i === null || i === undefined ? null : gCards.querySelector('[data-g="' + i + '"]');
+    var from = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    if (from && !(from.width > 0)) from = null;
     setLevel('app');
     if (i === null || i === undefined) return;
     var n = gNode(i);
     var uid = n.units[0];
     if (uid === undefined) return;
     revealUnit(uid);
-    if (!zoomable(AU[uid])) { selectUnit('u' + uid, true); return; }
+    if (!zoomable(AU[uid])) { selectUnit('u' + uid, false); enterAt('u' + uid, null, from); return; }
     var path = [];
     if (n.kind === 'module') {
       var rel = n.dir.slice((AU[uid].dir || '').length);
       var id = rel ? nodeFromRef(uid, rel) : null;
       if (id) path = zchain(uid, id);
     }
-    zoomOpen(uid, path);
+    zoomOpen(uid, path, { fit: false });
+    enterAt('u' + uid, path.length ? path[path.length - 1] : null, from);
+  }
+  // Explore opened on one card: at 1:1, its top left where the overview's
+  // card was (kept in view), grown there from the overview card's size so
+  // the move reads as that card opening.
+  function enterAt(key, levelId, from) {
+    var uid = +key.slice(1), it = levelId && ast.zitems[uid] ? ast.zitems[uid].byId[levelId] : null;
+    var b = it ? itemBox(uid, it) : ast.pos[key];
+    if (!b) { homeApps(); return; }
+    var ar = appsEl.getBoundingClientRect();
+    var to = function () {
+      var a = stageArea(), k = READ_K, m = 16;
+      var x = from ? from.left - ar.left : m, y = from ? from.top - ar.top : m;
+      // Fully in view when it fits, else its top left at the margin.
+      x = Math.max(m, Math.min(x, a.w - m - b.w * k));
+      y = Math.max(m, Math.min(y, a.h - m - b.h * k));
+      return { k: k, x: Math.round(x - b.x * k), y: Math.round(y - b.y * k) };
+    };
+    stopCam();
+    if (from && !REDUCE) {
+      var k0 = Math.max(0.05, Math.min(READ_K, from.width / Math.max(1, b.w)));
+      ast.cam.k = k0; ast.cam.x = from.left - ar.left - b.x * k0; ast.cam.y = from.top - ar.top - b.y * k0;
+      applyAppCam();
+    }
+    animateCam(to(), to);
   }
   function glanceKey(ev) {
     var k = ev.key;
@@ -8135,6 +8384,10 @@
   if (glanceEl) {
     glanceEl.addEventListener('click', function (ev) {
       var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gdeploy], [data-gkey], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gq], [data-gclear]');
+      // The second click of a double-click on a card opens it in Explore:
+      // the first one re-drew the cards, so the browser may send no
+      // dblclick to the new element under the pointer.
+      if (t && t.dataset.g !== undefined && ev.detail === 2 && t.closest('#g-map')) { gExplore(+t.dataset.g); return; }
       if (t) { glanceClick(t); return; }
       // The paper: back to Start here (a flow or a tour keeps going).
       if (ev.target.closest('#g-map') && gst.flow === null && gst.tour === null && (gst.sel !== null || gst.link !== null || gst.question !== null)) {
@@ -8144,7 +8397,7 @@
     });
     glanceEl.addEventListener('dblclick', function (ev) {
       var c = ev.target.closest('[data-g]');
-      if (c && c.closest('#g-map')) gExplore(+c.dataset.g);
+      if (st.level === 'glance' && c && c.closest('#g-map')) gExplore(+c.dataset.g);
     });
     glanceEl.addEventListener('mouseover', function (ev) {
       var hit = ev.target.closest('.g-ln');
@@ -8162,18 +8415,43 @@
   if (lvlGlance) lvlGlance.addEventListener('click', function () { setLevel('glance'); });
 
   // ----------------------------------------------------------------- header
+  // The sheet's counts, in the overview's words and by its classes: the
+  // same apps, libraries and infrastructure tools, then one line for what
+  // the overview leaves out and why.
+  function appCounts() {
+    var by = {}, off = [], mainU = null;
+    AU.forEach(function (u) { var c = unitClass(u); by[c] = (by[c] || 0) + 1; if (c === 'off') off.push(u); });
+    var counts = [];
+    if (GL && GL.mode === 'modules') {
+      var mod = GL.nodes.filter(function (n) { return n.kind === 'module'; });
+      if (mod.length) {
+        mainU = mod[0].units[0];
+        counts.push(AU[mainU].name + ' (' + plural(mod.length, 'module', 'modules') + ' on the overview)');
+        by[unitClass(AU[mainU])]--;
+      }
+    }
+    var apps = plural(by.app || 0, 'app', 'apps'), libs = plural(by.lib || 0, 'library', 'libraries');
+    if (GL && GL.mode === 'packages') counts.push(plural((by.app || 0) + (by.lib || 0), 'package', 'packages') + ' (' + apps + ', ' + libs + ')');
+    else {
+      if (by.app) counts.push(apps);
+      if (by.lib) counts.push(libs);
+    }
+    var tools = igroups().list;
+    if (tools.length) {
+      var nf = tools.reduce(function (s, g) { return s + g.units.length; }, 0);
+      counts.push(tools.map(function (g) { return g.name; }).join(', ') + (nf > tools.length ? ' (' + plural(nf, 'folder', 'folders') + ')' : ''));
+    }
+    if (by.res) counts.push(plural(by.res, 'data project', 'data projects'));
+    if (off.length) counts.push('+' + fmt(off.length) + ' not on the overview: ' + off.slice(0, 4).map(function (u) { return u.name + ' (' + (leftOutWhy(u) || 'no indexed code') + ')'; }).join(', ') + (off.length > 4 ? ', +' + (off.length - 4) : ''));
+    if (by.hidden) counts.push(plural(by.hidden, 'test, docs or tooling folder', 'test, docs and tooling folders') + ' hidden');
+    return counts;
+  }
   function setHeader() {
     document.getElementById('repo-name').textContent = META.repo;
     var c = META.counts, parts = [];
     if (st.level === 'app') {
-      var by = {};
-      AU.forEach(function (u) { var g = u.app ? 'app' : u.hidden ? 'hidden' : u.kind === 'infra' || u.kind === 'data' ? 'infra' : 'lib'; by[g] = (by[g] || 0) + 1; });
-      parts.push('<b>applications and libraries</b>');
-      var counts = [];
-      if (by.app) counts.push(plural(by.app, 'app', 'apps'));
-      if (by.lib) counts.push(plural(by.lib, 'library or shared folder', 'libraries and shared folders'));
-      if (by.infra) counts.push(plural(by.infra, 'infra unit', 'infra units'));
-      parts.push(counts.join(' · ') + (by.hidden ? '<span class="long"> · ' + fmt(by.hidden) + ' tests, examples, docs and tooling hidden</span>' : ''));
+      parts.push('<b>Explore</b>');
+      parts.push(esc(appCounts().join(' · ')));
     } else {
       parts.push('<b>' + esc(META.scope) + '</b>');
       parts.push(fmt(c.nodes) + ' nodes · ' + fmt(c.edges) + ' edges' + (c.halo_nodes ? ' · ' + fmt(c.halo_nodes) + ' outside the walk' : ''));
@@ -8190,7 +8468,7 @@
       statusEl.textContent = plural(Object.keys(ast.pos).length, 'card', 'cards') + ' · ' +
         plural(ast.conns.filter(function (c) { return !c.skip; }).length, 'link', 'links') +
         (ast.open.size ? ' · ' + plural(ast.open.size, 'card', 'cards') + ' open, ' + plural(ast.zlinks.length, 'inner link', 'inner links') +
-          (ast.zlinks.length > ZLINK_CAP ? ' (' + fmt(ZLINK_CAP) + ' heaviest drawn)' : '') : ZR ? ' · scroll into a card to open it' : '') +
+          (ast.zlinks.length > ZLINK_CAP ? ' (' + fmt(ZLINK_CAP) + ' heaviest drawn)' : '') : ZR ? ' · double-click a card, or press Enter on it, to open it' : '') +
         ' · ' + Math.round(ast.cam.k * 100) + '%';
       return;
     }
@@ -8234,7 +8512,8 @@
       // A fit still moving (or just made) is made again for the new size:
       // a panel that opened with it does not hide part of what it framed.
       var refit = zFit && (zAnim || performance.now() - zFit.at < 600) ? zFit : null;
-      if (!ast.sheet || !lastStageW || (refit && !refit.fn)) fitApps();
+      if (!ast.sheet || !lastStageW || (refit && !refit.fn && refit.home)) homeApps();
+      else if (refit && !refit.fn) fitApps();
       else if (refit) animateCam(refit.fn(), refit.fn);
       else { ast.cam.x += (w - lastStageW) / 2; applyAppCam(); }
     } else resize();
@@ -8402,15 +8681,30 @@
     // The sheet: each card's band and box, and the drawn links.
     apps: function () {
       return {
-        tabOrder: (ast.tabOrder || []).map(function (k) { return k.charAt(0) === 'u' ? AU[+k.slice(1)].name : CHIPS[+k.slice(1)].name; }),
+        tabOrder: (ast.tabOrder || []).map(cardKeyName),
         cards: Object.keys(ast.pos).map(function (k) {
           var p = ast.pos[k];
-          return { key: k, name: k.charAt(0) === 'u' ? AU[+k.slice(1)].name : CHIPS[+k.slice(1)].name, band: BANDS[p.band].id, row: p.row, x: p.x, y: p.y, w: p.w, h: p.h };
+          var c = k.charAt(0), i = +k.slice(1);
+          return { key: k, name: c === 'u' ? AU[i].name : c === 'g' ? igroups().list[i].name : CHIPS[i].name, band: BANDS[p.band].id, row: p.row, x: p.x, y: p.y, w: p.w, h: p.h };
         }),
         links: ast.conns.filter(function (c) { return !c.skip; }).map(function (c) {
-          return { from: c.a, to: c.b, family: c.fam, label: c.label, up: c.sb === 'b' };
-        })
+          return { from: c.a, to: c.b, family: c.fam, label: c.label, up: c.sb === 'b', crowded: !!c.crowded };
+        }),
+        width: ast.sheet ? ast.sheet.width : 0, height: ast.sheet ? ast.sheet.height : 0
       };
+    },
+    // The header line over the sheet.
+    meta: function () { return document.getElementById('meta').textContent; },
+    // Show or fold an infrastructure tool's folders, by the tool's name.
+    toggleGroup: function (name) {
+      var gr = igroups().list.find(function (x) { return x.name === name; });
+      if (gr) toggleGroup(gr.i);
+      return !!gr;
+    },
+    // Sheet labels for made-up links: which find a free spot, and where.
+    placeLabels: function (conns, P) {
+      placeLabels(conns, P, []);
+      return conns.map(function (c) { return { crowded: !!c.crowded, box: c.lbox }; });
     },
     selectUnit: function (name) {
       var u = AU.find(function (x) { return x.name === name; });
@@ -8526,7 +8820,16 @@
         applyAppCam(); renderZoomView(true); return true;
       },
       hoverStub: function (i) { markStub(i); return { on: ast.stubs.map(function (s, j) { return stubOn(s, j); }) }; },
-      clickStub: function (i) { ast.zlink = { stub: ast.stubs[i] }; renderPanel(); return panel.textContent; },
+      clickStub: function (i) { ast.zlink = { stub: ast.stubs[i] }; renderPanel(); if (zRendered) renderZlinks(zRendered); return panel.textContent; },
+      // The view Explore opens on with nothing chosen, at once.
+      home: function () { homeApps(); return { k: ast.cam.k, x: ast.cam.x, y: ast.cam.y }; },
+      // An open card's box as the click handler finds it: unit, index, id.
+      itemKey: function (name, key) {
+        var id = unitByName(name), z = ast.zitems[id];
+        var it = z && (z.byId[key] || z.list.find(function (x) { return (isRow(x) ? (x.sym || x.node).name : x.node.name) === key; }));
+        return it ? { u: id, k: it.k, id: it.id, type: it.type } : null;
+      },
+      edgesHtml: function () { return zedges ? zedges.innerHTML : ''; },
       selected: function () { var s = ast.zsel; if (!s) return null; var n = znode(s.u, s.id); return { unit: AU[s.u].name, name: n.name, type: n.type }; },
       select: function (name, ref) { var id = unitByName(name), nid = nodeFromRef(id, ref); if (nid) zselect(id, nid); return !!nid; },
       tree: function (name, filter) {

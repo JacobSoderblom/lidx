@@ -398,6 +398,13 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .graph-only[hidden] { display: none !important; }
 .stage.app-mode #canvas, .stage.app-mode #overlay, .stage.app-mode #minimap, .stage.app-mode .matrix { display: none; }
 .apps { position: absolute; inset: 0; overflow: hidden; touch-action: none; cursor: grab; background: var(--canvas); }
+/* The status line is a bar under the sheet: it never covers a card. */
+.stage.app-mode .apps { bottom: 28px; }
+.stage.app-mode .status {
+  left: 0; right: 0; bottom: 0; max-width: none; height: 28px; box-sizing: border-box; padding: 6px 16px 0;
+  border-radius: 0; border-top: 1px solid var(--rule); background: var(--paper);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .apps[hidden] { display: none; }
 .apps.dragging { cursor: grabbing; }
 .apps:focus-visible { outline-offset: -3px; }
@@ -411,6 +418,7 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .apps.few .apps-edges .lbl, .apps-edges .conn.on .lbl, .apps-edges .conn.named .lbl { display: block; }
 .apps.focus .apps-edges .conn.named:not(.on) .lbl { display: none; }
 .apps-edges .conn.quiet:not(.on) { display: none; }
+.apps-edges .conn.crowded:not(.on) .lbl { display: none; }
 .legend .quiet-btn {
   margin-left: 4px; border: 1px solid var(--rule); background: var(--paper); border-radius: 999px; padding: 0 7px;
   font-size: 11px; color: var(--ink-3); min-height: 24px; vertical-align: -3px; margin-top: -4px; margin-bottom: -4px;
@@ -437,8 +445,8 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .band-label span { display: block; font-weight: 500; letter-spacing: 0.04em; font-size: 22px; line-height: 1.2; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .band-rule { position: absolute; left: 0; top: 0; height: 0; border-top: 1px solid var(--rule); pointer-events: none; }
 .card {
-  position: absolute; left: 0; top: 0; width: 264px; padding: 10px 12px 11px; cursor: pointer;
-  background: var(--paper); color: var(--ink); border: 1.5px solid var(--ink); border-radius: 4px;
+  position: absolute; left: 0; top: 0; width: 264px; padding: 8px 11px 9px; cursor: pointer;
+  background: var(--paper); color: var(--ink); border: 1.5px solid var(--ink); border-radius: 5px;
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s, box-shadow 0.18s;
 }
 .card.lib { width: 216px; border: 1px solid var(--ink-3); background: var(--paper-2); }
@@ -451,16 +459,30 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .card.sel { box-shadow: 0 0 0 3px var(--focus-soft); border-color: var(--focus); border-style: solid; }
 .apps.focus .card.dim { opacity: 0.32; }
 .card .k {
-  display: flex; align-items: baseline; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+  display: flex; align-items: baseline; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
   text-transform: uppercase; color: var(--ink-3); min-width: 0;
 }
-.card .k .lg { margin-left: auto; font-weight: 500; letter-spacing: 0.03em; text-transform: none; font-size: 11.5px; white-space: nowrap; }
+.card .k .lg { margin-left: auto; font-weight: 500; letter-spacing: 0.02em; text-transform: none; font-size: 11px; white-space: nowrap; }
 .card .k i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 3px; border: 1px solid var(--node-line); }
-.card h3 { margin: 3px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere; }
+.card h3 { margin: 2px 0 0; font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere; }
 .card.lib h3, .card.infra h3 { font-size: 14px; }
+/* The overview's card language: a sentence, then the resources as tags. */
+.card .g-sent { margin: 3px 0 0; }
+.card .g-badges { margin-top: 6px; }
+.card.off { border-style: dotted; }
+.card .off-why { margin: 3px 0 0; font-size: 12px; color: var(--ink-3); }
+/* An infrastructure tool, its folders folded into it: the overview's chip. */
+.card.igroup { width: 216px; border: 1.2px dashed var(--ink-3); border-radius: 12px; background: var(--paper); }
+.card.igroup h3 { font-size: 14px; }
+.card.igroup .sub { margin: 2px 0 0; font-size: 12px; color: var(--ink-2); }
+.card.igroup .gexp {
+  display: inline-flex; align-items: center; margin-top: 7px; border: 1px solid var(--rule); background: var(--paper); border-radius: 999px; padding: 1px 10px;
+  min-height: 26px; box-sizing: border-box; font-size: 12px; color: var(--ink-2); cursor: pointer;
+}
+.card.igroup .gexp:hover { color: var(--ink); border-color: var(--ink-3); }
 .card .root { font: 11px var(--mono); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 .card dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 9px; font-size: 12.5px; line-height: 1.35; }
-.card dt { color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding-top: 2px; }
+.card dt { color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; padding-top: 1px; }
 .card dd { margin: 0; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
 .card .mods { margin: 8px 0 0; padding-top: 6px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .mods b { color: var(--ink-2); font-weight: 500; }
@@ -504,21 +526,30 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .zedges .zl:not(.on):not(.cross) { opacity: 0.4; }
 .zedges .zl.many:not(.on):not(.cross) { opacity: 0.2; }
 .zedges.hasfocus .zl:not(.on) { opacity: 0.08; }
-.zedges .zl.on .ln { stroke: var(--focus); }
-.zedges .zl.on .ah { fill: var(--focus); }
+.zedges .zl.on .ln { stroke: var(--ink); }
+.zedges .zl.on .ah { fill: var(--ink); }
+/* Orange only for the line clicked (the Redline Rule). */
+.zedges .zl.sel .ln { stroke: var(--focus); }
+.zedges .zl.sel .ah { fill: var(--focus); }
 /* Stubs: where an open level's links to one target leave it, bundled. */
 .zedges .zstub .ln { fill: none; stroke: var(--c); opacity: 0.75; }
 .zedges .zstub .ln.on-card { stroke-dasharray: 2 4; opacity: 0.55; }
 .zedges .zstub .ah { fill: var(--c); opacity: 0.75; }
 .zedges .zstub .pt { fill: var(--paper); stroke: var(--c); stroke-width: 1.6; }
-.zedges .zstub .plbl { font: 700 11px var(--sans); fill: var(--ink); pointer-events: none; }
-.zedges .zstub .pbg { fill: var(--paper); stroke: var(--c); stroke-width: 1; opacity: 0.96; }
-.zedges .zstub.on .pbg { stroke: var(--focus); stroke-width: 1.6; }
+.zedges .zstub .plbl { font: 600 11px var(--sans); fill: var(--ink-2); pointer-events: none; }
+/* A stub's label is a neutral graphite chip; its line keeps the family's colour. */
+.zedges .zstub .pbg { fill: var(--paper); stroke: var(--rule); stroke-width: 1; opacity: 0.96; }
+.zedges .zstub.on .pbg { stroke: var(--ink-3); stroke-width: 1.2; }
+.zedges .zstub.on .plbl { fill: var(--ink); }
+.zedges .zstub.sel .pbg { stroke: var(--focus); stroke-width: 1.6; }
 .zedges .zstub .ldr { fill: none; stroke: var(--c); stroke-width: 1; opacity: 0.6; }
 .zedges .zstub .shit { fill: transparent; stroke: none; pointer-events: all; cursor: pointer; }
-.zedges .zstub.on .ln, .zedges .zstub.on .ln.on-card { stroke: var(--focus); opacity: 1; }
-.zedges .zstub.on .ah { fill: var(--focus); opacity: 1; }
-.zedges .zstub.on .pt { stroke: var(--focus); }
+.zedges .zstub.on .ln, .zedges .zstub.on .ln.on-card { stroke: var(--ink); opacity: 1; }
+.zedges .zstub.on .ah { fill: var(--ink); opacity: 1; }
+.zedges .zstub.on .pt { stroke: var(--ink); }
+.zedges .zstub.sel .ln, .zedges .zstub.sel .ln.on-card { stroke: var(--focus); }
+.zedges .zstub.sel .ah { fill: var(--focus); }
+.zedges .zstub.sel .pt { stroke: var(--focus); }
 /* Out of focus a stub fades, its label stays readable. */
 .zedges.hasfocus .zstub:not(.on) .ln, .zedges.hasfocus .zstub:not(.on) .ah, .zedges.hasfocus .zstub:not(.on) .pt, .zedges.hasfocus .zstub:not(.on) .ldr { opacity: 0.3; }
 .zedges.hasfocus .zstub:not(.on) .plbl { fill: var(--ink-2); }
@@ -528,7 +559,7 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .zedges .zll .ldr { fill: none; stroke: var(--ink-3); stroke-width: 1; opacity: 0.6; }
 .zedges .zlbl.on .lbl { fill: var(--ink); }
 .zedges.hasfocus .zlbl:not(.on) { opacity: 0.3; }
-.zi.zhl { box-shadow: 0 0 0 2px var(--focus); background: var(--focus-soft); z-index: 1; }
+.zi.zhl { box-shadow: 0 0 0 2px var(--ink-2); background: var(--paper-3); z-index: 1; }
 .card .zexp {
   display: inline-flex; align-items: center; cursor: pointer; position: absolute; bottom: 6px; right: 6px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink-2); border-radius: 5px;
   font-size: 11.5px; padding: 1px 8px; min-height: 24px; opacity: 0; transition: opacity 0.15s;
@@ -539,9 +570,9 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .card.zoomed.sel { box-shadow: 0 0 0 3px var(--focus-soft); }
 .card.zoomed .zh { position: absolute; left: 0; top: 0; right: 0; height: 74px; padding: 9px 12px 0; border-bottom: 1px solid var(--rule); }
 .card.zoomed .zt { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.card.zoomed .zt h3 { margin: 2px 0 0; font-size: 16px; }
+.card.zoomed .zt h3 { margin: 2px 0 0; font-size: 16px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card.zoomed .zn { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.card.zoomed .zact { margin-left: auto; display: flex; gap: 6px; }
+.card.zoomed .zact { margin-left: auto; display: flex; gap: 6px; flex: none; white-space: nowrap; }
 .card.zoomed .zact button, .card.zoomed .zcrumbs button { border: 1px solid var(--rule); background: var(--paper); border-radius: 5px; padding: 1px 8px; min-height: 24px; font-size: 12px; color: var(--ink-2); }
 .card.zoomed .zact button:hover { color: var(--ink); border-color: var(--ink-3); }
 .card.zoomed .zcrumbs { display: flex; align-items: center; gap: 3px; margin-top: 5px; font-size: 12px; white-space: nowrap; overflow: hidden; }
@@ -549,14 +580,14 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .card.zoomed .zcrumbs button:hover { border-color: var(--rule); color: var(--ink); }
 .card.zoomed .zcrumbs button[aria-current="location"] { color: var(--ink); font-weight: 700; }
 .card.zoomed .zcrumbs .sep { color: var(--ink-3); }
-.card.zoomed .zhint { margin: 7px 0 0; font-size: 12px; color: var(--ink-3); }
+.card.zoomed .zhint { margin: 7px 0 0; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .zin { position: absolute; left: 12px; top: 84px; }
 .zom { position: absolute; left: 12px; right: 12px; bottom: 2px; margin: 0; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .zempty { margin: 8px 0; color: var(--ink-3); font-size: 13px; }
 .zi { position: absolute; left: 0; top: 0; box-sizing: border-box; color: var(--ink); font-size: 12px; line-height: 1.3; cursor: pointer; overflow: hidden; }
 .zi:focus { outline: none; }
 .zi:focus-visible, .zi.zsel { box-shadow: 0 0 0 2px var(--focus); z-index: 1; }
-.zi .zk { display: flex; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+.zi .zk { display: flex; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3); }
 .zi .zk .n { margin-left: auto; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
 .zi .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zi .n { color: var(--ink-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
@@ -573,7 +604,7 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .z-others { padding: 6px 9px; border: 1px dashed var(--ink-3); border-radius: 3px; background: var(--paper); }
 .z-others:hover { border-color: var(--ink); }
 .z-others .nm { font: 600 12.5px var(--sans); color: var(--ink-2); }
-.z-others .tw { display: inline-block; width: 10px; color: var(--ink-3); font-size: 11px; }
+.z-others .tw { display: inline-block; width: 11px; color: var(--ink-3); font-size: 11px; }
 .z-others.compact .nm { font: 500 12px var(--sans); }
 .z-frame { border: 1px solid var(--ink-3); border-radius: 4px; background: var(--paper-2); cursor: grab; overflow: visible; }
 /* A selected (or hovered-to) open level stays under the boxes it holds,

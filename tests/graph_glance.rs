@@ -608,3 +608,36 @@ fn card_descriptions_come_from_manifests_then_readmes() {
     assert_eq!(card["sentence"], "Bills customers every month.");
     assert_eq!(card["sentence_from"], "description");
 }
+
+/// Each unit carries the overview's class for Explore to count by, and a
+/// unit the overview leaves out says why: its code is in a language lidx
+/// does not index.
+#[test]
+fn units_carry_the_overview_class_and_why_one_is_left_out() {
+    let files = common::glance_fixtures::explore();
+    let (_tmp, root, db) = common::index_repo("lidx-glance-class-", &files);
+    let apps = glance(&root, &db);
+    let units = apps["units"].as_array().unwrap();
+    let class = &apps["glance"]["unit_class"];
+    let of = |name: &str| -> (String, usize) {
+        let u = units
+            .iter()
+            .find(|u| u["name"] == name)
+            .unwrap_or_else(|| panic!("no {name}: {apps}"));
+        let id = u["id"].as_u64().unwrap() as usize;
+        (class[id].as_str().unwrap().to_string(), id)
+    };
+    assert_eq!(of("portal").0, "app");
+    assert_eq!(of("ingest-api").0, "app");
+    assert_eq!(of("validator").0, "app");
+    assert_eq!(of("deploy/k8s").0, "infra");
+    assert_eq!(of("deploy/overlays").0, "infra");
+    assert_eq!(of("./").0, "hidden");
+    let (ads, id) = of("ads");
+    assert_eq!(ads, "off");
+    assert_eq!(
+        apps["glance"]["left_out"],
+        serde_json::json!([[id, "Java, not indexed"]])
+    );
+    assert_eq!(class.as_array().unwrap().len(), units.len());
+}
