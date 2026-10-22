@@ -255,7 +255,6 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             ("Message bus", "publish", "file-uploaded"),
             ("validator", "bus", "validator.main.on_uploaded"),
             ("validator", "call", "validator.main.check"),
-            ("Kubernetes manifests", "config", "env://DB_PASSWORD"),
         ])
     );
     let f = &g.g()["flows"][0];
@@ -263,7 +262,26 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
     assert_eq!(f["label"], "POST /uploads");
     assert_eq!(f["probable"], false);
     assert_eq!(f["steps"][3]["file"], "api/ingest_api/main.py");
-    assert_eq!(f["steps"][6]["file"], "deploy/k8s/validator.yaml");
+    // The secret the manifests set is where a value comes from, not a hop
+    // at run time: the flow's `reads`, its manifests not one of its parts.
+    assert_eq!(f["reads"].as_array().unwrap().len(), 1);
+    assert_eq!(f["reads"][0]["name"], "secret DB_PASSWORD");
+    assert_eq!(f["reads"][0]["qual"], "env://DB_PASSWORD");
+    assert_eq!(f["reads"][0]["file"], "deploy/k8s/validator.yaml");
+    let parts: Vec<&str> = f["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            g.g()["nodes"][n.as_u64().unwrap() as usize]["name"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        parts,
+        vec!["portal", "ingest-api", "Message bus", "validator"]
+    );
     // The entry point's card knows its flow.
     assert_eq!(g.g()["nodes"][1]["flows"], serde_json::json!([0]));
     assert_eq!(g.g()["entries"][0]["flow"], 0);

@@ -41,6 +41,78 @@ fn run(page: &Path, scenario: &str, arg: &str) -> Value {
     run_at(page, scenario, arg, "")
 }
 
+/// `run` with `vars` set in the harness's environment (NARROW=1: a
+/// phone-width window).
+fn run_env(page: &Path, scenario: &str, arg: &str, vars: &[(&str, &str)]) -> Value {
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/viewer_node/harness.js");
+    let out = Command::new("node")
+        .envs(vars.iter().copied())
+        .arg(harness)
+        .arg(page)
+        .arg(scenario)
+        .arg(arg)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "harness failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("harness prints JSON")
+}
+
+/// Points of every drawn curve inside a lane heading's text (shrunk by
+/// 1px): "curve from>to in heading" for each, none when every line keeps
+/// off the headings' words. A line into a card whose whole top is under a
+/// heading's words cannot keep off them (it passes behind the words, on
+/// their halo) and is not counted.
+fn through_headings(curves: &Value, lanes: &Value, cards: &Value) -> Vec<String> {
+    let mut bad = Vec::new();
+    let covered = |to: &str| {
+        let Some(c) = cards.as_array().unwrap().iter().find(|c| c["name"] == to) else {
+            return false;
+        };
+        let f = |v: &Value, k: &str| v[k].as_f64().unwrap();
+        lanes.as_array().unwrap().iter().any(|l| {
+            let h = &l["head"];
+            f(h, "y") < f(c, "y")
+                && f(h, "y") + 40.0 > f(c, "y")
+                && f(h, "x") - 8.0 <= f(c, "x") + 12.0
+                && f(h, "x") + f(h, "w") + 8.0 >= f(c, "x") + f(c, "w") - 12.0
+        })
+    };
+    for c in curves.as_array().unwrap() {
+        if covered(c["to"].as_str().unwrap()) {
+            continue;
+        }
+        for seg in c["pp"].as_array().unwrap() {
+            for i in 0..=24 {
+                let (x, y) = bez(seg, i as f64 / 24.0);
+                for l in lanes.as_array().unwrap() {
+                    let h = &l["head"];
+                    let f = |k: &str| h[k].as_f64().unwrap();
+                    if x > f("x") + 1.0
+                        && x < f("x") + f("w") - 1.0
+                        && y > f("y") + 1.0
+                        && y < f("y") + f("h") - 1.0
+                    {
+                        let s = format!(
+                            "{}>{} in {}",
+                            c["from"].as_str().unwrap(),
+                            c["to"].as_str().unwrap(),
+                            l["label"].as_str().unwrap()
+                        );
+                        if !bad.contains(&s) {
+                            bad.push(s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    bad
+}
+
 /// `run` with the page opened at URL fragment `hash`.
 fn run_at(page: &Path, scenario: &str, arg: &str, hash: &str) -> Value {
     let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/viewer_node/harness.js");
@@ -1485,8 +1557,8 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
             (json!(0), json!(2), Value::Null),
             (json!(0), json!(1), Value::Null),
             // Past the end it stays on the last step.
-            (json!(0), json!(6), Value::Null),
-            (Value::Null, json!(6), json!("Kubernetes manifests")),
+            (json!(0), json!(5), Value::Null),
+            (Value::Null, json!(5), json!("validator")),
         ],
         "{r}"
     );
@@ -1503,20 +1575,23 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
         ),
         "{side}"
     );
+    // The secret its deployment sets is said beside the steps, not as a
+    // hop to the manifests.
     assert!(
-        side.contains("7secret DB_PASSWORDKubernetes manifests · reads the secret"),
+        side.contains("Set where it is deployedvalidator reads the secret DB_PASSWORD, which a deployment file sets: deploy/k8s/validator.yaml:"),
         "{side}"
     );
+    assert!(!side.contains("Kubernetes manifests ·"), "{side}");
     // Numbered crossings on the map, the current one marked.
     let links = r["html"]["links"].as_str().unwrap();
-    assert_eq!(links.matches("class=\"g-fl").count(), 4, "{links}");
+    assert_eq!(links.matches("class=\"g-fl").count(), 3, "{links}");
     assert!(
         links.contains("class=\"g-fl past\" data-gstep=\"1\""),
         "{links}"
     );
     assert!(links.contains("class=\"g-fl\" data-gstep=\"3\""), "{links}");
     let tours = r["html"]["tours"].as_str().unwrap();
-    assert!(tours.contains("Step 3 of 7"), "{tours}");
+    assert!(tours.contains("Step 3 of 6"), "{tours}");
 }
 
 /// Flows that do not fit the tours strip move into its menu, each as
@@ -1646,16 +1721,10 @@ fn the_sequence_toggle_draws_the_flow_in_lanes() {
     assert_eq!(r["on"]["state"]["seq"], true);
     assert_eq!(
         r["on"]["lanes"],
-        serde_json::json!([
-            "portal",
-            "ingest-api",
-            "Message bus",
-            "validator",
-            "Kubernetes manifests"
-        ])
+        serde_json::json!(["portal", "ingest-api", "Message bus", "validator"])
     );
     let svg = r["on"]["html"].as_str().unwrap();
-    assert_eq!(svg.matches("class=\"sq-msg").count(), 7, "{svg}");
+    assert_eq!(svg.matches("class=\"sq-msg").count(), 6, "{svg}");
     assert!(
         svg.contains("class=\"sq-msg cur\" data-gstep=\"1\""),
         "{svg}"
@@ -1704,7 +1773,7 @@ fn the_tour_runs_and_exits_keeping_the_selection() {
         serde_json::json!(["Kubernetes manifests", "validator"])
     );
     assert!(
-        seen[2]["side"].as_str().unwrap().starts_with("System tour · step 3 of 6Follow one requestPOST /uploads → ingest-api → Message bus → validator: 7 steps across 5 parts."),
+        seen[2]["side"].as_str().unwrap().starts_with("System tour · step 3 of 6Follow one requestPOST /uploads → ingest-api → Message bus → validator: 6 steps across 4 parts."),
         "{}",
         seen[2]["side"]
     );
@@ -2536,6 +2605,41 @@ fn shared_and_hub_resources_are_tags_whose_lines_wait_for_a_focus() {
         vec!["a>RabbitMQ", "a>Redis", "b>RabbitMQ", "c>RabbitMQ"],
         "{r}"
     );
+    // The broker's three users' lines arrive as one bundle: one port on
+    // its top, and no label each (their titles say what each line is).
+    let into: Vec<(i64, i64)> = steps[2]["curves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["to"] == "RabbitMQ")
+        .map(|c| {
+            let last = c["pp"].as_array().unwrap().last().unwrap();
+            (
+                last[3][0].as_f64().unwrap().round() as i64,
+                last[3][1].as_f64().unwrap().round() as i64,
+            )
+        })
+        .collect();
+    assert_eq!(into.len(), 3, "{r}");
+    assert!(into.iter().all(|p| *p == into[0]), "{into:?}");
+    assert!(
+        steps[2]["labelled"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| !l.as_str().unwrap().ends_with(">RabbitMQ")),
+        "{}",
+        steps[2]["labelled"]
+    );
+    // No line, at rest or around a focus, runs through a heading's words;
+    // the lane note steps aside from lines drawn for a focus.
+    for s in steps {
+        assert_eq!(
+            through_headings(&s["curves"], &s["lanes"], &s["cards"]),
+            Vec::<String>::new(),
+            "{s}"
+        );
+    }
     // Off every card: back to rest.
     assert_eq!(links(3), vec!["a>Redis"], "{r}");
     // On the hub: its five resources.
@@ -2660,17 +2764,18 @@ fn a_big_map_stays_readable_and_its_lines_do_not_cross() {
             .clone()
     };
     let mid = |c: &Value, x: &str, w: &str| c[x].as_f64().unwrap() + c[w].as_f64().unwrap() / 2.0;
-    // The map's area in a 1400×900 window, beside the side column: left
-    // to right, larger than 1:1.
+    // The map's area in a 1400×900 window, beside the side column: top to
+    // bottom (the four services no line touches say so on a line of their
+    // own, which makes the columns of left to right taller), larger than 1:1.
     let r = run(&p, "glance-area", "1040,650");
-    assert_eq!(r["cam"]["dir"], "h", "{r}");
+    assert_eq!(r["cam"]["dir"], "v", "{r}");
     assert!(r["cam"]["k"].as_f64().unwrap() > 1.0, "{r}");
-    // Callers top to bottom in the order of what they call: no crossing.
+    // Callers left to right in the order of what they call: no crossing.
     let order = |names: Vec<&str>| {
         let mut v: Vec<(f64, usize)> = names
             .iter()
             .enumerate()
-            .map(|(i, n)| (mid(&card(&r, n), "y", "h"), i))
+            .map(|(i, n)| (mid(&card(&r, n), "x", "w"), i))
             .collect();
         v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         v.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
@@ -2686,6 +2791,20 @@ fn a_big_map_stays_readable_and_its_lines_do_not_cross() {
         Vec::<String>::new(),
         "{r}"
     );
+    // The four services no line touches say so, each on a line of its
+    // own; the others do not.
+    let html = r["html"].as_str().unwrap();
+    assert_eq!(
+        html.matches("<p class=\"g-alone\">No calls to or from other apps found in its code.</p>")
+            .count(),
+        4,
+        "{html}"
+    );
+    for n in ["s00", "s01", "s02", "s03"] {
+        let at = html.find(&format!("<h3>{n}</h3>")).unwrap();
+        let card = &html[at..at + html[at..].find("</div>").unwrap()];
+        assert!(card.contains("g-alone"), "{n}: {card}");
+    }
     // An area too short for it: 1:1, scrolling.
     let r = run(&p, "glance-area", "1040,420");
     let cam = &r["cam"];
@@ -2789,7 +2908,12 @@ fn crafted_deployment_and_resource_names_render_as_text() {
 /// of the services orders calls too; orders calls six; recs one. Ten
 /// services in one lane.
 fn mesh_page(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-    let calls: &[(&str, &[&str])] = &[
+    mesh_page_with(prefix, &[])
+}
+
+/// The mesh, plus services nothing calls and that call nothing.
+fn mesh_page_with(prefix: &str, loose: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+    let mut calls: Vec<(&str, &[&str])> = vec![
         ("loadgen", &["gateway"]),
         (
             "gateway",
@@ -2809,8 +2933,9 @@ fn mesh_page(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         ("email", &[]),
         ("payment", &[]),
     ];
+    calls.extend(loose.iter().map(|&n| (n, &[] as &[&str])));
     let mut owned: Vec<(String, String)> = Vec::new();
-    for (svc, outs) in calls {
+    for (svc, outs) in &calls {
         owned.push((
             format!("{svc}/pyproject.toml"),
             format!("[project]\nname = \"{svc}\"\ndependencies = [\"fastapi\", \"requests\"]\n"),
@@ -2925,18 +3050,24 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
             .position(|&y| y == f(&card(n), "y") as i64)
             .unwrap()
     };
-    // One row per step of the chain: load, gateway, orders and recs, the rest.
-    assert_eq!(ys.len(), 4, "{rest}");
+    // One row per step of the chain, the two short first steps folded into
+    // one (loadgen beside the gateway it calls): load and gateway, orders
+    // and recs, the rest.
+    assert_eq!(ys.len(), 3, "{rest}");
     assert_eq!(
         [
             "loadgen", "gateway", "orders", "recs", "catalog", "email", "payment", "shipping"
         ]
         .map(row),
-        [0, 1, 2, 2, 3, 3, 3, 3],
+        [0, 0, 1, 1, 2, 2, 2, 2],
+        "{rest}"
+    );
+    assert!(
+        f(&card("loadgen"), "x") < f(&card("gateway"), "x"),
         "{rest}"
     );
     // Two of orders' six callees lifted into its row, one either side.
-    assert_eq!([row("cart"), row("currency")], [2, 2], "{rest}");
+    assert_eq!([row("cart"), row("currency")], [1, 1], "{rest}");
     let step = f(&card("orders"), "w") + 40.0;
     let side = |n: &str| ((f(&card(n), "x") - f(&card("orders"), "x")) / step).round() as i64;
     let mut sides = vec![side("cart"), side("currency")];
@@ -2959,15 +3090,21 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
         ],
         "{rest}"
     );
-    // Each drawn line steps one row down, or along a row to a neighbour.
+    // Each drawn line steps one row down, or along a row to a neighbour
+    // (no card between the two).
     for l in rest["links"].as_array().unwrap() {
         let (a, b) = (l["from"].as_str().unwrap(), l["to"].as_str().unwrap());
         match row(b) as i64 - row(a) as i64 {
             1 => {}
-            0 => assert!(
-                (f(&card(a), "x") - f(&card(b), "x")).abs() < step + 1.0,
-                "{a}>{b} along its row skips a card: {rest}"
-            ),
+            0 => {
+                let (xa, xb) = (f(&card(a), "x"), f(&card(b), "x"));
+                let between = rest["cards"].as_array().unwrap().iter().any(|c| {
+                    f(c, "y") as i64 == f(&card(a), "y") as i64
+                        && f(c, "x") > xa.min(xb)
+                        && f(c, "x") < xa.max(xb)
+                });
+                assert!(!between, "{a}>{b} along its row skips a card: {rest}");
+            }
             d => panic!("{a}>{b} spans {d} rows: {rest}"),
         }
     }
@@ -3007,7 +3144,13 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
         "{hover}"
     );
     assert_eq!(link_names(off), link_names(rest));
-    for s in [rest, hover] {
+    for (s, labelled) in [
+        (rest, vec!["gateway", "loadgen", "orders", "recs"]),
+        // With the pointer on the gateway, catalog has three callers: their
+        // lines are a bundle, unlabelled (each keeps its title), so recs,
+        // whose one line that is, has no label.
+        (hover, vec!["gateway", "loadgen", "orders"]),
+    ] {
         assert_eq!(
             unclear_curves(&s["cards"], &s["curves"]),
             Vec::<String>::new(),
@@ -3015,20 +3158,38 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
         );
         // Lines between rows run square; two callers' tracks never run on
         // top of each other.
-        let mut runs: Vec<(String, (f64, f64, f64))> = Vec::new();
+        // (Lines into one card from three or more callers are a bundle:
+        // they share the track over it on purpose.)
+        let mut runs: Vec<(String, String, (f64, f64, f64))> = Vec::new();
         for c in s["curves"].as_array().unwrap() {
             let (a, b) = (c["from"].as_str().unwrap(), c["to"].as_str().unwrap());
             if row(a) != row(b) {
                 assert!(is_square(c), "{a}>{b} is not square: {c}");
             }
             for run in across_runs(c) {
-                runs.push((a.to_string(), run));
+                runs.push((a.to_string(), b.to_string(), run));
             }
         }
-        for (i, (a, x)) in runs.iter().enumerate() {
-            for (b, y) in &runs[i + 1..] {
+        let callers = |t: &str| {
+            let mut v: Vec<&str> = s["curves"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["to"] == t)
+                .map(|c| c["from"].as_str().unwrap())
+                .collect();
+            v.sort();
+            v.dedup();
+            v.len()
+        };
+        for (i, (a, ta, x)) in runs.iter().enumerate() {
+            for (b, tb, y) in &runs[i + 1..] {
                 assert!(
-                    a == b || (x.0 - y.0).abs() >= 1.0 || x.2 <= y.1 + 2.0 || y.2 <= x.1 + 2.0,
+                    a == b
+                        || (ta == tb && callers(ta) >= 3)
+                        || (x.0 - y.0).abs() >= 1.0
+                        || x.2 <= y.1 + 2.0
+                        || y.2 <= x.1 + 2.0,
                     "{a} and {b} share a track at {}: {s}",
                     x.0
                 );
@@ -3049,11 +3210,7 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
                 "two labels for {l}: {s}"
             );
         }
-        assert_eq!(
-            seen.into_iter().collect::<Vec<_>>(),
-            vec!["gateway", "loadgen", "orders", "recs"],
-            "{s}"
-        );
+        assert_eq!(seen.into_iter().collect::<Vec<_>>(), labelled, "{s}");
         let rect = |b: &Value| [f(b, "x"), f(b, "y"), f(b, "w"), f(b, "h")];
         let over = |a: [f64; 4], b: [f64; 4]| {
             a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1]
@@ -3065,9 +3222,33 @@ fn a_service_mesh_is_drawn_as_a_call_hierarchy() {
             }
             for m in &shown[i + 1..] {
                 assert!(!over(b, rect(&m["box"])), "labels {l} and {m} overlap");
+                // Side by side they keep 14px apart: never one run of words.
+                let w = rect(&m["box"]);
+                let apart = [b[0] - 14.0, b[1] - 2.0, b[2] + 28.0, b[3] + 4.0];
+                assert!(!over(apart, w), "labels {l} and {m} run together");
             }
         }
+        assert_eq!(
+            through_headings(&s["curves"], &s["lanes"], &s["cards"]),
+            Vec::<String>::new(),
+            "{s}"
+        );
     }
+    // An area too short for the rows at 1:1: bands, the short first steps
+    // still folded into one row, loadgen beside the gateway it calls.
+    let b = run(&p, "glance-area", "1040,400");
+    let card = |n: &str| {
+        b["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("{n}: {b}"))
+            .clone()
+    };
+    assert_eq!(card("loadgen")["y"], card("gateway")["y"], "{b}");
+    assert!(f(&card("loadgen"), "x") < f(&card("gateway"), "x"), "{b}");
+    assert_eq!(overlapping(&b["cards"]), Vec::<String>::new());
 }
 
 /// Reading order of the landing cards: lane by lane (top to bottom, then
@@ -3621,19 +3802,32 @@ fn an_event_driven_system_shows_who_publishes_and_who_reacts() {
         "{svg}"
     );
     // The broker selected: its lines, an arrow into each subscriber, two
-    // heads on a line both ways.
+    // heads on a line both ways. Its events are named without the ending
+    // they all share ("IntegrationEvent"), which the panel says, each whole
+    // name in its title.
     let s = run(&p, "glance-select", "RabbitMQ");
     let side = s["card"]["side"].as_str().unwrap();
     assert!(
-        side.contains("Events 3Ordering publishes OrderPaidIntegrationEvent → Catalog, WebOrdering publishes OrderStartedIntegrationEvent → BasketCatalog publishes StockLowIntegrationEvent → Ordering"),
+        side.contains("Events 3Ordering publishes OrderPaid → Catalog, WebOrdering publishes OrderStarted → BasketCatalog publishes StockLow → Ordering"),
         "{side}"
     );
     assert!(
-        side.contains("PublishersOrdering publishes 2 eventsOrderPaidIntegrationEvent, OrderStartedIntegrationEventCatalog publishes StockLowIntegrationEvent"),
+        side.contains("Names are shown without the ending \"IntegrationEvent\" most of them share; point at one for its whole name."),
+        "{side}"
+    );
+    let shtml = s["card"]["sideHtml"].as_str().unwrap();
+    assert!(
+        shtml.contains("<code title=\"OrderPaidIntegrationEvent\">OrderPaid</code>"),
+        "{shtml}"
+    );
+    assert!(
+        side.contains(
+            "PublishersOrdering publishes 2 eventsOrderPaid, OrderStartedCatalog publishes StockLow"
+        ),
         "{side}"
     );
     assert!(
-        side.contains("SubscribersBasket subscribes to OrderStartedIntegrationEvent"),
+        side.contains("SubscribersBasket subscribes to OrderStarted"),
         "{side}"
     );
     assert!(!side.contains("Used by"), "{side}");
@@ -3687,14 +3881,233 @@ fn an_event_driven_system_shows_who_publishes_and_who_reacts() {
     let side = t["side"].as_str().unwrap();
     assert!(side.contains("How events flow"), "{side}");
     assert!(
-        side.contains("Ordering publishes OrderPaidIntegrationEvent → Catalog, Web"),
+        side.contains("Ordering publishes OrderPaid → Catalog, Web"),
         "{side}"
     );
     // A flow names the event at each crossing.
     let f = run(&p, "glance-flow", "0");
     let side = f["side"].as_str().unwrap();
     assert!(
-        side.contains("3 Catalog picks OrderPaidIntegrationEvent up from RabbitMQ."),
+        side.contains("3 Catalog picks OrderPaid up from RabbitMQ."),
         "{side}"
     );
+}
+
+/// The ending most message names share is left off where they are shown
+/// (only whole names, only that ending); a repo whose names share none
+/// keeps them whole. The legend says so, and keys the tags. A strip hides
+/// every chip from the first past its edge; the map's foot cue shows only
+/// while more of a scrolling map is below.
+#[test]
+fn message_names_drop_their_common_ending_and_the_strip_and_cue_fit() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::EVENTS, "lidx-viewer-gshort-");
+    let arg = serde_json::json!({
+        "short": [
+            "publishes OrderStartedIntegrationEvent",
+            "on OrderPaidIntegrationEvent → Catalog",
+            "OrderStartedIntegrationEventX",
+            "IntegrationEvent",
+            "MyOrderPaidIntegrationEvent"
+        ],
+        "cut": [[[100, 200, 300], 250], [[100, 200, 300], 400], [[100, 500, 300], 400], [[], 10]],
+        "below": [[true, 0, 500, 900], [true, 400, 500, 900], [true, 391, 500, 900], [false, 0, 500, 900]]
+    });
+    let r = run(&p, "glance-pure", &arg.to_string());
+    assert_eq!(
+        r["short"],
+        serde_json::json!([
+            "publishes OrderStarted",
+            "on OrderPaid → Catalog",
+            "OrderStartedIntegrationEventX",
+            "IntegrationEvent",
+            "MyOrderPaidIntegrationEvent"
+        ])
+    );
+    assert_eq!(r["cut"], serde_json::json!([1, 0, 2, 0]));
+    assert_eq!(r["below"], serde_json::json!([true, false, true, false]));
+    // Explore's line labels too.
+    let e = run(
+        &p,
+        "labels-text",
+        "publishes to topic OrderStartedIntegrationEvent",
+    );
+    assert_eq!(e["text"], "publishes to topic OrderStarted", "{e}");
+    // The tours strip's flow pills: short names, whole in their title.
+    let l = run(&p, "glance-landing", "");
+    let tours = l["html"]["tours"].as_str().unwrap();
+    for pill in tours.split("data-gflow=").skip(1) {
+        let text = &pill[pill.find('>').unwrap() + 1..pill.find("</button>").unwrap()];
+        assert!(!text.contains("IntegrationEvent"), "{text}");
+    }
+    let a = run(&p, "glance-a11y", "");
+    let key = a["open"]["key"].as_str().unwrap();
+    assert!(
+        key.contains("</span>a line drawn when you point at the card</li>"),
+        "{key}"
+    );
+    assert!(
+        key.contains(
+            "Names are shown without the ending &quot;IntegrationEvent&quot; most of them share"
+        ),
+        "{key}"
+    );
+    // No ending shared by most names: names stay whole, no note.
+    let (_t2, q) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-gshort2-");
+    let r = run(
+        &q,
+        "glance-pure",
+        &serde_json::json!({ "short": ["publishes file-uploaded"] }).to_string(),
+    );
+    assert_eq!(r["short"], serde_json::json!(["publishes file-uploaded"]));
+    let a = run(&q, "glance-a11y", "");
+    assert!(
+        !a["open"]["key"]
+            .as_str()
+            .unwrap()
+            .contains("Names are shown"),
+        "{a}"
+    );
+}
+
+/// In a phone-width window the page scrolls as one: the map area is as
+/// tall as its drawing (no scroll inside a scroll), laid out for its width
+/// alone.
+#[test]
+fn a_narrow_window_scrolls_the_page_not_the_map() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = mesh_page("lidx-viewer-gnarrow-");
+    let r = run_env(&p, "glance-narrow", "390,300", &[("NARROW", "1")]);
+    let cam = &r["cam"];
+    let k = cam["k"].as_f64().unwrap();
+    let want = (cam["h"].as_f64().unwrap() * k).ceil() as i64;
+    let got: i64 = r["mapHeight"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches("px")
+        .parse()
+        .unwrap();
+    assert_eq!(got, want, "{r}");
+    assert!(got > 300, "taller than the area it was given: {r}");
+    // Wide: the area binds, nothing is set.
+    let r = run(&p, "glance-narrow", "1040,717");
+    assert_eq!(r["mapHeight"], "", "{r}");
+}
+
+/// Geometry laid out by the test. A line into a card part-covered by a
+/// lane heading enters by the part of its top the heading's words leave
+/// free. Two callers bundled into one card share one channel down the row
+/// they skip. Two labels side by side keep 14px apart. Folding short
+/// layers takes as many pairs as it can, then the fewest cards per row.
+#[test]
+fn routes_keep_off_headings_bundles_share_a_channel_labels_keep_apart() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::MULTI, "lidx-viewer-ggeo-");
+    let b = |x: f64, y: f64, w: f64, h: f64| serde_json::json!({ "x": x, "y": y, "w": w, "h": h });
+    let arg = serde_json::json!({
+        "orth": [
+            {
+                "a": b(0.0, 0.0, 196.0, 100.0), "t": b(0.0, 200.0, 196.0, 60.0),
+                "a1": b(0.0, 400.0, 100.0, 60.0), "a2": b(400.0, 400.0, 100.0, 60.0),
+                "m1": b(0.0, 550.0, 100.0, 60.0), "m2": b(150.0, 550.0, 100.0, 60.0), "m3": b(400.0, 550.0, 100.0, 60.0),
+                "r": b(200.0, 700.0, 100.0, 60.0)
+            },
+            { "w": 600, "h": 800 },
+            [{ "label": "Data and", "x": 0, "y": 170, "w": 196 }],
+            [["a", "t"], ["a1", "r"], ["a2", "r"], ["m2", "r"]]
+        ],
+        "labels": [
+            { "z": b(900.0, 900.0, 10.0, 10.0) },
+            { "w": 1000, "h": 1000 },
+            [
+                { "from": "a", "label": "abcdefghij", "pp": [0, 500, 100] },
+                { "from": "b", "label": "abcdefghij", "pp": [92, 500, 192] }
+            ]
+        ],
+        "fold": [[2, 1, 1, 2, 1], [1, 1, 1], [3, 1], [1, 1, 3]]
+    });
+    let r = run(&p, "glance-geometry", &arg.to_string());
+    let last = |k: &str| {
+        let pp = r["orth"][k]
+            .as_array()
+            .unwrap_or_else(|| panic!("{k}: {r}"));
+        let q = &pp.last().unwrap()[3];
+        (q[0].as_f64().unwrap(), q[1].as_f64().unwrap())
+    };
+    // "DATA AND" (harness text: 7px a letter) ends at x = 100: the port is
+    // at 108, the first x past the words and their 8px margin.
+    assert_eq!(last("a>t"), (108.0, 200.0), "{r}");
+    // The x where each bundled caller's line crosses the middle row.
+    let down_at = |k: &str| -> Vec<i64> {
+        let mut xs = Vec::new();
+        for seg in r["orth"][k].as_array().unwrap() {
+            for i in 0..=10 {
+                let (x, y) = bez(seg, i as f64 / 10.0);
+                if y > 560.0 && y < 600.0 {
+                    xs.push(x.round() as i64);
+                }
+            }
+        }
+        xs.sort();
+        xs.dedup();
+        xs
+    };
+    assert_eq!(down_at("a1>r"), down_at("a2>r"), "{r}");
+    assert_eq!(down_at("a1>r").len(), 1, "{r}");
+    assert_eq!(last("a1>r"), last("a2>r"), "{r}");
+    assert_eq!(last("a1>r"), last("m2>r"), "{r}");
+    // Labels: the second leaves 14px or more after the first.
+    let lx = |i: usize| r["labels"][i]["x"].as_f64().unwrap();
+    let lw = |i: usize| r["labels"][i]["w"].as_f64().unwrap();
+    assert_eq!(lx(0), 10.0, "{r}");
+    assert_eq!(lx(1), 110.0, "{r}");
+    assert!(lx(1) - (lx(0) + lw(0)) >= 14.0, "{r}");
+    // Folds (negative: a folded row): the fewest cards per folded row; on
+    // a tie, the later pair.
+    assert_eq!(
+        r["fold"],
+        serde_json::json!([[2, -2, -3], [1, -2], [-4], [-2, 3]])
+    );
+}
+
+/// Bands for a map too tall for its area: rows a little tighter when that
+/// makes the whole map fit (1040×500: 493px tall, where the usual bands
+/// take 509 and scroll); and a service nothing links to takes a free place
+/// at the end of a folded row (beside loadgen and the gateway) rather than
+/// a row of its own.
+#[test]
+fn tight_bands_fit_a_map_and_a_folded_row_takes_a_loose_card() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_t, p) = mesh_page_with("lidx-viewer-gtight-", &["assist"]);
+    let r = run(&p, "glance-area", "1040,500");
+    assert_eq!(r["cam"]["h"], 493, "{r}");
+    assert_eq!(r["cam"]["k"], 1.0, "{r}");
+    let r = run(&p, "glance-area", "1040,400");
+    assert_eq!(r["cam"]["h"], 509, "{r}");
+    let card = |n: &str| {
+        r["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("{n}: {r}"))
+            .clone()
+    };
+    let f = |c: &Value, k: &str| c[k].as_f64().unwrap();
+    assert_eq!(card("assist")["y"], card("loadgen")["y"], "{r}");
+    assert_eq!(card("gateway")["y"], card("loadgen")["y"], "{r}");
+    assert!(f(&card("assist"), "x") > f(&card("gateway"), "x"), "{r}");
+    assert_eq!(overlapping(&r["cards"]), Vec::<String>::new());
 }

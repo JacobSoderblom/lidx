@@ -1128,3 +1128,61 @@ fn what_infrastructure_declares_does_not_depend_on_the_scope_shown() {
         );
     }
 }
+
+/// The same apps described in several places (plain manifests, a kustomize
+/// base, a release bundle) are one "Where it runs" group, its places in
+/// its label and its sentence saying so; an app deployed by files beside
+/// its code is named by that folder, not by the list of its files.
+#[test]
+fn deployments_of_the_same_apps_in_several_places_are_one_group() {
+    let deployment = |app: &str| {
+        format!(
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {app}\nspec:\n  template:\n    metadata:\n      labels:\n        app: {app}\n    spec:\n      containers:\n        - name: {app}\n          image: registry.example.com/{app}:1.0\n"
+        )
+    };
+    let mut owned: Vec<(String, String)> = Vec::new();
+    for app in ["cart", "front", "extra"] {
+        owned.push((
+            format!("{app}/go.mod"),
+            format!("module example.com/{app}\n\ngo 1.22\n"),
+        ));
+        owned.push((
+            format!("{app}/main.go"),
+            "package main\n\nfunc main() {\n}\n".to_string(),
+        ));
+        owned.push((
+            format!("{app}/Dockerfile"),
+            "FROM golang:1.22\n".to_string(),
+        ));
+    }
+    for dir in ["manifests", "kustomize/base", "release"] {
+        for app in ["cart", "front"] {
+            owned.push((format!("{dir}/{app}.yaml"), deployment(app)));
+        }
+    }
+    owned.push((
+        "extra/kustomization.yaml".to_string(),
+        "apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources:\n  - extra.yaml\n".to_string(),
+    ));
+    owned.push(("extra/extra.yaml".to_string(), deployment("extra")));
+    let files: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let g = glance(&files);
+    assert_eq!(
+        deploy(&g),
+        vec![
+            (
+                "Kubernetes (extra/)".to_string(),
+                "Runs as 1 container on Kubernetes.".to_string(),
+                strs(&["extra"])
+            ),
+            (
+                "Kubernetes (kustomize/, manifests/, release/)".to_string(),
+                "Runs as 2 containers on Kubernetes. The same 2 apps are described in each of these 3 places.".to_string(),
+                strs(&["cart", "front"])
+            ),
+        ]
+    );
+}

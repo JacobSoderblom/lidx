@@ -2423,17 +2423,36 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             {
                 names.push("database".to_string());
             }
+            // Config a deployment file sets is evidence of where a value
+            // comes from, not a hop the request takes at run time: it is
+            // the flow's `reads`, not a step (a secret store the code calls
+            // stays a step).
+            let deployed = |s: &Step| s.via == "config" && nodes[s.node].kind == "infra";
+            let steps: Vec<&Step> = f.steps.iter().filter(|s| !deployed(s)).collect();
+            let reads: Vec<Value> = f
+                .steps
+                .iter()
+                .filter(|s| deployed(s))
+                .map(|s| json!({ "node": s.node, "name": s.name, "qual": s.qual, "file": s.file, "line": s.line }))
+                .collect();
+            let seq: Vec<usize> = f
+                .seq
+                .iter()
+                .copied()
+                .filter(|&nd| steps.iter().any(|s| s.node == nd))
+                .collect();
             json!({
                 "title": flow_title(&e.label, &names, branch.as_ref().map(|(b, w)| (*b, w.as_str()))),
+                "reads": reads,
                 "fan": f.fan.iter().map(|(nd, to)| json!({ "node": nd, "to": to })).collect::<Vec<_>>(),
                 "label": e.label,
                 "caller": caller,
                 "entry": f.entry,
                 "score": f.score,
-                "nodes": f.seq,
-                "probable": f.steps.iter().any(|s| s.probable),
+                "nodes": seq,
+                "probable": steps.iter().any(|s| s.probable),
                 "ends": if f.unresolved_end { "unresolved" } else { "" },
-                "steps": f.steps.iter().map(|s| {
+                "steps": steps.iter().map(|s| {
                     let mut v = json!({
                         "node": s.node, "name": s.name, "qual": s.qual, "file": s.file, "line": s.line,
                         "kind": s.kind, "via": s.via, "probable": s.probable,
@@ -3209,7 +3228,16 @@ fn deploy_groups(
     for (i, t, ev) in units::deployments(units) {
         let Some(nd) = app_node(t) else { continue };
         let infra = &units[i];
-        let root = infra.display_root();
+        // A unit rooted at a list of files is named by the deploying file's
+        // folder, not by the whole list.
+        let root = match infra.display_root() {
+            r if r.contains(", ") => ev
+                .file
+                .rsplit_once('/')
+                .map(|(d, _)| format!("{d}/"))
+                .unwrap_or(r),
+            r => r,
+        };
         let tool: &'static str = if infra.why == "Aspire" {
             "Aspire"
         } else {
@@ -3312,7 +3340,7 @@ fn deploy_groups(
             _ => 8,
         }
     };
-    let list: Vec<(String, DeployGroup)> = groups.into_iter().collect();
+    let (list, places) = merge_same_deploys(groups.into_iter().collect());
     // Each node is drawn in one group: the first a deployment runs it in.
     let mut primary: HashMap<usize, usize> = HashMap::new();
     for (gi, (label, (tool, ns, _))) in list.iter().enumerate() {
@@ -3371,6 +3399,15 @@ fn deploy_groups(
                 count(n, "app", "apps")
             ),
         };
+        // Groups merged for running the same apps say so.
+        let sentence = match places[gi] {
+            k if k > 1 => format!(
+                "{sentence} The same {} {} described in each of these {k} places.",
+                count(n, "app", "apps"),
+                if n == 1 { "is" } else { "are" }
+            ),
+            _ => sentence,
+        };
         let mut members: Vec<usize> = ns.iter().copied().collect();
         members.sort_by_key(|nd| (primary.get(nd) != Some(&gi), *nd));
         for &nd in ns {
@@ -3389,6 +3426,53 @@ fn deploy_groups(
         }));
     }
     out
+}
+
+/// Deployment groups of one tool that run the same apps (the same
+/// Kubernetes manifests in `kubernetes-manifests/`, `kustomize/base/` and
+/// `release/`) as one group, its places listed in its label:
+/// `Kubernetes (kubernetes-manifests/, kustomize/base/, release/)`. Only
+/// labels of the form `<tool name> (<place>)` with one tool name merge; the
+/// rest stay apart. Returns the groups and how many places each stands for.
+fn merge_same_deploys(
+    list: Vec<(String, DeployGroup)>,
+) -> (Vec<(String, DeployGroup)>, Vec<usize>) {
+    let split = |label: &str| -> Option<(String, String)> {
+        let (head, rest) = label.split_once(" (")?;
+        Some((head.to_string(), rest.strip_suffix(')')?.to_string()))
+    };
+    let mut out: Vec<(String, DeployGroup)> = Vec::new();
+    let mut places: Vec<Vec<String>> = Vec::new();
+    for (label, g) in list {
+        let parts = split(&label);
+        let same = parts.as_ref().and_then(|(head, _)| {
+            out.iter().position(|(l, o)| {
+                o.0 == g.0
+                    && o.1 == g.1
+                    && !matches!(g.0, "none" | "docker")
+                    && split(l).is_some_and(|(h, _)| &h == head)
+            })
+        });
+        match (same, parts) {
+            (Some(at), Some((_, place))) => {
+                out[at].1.2.extend(g.2);
+                places[at].push(place);
+            }
+            (_, parts) => {
+                places.push(parts.map(|(_, p)| vec![p]).unwrap_or_default());
+                out.push((label, g));
+            }
+        }
+    }
+    let counts = places.iter().map(|p| p.len().max(1)).collect();
+    for (o, p) in out.iter_mut().zip(&places) {
+        if p.len() > 1
+            && let Some((head, _)) = split(&o.0)
+        {
+            o.0 = format!("{head} ({})", p.join(", "));
+        }
+    }
+    (out, counts)
 }
 
 fn entries_json_len(entries: &[EntryPoint]) -> usize {
