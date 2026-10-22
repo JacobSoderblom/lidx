@@ -16,10 +16,10 @@
   </div>
   <nav id="crumbs" class="crumbs" aria-label="Folder path"></nav>
   <div class="search">
-    <label for="search" class="sr-only">Search nodes</label>
+    <label for="search" id="search-label" class="sr-only">Search apps, symbols, files and folders</label>
     <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a symbol, file or folder" role="combobox" aria-expanded="false" aria-controls="search-list" aria-autocomplete="list">
     <kbd class="search-key" aria-hidden="true">/</kbd>
-    <ul id="search-list" role="listbox" aria-label="Matching nodes" hidden></ul>
+    <ul id="search-list" role="listbox" aria-label="Search results" hidden></ul>
   </div>
   <div class="tools" role="toolbar" aria-label="View">
     <div class="seg" role="group" aria-label="Level" id="level-seg" hidden>
@@ -38,7 +38,7 @@
     </div>
     <div class="seg depth graph-only" role="group" aria-label="Folder depth">
       <button type="button" id="depth-less" aria-label="Fewer folder levels" title="Fewer folder levels">−</button>
-      <span id="depth-label" class="depth-label" aria-live="polite">folders</span>
+      <span id="depth-label" class="depth-label">folders</span>
       <button type="button" id="depth-more" aria-label="More folder levels" title="More folder levels">+</button>
     </div>
     <div class="seg" role="group" aria-label="History">
@@ -67,17 +67,18 @@
 <section id="glance" class="glance" aria-label="System at a glance" hidden>
   <div id="g-head" class="g-head"></div>
   <div id="g-tours" class="g-tours" role="toolbar" aria-label="Tours and flows"></div>
+  <div id="g-key" class="g-key" role="region" aria-label="Legend" hidden></div>
   <div id="g-map" class="g-map">
     <div id="g-scroll" class="g-scroll">
       <div id="g-world" class="g-world">
         <svg id="g-links" class="g-links" aria-hidden="true"></svg>
-        <div id="g-cards" role="list" aria-label="The main parts of the system"></div>
+        <div id="g-cards" role="group" aria-label="The main parts of the system"></div>
       </div>
     </div>
     <div id="g-seq" class="g-seq" hidden></div>
     <div id="g-strip" class="g-strip" hidden></div>
   </div>
-  <aside id="g-side" class="g-side" aria-label="Start here" aria-live="polite"></aside>
+  <aside id="g-side" class="g-side" aria-label="Start here"></aside>
 </section>
 <main id="main" class="main">
   <aside id="legend" class="legend" aria-label="Legend and filters"></aside>
@@ -89,7 +90,7 @@
     <div id="apps" class="apps" hidden>
       <div id="apps-world" class="apps-world">
         <svg id="apps-edges" class="apps-edges" aria-hidden="true"></svg>
-        <div id="apps-cards" role="list" aria-label="Applications, libraries and infrastructure"></div>
+        <div id="apps-cards" role="group" aria-label="Applications, libraries and infrastructure"></div>
         <svg id="apps-zedges" class="apps-edges zedges" aria-hidden="true"></svg>
       </div>
     </div>

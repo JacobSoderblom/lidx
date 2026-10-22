@@ -1415,7 +1415,7 @@
     });
     // Transport tags on folder-to-folder bridges.
     if (tags.length && tags.length < 400) {
-      c.font = '600 10.5px ' + SANS;
+      c.font = '600 11px ' + SANS;
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       tags.forEach(function (it) {
@@ -1434,7 +1434,7 @@
       });
     }
     if (hlEdges && st.cam.k > 1.4 && hlEdges.size <= 30) {
-      c.font = '10.5px ' + MONO;
+      c.font = '11px ' + MONO;
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       hlEdges.forEach(function (idx) {
@@ -1562,7 +1562,7 @@
       }
       if (b.h > 22) {
         c.fillStyle = theme['ink-3'];
-        c.font = '600 ' + Math.min(12, Math.max(9, b.h * 0.26)).toFixed(1) + 'px ' + SANS;
+        c.font = '600 ' + Math.min(12, Math.max(11, b.h * 0.26)).toFixed(1) + 'px ' + SANS;
         c.textAlign = 'right';
         c.textBaseline = 'bottom';
         c.fillText((v.folded ? '+' : '') + fmt(v.members.length), b.x + b.w - 6, b.y + b.h - sh - 3);
@@ -1646,13 +1646,13 @@
     var badgeHere = st.selected === v.id || st.hoverNode === v || (hl && hl.has(v.idx) && hl.get(v.idx) <= 1) || k > 1.8;
     if (v.hidden && badgeHere && r > 3.5) {
       var t = '+' + v.hidden;
-      c.font = '600 9.5px ' + SANS;
+      c.font = '600 11px ' + SANS;
       c.textAlign = 'left';
       c.textBaseline = 'middle';
       var tw = c.measureText(t).width + 6;
       var bx = x - r * 0.7 - tw, by = y - r - 5;
       c.beginPath();
-      roundRect(c, bx, by - 6, tw, 12, 6);
+      roundRect(c, bx, by - 7, tw, 14, 7);
       c.fillStyle = theme.paper;
       c.fill();
       c.strokeStyle = theme['ink-3'];
@@ -3140,6 +3140,8 @@
     st.userMoved = false;
     relayout(0.5);
     if (st.view === 'matrix') renderMatrix();
+    live.textContent = (st.depth === Infinity ? 'Every folder open' : st.depth > 0 ? 'Folders open to depth ' + st.depth : 'Custom folder depth') +
+      ': ' + plural(V.nodes.length, 'node', 'nodes') + ' shown';
   }
   function currentDepth() {
     if (st.depth === Infinity) return MAX_DEPTH;
@@ -3536,10 +3538,13 @@
     }).join(' ');
     var kind = unitKind(u) + (u.kind === 'infra' && u.why ? ' · ' + u.why : '');
     if (open && zoomable(u)) return zoomCardHtml(u, cls, kind, u.kind !== 'infra' ? dots : '');
-    var html = '<article role="listitem" class="' + cls + '" data-key="u' + u.id + '" tabindex="0" title="' + esc(u.root) + '" aria-expanded="' + open + '" aria-label="' +
-      esc(u.name + ', ' + unitKind(u) + (langs.length ? ', ' + langs.map(langName).join(' and ') : '')) + '">';
+    // A closed card is one button (Enter opens it); an open one holds buttons of
+    // its own, so it is a group.
+    var html = '<div class="' + cls + '" data-key="u' + u.id + '" tabindex="0" title="' + esc(u.root) + '" ' +
+      (open ? 'role="group"' : 'role="button" aria-expanded="false" aria-pressed="' + (ast.selected === 'u' + u.id) + '"') + ' aria-label="' +
+      esc(u.name + ', ' + unitKind(u) + (open ? ', open' : '') + (langs.length ? ', ' + langs.map(langName).join(' and ') : '')) + '">';
     html += '<div class="k"><span>' + esc(kind) + '</span>' + (u.kind !== 'infra' && dots ? '<span class="lg">' + dots + '</span>' : '') + '</div>';
-    if (zoomable(u) && u.files) html += '<button type="button" class="zexp" data-zexp="' + u.id + '" aria-label="Expand ' + esc(u.name) + ' in place" title="Expand in place: folders, files, symbols (Enter)">Expand</button>';
+    if (zoomable(u) && u.files) html += '<span class="zexp" data-zexp="' + u.id + '" aria-hidden="true" title="Expand in place: folders, files, symbols (Enter)">Expand</span>';
     html += '<h3>' + esc(u.name) + '</h3>';
     // The path is in the tooltip and the panel: on the sheet it costs a line
     // per card and says less than the name.
@@ -3561,12 +3566,12 @@
       var top = mods.slice(0, 3).map(function (m) { return relName(u, m[0]); });
       html += '<p class="mods"><b>' + esc(top.join(' · ')) + '</b>' + (mods.length > 3 ? ' +' + (mods.length - 3) : '') + '</p>';
     }
-    html += '</article>';
+    html += '</div>';
     return html;
   }
   function chipHtml(c, i) {
-    return '<article role="listitem" class="card chip" data-key="p' + i + '" tabindex="0" aria-label="' + esc(c.name + ', external package used by ' + plural(c.users.length, 'unit', 'units')) + '">' +
-      '<h3>' + esc(c.name) + '</h3><div class="root">' + esc(plural(c.users.length, 'user', 'users')) + '</div></article>';
+    return '<div role="button" aria-pressed="' + (ast.selected === 'p' + i) + '" class="card chip" data-key="p' + i + '" tabindex="0" aria-label="' + esc(c.name + ', external package used by ' + plural(c.users.length, 'unit', 'units')) + '">' +
+      '<h3>' + esc(c.name) + '</h3><div class="root">' + esc(plural(c.users.length, 'user', 'users')) + '</div></div>';
   }
 
   // Connectors: one per ordered pair of cards, merging that pair's links.
@@ -3806,6 +3811,13 @@
     });
     var conns = buildConns();
     var lay = layoutApps(keys, sizes, conns);
+    // Tab order is reading order on the sheet: band by band, row by row, left to right.
+    ast.tabOrder = keys.slice().sort(function (a, b) {
+      var A = lay.P[a], B = lay.P[b];
+      if (!A || !B) return 0;
+      return Math.abs(A.y - B.y) > 8 ? A.y - B.y : A.x - B.x;
+    });
+    ast.tabOrder.forEach(function (k) { if (els[k]) appsCards.appendChild(els[k]); });
     routeConns(conns, lay.P);
     placeLabels(conns, lay.P, []);
     // Cards are new elements each render: start each where it was (no
@@ -3927,6 +3939,7 @@
     Array.prototype.forEach.call(appsCards.querySelectorAll('[data-key]'), function (el) {
       var k = el.dataset.key;
       el.classList.toggle('sel', k === ast.selected);
+      if (el.getAttribute('role') === 'button') el.setAttribute('aria-pressed', String(k === ast.selected));
       el.classList.toggle('dim', !!near && !near.has(k));
     });
     Array.prototype.forEach.call(appsSvg.querySelectorAll('[data-conn]'), function (g) {
@@ -3954,6 +3967,11 @@
     }
   }
   function selectConn(i) {
+    var cn = ast.conns[i];
+    if (cn) {
+      var nameOf = function (k) { return k.charAt(0) === 'u' ? AU[+k.slice(1)].name : CHIPS[+k.slice(1)].name; };
+      live.textContent = 'Link from ' + nameOf(cn.a) + ' to ' + nameOf(cn.b) + ': ' + cn.text;
+    }
     ast.zlink = null;
     ast.selConn = i;
     ast.selected = null;
@@ -4169,7 +4187,7 @@
       if (!fc[f] && ast.on[f]) return;
       html += '<label><input type="checkbox" data-afam="' + f + '"' + (ast.on[f] ? ' checked' : '') + '>' +
         famSwatch(f).replace('<svg ', '<svg class="key-line" ') + '<span' + (ast.on[f] ? '' : ' class="off"') + '>' + esc(APP_FAM[f].label) +
-        (f in ast.quiet ? ' <button type="button" class="quiet-btn" data-aquiet="' + f + '" aria-pressed="' + !ast.quiet[f] + '" title="Draw these links all the time, not only around the card in focus">' +
+        (f in ast.quiet ? ' <button type="button" class="quiet-btn" data-aquiet="' + f + '" aria-label="' + esc(APP_FAM[f].label + ' links, ' + (ast.quiet[f] ? 'drawn on focus. Switch to always drawn' : 'always drawn. Switch to drawn on focus')) + '" title="Draw these links all the time, not only around the card in focus">' +
           (ast.quiet[f] ? 'on focus' : 'always') + '</button>' : '') +
         '</span><span class="count">' + fmt(fc[f] || 0) + '</span></label>';
     });
@@ -4198,9 +4216,12 @@
     var b = ev.target.closest('button[data-aquiet]');
     if (!b || st.level !== 'app') return;
     ev.preventDefault();
-    ast.quiet[b.dataset.aquiet] = !ast.quiet[b.dataset.aquiet];
+    var fam = b.dataset.aquiet;
+    ast.quiet[fam] = !ast.quiet[fam];
     renderApps(true);
     renderLegend();
+    var again = legend.querySelector('[data-aquiet="' + fam + '"]');
+    if (again) again.focus();
   });
   function appLegendChange(t) {
     if (t.dataset.afam) ast.on[t.dataset.afam] = t.checked;
@@ -4291,7 +4312,7 @@
     }, { passive: false });
     appsEl.addEventListener('click', function (ev) {
       if (ast.dragged) return;
-      var b = ev.target.closest('button');
+      var b = ev.target.closest('button, [data-zexp]');
       if (b && b.dataset.zexp !== undefined) { zoomOpen(+b.dataset.zexp, []); return; }
       if (b && b.dataset.zup !== undefined) { var uu = +b.dataset.zu; zoomTo(uu, (ast.zpath[uu] || []).indexOf(b.dataset.zup)); return; }
       if (b && b.dataset.zcrumb !== undefined) { zoomTo(+b.dataset.zcrumb, +b.dataset.depth); return; }
@@ -4962,7 +4983,7 @@
   }
   function zoomCardHtml(u, cls, kind, dots) {
     var om = zdata().omitted[u.id];
-    var html = '<article role="listitem" class="' + cls + ' zoomed" data-key="u' + u.id + '" tabindex="0" aria-expanded="true" aria-label="' +
+    var html = '<div role="group" class="' + cls + ' zoomed" data-key="u' + u.id + '" tabindex="0" aria-label="' +
       esc(u.name + ', ' + unitKind(u) + ', open') + '" title="' + esc(u.root) + '">';
     html += '<div class="zh"><div class="k"><span>' + esc(kind) + '</span>' + (dots ? '<span class="lg">' + dots + '</span>' : '') + '</div>';
     var root = ztree(u.id).root;
@@ -4973,7 +4994,7 @@
       : '<p class="zhint">Scroll into a folder or file, or double-click it, to open it. Esc goes back up.</p></div>';
     html += '<div class="zin" data-zin="' + u.id + '"></div>';
     if (om) html += '<p class="zom">' + esc(plural(om.syms, 'symbol', 'symbols') + ' in ' + plural(om.files, 'file', 'files') + ' not embedded (--max-symbols ' + fmt(ZR.max_symbols) + '); see the panel') + '</p>';
-    return html + '</article>';
+    return html + '</div>';
   }
   function glyph(kind) { return KIND_GLYPH[kind] || (kind ? kind.charAt(0) : '·'); }
   // A line inside a box: a member of a class, a file of an "other files" box.
@@ -6115,7 +6136,7 @@
   var gSvg = document.getElementById('g-links'), gCards = document.getElementById('g-cards');
   var gSide = document.getElementById('g-side'), gTours = document.getElementById('g-tours');
   var gHead = document.getElementById('g-head'), gStrip = document.getElementById('g-strip');
-  var gSeq = document.getElementById('g-seq');
+  var gSeq = document.getElementById('g-seq'), gKeyEl = document.getElementById('g-key');
   var G_CARD = { w: 196, h: 106 }, G_CHIP = { w: 176, h: 44 }, G_RES = { w: 184, h: 64 }, G_GAP = { x: 128, y: 18 }, G_HEAD = 30, G_PAD = 24, G_SIDE = 32;
   // Largest scale the map is drawn at: a small map grows to use its area,
   // with cards and text no more than a third larger than their own size.
@@ -6132,7 +6153,7 @@
   var G_SHARED = 3, G_FAN = 4;
   var gst = {
     sel: null, link: null, flow: null, step: 0, seq: false, tour: null, resume: null, question: null,
-    all: false, deploy: false, hover: null, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
+    all: false, deploy: false, key: false, hover: null, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
   };
   var VIA = {
     start: 'starts', call: 'calls', http: 'calls over HTTP', rpc: 'calls over RPC', bus: 'receives the message', config: 'reads config', db: 'reaches the database',
@@ -7364,7 +7385,9 @@
     var kind = n.kind === 'infra' ? 'infra' : n.kind === 'module' ? 'module' : n.kind === 'resource' ? n.res.noun : (KIND_LABEL[n.kind] || n.kind);
     var lang = n.langs && n.langs.length ? n.langs.slice(0, 2).join(' · ') : '';
     if (n.kind === 'resource') cls = cls.replace(' g-chip', ' g-res g-r-' + n.res.cat);
-    var html = '<article class="' + cls + '" style="' + style + '" data-g="' + n.id + '" tabindex="0" role="listitem" aria-label="' +
+    // A card is one button: Enter selects it and lists its lines in the side
+    // column, Enter again opens it in Explore.
+    var html = '<div class="' + cls + '" style="' + style + '" data-g="' + n.id + '" tabindex="0" role="button" aria-pressed="' + (gst.sel === n.id) + '" aria-label="' +
       esc(n.name + ', ' + kind + '. ' + n.sentence) + '" title="' + esc(n.sentence) + '">';
     if (n.kind === 'resource') {
       html += '<div class="g-k"><span>' + esc(kind) + '</span></div><h3>' + esc(n.name) + '</h3><p>' + esc(gResLine(n)) + '</p>';
@@ -7381,7 +7404,7 @@
       var nums = gFlowBadges(n.id);
       if (nums.length) html += '<span class="g-nums">' + nums.map(function (k) { return '<b class="g-num' + (gst.flow !== null && k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>'; }).join('') + '</span>';
     }
-    return html + '</article>';
+    return html + '</div>';
   }
   // A card's tags for the shared resources it uses, as many as fit one
   // line and a count of the rest; each in its resource's colour.
@@ -7443,10 +7466,63 @@
     var first = gst.lanes.find(function (o) { return (o.id === 'data' || o.id === 'ext') && o !== ln && gst.lanes.indexOf(o) < gst.lanes.indexOf(ln) && gLaneNote(o); });
     return !first;
   }
+  // The cards in the order the eye reads the map, which is the Tab order:
+  // lane by lane (top to bottom, then left to right), row by row, left to right.
+  function gReadingOrder() {
+    var at = {};
+    gst.lanes.slice().sort(function (a, b) { return a.y - b.y || a.x - b.x; }).forEach(function (ln, i) { at[ln.id] = i; });
+    var laneOf = function (b) { return at[b.lane] === undefined ? 1e9 : at[b.lane]; };
+    return Object.keys(gst.boxes).sort(function (a, b) {
+      var A = gst.boxes[a], B = gst.boxes[b];
+      if (laneOf(A) !== laneOf(B)) return laneOf(A) - laneOf(B);
+      if (Math.abs(A.y - B.y) > 8) return A.y - B.y;
+      return A.x - B.x || a - b;
+    });
+  }
+  // The legend: the line styles and resource kinds this map uses, drawn
+  // with the map's own dash patterns and rules, each beside its name.
+  var G_KEY_LINES = [
+    { fams: ['code'], cls: 'code', text: 'calls code' },
+    { fams: ['http'], cls: 'http', text: 'HTTP request' },
+    { fams: ['rpc'], cls: 'rpc', text: 'RPC call' },
+    { fams: ['bus', 'msg'], cls: 'bus', text: 'message bus' },
+    { fams: ['config'], cls: 'config', text: 'reads config' },
+    { fams: ['secret'], cls: 'secret', text: 'reads secrets' },
+    { fams: ['data', 'store'], cls: 'data', text: 'reads or writes data' },
+    { fams: ['ext'], cls: 'ext', text: 'calls an outside system' },
+    { fams: ['wire'], cls: 'wire', text: 'deployed with' }
+  ];
+  var G_KEY_RES = [['db', 'database'], ['cache', 'cache'], ['search', 'search index'], ['storage', 'object storage'], ['bus', 'message bus'], ['secrets', 'secret store'], ['config', 'config store'], ['ext', 'outside system']];
+  function gKeyHtml() {
+    var fams = {}, cats = {};
+    GL.links.forEach(function (l) { fams[l.family] = true; });
+    GL.nodes.forEach(function (n) { if (n.kind === 'resource' && n.res) cats[n.res.cat] = true; });
+    var lines = G_KEY_LINES.filter(function (k) { return k.fams.some(function (f) { return fams[f]; }); });
+    var res = G_KEY_RES.filter(function (k) { return cats[k[0]]; });
+    var html = '';
+    if (lines.length) {
+      html += '<div class="g-kgroup"><span class="g-tk" id="g-key-lines">Lines</span><ul aria-labelledby="g-key-lines">' + lines.map(function (k) {
+        return '<li><svg class="g-sw" width="38" height="10" viewBox="0 0 38 10" aria-hidden="true"><g class="g-ln f-' + k.cls + '" style="--w:2"><path class="ln" d="M1 5H37"/></g></svg>' + esc(k.text) + '</li>';
+      }).join('') + '</ul></div>';
+    }
+    if (res.length) {
+      html += '<div class="g-kgroup"><span class="g-tk" id="g-key-res">Resources</span><ul aria-labelledby="g-key-res">' + res.map(function (k) {
+        return '<li><span class="g-sw-res g-r-' + k[0] + '" aria-hidden="true"></span>' + esc(k[1]) + '</li>';
+      }).join('') + '</ul></div>';
+    }
+    if (gDeployUseful()) html += '<div class="g-kgroup"><ul><li><span class="g-sw-frame" aria-hidden="true"></span>runs together (Where it runs)</li></ul></div>';
+    return html || '<span class="g-dim">Nothing to key: this map has no lines yet.</span>';
+  }
+  function renderGlanceKey() {
+    if (!gKeyEl) return;
+    gKeyEl.hidden = !gst.key;
+    gKeyEl.innerHTML = gst.key ? gKeyHtml() : '';
+  }
   function renderGlance() {
     if (!GL) return;
     gst.keep = gEmphasis();
     renderGlanceHead();
+    renderGlanceKey();
     renderGlanceTours();
     if (gst.seq && gst.flow !== null) {
       gWorld.hidden = true; gSeq.hidden = false; gStrip.hidden = true;
@@ -7475,7 +7551,7 @@
         if (note) noted = true;
         html += '<div class="g-lane' + (ln.group ? ' g-dlane' : '') + '" style="transform:translate(' + ln.x + 'px,' + ln.y + 'px);width:' + Math.max(ln.w, 120) + 'px">' + esc(ln.label) + ' <span>' + ln.n + '</span>' + more + note + '</div>';
       });
-      Object.keys(gst.boxes).forEach(function (k) { html += gCardHtml(gNode(+k), gst.boxes[k]); });
+      gReadingOrder().forEach(function (k) { html += gCardHtml(gNode(+k), gst.boxes[k]); });
       gCards.innerHTML = html;
       renderGlanceLinks(geoms);
       renderGlanceStrip();
@@ -7646,7 +7722,8 @@
     var from = GL.summary.from && GL.summary.from !== 'template' ? '<span class="g-src">from ' + esc(GL.summary.from) + '</span>' : '';
     gHead.innerHTML = '<div class="g-row"><div class="g-title"><h2>' + esc(META.repo) + '</h2><span class="g-counts">' + esc(counts.join(' · ')) + '</span>' + note + '</div>' +
       '<button type="button" class="g-explore" data-gexplore="1" title="The apps, folders, files and symbols, zoomable (E)">Explore ▸</button></div>' +
-      '<p class="g-sum">' + esc(GL.summary.text) + ' ' + from + '</p>';
+      '<p class="g-sum">' + esc(GL.summary.text) + ' ' + from +
+      ' <button type="button" class="g-link g-ktoggle" data-gkey="1" aria-expanded="' + !!gst.key + '" aria-controls="g-key" title="What the lines and resource kinds on this map mean">Legend</button></p>';
   }
   function gTourStep() { return gst.tour !== null ? GL.tour[gst.tour] : null; }
   function renderGlanceTours() {
@@ -7734,7 +7811,7 @@
         return '<li><b>' + esc(h.name) + '</b><span class="g-dim">complexity ' + fmt(h.complexity) + ' · ' + esc(plural(h.uses, 'caller', 'callers')) + ' · ' + esc(gNode(h.node).name) + '</span>' + gCode(h.file, h.line) + '</li>';
       }).join('') + '</ul></section>';
     }
-    html += '<p class="g-hint">Click a card or a line for more; double-click a card to open it in Explore.</p>';
+    html += '<p class="g-hint">Click a card or a line for more; double-click a card to open it in Explore. From the keyboard, Tab to a card: Enter selects it and lists its lines here, Enter again opens it in Explore.</p>';
     return html;
   }
   function gWaysText(w) {
@@ -7917,7 +7994,17 @@
     renderGlance();
     if (i !== null) live.textContent = gNode(i).name + ': ' + gNode(i).sentence;
   }
-  function gSelectLink(li) { gst.link = li; gst.sel = null; gst.question = null; gst.qmenu = false; renderGlance(); }
+  function gSelectLink(li) {
+    gst.link = li; gst.sel = null; gst.question = null; gst.qmenu = false; renderGlance();
+    var l = GL.links[li];
+    if (l) live.textContent = 'Line from ' + gNode(l.from).name + ' to ' + gNode(l.to).name + ': ' + l.label + ', ' + plural(l.count, 'call', 'calls');
+  }
+  // The side column after a click inside it: focus its heading, so a
+  // keyboard user is not dropped at the top of the page.
+  function gFocusSide() {
+    var h = gSide.querySelector('h2');
+    if (h) { h.setAttribute('tabindex', '-1'); h.focus(); }
+  }
   function gOpenFlow(fi, step) {
     if (!GL.flows[fi]) return;
     gst.flow = fi; gst.step = step || 0; gst.qmenu = false; gst.question = null; gst.sel = null; gst.link = null;
@@ -7965,7 +8052,10 @@
     else if (t.nodes.length === 1) gst.sel = t.nodes[0];
     renderGlance();
   }
-  function gQuestion(i) { gst.question = i; gst.qmenu = false; gst.sel = null; gst.link = null; renderGlance(); }
+  function gQuestion(i) {
+    gst.question = i; gst.qmenu = false; gst.sel = null; gst.link = null; renderGlance();
+    if (GL.questions[i]) live.textContent = 'Question: ' + GL.questions[i].q;
+  }
   // Into Explore, at the card (and folder) this node stands for.
   function gExplore(i) {
     setLevel('app');
@@ -7999,7 +8089,7 @@
     if (k === 't' && gst.tour === null && GL.tour.length) { gTour(0); return; }
     if ((k === 'd' || k === 'D') && gDeployUseful()) { gst.deploy = !gst.deploy; renderGlance(); return; }
     // A focused card: Enter selects it, Enter again opens it in Explore.
-    if ((k === 'Enter' || k === ' ') && ev.target && ev.target.dataset && ev.target.dataset.g !== undefined && ev.target.tagName === 'ARTICLE') {
+    if ((k === 'Enter' || k === ' ') && ev.target && ev.target.dataset && ev.target.dataset.g !== undefined && ev.target.classList.contains('g-card')) {
       ev.preventDefault();
       var id = +ev.target.dataset.g;
       if (gst.sel === id && k === 'Enter') gExplore(id); else { gSelect(id); var el = gCards.querySelector('[data-g="' + id + '"]'); if (el && el.focus) el.focus(); }
@@ -8013,6 +8103,12 @@
     if (d.gopen !== undefined) { gExplore(+d.gopen); return true; }
     if (d.gall !== undefined) { gst.all = !gst.all; renderGlance(); return true; }
     if (d.gdeploy !== undefined) { gst.deploy = !gst.deploy; renderGlance(); return true; }
+    if (d.gkey !== undefined) {
+      gst.key = !gst.key; renderGlance();
+      var kb = gHead.querySelector('[data-gkey]');
+      if (kb) kb.focus();
+      return true;
+    }
     if (d.gtstart !== undefined) { gTour(0); return true; }
     if (d.gtour !== undefined) { gTour(+d.gtour); return true; }
     if (d.gtnav !== undefined) { gTourNav(+d.gtnav); return true; }
@@ -8024,14 +8120,21 @@
     if (d.gseq !== undefined) { gst.seq = !gst.seq; renderGlance(); return true; }
     if (d.gqmenu !== undefined) { gst.qmenu = !gst.qmenu; renderGlanceTours(); return true; }
     if (d.gq !== undefined) { gQuestion(+d.gq); return true; }
-    if (d.gclear !== undefined) { gst.sel = null; gst.link = null; gst.question = null; renderGlance(); return true; }
-    if (d.gl !== undefined) { gSelectLink(+d.gl); return true; }
-    if (d.g !== undefined) { if (gst.flow !== null) gLeaveFlow(); gSelect(+d.g); return true; }
+    if (d.gclear !== undefined) {
+      var was = gst.sel;
+      gst.sel = null; gst.link = null; gst.question = null; renderGlance();
+      var wc = was === null ? null : gCards.querySelector('[data-g="' + was + '"]');
+      if (wc && wc.focus) wc.focus();
+      return true;
+    }
+    var inSide = !!(t.closest && t.closest('#g-side'));
+    if (d.gl !== undefined) { gSelectLink(+d.gl); if (inSide) gFocusSide(); return true; }
+    if (d.g !== undefined) { if (gst.flow !== null) gLeaveFlow(); gSelect(+d.g); if (inSide) gFocusSide(); return true; }
     return false;
   }
   if (glanceEl) {
     glanceEl.addEventListener('click', function (ev) {
-      var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gdeploy], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gq], [data-gclear]');
+      var t = ev.target.closest('[data-g], [data-gl], [data-gcopy], [data-gexplore], [data-gopen], [data-gall], [data-gdeploy], [data-gkey], [data-gtstart], [data-gtour], [data-gtnav], [data-gtexit], [data-gflow], [data-gflowexit], [data-gstepnav], [data-gstep], [data-gseq], [data-gqmenu], [data-gq], [data-gclear]');
       if (t) { glanceClick(t); return; }
       // The paper: back to Start here (a flow or a tour keeps going).
       if (ev.target.closest('#g-map') && gst.flow === null && gst.tour === null && (gst.sel !== null || gst.link !== null || gst.question !== null)) {
@@ -8115,6 +8218,9 @@
     levelSeg.hidden = false;
     search.placeholder = 'Find an app, symbol, file or folder';
     if (GL) lvlGlance.hidden = false;
+  } else {
+    var searchLabel = document.getElementById('search-label');
+    if (searchLabel) searchLabel.textContent = 'Search symbols, files and folders';
   }
   applyTheme(null);
   renderCrumbs();
@@ -8226,7 +8332,7 @@
       state: function () {
         return {
           sel: gst.sel === null ? null : gNode(gst.sel).name, link: gst.link, flow: gst.flow, step: gst.step, seq: gst.seq,
-          tour: gst.tour, resume: gst.resume, question: gst.question, all: gst.all, deploy: gst.deploy,
+          tour: gst.tour, resume: gst.resume, question: gst.question, all: gst.all, deploy: gst.deploy, key: gst.key,
           dim: Object.keys(gst.boxes).filter(function (k) { return gst.keep && gst.keep.indexOf(+k) < 0; }).map(function (k) { return gNode(+k).name; }).sort()
         };
       },
@@ -8235,6 +8341,7 @@
       },
       lanes: function () { return gst.lanes.map(function (l) { return { id: l.id, label: l.label, n: l.n, more: l.more || 0 }; }); },
       toggleDeploy: function () { glanceClick({ dataset: { gdeploy: '1' } }); },
+      toggleKey: function () { glanceClick({ dataset: { gkey: '1' } }); },
       links: function () {
         var labelled = {};
         gst.labels.forEach(function (x) { labelled[x.i] = x; });
@@ -8268,7 +8375,7 @@
         return { side: r.side, bow: r.bow, p: pp[0], pp: pp, via: r.via === undefined ? null : r.via, plain: gSides(boxes[from], boxes[to]) };
       },
       strip: function () { return gStrip.hidden ? [] : GL.nodes.filter(function (n) { return n.place === 'strip'; }).map(function (n) { return n.name; }); },
-      html: function () { return { head: gHead.innerHTML, tours: gTours.innerHTML, cards: gCards.innerHTML, links: gSvg.innerHTML, side: gSide.innerHTML, seq: gSeq.innerHTML, strip: gStrip.innerHTML }; },
+      html: function () { return { head: gHead.innerHTML, key: gKeyEl ? gKeyEl.innerHTML : '', keyHidden: gKeyEl ? !!gKeyEl.hidden : true, tours: gTours.innerHTML, cards: gCards.innerHTML, links: gSvg.innerHTML, side: gSide.innerHTML, seq: gSeq.innerHTML, strip: gStrip.innerHTML }; },
       side: function () { return gSide.textContent; },
       tours: function () { return gTours.textContent; },
       seqLanes: function () { return gst.seq ? (gst.seqLanes || []) : []; },
@@ -8295,6 +8402,7 @@
     // The sheet: each card's band and box, and the drawn links.
     apps: function () {
       return {
+        tabOrder: (ast.tabOrder || []).map(function (k) { return k.charAt(0) === 'u' ? AU[+k.slice(1)].name : CHIPS[+k.slice(1)].name; }),
         cards: Object.keys(ast.pos).map(function (k) {
           var p = ast.pos[k];
           return { key: k, name: k.charAt(0) === 'u' ? AU[+k.slice(1)].name : CHIPS[+k.slice(1)].name, band: BANDS[p.band].id, row: p.row, x: p.x, y: p.y, w: p.w, h: p.h };
