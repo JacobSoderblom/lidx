@@ -6282,6 +6282,8 @@
     if (mainEl) mainEl.hidden = gl;
     if (metaEl) metaEl.hidden = gl;
     crumbs.hidden = gl || l === 'app';
+    // The overview has no path: a breadcrumb left from Explore is stale.
+    if (gl) crumbs.innerHTML = '';
     if (gl) {
       st.level = 'glance';
       hideTooltip();
@@ -6371,12 +6373,15 @@
   // one of its users. Fewer users keep their lines, unless their user has
   // more than G_FAN such lines: a hub's resources are tags on its card too.
   var G_SHARED = 3, G_FAN = 4;
+  // Least room between a line label and the edge of the map: its 4px halo
+  // and some air, so no label reads as cut off.
+  var G_LABEL_EDGE = 10;
   var gst = {
     sel: null, link: null, flow: null, step: 0, seq: false, tour: null, resume: null, question: null,
     all: false, deploy: false, key: false, hover: null, cam: { k: 1, x: 0, y: 0 }, boxes: {}, labels: [], drawn: []
   };
   var VIA = {
-    start: 'starts', call: 'calls', http: 'calls over HTTP', rpc: 'calls over RPC', bus: 'receives the message', config: 'reads config', db: 'reaches the database',
+    start: 'starts', call: 'calls', http: 'calls over HTTP', rpc: 'calls RPC', bus: 'receives the message', config: 'reads config', db: 'reaches the database',
     publish: 'publishes to', res: 'reaches the resource'
   };
   // What a flow does at a resource, by its category.
@@ -6387,6 +6392,7 @@
   function gVia(s) {
     var n = GL.nodes[s.node];
     if (s.via === 'res' && n && n.res && VIA_RES[n.res.cat]) return VIA_RES[n.res.cat];
+    if (s.via === 'config' && String(s.name).indexOf('secret ') === 0) return 'reads the secret';
     return VIA[s.via];
   }
   // Who uses each resource: the parts with a link to it.
@@ -7550,6 +7556,25 @@
       groups[k].push(g);
       g.lbl = null; g.text = g.l.label;
     });
+    // Points along every line, every few pixels: a label is kept off
+    // other lines where it can be, so no line runs through its text.
+    var linePts = geoms.map(function (g) {
+      var pts = [];
+      (g.pp || []).forEach(function (p) {
+        var len = Math.hypot(p[3][0] - p[0][0], p[3][1] - p[0][1]) + Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
+        var n = Math.max(4, Math.ceil(len / 6));
+        for (var t = 0; t <= n; t++) pts.push(gBez(p, t / n));
+      });
+      return pts;
+    });
+    var crossesLine = function (r, mine) {
+      for (var i = 0; i < geoms.length; i++) {
+        if (mine.indexOf(geoms[i]) >= 0) continue;
+        var pts = linePts[i];
+        for (var j = 0; j < pts.length; j++) if (pts[j][0] > r.x && pts[j][0] < r.x + r.w && pts[j][1] > r.y && pts[j][1] < r.y + r.h) return true;
+      }
+      return false;
+    };
     var weight = function (k) { return groups[k].reduce(function (a, g) { return a + g.l.count; }, 0); };
     // Busiest first, so the strongest links keep the best spots.
     order.sort(function (p, q) { return weight(q) - weight(p) || groups[p][0].i - groups[q][0].i; });
@@ -7564,17 +7589,24 @@
         else ts.forEach(function (t, n) { spots.push({ g: g, pt: gBez(g.p, t), curve: true, at: 1e6 + n }); });
       });
       spots.sort(function (p, q) { return p.at - q.at; });
-      for (var s = 0; s < spots.length; s++) {
-        var m = spots[s].pt, tries;
-        if (spots[s].curve || spots[s].across) tries = [[m[0] - w / 2, m[1] - h / 2], [m[0] - w / 2, m[1] - h - 3], [m[0] - w / 2, m[1] + 3]];
-        else tries = [[m[0] + 6, m[1] - h / 2], [m[0] - w - 6, m[1] - h / 2], [m[0] - w / 2, m[1] - h / 2]];
-        for (var j = 0; j < tries.length; j++) {
-          var r = { x: tries[j][0], y: tries[j][1], w: w, h: h };
-          // Inside what the map's area shows: past it a label is cut off.
-          var inside = r.x >= 2 - mx && r.y >= 2 - my && r.x + r.w <= gst.size.w - 2 + mx && r.y + r.h <= gst.size.h - 2 + my;
-          if (inside && !gHits(r, obst) && !gHits(r, placed)) { spots[s].g.lbl = r; spots[s].g.text = text; placed.push(r); break; }
+      // First a spot clear of other lines too; failing that, any clear of
+      // cards and labels.
+      var done = false;
+      for (var pass = 0; pass < 2 && !done; pass++) {
+        for (var s = 0; s < spots.length && !done; s++) {
+          var m = spots[s].pt, tries;
+          if (spots[s].curve || spots[s].across) tries = [[m[0] - w / 2, m[1] - h / 2], [m[0] - w / 2, m[1] - h - 3], [m[0] - w / 2, m[1] + 3]];
+          else tries = [[m[0] + 6, m[1] - h / 2], [m[0] - w - 6, m[1] - h / 2], [m[0] - w / 2, m[1] - h / 2]];
+          for (var j = 0; j < tries.length; j++) {
+            var r = { x: tries[j][0], y: tries[j][1], w: w, h: h };
+            // Inside what the map's area shows, with room for the label's
+            // halo: past it a label is cut off.
+            var inside = r.x >= G_LABEL_EDGE - mx && r.y >= 2 - my && r.x + r.w <= gst.size.w - G_LABEL_EDGE + mx && r.y + r.h <= gst.size.h - 2 + my;
+            if (inside && !gHits(r, obst) && !gHits(r, placed) && (pass === 1 || !crossesLine(r, list))) {
+              spots[s].g.lbl = r; spots[s].g.text = text; placed.push(r); done = true; break;
+            }
+          }
         }
-        if (j < tries.length) break;
       }
     });
     gst.labels = geoms.filter(function (g) { return g.lbl; }).map(function (g) { return { i: g.i, text: g.text, box: g.lbl }; });
@@ -7586,7 +7618,11 @@
     // What stays bright: the selection and its neighbours, a link's ends,
     // a flow's nodes, a tour step's nodes, a question's nodes.
     var keep = null;
-    if (gst.flow !== null) keep = GL.flows[gst.flow].nodes.slice();
+    if (gst.flow !== null) {
+      // The flow's parts, and the others it branches to on the way.
+      keep = GL.flows[gst.flow].nodes.slice();
+      (GL.flows[gst.flow].fan || []).forEach(function (b) { b.to.forEach(function (t) { if (keep.indexOf(t) < 0) keep.push(t); }); });
+    }
     else if (gTourStep()) keep = gTourStep().nodes.slice();
     else if (gst.question !== null) keep = GL.questions[gst.question].nodes.slice();
     else if (gst.link !== null) { var l = GL.links[gst.link]; keep = [l.from, l.to]; }
@@ -7975,25 +8011,58 @@
         '<button type="button" data-gtexit="1" title="Leave the tour here (Esc)">Exit</button></span>';
     } else if (gst.flow !== null) {
       var f = GL.flows[gst.flow];
-      html += '<button type="button" data-gflowexit="1" class="g-back">◂ Overview</button><span class="g-tk">Flow</span><b class="g-ftitle">' + esc(f.title) + '</b>' +
+      html += '<button type="button" data-gflowexit="1" class="g-back">◂ Overview</button><span class="g-tk">Flow</span><b class="g-ftitle" title="' + esc(f.title) + '">' + esc(f.title) + '</b>' +
         '<span class="g-tstep">Step ' + (gst.step + 1) + ' of ' + f.steps.length + '</span>' +
         '<span class="g-tbtns"><button type="button" data-gstepnav="-1"' + (gst.step === 0 ? ' disabled' : '') + ' aria-label="Previous step">‹</button>' +
         '<button type="button" data-gstepnav="1"' + (gst.step === f.steps.length - 1 ? ' disabled' : '') + ' aria-label="Next step">›</button>' +
-        '<button type="button" data-gseq="1" aria-pressed="' + gst.seq + '">Sequence</button></span>';
+        '<span class="g-seg" role="group" aria-label="Show the flow as"><button type="button" data-gseq="1" aria-pressed="' + gst.seq + '" title="One column per part, the steps top down (S)">Sequence</button>' +
+        '<button type="button" data-gseq="0" aria-pressed="' + !gst.seq + '" title="The steps drawn on the map (S)">Map</button></span></span>';
     } else {
-      html += '<span class="g-tk">Tours</span>';
-      if (GL.tour.length) html += '<button type="button" class="g-tour pri" data-gtstart="1">System tour <span>' + esc(plural(GL.tour.length, 'step', 'steps')) + '</span></button>';
-      if (gst.resume !== null) html += '<button type="button" class="g-tour" data-gtour="' + gst.resume + '">Resume tour <span>step ' + (gst.resume + 1) + '</span></button>';
-      GL.flows.slice(0, 3).forEach(function (f, i) {
-        html += '<button type="button" class="g-tour" data-gflow="' + i + '" title="Follow this request step by step">' + esc(f.title) + '</button>';
-      });
-      if (GL.questions.length) {
-        html += '<span class="g-q"><button type="button" data-gqmenu="1" aria-haspopup="true" aria-expanded="' + !!gst.qmenu + '">More questions ▾</button>';
-        if (gst.qmenu) html += '<div class="g-qmenu" role="menu">' + GL.questions.map(function (q, i) { return '<button type="button" role="menuitem" data-gq="' + i + '">' + esc(q.q) + '</button>'; }).join('') + '</div>';
-        html += '</span>';
+      // The strip stays one row: flows that do not fit beside the tours
+      // (a Resume pill takes room) move into the menu, so the map below
+      // never shifts.
+      var n = Math.min(3, GL.flows.length);
+      for (; n >= 0; n--) {
+        gTours.innerHTML = gIdleTours(n);
+        if (!gWraps(gTours)) break;
       }
+      gst.flowsShown = Math.max(0, n);
+      return;
     }
     gTours.innerHTML = html;
+  }
+  // Whether a strip's items run onto a second row.
+  function gWraps(el) {
+    var kids = el.children;
+    if (kids.length < 2 || !el.clientWidth) return false;
+    // An item that starts below where another ends sits on a later row.
+    var rects = [], i;
+    for (i = 0; i < kids.length; i++) rects.push(kids[i].getBoundingClientRect());
+    var end = Math.min.apply(null, rects.map(function (r) { return r.bottom; }));
+    for (i = 0; i < rects.length; i++) if (rects[i].top >= end) return true;
+    return false;
+  }
+  // The tours strip at rest, with its first `n` flows as pills; the rest
+  // are in the menu.
+  function gIdleTours(n) {
+    var html = '<span class="g-tk">Tours</span>';
+    if (GL.tour.length) html += '<button type="button" class="g-tour pri" data-gtstart="1">System tour <span>' + esc(plural(GL.tour.length, 'step', 'steps')) + '</span></button>';
+    if (gst.resume !== null) html += '<button type="button" class="g-tour" data-gtour="' + gst.resume + '">Resume tour <span>step ' + (gst.resume + 1) + '</span></button>';
+    var flowTitle = function (f) { return 'Follow this request through the system: ' + f.title; };
+    GL.flows.slice(0, n).forEach(function (f, i) {
+      html += '<button type="button" class="g-tour" data-gflow="' + i + '" title="' + esc(flowTitle(f)) + '">' + esc(f.title) + '</button>';
+    });
+    var rest = GL.flows.slice(n, 3);
+    if (GL.questions.length || rest.length) {
+      html += '<span class="g-q"><button type="button" data-gqmenu="1" aria-haspopup="true" aria-expanded="' + !!gst.qmenu + '">More questions ▾</button>';
+      if (gst.qmenu) {
+        html += '<div class="g-qmenu" role="menu">' + rest.map(function (f, j) {
+          return '<button type="button" role="menuitem" data-gflow="' + (n + j) + '" title="' + esc(flowTitle(f)) + '">Follow ' + esc(f.title) + '</button>';
+        }).join('') + GL.questions.map(function (q, i) { return '<button type="button" role="menuitem" data-gq="' + i + '">' + esc(q.q) + '</button>'; }).join('') + '</div>';
+      }
+      html += '</span>';
+    }
+    return html;
   }
 
   // ----- the side column
@@ -8061,7 +8130,7 @@
   function gEntryRow(e) {
     return '<li class="g-entry" title="' + esc(e.qual + ' · ' + gLoc(e.file, e.line)) + '"><span class="g-way g-w-' + esc(e.kind) + '">' + esc(e.kind === 'http' ? 'HTTP' : e.kind === 'rpc' ? 'RPC' : e.kind) + '</span>' +
       '<span class="g-el">' + esc(e.label) + '</span>' +
-      (e.flow !== null && e.flow !== undefined ? '<button type="button" class="g-follow" data-gflow="' + e.flow + '" title="Follow this request step by step">Follow ▸</button>' : '<span></span>') + '</li>';
+      (e.flow !== null && e.flow !== undefined ? '<button type="button" class="g-follow" data-gflow="' + e.flow + '" title="Follow this request through the system" aria-label="' + esc('Follow ' + e.label + ' through the system') + '">Follow ▸</button>' : '<span></span>') + '</li>';
   }
   function gNodeSide(i) {
     var n = gNode(i);
@@ -8075,10 +8144,21 @@
     if (ways.length) html += '<dt>Ways in</dt><dd><p>' + esc(gWaysText(n.ways)) + '</p><ul>' + ways.slice(0, 6).map(gEntryRow).join('') + (ways.length > 6 ? '<li class="g-dim">+' + (ways.length - 6) + ' more</li>' : '') + '</ul></dd>';
     var out = [], inn = [];
     GL.links.forEach(function (l, li) { if (l.from === i) out.push(li); if (l.to === i) inn.push(li); });
+    // One row per verb, as the map and the card's sentence say it:
+    // "calls RPC: cartservice, shippingservice" (the sentence's count is
+    // this row's).
     var linkList = function (list, other) {
-      return '<ul>' + list.map(function (li) {
-        var l = GL.links[li];
-        return '<li><button type="button" class="g-nm" data-gl="' + li + '">' + esc(gNode(l[other]).name) + '</button> <span class="g-dim">' + esc(l.label) + '</span></li>';
+      var byVerb = {}, order = [];
+      list.forEach(function (li) {
+        var v = gVerb(GL.links[li].label);
+        if (!byVerb[v]) { byVerb[v] = []; order.push(v); }
+        byVerb[v].push(li);
+      });
+      return '<ul class="g-verbs">' + order.map(function (v) {
+        return '<li><span class="g-dim">' + esc(v) + '</span> ' + byVerb[v].map(function (li) {
+          var l = GL.links[li];
+          return '<button type="button" class="g-nm" data-gl="' + li + '" title="' + esc(gNode(l.from).name + ' → ' + gNode(l.to).name + ': ' + l.label) + '">' + esc(gNode(l[other]).name) + '</button>';
+        }).join(', ') + '</li>';
       }).join('') + '</ul>';
     };
     if (out.length) html += '<dt>Talks to</dt><dd>' + linkList(out, 'to') + '</dd>';
@@ -8176,6 +8256,10 @@
     var l = GL.links[li];
     var html = '<button type="button" class="g-backlink" data-gclear="1">‹ Start here</button>';
     html += '<h2 class="g-h">' + gNodeBtn(l.from) + ' → ' + gNodeBtn(l.to) + '</h2><p class="g-lead">' + esc(l.label.charAt(0).toUpperCase() + l.label.slice(1)) + '.</p>';
+    if (l.calls.some(function (c) { return c.wired; }) && (l.family === 'rpc' || l.family === 'http')) {
+      html += '<p class="g-note">Its deployment points ' + esc(gNode(l.from).name) + ' at ' + esc(gNode(l.to).name) + ', which serves only ' +
+        (l.family === 'rpc' ? 'RPC methods' : 'HTTP routes') + '. The calls themselves were not found in the code.</p>';
+    }
     html += '<h3>The calls behind it</h3><ul class="g-calls">';
     l.calls.forEach(function (c) {
       if (c.key !== undefined) {
@@ -8200,7 +8284,7 @@
     var from = gNode(prev.node).name;
     switch (s.via) {
       case 'http': return from + ' calls ' + here + ' over HTTP';
-      case 'rpc': return from + ' calls ' + here + ' over RPC';
+      case 'rpc': return from + ' calls RPC on ' + here;
       case 'publish': return from + ' publishes ' + s.name + ' to ' + here;
       case 'bus':
         if (gNode(prev.node).kind === 'resource') return here + ' picks ' + (s.topic || prev.name) + ' up from ' + from;
@@ -8211,6 +8295,18 @@
       default: return prev.node === s.node ? s.name + ' runs in ' + here : from + ' calls into ' + here;
     }
   }
+  // Where the request branches: the other parts it reaches from a part of
+  // the flow, and the one the flow follows.
+  function gFanHtml(f) {
+    if (!f.fan || !f.fan.length) return '';
+    return '<div class="g-fan"><h3>Where the request branches</h3><ul>' + f.fan.map(function (b) {
+      var at = f.nodes.indexOf(b.node), next = at >= 0 && at + 1 < f.nodes.length ? f.nodes[at + 1] : null;
+      var others = b.to.filter(function (t) { return t !== next; });
+      return '<li>' + gNodeBtn(b.node) + ' reaches ' + plural(b.to.length, 'part', 'parts') + ': ' +
+        (next !== null && b.to.indexOf(next) >= 0 ? 'this flow follows ' + gNodeBtn(next) + '; it also reaches ' : '') +
+        others.map(gNodeBtn).join(', ') + '.</li>';
+    }).join('') + '</ul></div>';
+  }
   function gFlowSide() {
     var f = GL.flows[gst.flow], s = f.steps[gst.step];
     var html = '<h2 class="g-h">' + esc(f.title) + '</h2>';
@@ -8220,7 +8316,7 @@
     html += '<ol class="g-chain">' + f.steps.map(function (st0, k) {
       return '<li class="' + (k === gst.step ? 'cur' : '') + (st0.probable ? ' probable' : '') + '"><button type="button" data-gstep="' + k + '"><b class="g-num' + (k === gst.step ? ' cur' : '') + '">' + (k + 1) + '</b>' +
         '<span class="g-cn">' + esc(st0.name) + '</span><span class="g-dim">' + esc(gNode(st0.node).name) + (st0.via !== 'call' && st0.via !== 'start' ? ' · ' + gVia(st0) : '') + '</span></button></li>';
-    }).join('') + '</ol>';
+    }).join('') + '</ol>' + gFanHtml(f);
     if (f.ends === 'unresolved') html += '<p class="g-note">The trace stops here: the next calls could not be resolved to code in the index.</p>';
     if (f.probable) html += '<p class="g-note">Dashed steps are probable: their calls were matched by name only.</p>';
     html += '<p class="g-hint"><kbd>←</kbd> <kbd>→</kbd> step · <kbd>Esc</kbd> leaves the flow and keeps the app selected.</p>';
@@ -8255,7 +8351,10 @@
   function gQuestionSide() {
     var q = GL.questions[gst.question];
     var html = '<button type="button" class="g-backlink" data-gclear="1">‹ Start here</button><h2 class="g-h">' + esc(q.q) + '</h2><p class="g-lead">' + esc(q.a) + '</p>';
-    if (q.items.length) html += '<ul class="g-rows">' + q.items.map(function (it) { return '<li><span>' + esc(it.text) + '</span>' + gCode(it.file, it.line) + '</li>'; }).join('') + '</ul>';
+    var rows = function (items) { return '<ul class="g-rows">' + items.map(function (it) { return '<li><span>' + esc(it.text) + '</span>' + gCode(it.file, it.line) + '</li>'; }).join('') + '</ul>'; };
+    if (q.items.length) html += rows(q.items);
+    // Answers in parts (secrets apart from plain config), each headed.
+    (q.groups || []).forEach(function (g) { html += '<section class="g-qgroup"><h3>' + esc(g.title) + ' <span>' + fmt(g.items.length) + '</span></h3>' + rows(g.items) + '</section>'; });
     return html;
   }
 
@@ -8310,20 +8409,106 @@
     var h = gSide.querySelector('h2');
     if (h) { h.setAttribute('tabindex', '-1'); h.focus(); }
   }
+  // A flow opens as a sequence: one column per part, the steps top down.
+  // The map is the other view of it (S, or the Map button).
   function gOpenFlow(fi, step) {
     if (!GL.flows[fi]) return;
-    gst.flow = fi; gst.step = step || 0; gst.qmenu = false; gst.question = null; gst.sel = null; gst.link = null;
+    gst.flow = fi; gst.step = step || 0; gst.seq = true; gst.qmenu = false; gst.question = null; gst.sel = null; gst.link = null;
     if (gst.tour !== null) { gst.resume = gst.tour; gst.tour = null; }
     renderGlance();
-    live.textContent = 'Flow ' + GL.flows[fi].title + ', step 1 of ' + GL.flows[fi].steps.length;
+    gRevealStep();
+    live.textContent = 'Flow ' + GL.flows[fi].title + ', step ' + (gst.step + 1) + ' of ' + GL.flows[fi].steps.length;
   }
-  function gStep(d) {
+  function gSetSeq(on) {
     if (gst.flow === null) return;
-    var f = GL.flows[gst.flow], k = Math.max(0, Math.min(f.steps.length - 1, gst.step + d));
+    gst.seq = !!on;
+    renderGlance();
+    gRevealStep();
+  }
+  function gGoStep(k) {
+    var f = GL.flows[gst.flow];
+    k = Math.max(0, Math.min(f.steps.length - 1, k));
     if (k === gst.step) return;
     gst.step = k;
     renderGlance();
+    gRevealStep();
     live.textContent = 'Step ' + (k + 1) + ': ' + gStepText(f, k);
+  }
+  function gStep(d) {
+    if (gst.flow === null) return;
+    gGoStep(gst.step + d);
+  }
+  // ----- bringing a step's subject into view
+  function gScrollBehavior() {
+    var reduce = REDUCE;
+    try { if (window.matchMedia) reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { /* none */ }
+    return reduce ? 'auto' : 'smooth';
+  }
+  // The scroll that shows the box [a0, a1] in a view [top, top + size):
+  // unchanged when it already shows; else the least move, or its start
+  // when it is larger than the view.
+  function gNearest(top, size, a0, a1, max) {
+    var pad = 20, t = top;
+    if (a1 - a0 + 2 * pad > size) t = a0 - pad;
+    else if (a0 - pad < top) t = a0 - pad;
+    else if (a1 + pad > top + size) t = a1 + pad - size;
+    return Math.max(0, Math.min(max, Math.round(t)));
+  }
+  // The box around cards (and lines) on the map, in the scroll area's
+  // pixels.
+  function gBoxOf(ids, links) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, k = gst.cam.k;
+    var add = function (x, y, w, h) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x + w); y1 = Math.max(y1, y + h); };
+    (ids || []).forEach(function (id) { var b = gst.boxes[id]; if (b) add(b.x, b.y, b.w, b.h); });
+    (links || []).forEach(function (li) {
+      var g = gst.drawn.find(function (d) { return d.i === li; });
+      if (g) g.pp.forEach(function (seg) { seg.forEach(function (p) { add(p[0], p[1], 0, 0); }); });
+    });
+    if (x0 === Infinity) return null;
+    return { x0: gst.cam.x + x0 * k, y0: gst.cam.y + y0 * k, x1: gst.cam.x + x1 * k, y1: gst.cam.y + y1 * k };
+  }
+  // Scroll the map so a step's cards and lines are in view; when they do
+  // not all fit, its focus (what the step is about) is.
+  function gReveal(ids, links, focus) {
+    if (gWorld.hidden) return null;
+    var vw = gScroll.clientWidth, vh = gScroll.clientHeight;
+    var b = gBoxOf(ids, links);
+    if (!b || !vw || !vh) return null;
+    if ((b.x1 - b.x0 > vw || b.y1 - b.y0 > vh) && focus && focus.length) b = gBoxOf(focus, null) || b;
+    var top = gNearest(gScroll.scrollTop, vh, b.y0, b.y1, Math.max(0, gScroll.scrollHeight - vh));
+    var left = gNearest(gScroll.scrollLeft, vw, b.x0, b.x1, Math.max(0, gScroll.scrollWidth - vw));
+    if (top !== gScroll.scrollTop || left !== gScroll.scrollLeft) {
+      if (gScroll.scrollTo) gScroll.scrollTo({ top: top, left: left, behavior: gScrollBehavior() });
+      else { gScroll.scrollTop = top; gScroll.scrollLeft = left; }
+    }
+    return { top: top, left: left };
+  }
+  // The current flow step: on the map, the parts it goes between; in the
+  // sequence, its row.
+  function gRevealStep() {
+    if (gst.flow === null) return null;
+    var f = GL.flows[gst.flow], k = gst.step;
+    if (gst.seq) {
+      var row = gSeq.querySelector('[data-gstep="' + k + '"]');
+      if (!row || !row.getBBox) return null;
+      var bb, svgEl = gSeq.querySelector('svg');
+      try { bb = row.getBBox(); } catch (e) { return null; }
+      var off = svgEl ? svgEl.getBoundingClientRect().top - gSeq.getBoundingClientRect().top + gSeq.scrollTop : 0;
+      var top = gNearest(gSeq.scrollTop, gSeq.clientHeight, off + bb.y, off + bb.y + bb.height, Math.max(0, gSeq.scrollHeight - gSeq.clientHeight));
+      if (top !== gSeq.scrollTop) {
+        if (gSeq.scrollTo) gSeq.scrollTo({ top: top, behavior: gScrollBehavior() }); else gSeq.scrollTop = top;
+      }
+      return { top: top };
+    }
+    var ids = [f.steps[k].node];
+    if (k > 0) ids.push(f.steps[k - 1].node);
+    return gReveal(ids, null, [f.steps[k].node]);
+  }
+  function gRevealTour() {
+    var t = gTourStep();
+    if (!t) return null;
+    var focus = t.focus || (t.select !== undefined ? [t.select] : null);
+    return gReveal(t.nodes, t.links, focus);
   }
   function gLeaveFlow() {
     if (gst.flow === null) return;
@@ -8340,6 +8525,7 @@
     var t = GL.tour[gst.tour];
     gst.sel = t.select !== undefined ? t.select : null;
     renderGlance();
+    gRevealTour();
     live.textContent = 'Tour step ' + (gst.tour + 1) + ': ' + t.title;
   }
   function gTourNav(d) {
@@ -8419,7 +8605,7 @@
       return;
     }
     if ((k === 'e' || k === 'E') && !ev.shiftKey) { gExplore(gst.sel); return; }
-    if (k === 's' && gst.flow !== null) { gst.seq = !gst.seq; renderGlance(); return; }
+    if ((k === 's' || k === 'S') && gst.flow !== null) { gSetSeq(!gst.seq); return; }
     if (k === 't' && gst.tour === null && GL.tour.length) { gTour(0); return; }
     if ((k === 'd' || k === 'D') && gDeployUseful()) { gst.deploy = !gst.deploy; renderGlance(); return; }
     // A focused card: Enter selects it, Enter again opens it in Explore.
@@ -8450,8 +8636,8 @@
     if (d.gflow !== undefined) { gOpenFlow(+d.gflow); return true; }
     if (d.gflowexit !== undefined) { gLeaveFlow(); return true; }
     if (d.gstepnav !== undefined) { gStep(+d.gstepnav); return true; }
-    if (d.gstep !== undefined && gst.flow !== null) { gst.step = +d.gstep; renderGlance(); return true; }
-    if (d.gseq !== undefined) { gst.seq = !gst.seq; renderGlance(); return true; }
+    if (d.gstep !== undefined && gst.flow !== null) { gGoStep(+d.gstep); return true; }
+    if (d.gseq !== undefined) { gSetSeq(d.gseq === '1' ? true : d.gseq === '0' ? false : !gst.seq); return true; }
     if (d.gqmenu !== undefined) { gst.qmenu = !gst.qmenu; renderGlanceTours(); return true; }
     if (d.gq !== undefined) { gQuestion(+d.gq); return true; }
     if (d.gclear !== undefined) {
@@ -8752,7 +8938,9 @@
       explore: function () { glanceClick({ dataset: { gexplore: '1' } }); },
       openFlow: function (i) { glanceClick({ dataset: { gflow: String(i) } }); },
       key: function (k) { glanceKey({ key: k, target: document.body, preventDefault: function () {} }); },
-      toggleSeq: function () { glanceClick({ dataset: { gseq: '1' } }); },
+      // The tours strip at rest with `n` flows as pills (the menu open or not).
+      idleTours: function (n, menu) { var q = gst.qmenu; gst.qmenu = !!menu; var h = gIdleTours(n); gst.qmenu = q; return h; },
+      toggleSeq: function () { glanceClick({ dataset: { gseq: gst.seq ? '0' : '1' } }); },
       tourStart: function () { glanceClick({ dataset: { gtstart: '1' } }); },
       tourNext: function () { glanceClick({ dataset: { gtnav: '1' } }); },
       tourBack: function () { glanceClick({ dataset: { gtnav: '-1' } }); },

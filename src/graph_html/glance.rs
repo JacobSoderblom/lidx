@@ -188,6 +188,13 @@ pub(crate) struct Candidate {
     /// Nodes in the order the path first reaches them.
     pub seq: Vec<usize>,
     pub unresolved_end: bool,
+    /// Where the request branches: a node of the path and every other node
+    /// (an app, a module, a resource) the trace reaches from it, when that is
+    /// more than one. The path follows only one of them.
+    pub fan: Vec<(usize, Vec<usize>)>,
+    /// `(from, to)` pairs of nodes a message crossed between: a branch
+    /// reached by publishing, not by a call.
+    pub messaged: BTreeSet<(usize, usize)>,
 }
 
 /// In-process links between two nodes: edge kinds counted, and sample
@@ -321,6 +328,8 @@ pub struct Facts {
     pub events: bool,
     pub calls_http: usize,
     pub calls_rpc: usize,
+    /// Apps its deployment wires it to, by no protocol the index knows.
+    pub sends_to: usize,
     pub config_keys: usize,
     pub secrets: usize,
     pub used_by: usize,
@@ -394,8 +403,14 @@ pub fn card_sentence(f: &Facts) -> String {
     }
     if f.calls_rpc > 0 {
         rest.push(format!(
-            "calls {} over RPC",
+            "calls RPC on {}",
             count(f.calls_rpc, "app", "apps")
+        ));
+    }
+    if f.sends_to > 0 {
+        rest.push(format!(
+            "sends requests to {}",
+            count(f.sends_to, "app", "apps")
         ));
     }
     if f.topics_out > 0 {
@@ -651,23 +666,57 @@ pub(crate) fn select_flows(
 }
 
 /// A flow's title: the entry point, then the nodes it reaches in order;
-/// a long one keeps its first two and its last.
-pub fn flow_title(label: &str, names: &[String]) -> String {
-    let names: Vec<String> = if names.len() > 4 {
-        vec![
-            names[0].clone(),
-            names[1].clone(),
-            "…".to_string(),
-            names[names.len() - 1].clone(),
-        ]
-    } else {
-        names.to_vec()
+/// a long one keeps its first two and its last. A request that branches
+/// says so where it first does (`branch`: the index of that node in
+/// `names` and what it reaches, "calls 5 apps"), then names the branch the
+/// flow follows: never one branch as if it were the whole request.
+pub fn flow_title(label: &str, names: &[String], branch: Option<(usize, &str)>) -> String {
+    let short = |names: &[String]| -> Vec<String> {
+        if names.len() > 4 {
+            vec![
+                names[0].clone(),
+                names[1].clone(),
+                "…".to_string(),
+                names[names.len() - 1].clone(),
+            ]
+        } else {
+            names.to_vec()
+        }
     };
+    if let Some((b, what)) = branch.filter(|(b, _)| *b < names.len()) {
+        let after = short(&names[b + 1..]);
+        let head = format!("{label} → {} {what}", names[b]);
+        return if after.is_empty() {
+            head
+        } else {
+            format!("{head}; following {}", after.join(" → "))
+        };
+    }
+    let names = short(names);
     if names.is_empty() {
         label.to_string()
     } else {
         format!("{label} → {}", names.join(" → "))
     }
+}
+
+/// What a branch point reaches, in words: "calls 3 apps", "uses 2
+/// resources", "calls 2 apps, messages 1 app and uses 1 resource".
+pub fn fan_phrase(apps: usize, messaged: usize, resources: usize, app: (&str, &str)) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if apps > 0 {
+        parts.push(format!("calls {}", count(apps, app.0, app.1)));
+    }
+    if messaged > 0 {
+        parts.push(format!("messages {}", count(messaged, app.0, app.1)));
+    }
+    if resources > 0 {
+        parts.push(format!(
+            "uses {}",
+            count(resources, "resource", "resources")
+        ));
+    }
+    and_list(&parts)
 }
 
 /// Command-line commands declared in a source file: `(name, line,
@@ -745,6 +794,53 @@ pub fn cli_commands(lang: &str, text: &str) -> Vec<(String, i64, bool)> {
         }
     }
     out
+}
+
+/// Two handlers of one route whose method the index does not know read
+/// apart by their handler: `/cart (viewCartHandler)`.
+fn tell_handlers_apart(entries: &mut [EntryPoint]) {
+    let mut handlers: HashMap<(usize, String), BTreeSet<String>> = HashMap::new();
+    for e in entries.iter().filter(|e| e.kind == "http") {
+        handlers
+            .entry((e.node, e.label.clone()))
+            .or_default()
+            .insert(e.sym.name.clone());
+    }
+    for e in entries.iter_mut() {
+        if e.kind == "http"
+            && handlers
+                .get(&(e.node, e.label.clone()))
+                .is_some_and(|h| h.len() > 1)
+        {
+            e.label = format!("{} ({})", e.label, e.sym.name);
+        }
+    }
+}
+
+/// The ways in listed: one row per way in (two symbols behind one label, a
+/// `main` declared twice, are one way in; the one a flow follows is kept),
+/// and no health probe unless a flow starts there.
+fn shown_entries(entries: &[EntryPoint], has_flow: &dyn Fn(usize) -> bool) -> HashSet<usize> {
+    let mut chosen: HashMap<(usize, &str, &str), usize> = HashMap::new();
+    for (i, e) in entries.iter().enumerate() {
+        let k = (e.node, e.kind, e.label.as_str());
+        match chosen.get(&k) {
+            Some(&j) if has_flow(j) || !has_flow(i) => {}
+            _ => {
+                chosen.insert(k, i);
+            }
+        }
+    }
+    chosen
+        .into_values()
+        .filter(|&i| !probe_entry(&entries[i]) || has_flow(i))
+        .collect()
+}
+
+/// A health or metrics route (`/healthz`, `/metrics`): no way in a
+/// newcomer follows, so neither counted nor listed.
+fn probe_entry(e: &EntryPoint) -> bool {
+    e.kind == "http" && e.key.as_deref().is_some_and(is_probe)
 }
 
 /// The label of an entry point from its edge.
@@ -1223,7 +1319,9 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                     from: a,
                     to: b,
                     family,
-                    label: process_label(family, &keys),
+                    label: process_label_with(family, &keys, &|k| {
+                        secret_from(inp, &nodes[b].units, k)
+                    }),
                     count: keys.len(),
                     // Every app reads config: drawn always, the arrows
                     // would bury the rest.
@@ -1405,21 +1503,32 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     }
     for ((a, b), evs) in wired {
         let starts_after = evs.iter().all(|e| e.text.contains(" depends on "));
+        // What the called app serves says how it is called: an app that
+        // serves only RPC methods is called over RPC, one that serves only
+        // HTTP routes over HTTP. Its link then reads as every other link of
+        // that kind, its evidence the deployment's.
+        let serves = |pick: &dyn Fn(&UnitUse) -> usize| -> bool {
+            nodes[b].units.iter().any(|&u| pick(&inp.uses[u]) > 0)
+        };
+        let http = serves(&|x: &UnitUse| x.http.keys.keys().filter(|k| !is_probe(k)).count());
+        let rpc = serves(&|x: &UnitUse| x.rpc.keys.len());
+        let (family, label) = match (starts_after, http, rpc) {
+            (true, _, _) => ("wire", "starts after".to_string()),
+            (false, false, true) => ("rpc", "calls RPC".to_string()),
+            (false, true, false) => ("http", "calls over HTTP".to_string()),
+            _ => ("wire", "sends requests".to_string()),
+        };
         out_links.push(OutLink {
             from: a,
             to: b,
-            family: "wire",
-            label: if starts_after {
-                "starts after".to_string()
-            } else {
-                "sends requests".to_string()
-            },
+            family,
+            label,
             count: evs.len(),
             quiet: false,
             calls: evs
                 .iter()
                 .take(MAX_CALLS)
-                .map(|e| json!({ "text": format!("deployment: {}", e.text), "file": e.file, "line": e.line }))
+                .map(|e| json!({ "text": format!("deployment: {}", e.text), "file": e.file, "line": e.line, "wired": true }))
                 .collect(),
             dir: "out",
         });
@@ -1487,6 +1596,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             e.label = format!("{} ({file})", e.label);
         }
     }
+    tell_handlers_apart(&mut entries);
     // Prominence: callers from other units for routes and RPCs.
     let mut callers_of: HashMap<String, BTreeSet<usize>> = HashMap::new();
     for (u, x) in inp.uses.iter().enumerate() {
@@ -1577,7 +1687,11 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                         node: from,
                         name: format!(
                             "{} {}",
-                            if is_secret(k) { "secret" } else { "config" },
+                            if secret_from(inp, &[l.to], k) {
+                                "secret"
+                            } else {
+                                "config"
+                            },
                             short_key(k)
                         ),
                         qual: k.clone(),
@@ -1696,8 +1810,11 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     };
     let code_lanes: Vec<bool> = nodes.iter().map(|n| is_code_lane(n.lane)).collect();
     let code_node = |i: usize| code_lanes.get(i).copied().unwrap_or(false);
+    let generated = Generated::new(inp.repo_root);
+    let is_made = |f: &str| generated.is(f);
     let hooks = Hooks {
         topic_of: &topic_of,
+        generated: &is_made,
         config_of: &config_of,
         broker_of: &broker_of,
         res_of: &res_of,
@@ -1862,8 +1979,8 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
     }
 
     // ---- core types, hotspots
-    let core = core_types(&ix, &node_of_file)?;
-    let hotspots = hotspots(&ix, &node_of_file)?;
+    let core = core_types(&ix, &node_of_file, &generated)?;
+    let hotspots = hotspots(&ix, &node_of_file, &generated)?;
 
     // ---- ranks and the card cap
     for (i, nd) in nodes.iter_mut().enumerate() {
@@ -2010,7 +2127,10 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         }
         if nd.kind == "infra" {
             let (keys, readers) = chip_keys.get(&i).cloned().unwrap_or_default();
-            let secrets = keys.iter().filter(|k| is_secret(k)).count();
+            let secrets = keys
+                .iter()
+                .filter(|k| secret_from(inp, &nd.units, k))
+                .count();
             let provided: usize = nd
                 .units
                 .iter()
@@ -2038,10 +2158,31 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             continue;
         }
         let x = &inp.uses[u];
-        let calls_to = |fam: &str| -> usize {
+        // Config keys it reads whose source the index found, plain or (a
+        // `secret://` key aside, which `secrets` counts) set from a secret.
+        let read_keys = |secret: bool| -> usize {
             inp.links
                 .iter()
-                .filter(|l| l.family == fam && l.from == u && l.to != u)
+                .filter(|l| l.family == "config" && l.from == u && l.to != u)
+                .flat_map(|l| l.keys.iter().map(move |k| (l.to, k)))
+                .filter(|(to, k)| {
+                    !is_probe(k) && !is_secret(k) && secret_from(inp, &[*to], k) == secret
+                })
+                .map(|(_, k)| k)
+                .collect::<BTreeSet<_>>()
+                .len()
+        };
+        // The apps it calls, as its panel lists them: the links drawn
+        // from its card.
+        let calls_to = |fam: &str, label: Option<&str>| -> usize {
+            out_links
+                .iter()
+                .filter(|l| {
+                    l.family == fam
+                        && l.from == i
+                        && l.to != i
+                        && label.is_none_or(|x| l.label == x)
+                })
                 .map(|l| l.to)
                 .collect::<BTreeSet<_>>()
                 .len()
@@ -2050,7 +2191,14 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             lang: nd.langs.first().cloned(),
             kind: nd.kind.clone(),
             why: units[u].why.clone(),
-            http_routes: x.http.keys.keys().filter(|k| !is_probe(k)).count(),
+            // Routes as its Ways in count them: a method and a path, health
+            // probes left out.
+            http_routes: entries
+                .iter()
+                .filter(|e| e.node == i && e.kind == "http" && !probe_entry(e))
+                .map(|e| e.label.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
             rpc_methods: x.rpc.keys.len(),
             rpc_services: x
                 .rpc
@@ -2069,10 +2217,21 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                     .map(|k| k.as_str()),
             )
             .0 == "event",
-            calls_http: calls_to("http"),
-            calls_rpc: calls_to("rpc"),
-            config_keys: x.config.keys.len(),
-            secrets: x.secrets.keys.len(),
+            calls_http: calls_to("http", None),
+            calls_rpc: calls_to("rpc", None),
+            sends_to: calls_to("wire", Some("sends requests")),
+            // Keys whose source the index found, as its panel lists them.
+            config_keys: if mode == Mode::Apps {
+                read_keys(false)
+            } else {
+                x.config.keys.len()
+            },
+            secrets: x.secrets.keys.len()
+                + if mode == Mode::Apps {
+                    read_keys(true)
+                } else {
+                    0
+                },
             used_by: if units[u].kind.is_app() {
                 0
             } else {
@@ -2217,12 +2376,45 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
             // The title starts at the entry point: a caller before it is
             // step 1, not part of the name.
             let caller = f.steps[0].qual != e.sym.qual;
-            let mut names: Vec<String> = f
+            // Named by where the request goes: infrastructure it reads
+            // config from is a step, not a destination.
+            let named: Vec<usize> = f
                 .seq
                 .iter()
                 .skip(usize::from(caller))
-                .map(|&nd| nodes[nd].name.clone())
+                .copied()
+                .filter(|&nd| nodes[nd].kind != "infra")
                 .collect();
+            let mut names: Vec<String> = named.iter().map(|&nd| nodes[nd].name.clone()).collect();
+            // A request that comes back to a part it passed ends there, not
+            // at the last part it first reached.
+            if let Some(end) = f
+                .steps
+                .iter()
+                .rev()
+                .map(|s| s.node)
+                .find(|&nd| nodes[nd].kind != "infra")
+                && named.last().is_some_and(|&l| l != end)
+            {
+                names.push(nodes[end].name.clone());
+            }
+            let app = if mode == Mode::Apps {
+                ("app", "apps")
+            } else {
+                ("part", "parts")
+            };
+            let branch = f.fan.iter().find_map(|(nd, to)| {
+                let at = named.iter().position(|x| x == nd)?;
+                let res = to
+                    .iter()
+                    .filter(|&&t| nodes[t].kind == "resource")
+                    .count();
+                let msg = to
+                    .iter()
+                    .filter(|&&t| f.messaged.contains(&(*nd, t)))
+                    .count();
+                Some((at, fan_phrase(to.len() - res - msg, msg, res, app)))
+            });
             // A database reached inside a part is named too.
             if f.steps
                 .iter()
@@ -2232,7 +2424,8 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 names.push("database".to_string());
             }
             json!({
-                "title": flow_title(&e.label, &names),
+                "title": flow_title(&e.label, &names, branch.as_ref().map(|(b, w)| (*b, w.as_str()))),
+                "fan": f.fan.iter().map(|(nd, to)| json!({ "node": nd, "to": to })).collect::<Vec<_>>(),
                 "label": e.label,
                 "caller": caller,
                 "entry": f.entry,
@@ -2254,10 +2447,12 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         })
         .collect();
     let entries_json: Vec<Value> = {
+        let shown = shown_entries(&entries, &|i| entry_flow.contains_key(&i));
         let mut per: HashMap<usize, usize> = HashMap::new();
         entries
             .iter()
             .enumerate()
+            .filter(|(i, _)| shown.contains(i))
             .filter(|(_, e)| {
                 let c = per.entry(e.node).or_default();
                 *c += 1;
@@ -2277,7 +2472,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         let mut m: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for e in entries
             .iter()
-            .filter(|e| e.node == i && e.kind != "central")
+            .filter(|e| e.node == i && e.kind != "central" && !probe_entry(e))
         {
             m.entry(e.kind).or_default().insert(e.label.as_str());
         }
@@ -2336,6 +2531,21 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
         }
         v.into_iter().collect()
     };
+    // A library most of whose code a generator wrote (protobuf stubs, an API
+    // client): shared, but not code anyone edits or should start from.
+    let generated_lib = |i: usize| -> bool {
+        if nodes[i].lane != "lib" {
+            return false;
+        }
+        let (mut all, mut made) = (0usize, 0usize);
+        for (p, l, _) in inp.files.iter() {
+            if is_code_lang(l) && node_of_file(p) == Some(i) {
+                all += 1;
+                made += usize::from(generated.is(p));
+            }
+        }
+        all > 0 && made * 2 > all
+    };
     let nodes_json: Vec<Value> = nodes
         .iter()
         .enumerate()
@@ -2353,6 +2563,7 @@ pub(super) fn glance_json(ctx: &Ctx, inp: &Input) -> Result<Value> {
                 "res": nd.res,
                 "other": other_infra(i),
                 "deploy": deploy.of.get(&i).cloned().unwrap_or_default(),
+                "generated": generated_lib(i),
             })
         })
         .collect();
@@ -2635,6 +2846,10 @@ fn found_index(res_node: &[Option<usize>], node: usize) -> usize {
 struct Hooks<'a> {
     /// A topic as written, from its key.
     topic_of: &'a dyn Fn(&str) -> String,
+    /// Code a generator wrote. A plain call from one part into another
+    /// part's generated code is a name collision (two apps' copies of one
+    /// protobuf message), not where the request goes.
+    generated: &'a dyn Fn(&str) -> bool,
     config_of: &'a dyn Fn(&str) -> Option<Step>,
     broker_of: &'a dyn Fn(&str) -> Option<Step>,
     res_of: &'a dyn Fn(&str) -> Option<Step>,
@@ -3207,8 +3422,27 @@ fn rpc_service(key: &str) -> String {
     }
 }
 
+/// A key read as a secret: a `secret://` key, or one the providing units set
+/// from a secret (a Kubernetes `secretKeyRef`).
+fn secret_from(inp: &Input, providers: &[usize], key: &str) -> bool {
+    is_secret(key)
+        || providers
+            .iter()
+            .any(|&u| inp.uses[u].secret_sourced.contains(key))
+}
+
 /// The verb of a link that crosses a process, with its count.
 pub fn process_label(family: &str, keys: &BTreeSet<String>) -> String {
+    process_label_with(family, keys, &|k| is_secret(k))
+}
+
+/// `process_label`, with what counts as a secret: a `secret://` key, or one
+/// its provider sets from a secret.
+pub fn process_label_with(
+    family: &str,
+    keys: &BTreeSet<String>,
+    is_secret: &dyn Fn(&str) -> bool,
+) -> String {
     let n = keys.len();
     let one = || {
         keys.iter()
@@ -3340,7 +3574,13 @@ fn link_calls(
             let r = first(&nodes[b].units, recv, k);
             let side =
                 |s: Option<SymRef>| s.map(|(q, f, l)| json!({ "qual": q, "file": f, "line": l }));
-            json!({ "key": short_key(k), "from": side(s), "to": side(r) })
+            let mut c = json!({ "key": short_key(k), "from": side(s), "to": side(r) });
+            // A config key read from a secret (a Kubernetes Secret, a Key
+            // Vault reference, a secret provider): not plain config.
+            if family == "config" {
+                c["secret"] = json!(secret_from(inp, &nodes[b].units, k));
+            }
+            c
         })
         .collect()
 }
@@ -3507,6 +3747,7 @@ fn best_path(
     } else {
         (0..hops.len()).collect()
     };
+    let (reach, messaged) = trace_reach(e, hops, node_of_file, counted, ctx, hooks);
     let mut consider = |mut steps: Vec<Step>, unresolved: bool| {
         if let Some(c) = &caller {
             steps.insert(0, c.clone());
@@ -3596,12 +3837,15 @@ fn best_path(
             return;
         }
         let score = score_path(seen.len(), bridges, config, db, e.prominence, steps.len());
+        let fan = path_fan(&seen, &reach);
         let cand = Candidate {
             entry: ei,
             steps,
             score,
             seq: seen,
             unresolved_end: unresolved && !trimmed,
+            fan,
+            messaged: messaged.clone(),
         };
         // The best path for each sequence of nodes.
         let better = match best.get(&cand.seq) {
@@ -3669,6 +3913,12 @@ fn best_path(
             if matches!(via, "http" | "rpc" | "bus") && !(hooks.code_node)(node) {
                 break;
             }
+            // Into another part's generated code by a plain call: a name
+            // collision, and the path ends before it.
+            let prev = steps.last().map(|s| s.node);
+            if via == "call" && prev != Some(node) && (hooks.generated)(&h.symbol.file_path) {
+                break;
+            }
             // A message goes through its broker: a step of its own.
             let topic = (via == "bus")
                 .then(|| {
@@ -3723,6 +3973,101 @@ fn best_path(
     });
     out.truncate(PATHS_PER_ENTRY);
     out
+}
+
+/// Each node and the other nodes a trace reaches from it.
+type Fanout = BTreeMap<usize, BTreeSet<usize>>;
+/// `(from, to)` pairs of nodes a message crossed between.
+type Crossings = BTreeSet<(usize, usize)>;
+
+/// Every other node the trace reaches from each node: the nodes its hops
+/// cross into (code reached over a call or a bridge) and the resources its
+/// files use. A request that reaches several from one node branches there.
+fn trace_reach(
+    e: &EntryPoint,
+    hops: &[TraceHop],
+    node_of_file: &dyn Fn(&str) -> Option<usize>,
+    counted: &dyn Fn(usize) -> bool,
+    ctx: &Ctx,
+    hooks: &Hooks,
+) -> (Fanout, Crossings) {
+    let node_of = |h: &TraceHop| -> Option<usize> {
+        if h.symbol.is_external() || !ctx.in_scope(&h.symbol.file_path) {
+            return None;
+        }
+        node_of_file(&h.symbol.file_path)
+    };
+    let mut at: HashMap<i64, Option<usize>> = HashMap::new();
+    at.insert(e.sym.id, Some(e.node));
+    for h in hops {
+        at.entry(h.symbol.id).or_insert_with(|| node_of(h));
+    }
+    let mut reach: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut files: Vec<(usize, &str)> = vec![(e.node, e.sym.file.as_str())];
+    // Hops past a name collision (a plain call into another part's
+    // generated code) are no part of the request.
+    let mut dead: HashSet<i64> = HashSet::new();
+    let mut brokers: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut messaged: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for h in hops {
+        let Some(n) = at.get(&h.symbol.id).copied().flatten() else {
+            continue;
+        };
+        let Some(p) = at.get(&h.predecessor_id).copied().flatten() else {
+            continue;
+        };
+        if dead.contains(&h.predecessor_id)
+            || (p != n && h.bridge_direction.is_none() && (hooks.generated)(&h.symbol.file_path))
+        {
+            dead.insert(h.symbol.id);
+            continue;
+        }
+        files.push((n, h.symbol.file_path.as_str()));
+        if p != n && h.boundary_type.as_deref() == Some("message_bus") {
+            messaged.insert((p, n));
+        }
+        if p != n && counted(n) && (hooks.code_node)(n) {
+            reach.entry(p).or_default().insert(n);
+        }
+        // A message passes its broker: broker and subscriber are one branch.
+        if let Some(topic) = h
+            .protocol_context
+            .as_ref()
+            .and_then(|c| c["channel"].as_str())
+            && let Some(b) = (hooks.broker_of)(short_key(topic))
+        {
+            brokers.entry(p).or_default().insert(b.node);
+        }
+    }
+    for (n, f) in files {
+        if let Some(r) = (hooks.res_of)(f)
+            && r.node != n
+            && counted(r.node)
+        {
+            reach.entry(n).or_default().insert(r.node);
+        }
+    }
+    for (n, bs) in brokers {
+        if let Some(to) = reach.get_mut(&n) {
+            to.retain(|t| !bs.contains(t));
+        }
+    }
+    (reach, messaged)
+}
+
+/// The branch points of a path: each node of it (but the last) that the
+/// trace leaves for more than one other node.
+pub(crate) fn path_fan(
+    seq: &[usize],
+    reach: &BTreeMap<usize, BTreeSet<usize>>,
+) -> Vec<(usize, Vec<usize>)> {
+    seq.iter()
+        .take(seq.len().saturating_sub(1))
+        .filter_map(|n| {
+            let to = reach.get(n)?;
+            (to.len() > 1).then(|| (*n, to.iter().copied().collect()))
+        })
+        .collect()
 }
 
 /// `trace_flow` downstream from each id. The traces are independent reads,
@@ -4094,7 +4439,11 @@ impl Ranked {
 
 /// The types most used from other files: references to a type or any of
 /// its members, by distinct referring symbol.
-fn core_types(ix: &Ix, node_of_file: &dyn Fn(&str) -> Option<usize>) -> Result<Vec<Ranked>> {
+fn core_types(
+    ix: &Ix,
+    node_of_file: &dyn Fn(&str) -> Option<usize>,
+    generated: &Generated,
+) -> Result<Vec<Ranked>> {
     let ctx = ix.ctx;
     let conn = ctx.db.read_conn()?;
     let mut stmt = conn.prepare(
@@ -4119,7 +4468,10 @@ fn core_types(ix: &Ix, node_of_file: &dyn Fn(&str) -> Option<usize>) -> Result<V
         .iter()
         .enumerate()
         .filter(|(_, t)| {
-            ctx.in_scope(&t.file) && !is_aux(&t.file) && node_of_file(&t.file).is_some()
+            ctx.in_scope(&t.file)
+                && !is_aux(&t.file)
+                && node_of_file(&t.file).is_some()
+                && !generated.is(&t.file)
         })
         .map(|(i, t)| (t.qual.as_str(), i))
         .collect();
@@ -4172,7 +4524,11 @@ fn core_types(ix: &Ix, node_of_file: &dyn Fn(&str) -> Option<usize>) -> Result<V
 
 /// Functions where a change is riskiest: complex and called from many
 /// places (complexity × (1 + ln callers)).
-fn hotspots(ix: &Ix, node_of_file: &dyn Fn(&str) -> Option<usize>) -> Result<Vec<Ranked>> {
+fn hotspots(
+    ix: &Ix,
+    node_of_file: &dyn Fn(&str) -> Option<usize>,
+    generated: &Generated,
+) -> Result<Vec<Ranked>> {
     let ctx = ix.ctx;
     let conn = ctx.db.read_conn()?;
     let mut stmt = conn.prepare(
@@ -4211,10 +4567,15 @@ fn hotspots(ix: &Ix, node_of_file: &dyn Fn(&str) -> Option<usize>) -> Result<Vec
     }
     let mut out: Vec<(f64, Ranked)> = rows
         .into_iter()
-        .filter(|(s, _)| ctx.in_scope(&s.file) && !is_generated(&s.file) && !is_aux(&s.file))
+        .filter(|(s, _)| ctx.in_scope(&s.file) && !is_aux(&s.file) && !generated.is(&s.file))
         .filter_map(|(s, cx)| {
             let node = node_of_file(&s.file)?;
             let c = callers.get(&s.id).map(HashSet::len).unwrap_or(0);
+            // Code no one calls (a handler a router reaches by name) weighs
+            // nothing here: the list is "complex and widely called".
+            if c == 0 {
+                return None;
+            }
             let score = cx as f64 * (1.0 + (1.0 + c as f64).ln());
             Some((
                 score,
@@ -4297,6 +4658,65 @@ pub fn is_generated(path: &str) -> bool {
         || path
             .split('/')
             .any(|d| d == "generated" || d == "__generated__")
+}
+
+/// A generator's header in a file's first lines: Go's `// Code generated
+/// ... DO NOT EDIT.`, .NET's `<auto-generated>`, `@generated`, protoc's
+/// "Generated by the protocol buffer compiler", and the like.
+pub fn has_generated_header(text: &str) -> bool {
+    text.lines().take(30).any(|l| {
+        let l = l.to_ascii_lowercase();
+        [
+            "code generated",
+            "<auto-generated",
+            "@generated",
+            "do not edit",
+            "auto-generated",
+            "autogenerated",
+            "generated by the protocol buffer compiler",
+            "this file was generated",
+            "this file is generated",
+        ]
+        .iter()
+        .any(|m| l.contains(m))
+    })
+}
+
+/// Generated code, by its name or by its header on disk; each file read
+/// once.
+struct Generated<'a> {
+    root: &'a Path,
+    seen: std::cell::RefCell<HashMap<String, bool>>,
+}
+
+impl<'a> Generated<'a> {
+    fn new(root: &'a Path) -> Self {
+        Generated {
+            root,
+            seen: Default::default(),
+        }
+    }
+    fn is(&self, rel: &str) -> bool {
+        if is_generated(rel) {
+            return true;
+        }
+        if let Some(&g) = self.seen.borrow().get(rel) {
+            return g;
+        }
+        let g = read_head(self.root, rel).is_some_and(|t| has_generated_header(&t));
+        self.seen.borrow_mut().insert(rel.to_string(), g);
+        g
+    }
+}
+
+/// The first few kilobytes of a file: enough for its header.
+fn read_head(root: &Path, rel: &str) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(root.join(rel)).ok()?;
+    let mut buf = vec![0u8; 4096];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Docs a newcomer should open first, from what is on disk.
@@ -4557,13 +4977,18 @@ fn tour(doc: &Value) -> Vec<Value> {
             "title": "Follow one request",
             "text": format!("{}: {} steps across {}.", f["title"].as_str().unwrap_or(""), f["steps"].as_array().map(Vec::len).unwrap_or(0), count(f["nodes"].as_array().map(Vec::len).unwrap_or(0), "part", "parts")),
             "nodes": f["nodes"], "links": [], "flow": 0,
+            // Where the request starts: the map shows the rest as it scrolls.
+            "focus": f["nodes"].as_array().map(|v| v.iter().take(2).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         }));
     }
     // 4. How the parts talk.
     let talk: Vec<(usize, &Value)> = links
         .iter()
         .enumerate()
-        .filter(|(_, l)| matches!(l["family"].as_str(), Some("http" | "rpc" | "bus")))
+        .filter(|(_, l)| {
+            matches!(l["family"].as_str(), Some("http" | "rpc" | "bus"))
+                || (l["family"] == "wire" && l["label"] == "sends requests")
+        })
         .collect();
     if !talk.is_empty() {
         let mut by: BTreeMap<&str, usize> = BTreeMap::new();
@@ -4575,6 +5000,11 @@ fn tour(doc: &Value) -> Vec<Value> {
             .map(|(f, c)| match *f {
                 "http" => count(*c, "HTTP link", "HTTP links"),
                 "rpc" => count(*c, "RPC link", "RPC links"),
+                "wire" => count(
+                    *c,
+                    "link only their deployment sets up",
+                    "links only their deployment sets up",
+                ),
                 _ => count(*c, "message-bus link", "message-bus links"),
             })
             .collect();
@@ -4633,24 +5063,48 @@ fn tour(doc: &Value) -> Vec<Value> {
         .filter(|(_, l)| matches!(l["family"].as_str(), Some("config" | "secret")))
         .collect();
     if !cfg.is_empty() {
-        let mut providers: BTreeMap<String, usize> = BTreeMap::new();
+        // Plain config and secrets apart: a manifest setting `PORT` is no
+        // secret store.
+        let mut plain: BTreeMap<String, usize> = BTreeMap::new();
+        let mut secret: BTreeMap<String, usize> = BTreeMap::new();
         for (_, l) in &cfg {
-            *providers.entry(name(&l["to"])).or_default() += 1;
+            let label = l["label"].as_str().unwrap_or("");
+            if l["family"] == "secret" || label.contains("secret") {
+                *secret.entry(name(&l["to"])).or_default() += 1;
+            }
+            if l["family"] == "config" && (label.contains("config") || !label.contains("secret")) {
+                *plain.entry(name(&l["to"])).or_default() += 1;
+            }
         }
-        let parts: Vec<String> = providers
-            .iter()
-            .map(|(p, c)| format!("{p} (read by {})", count(*c, "app", "apps")))
-            .collect();
+        let parts = |m: &BTreeMap<String, usize>| -> String {
+            and_list(
+                &m.iter()
+                    .map(|(p, c)| format!("{p} (read by {})", count(*c, "app", "apps")))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let mut text: Vec<String> = Vec::new();
+        if !plain.is_empty() {
+            text.push(format!("Config keys are set in {}.", parts(&plain)));
+        }
+        text.push(if secret.is_empty() {
+            "No code reads a secret.".to_string()
+        } else {
+            format!("Secrets come from {}.", parts(&secret))
+        });
         let mut ns: BTreeSet<u64> = BTreeSet::new();
+        let mut focus: BTreeSet<u64> = BTreeSet::new();
         for (_, l) in &cfg {
             ns.insert(l["from"].as_u64().unwrap_or(0));
             ns.insert(l["to"].as_u64().unwrap_or(0));
+            focus.insert(l["to"].as_u64().unwrap_or(0));
         }
         steps.push(json!({
             "id": "config",
             "title": "Where config and secrets come from",
-            "text": format!("Config keys and secrets are set in {}.", and_list(&parts)),
+            "text": text.join(" "),
             "nodes": ns.into_iter().collect::<Vec<_>>(),
+            "focus": focus.into_iter().collect::<Vec<_>>(),
             "links": cfg.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
         }));
     }
@@ -4659,7 +5113,9 @@ fn tour(doc: &Value) -> Vec<Value> {
         let mut v: Vec<&Value> = nodes
             .iter()
             .filter(|n| {
-                n["lane"] == "lib" && n["used_by"].as_array().is_some_and(|u| !u.is_empty())
+                n["lane"] == "lib"
+                    && n["used_by"].as_array().is_some_and(|u| !u.is_empty())
+                    && !n["generated"].as_bool().unwrap_or(false)
             })
             .collect();
         v.sort_by(|a, b| {
@@ -4708,7 +5164,7 @@ fn tour(doc: &Value) -> Vec<Value> {
             }
         }
         steps.push(json!({
-            "id": "shared", "title": "Shared code everyone depends on", "text": text.trim_end(),
+            "id": "shared", "title": if shared.is_empty() { "The most used types" } else { "Shared code everyone depends on" }, "text": text.trim_end(),
             "nodes": ns, "links": [], "panel": "core",
         }));
     }
@@ -4987,7 +5443,9 @@ fn data_step(nodes: &[Value], links: &[Value], mode: &str) -> Option<Value> {
         .iter()
         .enumerate()
         .filter(|(_, l)| {
+            // Secrets are the config step's: a secret store keeps no data.
             l["family"].as_str().is_some_and(is_res_family)
+                && l["family"] != "secret"
                 && on_map(l["from"].as_u64().unwrap_or(0))
                 && on_map(l["to"].as_u64().unwrap_or(0))
         })
@@ -5021,12 +5479,13 @@ fn data_step(nodes: &[Value], links: &[Value], mode: &str) -> Option<Value> {
         .collect();
     let mut text = format!(
         "The {many} keep data and pass messages through {}: {}",
-        count(users.len(), "shared resource", "shared resources"),
-        and_list(&parts)
+        count(users.len(), "resource", "resources"),
+        if users.len() > 5 {
+            format!("{} and {} more", parts.join(", "), users.len() - 5)
+        } else {
+            and_list(&parts)
+        }
     );
-    if users.len() > 5 {
-        text.push_str(&format!(" and {} more", users.len() - 5));
-    }
     text.push('.');
     // Pairs that never call each other and meet only at a resource.
     let direct: BTreeSet<(u64, u64)> = links
@@ -5040,8 +5499,15 @@ fn data_step(nodes: &[Value], links: &[Value], mode: &str) -> Option<Value> {
             (a.min(b), a.max(b))
         })
         .collect();
+    // Only a store or a broker couples the apps that share it; two apps
+    // calling one external API are not coupled by it.
+    let couples: BTreeSet<u64> = res_links
+        .iter()
+        .filter(|(_, l)| matches!(l["family"].as_str(), Some("data" | "msg" | "store")))
+        .map(|(_, l)| l["to"].as_u64().unwrap_or(0))
+        .collect();
     let mut only: Vec<(u64, u64, u64)> = Vec::new();
-    for (r, u) in &order {
+    for (r, u) in order.iter().filter(|(r, _)| couples.contains(r)) {
         let list: Vec<u64> = u.iter().copied().collect();
         for (i, a) in list.iter().enumerate() {
             for b in &list[i + 1..] {
@@ -5077,6 +5543,8 @@ fn data_step(nodes: &[Value], links: &[Value], mode: &str) -> Option<Value> {
         "title": "Data and messaging",
         "text": text,
         "nodes": ns.into_iter().collect::<Vec<_>>(),
+        // What the step is about: the resources, whatever else stays lit.
+        "focus": users.keys().copied().collect::<Vec<_>>(),
         "links": res_links.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
     }))
 }
@@ -5092,25 +5560,54 @@ fn questions(doc: &Value) -> Vec<Value> {
             .to_string()
     };
     let mut out: Vec<Value> = Vec::new();
-    // Secrets.
+    // Secrets, apart from plain config: a key a secret store, a Kubernetes
+    // Secret or a vault reference provides is a secret; `PORT` set in a
+    // manifest is not.
     {
-        let mut items: Vec<Value> = Vec::new();
-        let mut ns: BTreeSet<u64> = BTreeSet::new();
+        let mut secret_items: Vec<Value> = Vec::new();
+        let mut config_items: Vec<Value> = Vec::new();
+        let mut secret_ns: BTreeSet<u64> = BTreeSet::new();
+        let mut config_ns: BTreeSet<u64> = BTreeSet::new();
+        let mut providers: BTreeSet<String> = BTreeSet::new();
         for l in links
             .iter()
             .filter(|l| matches!(l["family"].as_str(), Some("config" | "secret")))
         {
+            let ends = [
+                l["from"].as_u64().unwrap_or(0),
+                l["to"].as_u64().unwrap_or(0),
+            ];
             for c in l["calls"].as_array().into_iter().flatten() {
-                let Some(key) = c["key"].as_str() else {
-                    continue;
-                };
-                items.push(json!({
-                    "text": format!("{} reads {key} from {}", name(&l["from"]), name(&l["to"])),
-                    "file": c["from"]["file"], "line": c["from"]["line"],
-                }));
+                match c["key"].as_str() {
+                    Some(key) if c["secret"].as_bool().unwrap_or(false) => {
+                        secret_items.push(json!({
+                            "text": format!("{} reads secret {key} from {}", name(&l["from"]), name(&l["to"])),
+                            "file": c["from"]["file"], "line": c["from"]["line"],
+                        }));
+                        secret_ns.extend(ends);
+                    }
+                    Some(key) => {
+                        config_items.push(json!({
+                            "text": format!("{} reads {key} from {}", name(&l["from"]), name(&l["to"])),
+                            "file": c["from"]["file"], "line": c["from"]["line"],
+                        }));
+                        config_ns.extend(ends);
+                        providers.insert(name(&l["to"]));
+                    }
+                    // A secret store's evidence: where the code uses it.
+                    None if l["family"] == "secret" => {
+                        secret_items.push(json!({
+                            "text": format!("{} uses {}: {}", name(&l["from"]), name(&l["to"]), c["text"].as_str().unwrap_or("")),
+                            "file": c["file"], "line": c["line"],
+                        }));
+                        secret_ns.extend(ends);
+                    }
+                    None => {}
+                }
             }
-            ns.insert(l["from"].as_u64().unwrap_or(0));
-            ns.insert(l["to"].as_u64().unwrap_or(0));
+            if l["family"] == "secret" {
+                secret_ns.extend(ends);
+            }
         }
         let secrets: Vec<&Value> = links
             .iter()
@@ -5119,14 +5616,31 @@ fn questions(doc: &Value) -> Vec<Value> {
                     && l["label"].as_str().is_some_and(|s| s.contains("secret"))
             })
             .collect();
+        let plain = if config_items.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " {} plain config, not secrets: listed apart below.",
+                count(
+                    config_items.len(),
+                    "other key read is",
+                    "other keys read are"
+                )
+            )
+        };
         let a = if links
             .iter()
             .all(|l| !matches!(l["family"].as_str(), Some("config" | "secret")))
         {
             "No secrets or config keys found: no code reads a key that the repository's infrastructure provides.".to_string()
+        } else if secrets.is_empty() && secret_items.is_empty() {
+            let from: Vec<String> = providers.into_iter().collect();
+            format!(
+                "No code reads a secret: no secret store, Kubernetes Secret or vault reference was found. The keys below are plain config, set in {}.",
+                and_list(&from)
+            )
         } else if secrets.is_empty() {
-            "No code reads a secret. Config keys come from the infrastructure listed below."
-                .to_string()
+            format!("Secrets are read as config keys, listed below.{plain}")
         } else {
             let parts: Vec<String> = secrets
                 .iter()
@@ -5139,10 +5653,25 @@ fn questions(doc: &Value) -> Vec<Value> {
                     )
                 })
                 .collect();
-            format!("{}.", parts.join("; "))
+            format!("{}.{plain}", parts.join("; "))
         };
-        items.truncate(40);
-        out.push(json!({ "id": "secrets", "q": "Where do secrets come from?", "a": a, "nodes": ns.into_iter().collect::<Vec<_>>(), "items": items }));
+        secret_items.truncate(40);
+        config_items.truncate(40);
+        let mut groups: Vec<Value> = Vec::new();
+        if !secret_items.is_empty() {
+            groups.push(json!({ "title": "Secrets", "items": secret_items }));
+        }
+        if !config_items.is_empty() {
+            groups
+                .push(json!({ "title": "Plain config keys, not secrets", "items": config_items }));
+        }
+        // What lights up: where the secrets are, else the config.
+        let ns = if secret_ns.is_empty() {
+            config_ns
+        } else {
+            secret_ns
+        };
+        out.push(json!({ "id": "secrets", "q": "Where do secrets come from?", "a": a, "nodes": ns.into_iter().collect::<Vec<_>>(), "items": [], "groups": groups }));
     }
     out.extend(event_questions(&nodes));
     // What talks to each card.
@@ -5400,6 +5929,8 @@ mod tests {
             score,
             seq,
             unresolved_end: false,
+            fan: Vec::new(),
+            messaged: BTreeSet::new(),
         }
     }
 
@@ -5444,7 +5975,19 @@ mod tests {
         };
         assert_eq!(
             card_sentence(&svc),
-            "Go service serving 11 HTTP routes; calls 4 apps over RPC, reads 13 config keys."
+            "Go service serving 11 HTTP routes; calls RPC on 4 apps, reads 13 config keys."
+        );
+        // Apps its deployment points it at, by no protocol the index knows.
+        let wired = Facts {
+            lang: Some("Go".into()),
+            kind: "service".into(),
+            calls_rpc: 2,
+            sends_to: 3,
+            ..Facts::default()
+        };
+        assert_eq!(
+            card_sentence(&wired),
+            "Go service; calls RPC on 2 apps, sends requests to 3 apps."
         );
         let worker = Facts {
             lang: Some("Python".into()),
@@ -5642,17 +6185,185 @@ mod tests {
     #[test]
     fn flow_titles_start_at_the_entry_point() {
         assert_eq!(
-            flow_title("GET /a", &["x".into(), "y".into()]),
+            flow_title("GET /a", &["x".into(), "y".into()], None),
             "GET /a → x → y"
         );
         assert_eq!(
             flow_title(
                 "m",
-                &["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]
+                &["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
+                None
             ),
             "m → a → b → … → e"
         );
-        assert_eq!(flow_title("solo", &[]), "solo");
+        assert_eq!(flow_title("solo", &[], None), "solo");
+    }
+
+    #[test]
+    fn a_branching_flow_says_where_it_branches_and_which_branch_it_follows() {
+        let names: Vec<String> = ["frontend", "checkoutservice", "cartservice", "Spanner"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            flow_title("/cart/checkout", &names, Some((1, "calls 5 apps"))),
+            "/cart/checkout → checkoutservice calls 5 apps; following cartservice → Spanner"
+        );
+        // Branching at its last node: nothing more to follow.
+        assert_eq!(
+            flow_title("GET /x", &names[..2], Some((1, "uses 2 resources"))),
+            "GET /x → checkoutservice uses 2 resources"
+        );
+        // An index past the names is ignored.
+        assert_eq!(
+            flow_title("GET /x", &names[..2], Some((7, "calls 2 apps"))),
+            "GET /x → frontend → checkoutservice"
+        );
+        assert_eq!(fan_phrase(5, 0, 0, ("app", "apps")), "calls 5 apps");
+        assert_eq!(fan_phrase(0, 0, 3, ("app", "apps")), "uses 3 resources");
+        assert_eq!(
+            fan_phrase(2, 1, 1, ("app", "apps")),
+            "calls 2 apps, messages 1 app and uses 1 resource"
+        );
+        assert_eq!(
+            fan_phrase(1, 0, 1, ("part", "parts")),
+            "calls 1 part and uses 1 resource"
+        );
+    }
+
+    fn entry(node: usize, kind: &'static str, label: &str, name: &str, key: &str) -> EntryPoint {
+        EntryPoint {
+            node,
+            unit: node,
+            kind,
+            label: label.to_string(),
+            key: Some(key.to_string()),
+            sym: Sym {
+                id: 0,
+                name: name.to_string(),
+                qual: name.to_string(),
+                file: "a.go".to_string(),
+                line: 1,
+            },
+            prominence: 0,
+        }
+    }
+
+    #[test]
+    fn ways_in_are_one_row_each_and_two_handlers_of_a_route_read_apart() {
+        let mut es = vec![
+            entry(0, "http", "/cart", "viewCartHandler", "/cart"),
+            entry(0, "http", "/cart", "addToCartHandler", "/cart"),
+            entry(0, "http", "GET /x", "x", "/x"),
+            entry(0, "http", "GET /x", "x", "/x"),
+            entry(0, "main", "app main", "main", "main"),
+            entry(0, "main", "app main", "main", "main"),
+            entry(0, "http", "/healthz", "health", "/healthz"),
+            entry(1, "http", "/healthz", "health", "/healthz"),
+        ];
+        tell_handlers_apart(&mut es);
+        let labels: Vec<&str> = es.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(
+            &labels[..4],
+            &[
+                "/cart (viewCartHandler)",
+                "/cart (addToCartHandler)",
+                "GET /x",
+                "GET /x"
+            ]
+        );
+        // The second `main` is the one a flow follows: kept instead of the
+        // first. The probe is left out unless a flow starts at it.
+        let shown = shown_entries(&es, &|i| i == 5 || i == 7);
+        let mut v: Vec<usize> = shown.into_iter().collect();
+        v.sort();
+        assert_eq!(v, vec![0, 1, 2, 5, 7]);
+    }
+
+    #[test]
+    fn only_a_store_or_a_broker_couples_the_apps_that_share_it() {
+        let node = |id: u64, name: &str, kind: &str| json!({ "id": id, "name": name, "kind": kind, "place": "card" });
+        let nodes = vec![
+            node(0, "a", "service"),
+            node(1, "b", "service"),
+            node(2, "Vault", "resource"),
+            node(3, "Stripe", "resource"),
+            node(4, "Postgres", "resource"),
+        ];
+        let link = |f: u64, t: u64, fam: &str| json!({ "from": f, "to": t, "family": fam });
+        let mut links = vec![
+            link(0, 2, "secret"),
+            link(1, 2, "secret"),
+            link(0, 3, "ext"),
+            link(1, 3, "ext"),
+        ];
+        let s = data_step(&nodes, &links, "apps").unwrap();
+        // The secret store is not a place data is kept; the outside API is
+        // shared but couples nothing.
+        assert_eq!(
+            s["text"],
+            "The apps keep data and pass messages through 1 resource: Stripe (2 apps). Click a resource to see who uses it and how."
+        );
+        assert_eq!(s["focus"], json!([3]));
+        links.push(link(0, 4, "data"));
+        links.push(link(1, 4, "data"));
+        let s = data_step(&nodes, &links, "apps").unwrap();
+        assert_eq!(
+            s["text"],
+            "The apps keep data and pass messages through 2 resources: Postgres (2 apps) and Stripe (2 apps). 1 pair of apps that never call each other meet only here, such as a and b through Postgres. Click a resource to see who uses it and how."
+        );
+    }
+
+    #[test]
+    fn past_five_resources_the_rest_is_counted_once() {
+        let mut nodes = vec![json!({ "id": 0, "name": "a", "kind": "service", "place": "card" })];
+        let mut links = Vec::new();
+        for i in 1..=7u64 {
+            nodes.push(
+                json!({ "id": i, "name": format!("r{i}"), "kind": "resource", "place": "card" }),
+            );
+            links.push(json!({ "from": 0, "to": i, "family": "ext" }));
+        }
+        let s = data_step(&nodes, &links, "apps").unwrap();
+        assert_eq!(
+            s["text"],
+            "The apps keep data and pass messages through 7 resources: r1 (1 app), r2 (1 app), r3 (1 app), r4 (1 app), r5 (1 app) and 2 more. Click a resource to see who uses it and how."
+        );
+    }
+
+    #[test]
+    fn a_generators_header_marks_its_file() {
+        assert!(has_generated_header(
+            "// Code generated by protoc-gen-go. DO NOT EDIT.\npackage pb\n"
+        ));
+        assert!(has_generated_header(
+            "//------\n// <auto-generated>\n//     This code was generated by a tool.\n"
+        ));
+        assert!(has_generated_header("# @generated by tool\nx = 1\n"));
+        assert!(has_generated_header(
+            "# Generated by the protocol buffer compiler.  DO NOT EDIT!\n"
+        ));
+        assert!(!has_generated_header(
+            "package main\n\n// generates the report\nfunc main() {}\n"
+        ));
+        // Only the first lines are a header.
+        let late = format!("{}// Code generated. DO NOT EDIT.\n", "x\n".repeat(40));
+        assert!(!has_generated_header(&late));
+    }
+
+    #[test]
+    fn a_path_branches_where_the_trace_leaves_a_node_for_several() {
+        let mut reach: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        reach.insert(0, [1].into());
+        reach.insert(1, [2, 3, 4].into());
+        reach.insert(2, [5, 6].into());
+        // The last node's own reach is not a branch of this path.
+        assert_eq!(path_fan(&[0, 1, 2], &reach), vec![(1, vec![2, 3, 4])]);
+        assert_eq!(
+            path_fan(&[0, 1, 2, 5], &reach),
+            vec![(1, vec![2, 3, 4]), (2, vec![5, 6])]
+        );
+        assert!(path_fan(&[0], &reach).is_empty());
     }
 
     #[test]

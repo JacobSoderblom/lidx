@@ -138,6 +138,7 @@ h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; whit
 h1 .tool { color: var(--ink-3); font-weight: 600; }
 h1 .repo { color: var(--ink); }
 .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; font-size: 13px; }
+.crumbs[hidden] { display: none; }
 .crumbs button {
   border: 0; background: none; padding: 2px 5px; min-height: 24px; border-radius: 5px; color: var(--ink-2);
   max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -715,6 +716,13 @@ dialog button { border: 1px solid var(--rule); background: var(--paper-2); borde
 .g-tours .g-dot::before { content: ""; position: absolute; left: 6.5px; top: 6.5px; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--ink-3); background: var(--paper); }
 .g-tours .g-dot.done::before { background: var(--ink-3); }
 .g-tours .g-dot.cur::before { background: var(--focus); border-color: var(--focus); }
+.g-seg { display: inline-flex; }
+.g-tbtns .g-seg button { border-radius: 0; margin-left: -1px; }
+.g-tbtns .g-seg button:first-child { border-radius: 7px 0 0 7px; margin-left: 0; }
+.g-tbtns .g-seg button:last-child { border-radius: 0 7px 7px 0; }
+.g-fan { margin-top: 14px; font-size: 12.5px; color: var(--ink-2); }
+.g-fan ul { margin: 4px 0 0; padding-left: 0; list-style: none; display: grid; gap: 6px; }
+.g-qgroup h3 span { font-weight: 500; letter-spacing: 0; }
 .g-q { position: relative; margin-left: auto; }
 .g-qmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; background: var(--paper); border: 1px solid var(--rule); border-radius: 9px; box-shadow: var(--shadow); padding: 5px; display: grid; min-width: 260px; max-height: 60vh; overflow-y: auto; }
 .g-qmenu button { border: 0; border-radius: 6px; text-align: left; max-width: none; }

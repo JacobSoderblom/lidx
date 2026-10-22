@@ -256,7 +256,7 @@ fn a_compose_stack_shows_each_resource_category_with_verbs_and_evidence() {
         titles,
         [
             "on order-created → RabbitMQ → worker",
-            "POST /orders → orders → PostgreSQL"
+            "POST /orders → orders messages 1 app and uses 1 resource; following PostgreSQL"
         ]
     );
     let steps = |i: usize| -> Vec<(String, String)> {
@@ -293,12 +293,11 @@ fn a_compose_stack_shows_each_resource_category_with_verbs_and_evidence() {
         .find(|t| t["id"] == "data")
         .unwrap();
     assert_eq!(data["title"], "Data and messaging");
-    assert!(
-        data["text"].as_str().unwrap().starts_with(
-            "The apps keep data and pass messages through 6 shared resources: RabbitMQ (2 apps), "
-        ),
-        "{}",
-        data["text"]
+    // Key Vault keeps no data: it is the config step's. An outside API two
+    // apps call couples nothing, so no "meet only here" claim rests on it.
+    assert_eq!(
+        data["text"],
+        "The apps keep data and pass messages through 5 resources: RabbitMQ (2 apps), Amazon S3 (1 app), PostgreSQL (1 app), Redis (1 app) and api.payhub.io (1 app). Click a resource to see who uses it and how."
     );
     // Where it runs.
     assert_eq!(
@@ -490,7 +489,7 @@ fn an_aspire_app_host_declares_resources_and_wires_its_projects() {
     );
     assert_eq!(
         link(&g, "Orders.Api", "Catalog.Api")["calls"],
-        json!([{ "text": "deployment: orders-api .WithReference(catalog)", "file": "src/AppHost/Program.cs", "line": 7 }])
+        json!([{ "text": "deployment: orders-api .WithReference(catalog)", "file": "src/AppHost/Program.cs", "line": 7, "wired": true }])
     );
     // The app host is deployment, not a library: a chip, and the group
     // its projects run in.
@@ -537,6 +536,41 @@ fn kubernetes_groups_apps_by_namespace_and_env_hosts_wire_them() {
         )]
     );
     assert_eq!(node(&g, "cart")["deploy"], json!([0]));
+}
+
+/// An app its deployment points another at, serving only HTTP routes, is
+/// called over HTTP: the link reads as every HTTP link, its evidence the
+/// deployment's, and the caller's card counts it.
+#[test]
+fn a_wired_app_that_only_serves_http_is_called_over_http() {
+    let files: Vec<(&str, &str)> = K8S_NS
+        .iter()
+        .map(|&(p, t)| {
+            if p == "cart/main.go" {
+                (
+                    p,
+                    "package main\n\nimport \"net/http\"\n\nfunc main() {\n\thttp.HandleFunc(\"/cart\", viewCart)\n}\n\nfunc viewCart(w http.ResponseWriter, r *http.Request) {}\n",
+                )
+            } else {
+                (p, t)
+            }
+        })
+        .collect();
+    let g = glance(&files);
+    let l = link(&g, "front", "cart");
+    assert_eq!(l["family"], "http");
+    assert_eq!(l["label"], "calls over HTTP");
+    assert_eq!(l["calls"][0]["wired"], true);
+    assert_eq!(l["calls"][0]["text"], "deployment: CART_ADDR: cart:8080");
+    assert_eq!(
+        node(&g, "front")["sentence"],
+        "Go command-line app; calls 1 app over HTTP."
+    );
+    // The called app's card counts none of its caller's calls.
+    assert_eq!(
+        node(&g, "cart")["sentence"],
+        "Go service serving 1 HTTP route; uses Redis."
+    );
 }
 
 #[test]
