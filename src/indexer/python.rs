@@ -860,6 +860,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    if let Some(edge) = celery_send_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
     if let Some(edge) = config_read_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
@@ -2676,6 +2679,9 @@ fn handle_decorated_definition(
             let edges =
                 channel_edges_from_decorators(&decorators, &handler, source, &ctx.string_consts);
             output.edges.extend(edges);
+            output
+                .edges
+                .extend(celery_task_edges(&decorators, &handler, source));
         }
         walk_node(definition, ctx, source, output);
     }
@@ -3126,22 +3132,18 @@ fn channel_edges_from_decorators(
         let Some(raw_topic) = raw_topic else {
             continue;
         };
-        let Some(normalized) = channel::resolve_topic(&raw_topic, consts, &LocalBinding::NotLocal)
+        let Some(topic) = channel::resolve_topic(&raw_topic, consts, &LocalBinding::NotLocal)
         else {
             continue;
         };
 
-        let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-            channel::build_publish_detail(&normalized, &raw_topic, "python-decorator")
-        } else {
-            channel::build_subscribe_detail(&normalized, &raw_topic, "python-decorator")
-        };
+        let detail = channel::build_detail(kind, &topic, &raw_topic, "python-decorator");
 
         let (start_line, _start_col, end_line, _end_col, _start_byte, _end_byte) = span(*decorator);
         edges.push(EdgeInput {
             kind: kind.to_string(),
             source_qualname: Some(handler.to_string()),
-            target_qualname: Some(normalized),
+            target_qualname: Some(topic.key),
             detail: Some(detail),
             evidence_snippet: None,
             evidence_start_line: Some(start_line),
@@ -3152,6 +3154,131 @@ fn channel_edges_from_decorators(
     edges
 }
 
+/// The name a Celery task is sent by: the last part of its dotted name
+/// (`proj.tasks.send_email` -> `send_email`), as `.delay()` names it.
+fn celery_task_topic(name: &str) -> Option<channel::Topic> {
+    channel::Topic::named(name.rsplit('.').next().unwrap_or(name))
+}
+
+/// A Celery task (`@app.task`, `@celery.task(..)`, `@shared_task`) takes
+/// messages off the broker by its name: the `name=` it is given, else the
+/// function's own name. A bare `@task` is left alone (invoke and fabric use
+/// the name too).
+fn celery_task_edges(decorators: &[Node<'_>], handler: &str, source: &str) -> Vec<EdgeInput> {
+    let mut out = Vec::new();
+    for decorator in decorators {
+        let Some(expr) = decorator.named_child(0) else {
+            continue;
+        };
+        let (callee, call) = if expr.kind() == "call" {
+            (expr.child_by_field_name("function"), Some(expr))
+        } else {
+            (Some(expr), None)
+        };
+        let Some(callee) = callee else { continue };
+        let Some((base, name)) = attribute_base_and_name(callee, source) else {
+            continue;
+        };
+        let task = name == "shared_task" || (name == "task" && !base.is_empty());
+        if !task {
+            continue;
+        }
+        let named = call.and_then(|c| {
+            let args = parse_call_arguments(c, source);
+            args.keywords
+                .iter()
+                .find(|(k, _)| k == "name")
+                .and_then(|(_, v)| {
+                    crate::indexer::string_consts::string_literal_value(&node_text(*v, source))
+                })
+        });
+        let short = handler.rsplit('.').next().unwrap_or(handler);
+        let Some(topic) = celery_task_topic(named.as_deref().unwrap_or(short)) else {
+            continue;
+        };
+        let (start_line, _, end_line, _, _, _) = span(*decorator);
+        out.push(EdgeInput {
+            kind: channel::CHANNEL_SUBSCRIBE_KIND.to_string(),
+            source_qualname: Some(handler.to_string()),
+            detail: Some(channel::build_subscribe_detail(
+                &topic,
+                &node_text(*decorator, source),
+                "celery",
+            )),
+            target_qualname: Some(topic.key),
+            evidence_snippet: None,
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
+    out
+}
+
+/// A Celery task sent to the broker: `send_email.delay(..)` or
+/// `tasks.send_email.apply_async(..)`. The task is named by the expression
+/// the call is made on.
+fn celery_send_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let function = node.child_by_field_name("function")?;
+    let (base, name) = attribute_base_and_name(function, source)?;
+    if base.is_empty() {
+        return None;
+    }
+    // `app.send_task("proj.tasks.cleanup")`: the task by its name.
+    if name == "send_task" {
+        let args = parse_call_arguments(node, source);
+        let raw = args
+            .keywords
+            .iter()
+            .find(|(k, _)| k == "name")
+            .map(|(_, v)| *v)
+            .or_else(|| args.positional.first().copied())?;
+        let local = python_local_binding(node, &node_text(raw, source), source);
+        let value = ctx
+            .string_consts
+            .resolve_arg(&node_text(raw, source), &local)?;
+        let topic = celery_task_topic(&value)?;
+        return Some(EdgeInput {
+            kind: channel::CHANNEL_PUBLISH_KIND.to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            detail: Some(channel::build_publish_detail(
+                &topic,
+                &node_text(raw, source),
+                "celery",
+            )),
+            target_qualname: Some(topic.key),
+            evidence_snippet: None,
+            evidence_start_line: Some(span(node).0),
+            evidence_end_line: Some(span(node).2),
+            ..Default::default()
+        });
+    }
+    if !matches!(name.as_str(), "delay" | "apply_async") {
+        return None;
+    }
+    let task = base.rsplit('.').next().unwrap_or(&base);
+    if !task.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || task.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let topic = celery_task_topic(task)?;
+    Some(EdgeInput {
+        kind: channel::CHANNEL_PUBLISH_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        detail: Some(channel::build_publish_detail(
+            &topic,
+            &node_text(function, source),
+            "celery",
+        )),
+        target_qualname: Some(topic.key),
+        evidence_snippet: None,
+        evidence_start_line: Some(span(node).0),
+        evidence_end_line: Some(span(node).2),
+        ..Default::default()
+    })
+}
+
 fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     let function = node.child_by_field_name("function")?;
     let (base, name) = attribute_base_and_name(function, source)?;
@@ -3160,8 +3287,8 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     }
     // A broker SDK call names its topic whatever the client is called.
     let sdk = channel::sdk_channel_call(&name);
-    let (kind, framework, keyword) = if let Some((k, f, kw)) = sdk {
-        (k, f, kw)
+    let (kind, framework, keyword, pos) = if let Some((k, f, kw, pos)) = sdk {
+        (k, f, kw, pos)
     } else {
         if !channel::is_bus_receiver(&base) {
             return None;
@@ -3173,7 +3300,7 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
         } else {
             return None;
         };
-        (kind, "python-bus", "topic")
+        (kind, "python-bus", "topic", 0)
     };
     let args = parse_call_arguments(node, source);
     // First positional arg or the topic keyword
@@ -3182,18 +3309,14 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
         .iter()
         .find(|(k, _)| k == keyword)
         .map(|(_, v)| node_text(*v, source))
-        .or_else(|| args.positional.first().map(|v| node_text(*v, source)))?;
+        .or_else(|| args.positional.get(pos).map(|v| node_text(*v, source)))?;
     let local = python_local_binding(node, &raw_topic, source);
-    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
-    let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, framework)
-    } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
-    };
+    let topic = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
+    let detail = channel::build_detail(kind, &topic, &raw_topic, framework);
     Some(EdgeInput {
         kind: kind.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
+        target_qualname: Some(topic.key),
         detail: Some(detail),
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),

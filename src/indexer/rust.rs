@@ -7583,17 +7583,12 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     };
     let args = call_arguments(node);
     let raw_topic = node_text(*args.first()?, source);
-    let normalized =
-        channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
-    let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, "rust-bus")
-    } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, "rust-bus")
-    };
+    let topic = channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
+    let detail = channel::build_detail(kind, &topic, &raw_topic, "rust-bus");
     Some(EdgeInput {
         kind: kind.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
+        target_qualname: Some(topic.key),
         detail: Some(detail),
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),

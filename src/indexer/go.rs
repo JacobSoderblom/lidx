@@ -2816,36 +2816,33 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     let (receiver, method_name) = split_selector_expr(function_node, source)?;
 
     // A broker SDK call names its topic whatever the client is called.
-    let (kind, framework) = if let Some((k, f, _)) = channel::sdk_channel_call(&method_name) {
-        (k, f)
-    } else {
-        if !channel::is_bus_receiver(&receiver) {
-            return None;
-        }
-        let kind = if channel::is_publish_method(&method_name) {
-            channel::CHANNEL_PUBLISH_KIND
-        } else if channel::is_subscribe_method(&method_name) {
-            channel::CHANNEL_SUBSCRIBE_KIND
+    let (kind, framework, pos) =
+        if let Some((k, f, _, pos)) = channel::sdk_channel_call(&method_name) {
+            (k, f, pos)
         } else {
-            return None;
+            if !channel::is_bus_receiver(&receiver) {
+                return None;
+            }
+            let kind = if channel::is_publish_method(&method_name) {
+                channel::CHANNEL_PUBLISH_KIND
+            } else if channel::is_subscribe_method(&method_name) {
+                channel::CHANNEL_SUBSCRIBE_KIND
+            } else {
+                return None;
+            };
+            (kind, "go-bus", 0)
         };
-        (kind, "go-bus")
-    };
 
     let args = call_arguments(node);
-    let raw_topic = node_text(*args.first()?, source);
+    let raw_topic = node_text(*args.get(pos)?, source);
     let local = go_local_binding(node, &raw_topic, source);
-    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
-    let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
-        channel::build_publish_detail(&normalized, &raw_topic, framework)
-    } else {
-        channel::build_subscribe_detail(&normalized, &raw_topic, framework)
-    };
+    let topic = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
+    let detail = channel::build_detail(kind, &topic, &raw_topic, framework);
 
     Some(EdgeInput {
         kind: kind.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
+        target_qualname: Some(topic.key),
         detail: Some(detail),
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),

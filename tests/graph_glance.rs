@@ -5,7 +5,7 @@
 //! command-line app, and a workspace of libraries with no way in.
 mod common;
 
-use common::glance_fixtures::{CLI, LIBS, MULTI};
+use common::glance_fixtures::{CLI, EVENTS, LIBS, MULTI};
 
 use serde_json::Value;
 use std::path::Path;
@@ -188,7 +188,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
                 "Message bus",
                 "card",
                 "data",
-                "Message bus (the repository names no broker) with 1 topic (fileuploaded); 1 app publishes; 1 app subscribes."
+                "Message bus (the repository names no broker) with 1 topic (file-uploaded); 1 app publishes; 1 app subscribes."
             ),
         ])
     );
@@ -206,7 +206,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             (
                 "ingest-api".into(),
                 "validator".into(),
-                "publishes fileuploaded".into(),
+                "publishes file-uploaded".into(),
                 true
             ),
             (
@@ -218,13 +218,13 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             (
                 "ingest-api".into(),
                 "Message bus".into(),
-                "publishes fileuploaded".into(),
+                "publishes file-uploaded".into(),
                 false
             ),
             (
                 "validator".into(),
                 "Message bus".into(),
-                "subscribes to fileuploaded".into(),
+                "subscribes to file-uploaded".into(),
                 false
             ),
         ]
@@ -249,7 +249,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
             ("portal", "start", "ui/src/api.sendUpload"),
             ("ingest-api", "http", "ingest_api.main.upload"),
             ("ingest-api", "call", "ingest_api.main.store"),
-            ("Message bus", "publish", "fileuploaded"),
+            ("Message bus", "publish", "file-uploaded"),
             ("validator", "bus", "validator.main.on_uploaded"),
             ("validator", "call", "validator.main.check"),
             ("Kubernetes manifests", "config", "env://DB_PASSWORD"),
@@ -297,6 +297,7 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
         qs,
         vec![
             "Where do secrets come from?",
+            "What reacts to file-uploaded?",
             "What uses Message bus?",
             "What talks to ingest-api?",
             "What talks to validator?"
@@ -304,9 +305,13 @@ fn several_services_follow_one_request_across_http_the_bus_and_config() {
     );
     assert_eq!(
         g.g()["questions"][1]["a"],
-        "ingest-api publishes fileuploaded; validator subscribes to fileuploaded."
+        "validator subscribes to file-uploaded on Message bus; ingest-api publishes it."
     );
-    assert_eq!(g.g()["questions"][2]["a"], "portal calls over HTTP.");
+    assert_eq!(
+        g.g()["questions"][2]["a"],
+        "ingest-api publishes file-uploaded; validator subscribes to file-uploaded."
+    );
+    assert_eq!(g.g()["questions"][3]["a"], "portal calls over HTTP.");
     assert_eq!(
         g.g()["read_first"],
         serde_json::json!([{ "path": "README.md", "note": "what the project is" }])
@@ -640,4 +645,193 @@ fn units_carry_the_overview_class_and_why_one_is_left_out() {
         serde_json::json!([[id, "Java, not indexed"]])
     );
     assert_eq!(class.as_array().unwrap().len(), units.len());
+}
+
+/// Services that talk only through integration events on one broker: the
+/// map draws who publishes to whom, the broker's lines point the way the
+/// messages go, the tour explains how events flow, and every flow names the
+/// event it crosses the bus on.
+#[test]
+fn services_that_talk_through_events_draw_who_publishes_to_whom() {
+    let (_tmp, root, db) = common::index_repo("lidx-glance-events-", EVENTS);
+    let apps = glance(&root, &db);
+    let g = G(&apps);
+    assert_eq!(
+        g.nodes()[4],
+        (
+            "RabbitMQ".to_string(),
+            "card".to_string(),
+            "data".to_string(),
+            "RabbitMQ message broker with 3 events (OrderPaidIntegrationEvent, OrderStartedIntegrationEvent and StockLowIntegrationEvent); 2 apps publish; 4 apps subscribe.".to_string()
+        )
+    );
+    assert_eq!(
+        g.nodes()[2].3,
+        "C# web API serving 1 HTTP route and subscribed to 1 event; publishes 2 events, uses RabbitMQ."
+    );
+    // Event links drawn publisher to subscriber; of two apps that message
+    // each other the busier direction (a tie: the first).
+    let l = |a: &str, b: &str, label: &str, quiet: bool| {
+        (a.to_string(), b.to_string(), label.to_string(), quiet)
+    };
+    assert_eq!(
+        g.links(),
+        vec![
+            l(
+                "Catalog",
+                "Ordering",
+                "publishes StockLowIntegrationEvent",
+                false
+            ),
+            l(
+                "Ordering",
+                "Basket",
+                "publishes OrderStartedIntegrationEvent",
+                false
+            ),
+            l(
+                "Ordering",
+                "Catalog",
+                "publishes OrderPaidIntegrationEvent",
+                true
+            ),
+            l(
+                "Ordering",
+                "Web",
+                "publishes OrderPaidIntegrationEvent",
+                false
+            ),
+            l(
+                "Basket",
+                "RabbitMQ",
+                "subscribes to OrderStartedIntegrationEvent",
+                false
+            ),
+            l(
+                "Catalog",
+                "RabbitMQ",
+                "publishes 1 event, subscribes to 1",
+                false
+            ),
+            l(
+                "Ordering",
+                "RabbitMQ",
+                "publishes 2 events, subscribes to 1",
+                false
+            ),
+            l(
+                "Web",
+                "RabbitMQ",
+                "subscribes to OrderPaidIntegrationEvent",
+                false
+            ),
+        ]
+    );
+    let dirs: Vec<Value> = g.g()["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["dir"].clone())
+        .collect();
+    assert_eq!(
+        dirs,
+        serde_json::json!([null, null, null, null, "in", "both", "both", "in"])
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(g.g()["event_brokers"], serde_json::json!([4]));
+    assert_eq!(
+        g.g()["nodes"][4]["res"]["events"],
+        serde_json::json!([
+            { "name": "OrderPaidIntegrationEvent", "pubs": [2], "subs": [1, 3], "at": [
+                { "node": 1, "role": "sub", "qual": "Catalog.OrderPaidHandler.Handle", "file": "catalog/Handlers.cs", "line": 8 },
+                { "node": 2, "role": "pub", "qual": "Ordering.Api.Pay", "file": "ordering/Api.cs", "line": 14 },
+                { "node": 3, "role": "sub", "qual": "Web.OrderPaidHandler.Handle", "file": "web/Handlers.cs", "line": 7 },
+            ] },
+            { "name": "OrderStartedIntegrationEvent", "pubs": [2], "subs": [0], "at": [
+                { "node": 0, "role": "sub", "qual": "Basket.OrderStartedHandler.Handle", "file": "basket/Handlers.cs", "line": 7 },
+                { "node": 2, "role": "pub", "qual": "Ordering.Api.Pay", "file": "ordering/Api.cs", "line": 14 },
+            ] },
+            { "name": "StockLowIntegrationEvent", "pubs": [1], "subs": [2], "at": [
+                { "node": 1, "role": "pub", "qual": "Catalog.OrderPaidHandler.Handle", "file": "catalog/Handlers.cs", "line": 8 },
+                { "node": 2, "role": "sub", "qual": "Ordering.StockLowHandler.Handle", "file": "ordering/Api.cs", "line": 23 },
+            ] },
+        ])
+    );
+    assert_eq!(
+        g.tour().into_iter().map(|t| t.0).collect::<Vec<_>>(),
+        vec!["lanes", "busiest", "flow", "talk", "events", "data"]
+    );
+    let t = &g.g()["tour"][4];
+    assert_eq!(t["title"], "How events flow");
+    assert_eq!(
+        t["text"],
+        "RabbitMQ carries 3 events between 4 apps. Publishing: Ordering (2) and Catalog (1). Subscribing: Basket (1), Catalog (1), Ordering (1) and Web (1). The most widely heard: OrderPaidIntegrationEvent from Ordering to Catalog and Web."
+    );
+    assert_eq!(t["nodes"], serde_json::json!([4, 0, 1, 2, 3]));
+    assert_eq!(t["links"], serde_json::json!([0, 1, 3, 4, 5, 6, 7]));
+    assert_eq!(t["select"], 4);
+    assert_eq!(t["panel"], "events");
+    let qs: Vec<(String, String)> = g.g()["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|q| q["id"].as_str().unwrap().starts_with("reacts-"))
+        .map(|q| {
+            (
+                q["q"].as_str().unwrap().to_string(),
+                q["a"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        qs,
+        vec![
+            (
+                "What reacts to OrderPaidIntegrationEvent?".to_string(),
+                "Catalog and Web subscribe to OrderPaidIntegrationEvent on RabbitMQ; Ordering publishes it.".to_string()
+            ),
+            (
+                "What reacts to OrderStartedIntegrationEvent?".to_string(),
+                "Basket subscribes to OrderStartedIntegrationEvent on RabbitMQ; Ordering publishes it.".to_string()
+            ),
+            (
+                "What reacts to StockLowIntegrationEvent?".to_string(),
+                "Ordering subscribes to StockLowIntegrationEvent on RabbitMQ; Catalog publishes it.".to_string()
+            ),
+        ]
+    );
+    // A flow across the bus names each event, at the broker and where it
+    // is picked up.
+    assert_eq!(
+        g.titles(),
+        vec![
+            "on OrderPaidIntegrationEvent → RabbitMQ → Catalog",
+            "on OrderStartedIntegrationEvent → RabbitMQ → Basket"
+        ]
+    );
+    let topics: Vec<(String, String, Value)> = g.g()["flows"][0]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                g.name(&s["node"]),
+                s["via"].as_str().unwrap().to_string(),
+                s["topic"].clone(),
+            )
+        })
+        .collect();
+    let st = |n: &str, v: &str, t: Value| (n.to_string(), v.to_string(), t);
+    assert_eq!(
+        topics,
+        vec![
+            st("Ordering", "start", Value::Null),
+            st("RabbitMQ", "publish", "OrderPaidIntegrationEvent".into()),
+            st("Catalog", "bus", "OrderPaidIntegrationEvent".into()),
+            st("RabbitMQ", "publish", "StockLowIntegrationEvent".into()),
+            st("Ordering", "bus", "StockLowIntegrationEvent".into()),
+        ]
+    );
 }

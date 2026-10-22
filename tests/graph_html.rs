@@ -863,7 +863,7 @@ fn bridges_are_drawn_between_the_folders_that_own_them() {
             "VIA_BUS".to_string(),
             1,
             derived,
-            "channel://ordercreated".to_string(),
+            "channel://order-created".to_string(),
         )],
         "{via:?}"
     );

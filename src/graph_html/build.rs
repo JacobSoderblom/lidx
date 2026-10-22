@@ -262,9 +262,39 @@ fn display(edge: &Edge) -> Option<(Key, Key, u32)> {
 /// (`/Service/Method` without the proto package); the route it binds to is
 /// a property of the index, not of the order edges are met in, so every edge
 /// is rewritten to it before anything keys on its target.
+///
+/// A channel key is matched lowercased (`channel://orderstarted`); it is
+/// shown by the name the code writes for it (`channel://OrderStarted`), so
+/// every edge on one channel still meets on one key.
 #[derive(Default)]
 pub(crate) struct RouteCanon {
     cache: HashMap<String, String>,
+    topics: Option<HashMap<String, String>>,
+}
+
+/// The name people read for each channel key: the one its edges write most
+/// often, a capitalised one first on a tie, then the first in order.
+pub(crate) fn topic_names(pairs: &[(String, String)]) -> HashMap<String, String> {
+    let mut seen: HashMap<&str, BTreeMap<&str, usize>> = HashMap::new();
+    for (key, name) in pairs {
+        if crate::indexer::channel::normalize_channel_name(name).as_deref() == Some(key.as_str()) {
+            *seen.entry(key).or_default().entry(name).or_default() += 1;
+        }
+    }
+    seen.into_iter()
+        .filter_map(|(key, names)| {
+            let caps = |n: &str| n.chars().any(|c| c.is_ascii_uppercase());
+            let best = names
+                .into_iter()
+                .max_by(|a, b| {
+                    a.1.cmp(&b.1)
+                        .then_with(|| caps(a.0).cmp(&caps(b.0)))
+                        .then_with(|| b.0.cmp(a.0))
+                })?
+                .0;
+            Some((key.to_string(), format!("channel://{best}")))
+        })
+        .collect()
 }
 
 impl RouteCanon {
@@ -275,6 +305,9 @@ impl RouteCanon {
         kind: &str,
         tq: &str,
     ) -> String {
+        if edge_views::contains(edge_views::CHANNEL_FAMILY, kind) {
+            return self.topic(db, graph_version, tq);
+        }
         if !edge_views::contains(edge_views::RPC_FAMILY, kind) || !tq.starts_with('/') {
             return tq.to_string();
         }
@@ -290,6 +323,15 @@ impl RouteCanon {
         c
     }
 
+    /// A channel key as it is shown (see [`topic_names`]).
+    pub(crate) fn topic(&mut self, db: &Db, graph_version: i64, key: &str) -> String {
+        let topics = self.topics.get_or_insert_with(|| {
+            let pairs = channel_names(db, graph_version).unwrap_or_default();
+            topic_names(&pairs)
+        });
+        topics.get(key).cloned().unwrap_or_else(|| key.to_string())
+    }
+
     /// Rewrite the target of every unresolved bridge edge in `edges`.
     fn normalise(&mut self, db: &Db, graph_version: i64, edges: &mut [Edge]) {
         for e in edges {
@@ -302,6 +344,30 @@ impl RouteCanon {
             }
         }
     }
+}
+
+/// Every channel edge's key and the name its detail records.
+fn channel_names(db: &Db, graph_version: i64) -> Result<Vec<(String, String)>> {
+    let conn = db.read_conn()?;
+    let mut stmt = conn.prepare(
+        "SELECT target_qualname, detail FROM edges
+         WHERE graph_version = ?1 AND kind IN ('CHANNEL_PUBLISH', 'CHANNEL_SUBSCRIBE')
+           AND target_qualname IS NOT NULL AND detail IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([graph_version], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (key, detail) = row?;
+        if let Some(name) = serde_json::from_str::<serde_json::Value>(&detail)
+            .ok()
+            .and_then(|d| d.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        {
+            out.push((key.trim().to_string(), name));
+        }
+    }
+    Ok(out)
 }
 
 fn edge_rank(kind: &str) -> u8 {
@@ -1562,5 +1628,28 @@ mod tests {
         assert_eq!(external_package("ext:SHA256.Create"), "SHA256");
         assert_eq!(external_package("ext:app/page.useState"), "app");
         assert_eq!(external_package("ext:fmt"), "fmt");
+    }
+
+    #[test]
+    fn a_channel_is_shown_by_the_name_its_code_writes_most() {
+        let pairs: Vec<(String, String)> = [
+            ("channel://orderpaid", "OrderPaid"),
+            ("channel://orderpaid", "orderpaid"),
+            ("channel://orderpaid", "OrderPaid"),
+            ("channel://jobqueue", "job-queue"),
+            ("channel://jobqueue", "jobQueue"),
+            // A name that is not the key's is ignored.
+            ("channel://jobqueue", "other"),
+            ("channel://other", "x"),
+        ]
+        .iter()
+        .map(|(k, n)| (k.to_string(), n.to_string()))
+        .collect();
+        let names = topic_names(&pairs);
+        assert_eq!(names["channel://orderpaid"], "channel://OrderPaid");
+        // A tie: the capitalised one, though it sorts after.
+        assert_eq!(names["channel://jobqueue"], "channel://jobQueue");
+        assert!(!names.contains_key("channel://other"));
+        assert_eq!(names.len(), 2);
     }
 }

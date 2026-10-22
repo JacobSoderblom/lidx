@@ -7661,8 +7661,13 @@
     var k = Object.keys(users).length, parts = [], kinds = {};
     (n.res.items || []).forEach(function (it) { if (it[1] !== 'call' && it[1] !== 'object') kinds[it[1]] = (kinds[it[1]] || 0) + 1; });
     var top = Object.keys(kinds).sort(function (a, b) { return kinds[b] - kinds[a] || (a < b ? -1 : 1); })[0];
-    if (top) parts.push(plural(kinds[top], top, top + 's'));
     var one = GL.mode === 'modules' ? 'part' : 'app';
+    // A broker counts its messages by what they are named as.
+    var evs = n.res.events || [];
+    if (evs.length) {
+      var noun = gTopicNoun(evs.map(function (e) { return e.name; }));
+      parts.push(plural(evs.length, noun[0], noun[1]));
+    } else if (top) parts.push(plural(kinds[top], top, top + 's'));
     parts.push(k ? 'used by ' + plural(k, one, one + 's') : 'not used here');
     return parts.join(' · ');
   }
@@ -7705,7 +7710,8 @@
     { fams: ['code'], cls: 'code', text: 'calls code' },
     { fams: ['http'], cls: 'http', text: 'HTTP request' },
     { fams: ['rpc'], cls: 'rpc', text: 'RPC call' },
-    { fams: ['bus', 'msg'], cls: 'bus', text: 'message bus' },
+    { fams: ['bus'], cls: 'bus', text: 'message, publisher → subscriber' },
+    { fams: ['msg'], cls: 'bus', text: 'to a broker, arrow the way messages go' },
     { fams: ['config'], cls: 'config', text: 'reads config' },
     { fams: ['secret'], cls: 'secret', text: 'reads secrets' },
     { fams: ['data', 'store'], cls: 'data', text: 'reads or writes data' },
@@ -7794,6 +7800,13 @@
     gst.drawn = geoms;
     renderGlanceLinks(geoms);
   }
+  // A line's title, in the direction its messages or calls run.
+  function gLinkTitle(l) {
+    var a = gNode(l.from).name, b = gNode(l.to).name;
+    if (l.dir === 'in') return b + ' → ' + a + ': ' + a + ' ' + l.label;
+    if (l.dir === 'both') return a + ' ⇄ ' + b + ': ' + l.label;
+    return a + ' → ' + b + ': ' + l.label;
+  }
   function renderGlanceLinks(geoms) {
     var keep = gst.keep, svg = '';
     var flowPairs = gFlowPairs();
@@ -7804,12 +7817,16 @@
       // Lines drawn for the card under the pointer stay bright.
       if (gst.hover !== null && gSharedLink(l) && (l.from === gst.hover || l.to === gst.hover)) dim = false;
       if (flowing) dim = !flowPairs[l.from + '>' + l.to];
-      var d = gPathD(g.pp), lastSeg = g.pp[g.pp.length - 1];
-      var end = lastSeg[3], c = lastSeg[2], ang = Math.atan2(end[1] - c[1], end[0] - c[0]), s = 7;
-      var ah = 'M' + r1(end[0]) + ' ' + r1(end[1]) + 'L' + r1(end[0] - s * Math.cos(ang - 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang - 0.42)) +
-        'L' + r1(end[0] - s * Math.cos(ang + 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang + 0.42)) + 'Z';
+      var d = gPathD(g.pp), lastSeg = g.pp[g.pp.length - 1], firstSeg = g.pp[0];
+      var head = function (end, c) {
+        var ang = Math.atan2(end[1] - c[1], end[0] - c[0]), s = 7;
+        return 'M' + r1(end[0]) + ' ' + r1(end[1]) + 'L' + r1(end[0] - s * Math.cos(ang - 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang - 0.42)) +
+          'L' + r1(end[0] - s * Math.cos(ang + 0.42)) + ' ' + r1(end[1] - s * Math.sin(ang + 0.42)) + 'Z';
+      };
+      // A broker delivers to a subscriber: the arrow points at the app.
+      var ah = (l.dir === 'in' ? '' : head(lastSeg[3], lastSeg[2])) + (l.dir === 'in' || l.dir === 'both' ? head(firstSeg[0], firstSeg[1]) : '');
       svg += '<g class="g-ln f-' + esc(l.family) + (dim ? ' dim' : '') + (gst.link === g.i ? ' sel' : '') + '" data-gl="' + g.i + '" style="--w:' + gWidth(l.count, l.family) + '">' +
-        '<path class="ln" d="' + d + '"/><path class="ah" d="' + ah + '"/><path class="hit" d="' + d + '"><title>' + esc(gNode(l.from).name + ' → ' + gNode(l.to).name + ': ' + l.label) + '</title></path>';
+        '<path class="ln" d="' + d + '"/><path class="ah" d="' + ah + '"/><path class="hit" d="' + d + '"><title>' + esc(gLinkTitle(l)) + '</title></path>';
       if (g.lbl) svg += '<text class="lbl" x="' + r1(g.lbl.x + g.lbl.w / 2) + '" y="' + r1(g.lbl.y + 13) + '" text-anchor="middle">' + esc(g.text) + '</text>';
       svg += '</g>';
     });
@@ -8065,7 +8082,9 @@
       }).join('') + '</ul>';
     };
     if (out.length) html += '<dt>Talks to</dt><dd>' + linkList(out, 'to') + '</dd>';
-    if (inn.length) html += '<dt>' + (n.kind === 'resource' ? 'Used by' : 'Called by') + '</dt><dd>' + linkList(inn, 'from') + '</dd>';
+    var bus = n.kind === 'resource' && n.res && n.res.events && n.res.events.length ? gBusSide(n, inn) : null;
+    if (bus !== null) html += bus;
+    else if (inn.length) html += '<dt>' + (n.kind === 'resource' ? 'Used by' : 'Called by') + '</dt><dd>' + linkList(inn, 'from') + '</dd>';
     if (n.kind === 'resource') html += gResSide(n);
     if (n.other && n.other.total) html += '<dt>Also declares</dt><dd><ul>' + n.other.types.map(function (t) { return '<li><code>' + esc(t[0]) + '</code> <span class="g-dim">×' + fmt(t[1]) + '</span></li>'; }).join('') + (n.other.types.length < n.other.total ? '' : '') + '</ul></dd>';
     if (n.other && n.other.runtimes && n.other.runtimes.length) html += '<dt>Runs code on</dt><dd>' + esc(n.other.runtimes.join(', ')) + '</dd>';
@@ -8078,10 +8097,61 @@
     if (n.units.length && n.kind !== 'infra') html += '<div class="g-actions"><button type="button" class="pri" data-gopen="' + i + '">Open in Explore ▸</button></div>';
     return html;
   }
+  // Names as a short list: the first `max`, then "+N more".
+  function gSome(names, max) {
+    return names.length > max ? names.slice(0, max).join(', ') + ' +' + (names.length - max) + ' more' : names.join(', ');
+  }
+  // What a set of message names is called: events when every one is named
+  // as an event type, else topics.
+  function gTopicNoun(names) {
+    var ev = names.length > 0 && names.every(function (x) { return /Event$/.test(x); });
+    return ev ? ['event', 'events'] : ['topic', 'topics'];
+  }
+  var G_EV_APPS = 4, G_EV_NAMES = 2, G_EV_LIST = 6;
+  // A broker: each message from its publishers to its subscribers, then
+  // who publishes and who subscribes. Apps that use it beside that follow.
+  function gBusSide(n, inn) {
+    var evs = n.res.events, pubs = {}, subs = {}, html = '';
+    evs.forEach(function (e) {
+      e.pubs.forEach(function (i) { (pubs[i] = pubs[i] || []).push(e.name); });
+      e.subs.forEach(function (i) { (subs[i] = subs[i] || []).push(e.name); });
+    });
+    var noun = gTopicNoun(evs.map(function (e) { return e.name; }));
+    var side = function (title, by, verb) {
+      var order = Object.keys(by).map(Number).sort(function (a, b) { return by[b].length - by[a].length || gNode(a).name.localeCompare(gNode(b).name); });
+      if (!order.length) return '';
+      return '<dt>' + title + '</dt><dd><ul class="g-evapps">' + order.map(function (i) {
+        var list = by[i];
+        return '<li>' + gNodeBtn(i) + ' <span class="g-dim">' + esc(verb + ' ' + (list.length === 1 ? list[0] : plural(list.length, noun[0], noun[1]))) + '</span>' +
+          (list.length > 1 ? '<div class="g-evnames">' + esc(gSome(list, G_EV_NAMES)) + '</div>' : '') + '</li>';
+      }).join('') + '</ul></dd>';
+    };
+    html += '<dt>' + esc(noun[1].charAt(0).toUpperCase() + noun[1].slice(1)) + ' <span class="g-dtn">' + fmt(evs.length) + '</span></dt><dd><ul class="g-events">' + evs.slice(0, G_EV_LIST).map(function (e) {
+      var to = e.subs.map(function (i) { return gNode(i).name; });
+      var from = e.pubs.length ? e.pubs.slice(0, 2).map(gNodeBtn).join(', ') + (e.pubs.length > 2 ? ' +' + (e.pubs.length - 2) : '') + ' <span class="g-dim">publishes</span> ' : '';
+      return '<li>' + from + '<code>' + esc(e.name) + '</code>' +
+        (to.length ? ' <span class="g-dim">→</span> ' + esc(gSome(to, G_EV_APPS)) : ' <span class="g-dim">· no subscriber here</span>') + '</li>';
+    }).join('') + (evs.length > G_EV_LIST ? '<li class="g-dim">+' + (evs.length - G_EV_LIST) + ' more</li>' : '') + '</ul></dd>';
+    html += side('Publishers', pubs, 'publishes');
+    html += side('Subscribers', subs, 'subscribes to');
+    // Users with no named message: their code uses the broker's client only.
+    var named = {};
+    Object.keys(pubs).concat(Object.keys(subs)).forEach(function (k) { named[k] = 1; });
+    var rest = inn.filter(function (li) { return !named[GL.links[li].from]; });
+    if (rest.length) {
+      html += '<dt>Also used by</dt><dd><ul>' + rest.map(function (li) {
+        var l = GL.links[li];
+        return '<li><button type="button" class="g-nm" data-gl="' + li + '">' + esc(gNode(l.from).name) + '</button> <span class="g-dim">' + esc(l.label) + '</span></li>';
+      }).join('') + '</ul></dd>';
+    }
+    return html;
+  }
   // A resource: what it holds, where it is declared.
   function gResSide(n) {
     var r = n.res, html = '', byKind = {};
-    (r.items || []).forEach(function (it) { (byKind[it[1]] = byKind[it[1]] || []).push(it[0]); });
+    // A broker's topics are listed with who publishes and subscribes them.
+    var listed = r.events && r.events.length;
+    (r.items || []).forEach(function (it) { if (!(listed && it[1] === 'topic')) (byKind[it[1]] = byKind[it[1]] || []).push(it[0]); });
     Object.keys(byKind).sort().forEach(function (k) {
       var list = byKind[k], title = k === 'call' ? 'Calls' : k === 'object' ? 'Objects used' : k.charAt(0).toUpperCase() + k.slice(1) + 's';
       html += '<dt>' + esc(title) + '</dt><dd><ul class="g-items">' + list.slice(0, 12).map(function (x) { return '<li><code>' + esc(x) + '</code></li>'; }).join('') +
@@ -8121,13 +8191,20 @@
   }
   function gStepText(f, k) {
     var s = f.steps[k], prev = k > 0 ? f.steps[k - 1] : null, here = gNode(s.node).name;
-    if (k === 0) return f.caller ? here + ' sends the request' : 'It starts in ' + here + ' at ' + f.label;
+    if (k === 0) {
+      // A flow that starts at a message starts where it is published.
+      var next = f.steps[1];
+      if (f.caller && next && next.via === 'publish' && next.topic) return here + ' publishes ' + next.topic + ' in ' + s.name;
+      return f.caller ? here + ' sends the request' : 'It starts in ' + here + ' at ' + f.label;
+    }
     var from = gNode(prev.node).name;
     switch (s.via) {
       case 'http': return from + ' calls ' + here + ' over HTTP';
       case 'rpc': return from + ' calls ' + here + ' over RPC';
       case 'publish': return from + ' publishes ' + s.name + ' to ' + here;
-      case 'bus': return gNode(prev.node).kind === 'resource' ? here + ' picks ' + prev.name + ' up from ' + from : from + ' publishes; ' + here + ' picks the message up';
+      case 'bus':
+        if (gNode(prev.node).kind === 'resource') return here + ' picks ' + (s.topic || prev.name) + ' up from ' + from;
+        return s.topic ? from + ' publishes ' + s.topic + '; ' + here + ' picks it up' : from + ' publishes; ' + here + ' picks the message up';
       case 'config': return from + ' reads ' + (s.name.indexOf('secret ') === 0 ? s.name : 'config') + ' from ' + here;
       case 'db': return gNode(s.node).kind === 'resource' ? from + ' reads and writes ' + here : from + ' reaches the database in ' + here;
       case 'res': return from + ' uses ' + here;
@@ -8161,6 +8238,14 @@
     if (t.panel === 'ways' && t.select !== undefined) {
       var ways = GL.entries.filter(function (e) { return e.node === t.select && e.kind !== 'central'; });
       html += '<ul>' + ways.slice(0, 8).map(gEntryRow).join('') + (ways.length > 8 ? '<li class="g-dim">+' + (ways.length - 8) + ' more</li>' : '') + '</ul>';
+    }
+    if (t.panel === 'events' && t.select !== undefined && gNode(t.select).res) {
+      var evs = gNode(t.select).res.events || [];
+      html += '<ul class="g-events">' + evs.slice(0, 6).map(function (e) {
+        var to = e.subs.map(function (i) { return gNode(i).name; }), from = e.pubs.map(function (i) { return gNode(i).name; });
+        return '<li>' + (from.length ? esc(gSome(from, 2)) + ' <span class="g-dim">publishes</span> ' : '') + '<code>' + esc(e.name) + '</code>' +
+          (to.length ? ' <span class="g-dim">→</span> ' + esc(gSome(to, G_EV_APPS)) : '') + '</li>';
+      }).join('') + (evs.length > 6 ? '<li class="g-dim">+' + (evs.length - 6) + ' more · click ' + esc(gNode(t.select).name) + ' for all</li>' : '') + '</ul>';
     }
     if (t.panel === 'core') html += '<ul class="g-rows">' + GL.core_types.slice(0, 5).map(function (c) { return '<li><b>' + esc(c.name) + '</b><span class="g-dim">×' + fmt(c.uses) + ' · ' + esc(gNode(c.node).name) + '</span>' + gCode(c.file, c.line) + '</li>'; }).join('') + '</ul>';
     if (t.panel === 'hotspots') html += '<ul class="g-rows">' + GL.hotspots.slice(0, 5).map(function (h) { return '<li><b>' + esc(h.name) + '</b><span class="g-dim">complexity ' + fmt(h.complexity) + ' · ' + esc(gNode(h.node).name) + '</span>' + gCode(h.file, h.line) + '</li>'; }).join('') + '</ul>';

@@ -178,7 +178,10 @@ fn label(family: &str, link: &Link) -> String {
         "rpc" => format!("calls RPC ×{n}"),
         "declares" => format!("declares RPC ×{n}"),
         "bus" if n == 1 => one("publishes to topic"),
-        "bus" => format!("publishes to {n} topics"),
+        "bus" => format!(
+            "publishes to {n} {}",
+            super::glance::topic_noun(link.keys.iter().map(|k| k.as_str())).1
+        ),
         "config" => {
             let secrets = link.keys.iter().filter(|k| is_secret(k)).count();
             match (n, secrets) {
@@ -673,6 +676,16 @@ mod tests {
         };
         l.keys.insert("orders".to_string());
         assert_eq!(label("bus", &l), "publishes to topic orders");
+        let mut ev = Link {
+            weight: 2,
+            ..Link::default()
+        };
+        ev.keys.insert("channel://OrderPaidEvent".to_string());
+        ev.keys.insert("channel://StockLowEvent".to_string());
+        assert_eq!(label("bus", &ev), "publishes to 2 events");
+        ev.keys.insert("channel://jobs".to_string());
+        ev.weight = 3;
+        assert_eq!(label("bus", &ev), "publishes to 3 topics");
         l.keys = ["secret://a".to_string()].into();
         assert_eq!(label("config", &l), "reads secret a");
     }

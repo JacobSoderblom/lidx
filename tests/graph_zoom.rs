@@ -305,13 +305,13 @@ fn relations_are_aggregated_per_symbol_pair_with_exact_weights() {
                 "list_orders".to_string(),
                 "on_created".to_string(),
                 1,
-                vec!["channel://ordercreated".to_string()]
+                vec!["channel://order-created".to_string()]
             ),
             (
                 "list_orders".to_string(),
                 "on_paid".to_string(),
                 1,
-                vec!["channel://orderpaid".to_string()]
+                vec!["channel://order-paid".to_string()]
             ),
         ],
         "{w:?}"

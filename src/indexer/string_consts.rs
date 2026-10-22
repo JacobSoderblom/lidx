@@ -209,7 +209,7 @@ impl StringConsts {
         if name.is_empty() {
             return;
         }
-        let value = string_literal_value(value_text);
+        let value = string_literal_value(value_text).or_else(|| env_default(value_text));
         let mut path: Vec<&str> = scope.iter().map(String::as_str).collect();
         path.push(name);
         for start in 0..path.len() {
@@ -225,6 +225,33 @@ impl StringConsts {
             }
         }
     }
+}
+
+/// The default of an environment lookup with a literal fallback: the value
+/// the code uses unless the deployment sets one. `Environment.Get..("T") ??
+/// "orders"` (C#), `process.env.T || 'orders'` / `?? 'orders'` (JavaScript),
+/// `os.getenv("T", "orders")` / `os.environ.get("T", "orders")` (Python).
+/// Anything else, including a lookup with no literal default, is `None`.
+pub fn env_default(text: &str) -> Option<String> {
+    let t = text.trim();
+    for op in ["??", "||"] {
+        if let Some((left, right)) = t.rsplit_once(op) {
+            let l = left.to_ascii_lowercase();
+            if l.contains("env") && !l.contains(op) {
+                return string_literal_value(right.trim());
+            }
+            return None;
+        }
+    }
+    let open = t.find('(')?;
+    let head = t[..open].trim();
+    if !(head.ends_with("getenv") || head.ends_with("environ.get")) || !t.ends_with(')') {
+        return None;
+    }
+    let args = &t[open + 1..t.len() - 1];
+    let (name, default) = args.split_once(',')?;
+    string_literal_value(name.trim())?;
+    string_literal_value(default.trim())
 }
 
 /// Collect a file's module- and class-level string constants.
@@ -397,6 +424,27 @@ fn record_cs_declarators(node: Node<'_>, source: &str, scope: &[String], out: &m
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_lookup_defaults() {
+        for (raw, want) in [
+            (
+                "Environment.GetEnvironmentVariable(\"KAFKA_TOPIC\") ?? \"orders\"",
+                Some("orders"),
+            ),
+            ("process.env.TOPIC || 'orders'", Some("orders")),
+            ("process.env.TOPIC ?? 'orders'", Some("orders")),
+            ("os.getenv('TOPIC', 'orders')", Some("orders")),
+            ("os.environ.get(\"TOPIC\", \"orders\")", Some("orders")),
+            ("os.getenv('TOPIC')", None),
+            ("name ?? \"orders\"", None),
+            ("a || b", None),
+            ("os.getenv(name, 'orders')", None),
+            ("\"orders\"", None),
+        ] {
+            assert_eq!(env_default(raw).as_deref(), want, "{raw}");
+        }
+    }
 
     #[test]
     fn string_literal_forms() {

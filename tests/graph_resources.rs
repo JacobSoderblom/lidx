@@ -162,7 +162,7 @@ fn a_compose_stack_shows_each_resource_category_with_verbs_and_evidence() {
                 "RabbitMQ",
                 "card",
                 "data",
-                "RabbitMQ message broker with 1 service (mq) and 1 topic (ordercreated); 1 app publishes; 1 app subscribes; declared in Docker Compose."
+                "RabbitMQ message broker with 1 service (mq) and 1 topic (order-created); 1 app publishes; 1 app subscribes; declared in Docker Compose."
             ),
             (
                 "Amazon SQS",
@@ -196,9 +196,9 @@ fn a_compose_stack_shows_each_resource_category_with_verbs_and_evidence() {
             ("web", "api.payhub.io", "ext", "calls over HTTP"),
             ("orders", "PostgreSQL", "data", "reads/writes data"),
             ("orders", "Redis", "data", "caches data"),
-            ("orders", "RabbitMQ", "msg", "publishes ordercreated"),
+            ("orders", "RabbitMQ", "msg", "publishes order-created"),
             ("orders", "Amazon S3", "store", "stores objects"),
-            ("worker", "RabbitMQ", "msg", "subscribes to ordercreated"),
+            ("worker", "RabbitMQ", "msg", "subscribes to order-created"),
             ("worker", "Azure Key Vault", "secret", "reads secrets"),
         ])
     );
@@ -209,7 +209,7 @@ fn a_compose_stack_shows_each_resource_category_with_verbs_and_evidence() {
     // then the deployment, then the manifest.
     assert_eq!(
         link(&g, "orders", "RabbitMQ")["calls"][0],
-        json!({ "key": "ordercreated", "from": { "qual": "orders.main.save", "file": "orders/orders/main.py", "line": 15 } })
+        json!({ "key": "order-created", "from": { "qual": "orders.main.save", "file": "orders/orders/main.py", "line": 15 } })
     );
     assert_eq!(
         link(&g, "orders", "PostgreSQL")["calls"],
@@ -366,14 +366,14 @@ fn a_broker_used_through_a_library_is_named_and_an_unnamed_one_stays_neutral() {
             ("RabbitMQ".to_string(), "RabbitMQ message broker; used by 1 app.".to_string()),
             (
                 "Kafka".to_string(),
-                "Kafka message broker with 2 topics (invoicedue and paymentmade); 1 app publishes; 1 app subscribes.".to_string()
+                "Kafka message broker with 2 topics (invoice-due and payment-made); 1 app publishes; 1 app subscribes.".to_string()
             ),
         ]
     );
     assert_eq!(
         res_links(&g),
         own4(&[
-            ("api", "Kafka", "msg", "publishes paymentmade"),
+            ("api", "Kafka", "msg", "publishes payment-made"),
             ("jobs", "RabbitMQ", "msg", "exchanges messages"),
             ("mailer", "Kafka", "msg", "subscribes to 2 topics"),
         ])
@@ -978,7 +978,7 @@ fn a_front_ends_own_event_bus_is_no_broker() {
     assert_eq!(res_names(&g), strs(&["RabbitMQ"]));
     assert_eq!(
         uses_of(&g),
-        own3(&[("worker", "RabbitMQ", "subscribes to fileuploaded")])
+        own3(&[("worker", "RabbitMQ", "subscribes to file-uploaded")])
     );
 }
 

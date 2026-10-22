@@ -1402,10 +1402,10 @@ fn the_landing_page_shows_a_small_labelled_map() {
         vec![
             ("calls over HTTP".to_string(), true),
             ("reads config DB_PASSWORD".to_string(), true),
-            ("publishes fileuploaded".to_string(), true),
+            ("publishes file-uploaded".to_string(), true),
             // A short line between two stacked cards has no room for its
             // label; its title still says it.
-            ("subscribes to fileuploaded".to_string(), false),
+            ("subscribes to file-uploaded".to_string(), false),
         ]
     );
     // Labels keep off the cards and each other.
@@ -1496,7 +1496,7 @@ fn a_flow_steps_with_the_arrow_keys_and_escape_keeps_the_selection() {
     // The message goes to the bus, then the worker takes it off.
     assert!(
         side.contains(
-            "4fileuploadedMessage bus · publishes to5on_uploadedvalidator · receives the message"
+            "4file-uploadedMessage bus · publishes to5on_uploadedvalidator · receives the message"
         ),
         "{side}"
     );
@@ -1655,13 +1655,13 @@ fn a_card_a_line_and_a_question_each_explain_themselves() {
         "{side}"
     );
     assert!(
-        side.contains("Talks toKubernetes manifests reads config DB_PASSWORDMessage bus subscribes to fileuploaded"),
+        side.contains("Talks toKubernetes manifests reads config DB_PASSWORDMessage bus subscribes to file-uploaded"),
         "{side}"
     );
     // Where it runs: the deployment that names its image.
     assert!(side.contains("Runs inKubernetes (deploy/)"), "{side}");
     assert!(
-        side.contains("Called byingest-api publishes fileuploaded"),
+        side.contains("Called byingest-api publishes file-uploaded"),
         "{side}"
     );
     assert!(
@@ -2092,7 +2092,8 @@ fn the_resources_lane_renders_and_lines_go_through_the_broker() {
     );
     let html = r["html"]["cards"].as_str().unwrap();
     assert!(html.contains("class=\"g-card g-res g-r-bus\""), "{html}");
-    assert!(html.contains("<p>1 service · used by 2 apps</p>"), "{html}");
+    // A broker counts the topics its apps publish and subscribe to.
+    assert!(html.contains("<p>1 topic · used by 2 apps</p>"), "{html}");
     let c = run(&p, "glance-curves", "");
     assert_eq!(
         unclear_curves(&c["landing"]["cards"], &c["landing"]["curves"]),
@@ -2111,7 +2112,7 @@ fn the_resources_lane_renders_and_lines_go_through_the_broker() {
     let side = fl["side"].as_str().unwrap();
     assert!(
         side.contains(
-            "2ordercreatedRabbitMQ · publishes to3on_createdworker · receives the message"
+            "2order-createdRabbitMQ · publishes to3on_createdworker · receives the message"
         ),
         "{side}"
     );
@@ -2119,10 +2120,18 @@ fn the_resources_lane_renders_and_lines_go_through_the_broker() {
     let s = run(&p, "glance-select", "RabbitMQ");
     let side = s["card"]["side"].as_str().unwrap();
     assert!(side.contains("RabbitMQ messaging"), "{side}");
+    // Each topic from its publishers to its subscribers, then each side.
     assert!(
-        side.contains("Used byorders publishes ordercreatedworker subscribes to ordercreated"),
+        side.contains("Topics 1orders publishes order-created → worker"),
         "{side}"
     );
+    assert!(
+        side.contains(
+            "Publishersorders publishes order-createdSubscribersworker subscribes to order-created"
+        ),
+        "{side}"
+    );
+    assert!(!side.contains("Used by"), "{side}");
     assert!(
         side.contains("Declared indocker-compose.yml:18 mq:"),
         "{side}"
@@ -3048,7 +3057,7 @@ fn the_landing_cards_are_buttons_in_reading_order_and_the_legend_keys_the_map() 
     // Only the styles this map draws, each with its own dash class and a word.
     for (class, word) in [
         ("f-http", "HTTP request"),
-        ("f-bus", "message bus"),
+        ("f-bus", "to a broker, arrow the way messages go"),
         ("f-config", "reads config"),
     ] {
         assert!(
@@ -3439,4 +3448,119 @@ fn a_second_click_on_a_card_opens_it_in_explore() {
     assert_eq!(r["level"], "app", "{r}");
     assert_eq!(r["open"], serde_json::json!(["validator"]), "{r}");
     assert_eq!(r["k"], 1.0, "{r}");
+}
+
+/// Services that talk through integration events: the map draws who
+/// publishes to whom, each line to the broker points the way its messages
+/// go, the broker's card lists each event from publisher to subscribers,
+/// the tour shows how events flow, and a flow says which event it crosses
+/// the bus on.
+#[test]
+fn an_event_driven_system_shows_who_publishes_and_who_reacts() {
+    if !node_available() {
+        eprintln!("skipped: node is not installed");
+        return;
+    }
+    let (_tmp, p) = glance_page(common::glance_fixtures::EVENTS, "lidx-viewer-events-");
+    let r = run(&p, "glance-landing", "");
+    let drawn: Vec<String> = r["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            format!(
+                "{}>{}",
+                l["from"].as_str().unwrap(),
+                l["to"].as_str().unwrap()
+            )
+        })
+        .collect();
+    // Publisher to subscriber, drawn at rest; the broker's lines are tags.
+    assert_eq!(
+        drawn,
+        vec!["Catalog>Ordering", "Ordering>Basket", "Ordering>Web"],
+        "{r}"
+    );
+    let svg = r["html"]["links"].as_str().unwrap();
+    assert!(
+        svg.contains("<title>Ordering → Basket: publishes OrderStartedIntegrationEvent</title>"),
+        "{svg}"
+    );
+    // The broker selected: its lines, an arrow into each subscriber, two
+    // heads on a line both ways.
+    let s = run(&p, "glance-select", "RabbitMQ");
+    let side = s["card"]["side"].as_str().unwrap();
+    assert!(
+        side.contains("Events 3Ordering publishes OrderPaidIntegrationEvent → Catalog, WebOrdering publishes OrderStartedIntegrationEvent → BasketCatalog publishes StockLowIntegrationEvent → Ordering"),
+        "{side}"
+    );
+    assert!(
+        side.contains("PublishersOrdering publishes 2 eventsOrderPaidIntegrationEvent, OrderStartedIntegrationEventCatalog publishes StockLowIntegrationEvent"),
+        "{side}"
+    );
+    assert!(
+        side.contains("SubscribersBasket subscribes to OrderStartedIntegrationEvent"),
+        "{side}"
+    );
+    assert!(!side.contains("Used by"), "{side}");
+    let all = run(&p, "glance-everything", "")["html"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The arrowheads drawn on the line a title names: one per head.
+    let heads = |title: &str| -> usize {
+        let at = all.find(&format!("<title>{title}</title>")).expect(title);
+        let ah = all[..at].rfind("class=\"ah\" d=\"").unwrap();
+        let d = &all[ah..at];
+        d[..d.find("\"/>").unwrap()].matches('Z').count()
+    };
+    assert_eq!(
+        heads("RabbitMQ → Basket: Basket subscribes to OrderStartedIntegrationEvent"),
+        1
+    );
+    // A subscriber's head sits where the line leaves the app, not at the
+    // broker: its tip is the line's first point.
+    let tip_at_start = |title: &str| -> bool {
+        let at = all.find(&format!("<title>{title}</title>")).expect(title);
+        let ah = all[..at].rfind("class=\"ah\" d=\"M").unwrap();
+        let ln = all[..ah].rfind("class=\"ln\" d=\"M").unwrap();
+        let first = |i: usize| {
+            let t = &all[i..];
+            let t = &t[t.find("d=\"M").unwrap() + 4..];
+            t[..t.find(['L', 'C', 'H', 'V', 'Q']).unwrap()]
+                .trim()
+                .to_string()
+        };
+        first(ah) == first(ln)
+    };
+    assert!(tip_at_start(
+        "RabbitMQ → Basket: Basket subscribes to OrderStartedIntegrationEvent"
+    ));
+    assert!(!tip_at_start(
+        "Ordering → Basket: publishes OrderStartedIntegrationEvent"
+    ));
+    assert_eq!(
+        heads("Ordering ⇄ RabbitMQ: publishes 2 events, subscribes to 1"),
+        2
+    );
+    assert_eq!(
+        heads("Ordering → Basket: publishes OrderStartedIntegrationEvent"),
+        1
+    );
+    // The tour step on the broker.
+    let t = run(&p, "glance-tour-at", "events");
+    assert_eq!(t["state"]["sel"], "RabbitMQ", "{t}");
+    let side = t["side"].as_str().unwrap();
+    assert!(side.contains("How events flow"), "{side}");
+    assert!(
+        side.contains("Ordering publishes OrderPaidIntegrationEvent → Catalog, Web"),
+        "{side}"
+    );
+    // A flow names the event at each crossing.
+    let f = run(&p, "glance-flow", "0");
+    let side = f["side"].as_str().unwrap();
+    assert!(
+        side.contains("3 Catalog picks OrderPaidIntegrationEvent up from RabbitMQ."),
+        "{side}"
+    );
 }
